@@ -62,12 +62,24 @@ fi
 echo ""
 echo "=== Profile Builds ==="
 
+# Auto-detect available crypto backend
+if pkg-config --exists openssl 2>/dev/null || [ -f /usr/include/openssl/ssl.h ]; then
+    CRYPTO_FLAG="-DNANORTC_CRYPTO=openssl"
+    echo "  (using crypto: openssl)"
+elif pkg-config --exists mbedtls 2>/dev/null || [ -f /usr/include/mbedtls/ssl.h ]; then
+    CRYPTO_FLAG="-DNANORTC_CRYPTO=mbedtls"
+    echo "  (using crypto: mbedtls)"
+else
+    echo "  ERROR: neither openssl nor mbedtls development headers found"
+    exit 1
+fi
+
 for profile in DATA AUDIO MEDIA; do
     build_dir="$ROOT/build-ci-${profile}"
     rm -rf "$build_dir"
 
     run_check "Build $profile" \
-        bash -c "cmake -B '$build_dir' -DNANORTC_PROFILE=$profile -DCMAKE_BUILD_TYPE=Debug > /dev/null 2>&1 && cmake --build '$build_dir' -j\$(nproc) > /dev/null 2>&1"
+        bash -c "cmake -B '$build_dir' -DNANORTC_PROFILE=$profile $CRYPTO_FLAG -DCMAKE_BUILD_TYPE=Debug > /dev/null 2>&1 && cmake --build '$build_dir' -j\$(nproc) > /dev/null 2>&1"
 
     run_check "Test  $profile" \
         ctest --test-dir "$build_dir" --output-on-failure
@@ -102,7 +114,7 @@ asan_dir="$ROOT/build-ci-asan"
 rm -rf "$asan_dir"
 
 run_check "Build MEDIA + ASan" \
-    bash -c "cmake -B '$asan_dir' -DNANORTC_PROFILE=MEDIA -DCMAKE_BUILD_TYPE=Debug -DADDRESS_SANITIZER=ON > /dev/null 2>&1 && cmake --build '$asan_dir' -j\$(nproc) > /dev/null 2>&1"
+    bash -c "cmake -B '$asan_dir' -DNANORTC_PROFILE=MEDIA $CRYPTO_FLAG -DCMAKE_BUILD_TYPE=Debug -DADDRESS_SANITIZER=ON > /dev/null 2>&1 && cmake --build '$asan_dir' -j\$(nproc) > /dev/null 2>&1"
 
 run_check "Test  MEDIA + ASan" \
     ctest --test-dir "$asan_dir" --output-on-failure

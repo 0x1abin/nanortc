@@ -7,6 +7,7 @@
  */
 
 #include "nano_crypto.h"
+#include <mbedtls/version.h>
 #include <mbedtls/md.h>
 #include <mbedtls/entropy.h>
 #include <mbedtls/ctr_drbg.h>
@@ -22,6 +23,35 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+
+/* ---- mbedtls version compatibility ---- */
+
+/* mbedtls 3.x vs 2.x: key export API and mbedtls_pk_ec() differ */
+#if MBEDTLS_VERSION_NUMBER >= 0x03000000
+#define NANO_MBEDTLS_3
+#endif
+
+/* mbedtls 3.6+: mbedtls_pk_ec() removed, use mbedtls_pk_ec_rw() */
+#if MBEDTLS_VERSION_NUMBER >= 0x03060000
+#define NANO_PK_EC(pk) mbedtls_pk_ec_rw(pk)
+#else
+#define NANO_PK_EC(pk) mbedtls_pk_ec(pk)
+#endif
+
+/*
+ * mbedtls 2.x deprecated the non-_ret SHA functions.
+ * Use _ret variants on 2.x to avoid -Werror=deprecated-declarations.
+ * In 3.x the _ret variants were removed and the plain names return int.
+ */
+#ifdef NANO_MBEDTLS_3
+#define nano_sha256_starts mbedtls_sha256_starts
+#define nano_sha256_update mbedtls_sha256_update
+#define nano_sha256_finish mbedtls_sha256_finish
+#else
+#define nano_sha256_starts mbedtls_sha256_starts_ret
+#define nano_sha256_update mbedtls_sha256_update_ret
+#define nano_sha256_finish mbedtls_sha256_finish_ret
+#endif
 
 /* ---- HMAC-SHA1 (for STUN MESSAGE-INTEGRITY, RFC 8489 §14.5) ---- */
 
@@ -108,8 +138,10 @@ static int mbed_verify_cb(void *data, mbedtls_x509_crt *crt, int depth, uint32_t
     return 0;
 }
 
-/* ---- Key export callback (mbedtls 3.x API) ---- */
+/* ---- Key export callback (version-adaptive) ---- */
 
+#ifdef NANO_MBEDTLS_3
+/* mbedtls 3.x: callback on ssl context with key_export_type enum */
 static void mbed_key_export_cb(void *p_expkey, mbedtls_ssl_key_export_type type,
                                const unsigned char *secret, size_t secret_len,
                                const unsigned char client_random[32],
@@ -128,6 +160,27 @@ static void mbed_key_export_cb(void *p_expkey, mbedtls_ssl_key_export_type type,
     ctx->tls_prf_type = tls_prf_type;
     ctx->keys_captured = 1;
 }
+#else
+/* mbedtls 2.x: callback on conf with extended key export */
+static int mbed_key_export_cb(void *p_expkey, const unsigned char *ms, const unsigned char *kb,
+                              size_t maclen, size_t keylen, size_t ivlen,
+                              const unsigned char client_random[32],
+                              const unsigned char server_random[32],
+                              mbedtls_tls_prf_types tls_prf_type)
+{
+    (void)kb;
+    (void)maclen;
+    (void)keylen;
+    (void)ivlen;
+    nano_crypto_dtls_ctx_t *ctx = (nano_crypto_dtls_ctx_t *)p_expkey;
+    memcpy(ctx->master_secret, ms, 48);
+    memcpy(ctx->randbytes, client_random, 32);
+    memcpy(ctx->randbytes + 32, server_random, 32);
+    ctx->tls_prf_type = tls_prf_type;
+    ctx->keys_captured = 1;
+    return 0;
+}
+#endif
 
 /* ---- BIO wrappers (translate 0 → MBEDTLS_ERR_SSL_WANT_READ) ---- */
 
@@ -170,9 +223,9 @@ static int mbed_compute_fingerprint(const mbedtls_x509_crt *crt, char *buf, size
     unsigned char digest[32];
     mbedtls_sha256_context sha256;
     mbedtls_sha256_init(&sha256);
-    mbedtls_sha256_starts(&sha256, 0); /* 0 = SHA-256, not SHA-224 */
-    mbedtls_sha256_update(&sha256, crt->raw.p, crt->raw.len);
-    mbedtls_sha256_finish(&sha256, digest);
+    nano_sha256_starts(&sha256, 0); /* 0 = SHA-256, not SHA-224 */
+    nano_sha256_update(&sha256, crt->raw.p, crt->raw.len);
+    nano_sha256_finish(&sha256, digest);
     mbedtls_sha256_free(&sha256);
 
     /* Format as "XX:XX:XX:..." (95 chars for SHA-256) */
@@ -195,7 +248,7 @@ static int mbed_generate_cert(nano_crypto_dtls_ctx_t *ctx)
     if (ret != 0) {
         return ret;
     }
-    ret = mbedtls_ecp_gen_key(MBEDTLS_ECP_DP_SECP256R1, mbedtls_pk_ec(ctx->pkey),
+    ret = mbedtls_ecp_gen_key(MBEDTLS_ECP_DP_SECP256R1, NANO_PK_EC(ctx->pkey),
                               mbedtls_ctr_drbg_random, &ctx->ctr_drbg);
     if (ret != 0) {
         return ret;
@@ -329,6 +382,11 @@ static nano_crypto_dtls_ctx_t *mbed_dtls_ctx_new(int is_server)
      * security benefit when ICE has already validated connectivity. */
     mbedtls_ssl_conf_dtls_cookies(&ctx->conf, NULL, NULL, NULL);
 
+    /* Register key export callback (mbedtls 2.x: on conf before ssl_setup) */
+#ifndef NANO_MBEDTLS_3
+    mbedtls_ssl_conf_export_keys_ext_cb(&ctx->conf, mbed_key_export_cb, ctx);
+#endif
+
     /* Create SSL context */
     mbedtls_ssl_init(&ctx->ssl);
     ret = mbedtls_ssl_setup(&ctx->ssl, &ctx->conf);
@@ -341,7 +399,9 @@ static nano_crypto_dtls_ctx_t *mbed_dtls_ctx_new(int is_server)
                              mbedtls_timing_get_delay);
 
     /* Register key export callback (mbedtls 3.x: on ssl context) */
+#ifdef NANO_MBEDTLS_3
     mbedtls_ssl_set_export_keys_cb(&ctx->ssl, mbed_key_export_cb, ctx);
+#endif
 
     return ctx;
 
