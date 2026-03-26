@@ -8,6 +8,7 @@
 #include "nano_rtc_internal.h"
 #include "nano_ice.h"
 #include "nano_stun.h"
+#include "nano_log.h"
 #include <string.h>
 
 int nano_rtc_init(nano_rtc_t *rtc, const nano_rtc_config_t *cfg)
@@ -19,6 +20,11 @@ int nano_rtc_init(nano_rtc_t *rtc, const nano_rtc_config_t *cfg)
     memset(rtc, 0, sizeof(*rtc));
     rtc->config = *cfg;
     rtc->state = NANO_STATE_NEW;
+
+    /* Initialize logging (process-global callback) */
+    nano_log_init(&cfg->log);
+
+    NANO_LOGI("RTC", "nano_rtc_init");
 
     ice_init(&rtc->ice, cfg->role == NANO_ROLE_CONTROLLING);
     /* DTLS init is deferred until ICE connects (needs crypto + role) */
@@ -45,7 +51,9 @@ void nano_rtc_destroy(nano_rtc_t *rtc)
     if (!rtc) {
         return;
     }
+    NANO_LOGI("RTC", "nano_rtc_destroy");
     dtls_destroy(&rtc->dtls);
+    nano_log_cleanup();
     rtc->state = NANO_STATE_CLOSED;
 }
 

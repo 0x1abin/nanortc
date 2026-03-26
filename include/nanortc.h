@@ -88,6 +88,57 @@ static inline uint32_t nano_ntohl(uint32_t x)
 /* Configuration limits are defined in nanortc_config.h */
 
 /* ----------------------------------------------------------------
+ * Logging types
+ * ---------------------------------------------------------------- */
+
+/** @brief Log severity levels. */
+typedef enum {
+    NANO_LOG_ERROR = 0, /**< Unrecoverable errors that prevent operation. */
+    NANO_LOG_WARN  = 1, /**< Unusual but recoverable conditions. */
+    NANO_LOG_INFO  = 2, /**< Normal operation milestones. */
+    NANO_LOG_DEBUG = 3, /**< Diagnostic information. */
+    NANO_LOG_TRACE = 4, /**< Detailed packet-level diagnostics. */
+} nano_log_level_t;
+
+/**
+ * @brief Structured log message passed to the user callback.
+ *
+ * All pointer fields are valid only during the callback invocation.
+ * The application must copy any data it needs to retain.
+ */
+typedef struct nano_log_message {
+    nano_log_level_t level;  /**< Severity level. */
+    const char *subsystem;   /**< Component tag (e.g. "ICE", "SCTP"). */
+    const char *message;     /**< Human-readable message (static string). */
+    const char *file;        /**< Source file name, or NULL. */
+    uint32_t line;           /**< Source line number, or 0. */
+    const char *function;    /**< Function name, or NULL. */
+} nano_log_message_t;
+
+/**
+ * @brief Log callback function type.
+ *
+ * Called synchronously for each log message at or below the configured
+ * level. Must not call NanoRTC functions (no re-entrancy).
+ *
+ * @param msg   Pointer to the log message (never NULL).
+ * @param ctx   User-supplied context pointer from nano_log_config_t.
+ */
+typedef void (*nano_log_fn_t)(const nano_log_message_t *msg, void *ctx);
+
+/**
+ * @brief Logging subsystem configuration.
+ *
+ * Embed in nano_rtc_config_t. Set callback to NULL to disable logging.
+ * The compile-time NANO_LOG_LEVEL caps the runtime level.
+ */
+typedef struct nano_log_config {
+    nano_log_level_t level; /**< Runtime minimum level (capped by NANO_LOG_LEVEL). */
+    nano_log_fn_t callback; /**< Log callback, or NULL to disable. */
+    void *user_data;        /**< Opaque pointer passed to callback. */
+} nano_log_config_t;
+
+/* ----------------------------------------------------------------
  * Forward declarations
  * ---------------------------------------------------------------- */
 
@@ -216,6 +267,9 @@ typedef enum {
 typedef struct nano_rtc_config {
     const nano_crypto_provider_t *crypto;
     nano_ice_role_t role;
+
+    /** @brief Logging configuration (optional, zero-init disables). */
+    nano_log_config_t log;
 
     /* Memory configuration */
     uint32_t sctp_send_buf_size;

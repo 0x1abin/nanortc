@@ -120,15 +120,63 @@
 #endif
 
 /* ----------------------------------------------------------------
- * SCTP buffer sizes
+ * SCTP configuration (RFC 4960)
  * ---------------------------------------------------------------- */
 
 #ifndef NANO_SCTP_SEND_BUF_SIZE
-#define NANO_SCTP_SEND_BUF_SIZE (64 * 1024)
+#define NANO_SCTP_SEND_BUF_SIZE 4096
 #endif
 
 #ifndef NANO_SCTP_RECV_BUF_SIZE
-#define NANO_SCTP_RECV_BUF_SIZE (64 * 1024)
+#define NANO_SCTP_RECV_BUF_SIZE 4096
+#endif
+
+/* Maximum SCTP packet size over DTLS */
+#ifndef NANO_SCTP_MTU
+#define NANO_SCTP_MTU 1200
+#endif
+
+/* Pending outbound DATA chunk queue depth */
+#ifndef NANO_SCTP_MAX_SEND_QUEUE
+#define NANO_SCTP_MAX_SEND_QUEUE 16
+#endif
+
+/* Maximum gap ack blocks in SACK */
+#ifndef NANO_SCTP_MAX_GAP_BLOCKS
+#define NANO_SCTP_MAX_GAP_BLOCKS 4
+#endif
+
+/* State cookie maximum size (bytes) */
+#ifndef NANO_SCTP_COOKIE_SIZE
+#define NANO_SCTP_COOKIE_SIZE 32
+#endif
+
+/* Retransmission timer defaults (RFC 4960 §6.3.1) */
+#ifndef NANO_SCTP_RTO_INITIAL_MS
+#define NANO_SCTP_RTO_INITIAL_MS 1000
+#endif
+
+#ifndef NANO_SCTP_RTO_MIN_MS
+#define NANO_SCTP_RTO_MIN_MS 200
+#endif
+
+#ifndef NANO_SCTP_RTO_MAX_MS
+#define NANO_SCTP_RTO_MAX_MS 10000
+#endif
+
+/* Maximum DATA chunk retransmissions before error */
+#ifndef NANO_SCTP_MAX_RETRANSMITS
+#define NANO_SCTP_MAX_RETRANSMITS 10
+#endif
+
+/* Maximum INIT retransmissions (RFC 4960 §5.1) */
+#ifndef NANO_SCTP_MAX_INIT_RETRANSMITS
+#define NANO_SCTP_MAX_INIT_RETRANSMITS 8
+#endif
+
+/* HEARTBEAT interval in milliseconds (RFC 4960 §8.3) */
+#ifndef NANO_SCTP_HEARTBEAT_INTERVAL_MS
+#define NANO_SCTP_HEARTBEAT_INTERVAL_MS 30000
 #endif
 
 /* ----------------------------------------------------------------
@@ -146,6 +194,33 @@
 #ifndef NANO_JITTER_SLOTS
 #define NANO_JITTER_SLOTS 64
 #endif
+
+/* ----------------------------------------------------------------
+ * Logging configuration
+ * ---------------------------------------------------------------- */
+
+/**
+ * @brief Maximum compile-time log level.
+ *
+ * Messages above this level are eliminated by the preprocessor.
+ * Set via compiler flag: -DNANO_LOG_LEVEL=0 (errors only).
+ * Values: 0=ERROR, 1=WARN, 2=INFO, 3=DEBUG, 4=TRACE.
+ */
+#ifndef NANO_LOG_LEVEL
+#define NANO_LOG_LEVEL 4 /* TRACE — all messages compiled in */
+#endif
+
+/**
+ * @brief Define to compile out all logging code entirely.
+ */
+/* #define NANO_LOG_DISABLED */
+
+/**
+ * @brief Define to omit source file/line/function from log messages.
+ *
+ * Reduces code size on very constrained targets.
+ */
+/* #define NANO_LOG_NO_LOC */
 
 /* ----------------------------------------------------------------
  * Compile-time validation
