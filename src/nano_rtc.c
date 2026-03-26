@@ -21,7 +21,7 @@ int nano_rtc_init(nano_rtc_t *rtc, const nano_rtc_config_t *cfg)
     rtc->state = NANO_STATE_NEW;
 
     ice_init(&rtc->ice, cfg->role == NANO_ROLE_CONTROLLING);
-    dtls_init(&rtc->dtls);
+    /* DTLS init is deferred until ICE connects (needs crypto + role) */
     sctp_init(&rtc->sctp);
     dc_init(&rtc->datachannel);
     sdp_init(&rtc->sdp);
@@ -45,6 +45,7 @@ void nano_rtc_destroy(nano_rtc_t *rtc)
     if (!rtc) {
         return;
     }
+    dtls_destroy(&rtc->dtls);
     rtc->state = NANO_STATE_CLOSED;
 }
 
@@ -135,7 +136,7 @@ int nano_handle_receive(nano_rtc_t *rtc, uint32_t now_ms, const uint8_t *data, s
             rtc_enqueue_output(rtc, &out);
         }
 
-        /* Check for ICE state transition → emit event */
+        /* Check for ICE state transition → init DTLS + emit event */
         if (rtc->ice.state == NANO_ICE_STATE_CONNECTED && rtc->state < NANO_STATE_ICE_CONNECTED) {
             rtc->state = NANO_STATE_ICE_CONNECTED;
 
@@ -144,13 +145,79 @@ int nano_handle_receive(nano_rtc_t *rtc, uint32_t now_ms, const uint8_t *data, s
             evt.type = NANO_OUTPUT_EVENT;
             evt.event.type = NANO_EVENT_ICE_CONNECTED;
             rtc_enqueue_output(rtc, &evt);
+
+            /* Initialize DTLS — answerer=server, offerer=client */
+            int is_dtls_server = (rtc->config.role == NANO_ROLE_CONTROLLED);
+            int drc = dtls_init(&rtc->dtls, rtc->config.crypto, is_dtls_server);
+            if (drc != NANO_OK) {
+                return drc;
+            }
+
+            rtc->state = NANO_STATE_DTLS_HANDSHAKING;
+
+            /* Client role: send ClientHello immediately */
+            if (!is_dtls_server) {
+                drc = dtls_start(&rtc->dtls);
+                if (drc != NANO_OK) {
+                    return drc;
+                }
+                /* Drain DTLS output (ClientHello) */
+                size_t dout_len = 0;
+                if (dtls_poll_output(&rtc->dtls, rtc->dtls_scratch, sizeof(rtc->dtls_scratch),
+                                     &dout_len) == NANO_OK &&
+                    dout_len > 0) {
+                    nano_output_t tout;
+                    memset(&tout, 0, sizeof(tout));
+                    tout.type = NANO_OUTPUT_TRANSMIT;
+                    tout.transmit.data = rtc->dtls_scratch;
+                    tout.transmit.len = dout_len;
+                    tout.transmit.dest = *src;
+                    rtc_enqueue_output(rtc, &tout);
+                }
+            }
         }
 
         return NANO_OK;
 
     } else if (first >= 20 && first <= 63) {
-        /* DTLS [0x14-0x3F] */
-        return NANO_ERR_NOT_IMPLEMENTED; /* Phase 1 Step 2 */
+        /* DTLS [0x14-0x3F] — RFC 6347 */
+        if (rtc->state < NANO_STATE_ICE_CONNECTED) {
+            return NANO_ERR_STATE; /* ICE must complete first */
+        }
+
+        int drc = dtls_handle_data(&rtc->dtls, data, len);
+        if (drc < 0) {
+            return drc;
+        }
+
+        /* Drain DTLS output into transmit queue */
+        size_t dout_len = 0;
+        while (dtls_poll_output(&rtc->dtls, rtc->dtls_scratch, sizeof(rtc->dtls_scratch),
+                                &dout_len) == NANO_OK &&
+               dout_len > 0) {
+            nano_output_t tout;
+            memset(&tout, 0, sizeof(tout));
+            tout.type = NANO_OUTPUT_TRANSMIT;
+            tout.transmit.data = rtc->dtls_scratch;
+            tout.transmit.len = dout_len;
+            tout.transmit.dest = *src;
+            rtc_enqueue_output(rtc, &tout);
+            dout_len = 0;
+        }
+
+        /* Check for DTLS state transition → emit event */
+        if (rtc->dtls.state == NANO_DTLS_STATE_ESTABLISHED &&
+            rtc->state < NANO_STATE_DTLS_CONNECTED) {
+            rtc->state = NANO_STATE_DTLS_CONNECTED;
+
+            nano_output_t devt;
+            memset(&devt, 0, sizeof(devt));
+            devt.type = NANO_OUTPUT_EVENT;
+            devt.event.type = NANO_EVENT_DTLS_CONNECTED;
+            rtc_enqueue_output(rtc, &devt);
+        }
+
+        return NANO_OK;
 
     } else if (first >= 128 && first <= 191) {
         /* RTP/RTCP [0x80-0xBF] */

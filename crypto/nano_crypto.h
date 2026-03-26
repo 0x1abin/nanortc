@@ -37,7 +37,11 @@ typedef struct nano_crypto_provider {
     const char *name; /* e.g. "mbedtls", "wolfssl", "hw-aes" */
 
     /* ---- DTLS (required) ---- */
-    int (*dtls_init)(nano_crypto_dtls_ctx_t *ctx, int is_server);
+
+    /* Allocate and initialize a DTLS context. Returns NULL on failure.
+     * is_server: 1 = DTLS server (answerer), 0 = DTLS client (offerer). */
+    nano_crypto_dtls_ctx_t *(*dtls_ctx_new)(int is_server);
+
     int (*dtls_set_bio)(nano_crypto_dtls_ctx_t *ctx, void *userdata, nano_dtls_send_fn send_cb,
                         nano_dtls_recv_fn recv_cb);
     int (*dtls_handshake)(nano_crypto_dtls_ctx_t *ctx);

@@ -81,6 +81,9 @@ struct nano_rtc {
     /* Scratch buffer for STUN encode/decode.
      * Sans I/O contract: caller must drain outputs before next handle_receive. */
     uint8_t stun_buf[256];
+
+    /* Scratch buffer for DTLS output polling */
+    uint8_t dtls_scratch[NANO_DTLS_BUF_SIZE];
 };
 
 /* Enqueue an output. Returns NANO_OK or NANO_ERR_BUFFER_TOO_SMALL. */

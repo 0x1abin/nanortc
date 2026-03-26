@@ -17,7 +17,7 @@ NanoRTC uses AI coding agents for implementation. Time estimates use **agent ses
 
 - [x] STUN Binding Request/Response with MESSAGE-INTEGRITY and FINGERPRINT
 - [x] ICE connectivity: controlled role (answerer) and controlling role (offerer)
-- [ ] DTLS 1.2 handshake via mbedtls and OpenSSL crypto providers
+- [x] DTLS 1.2 handshake via mbedtls and OpenSSL crypto providers
 - [ ] SCTP four-way handshake (INIT → INIT-ACK → COOKIE-ECHO → COOKIE-ACK)
 - [ ] SCTP DATA/SACK reliable delivery
 - [ ] DCEP DATA_CHANNEL_OPEN/ACK exchange
@@ -119,6 +119,36 @@ SCTP is the most complex module (~2500 lines). May need multiple sessions.
 - Edge cases: bad credentials, pacing, max checks → FAILED, ERROR-CODE parsing
 
 **Files created/modified:** nano_crc32.c/h (new), nano_stun.c/h, nano_ice.c/h, nano_rtc.c, nano_rtc_internal.h, nano_crypto_openssl.c, nano_crypto_mbedtls.c, CMakeLists.txt, 4 test files
+
+### Step 2: DTLS integration (Completed 2026-03-26, 1 session)
+
+**Implemented:**
+- Sans I/O BIO adapter (`nano_dtls.c`): bio_send_cb/bio_recv_cb bridge crypto providers with NanoRTC buffers
+- ECDSA P-256 self-signed certificate generation (both backends)
+- SHA-256 certificate fingerprint computation ("XX:XX:..." format for SDP)
+- DTLS 1.2 handshake via mbedtls 3.5 and OpenSSL 3.0
+- Application data encrypt/decrypt (post-handshake DTLS records)
+- SRTP keying material export (RFC 5764 "EXTRACTOR-dtls_srtp" label, 60 bytes)
+- FSM integration: ICE_CONNECTED → dtls_init + dtls_start → DTLS_HANDSHAKING → DTLS_CONNECTED
+- DTLS demux in nano_handle_receive (RFC 7983 byte range 0x14-0x3F)
+
+**Tests (79 total across 5 suites, 10 new):**
+- DTLS init/destroy for server and client roles
+- SHA-256 fingerprint format validation (95 chars, hex:colon format)
+- Fingerprint uniqueness (two instances generate different certs)
+- Two-instance handshake loopback (client ↔ server in memory, ~4-6 rounds)
+- Encrypt on client → decrypt on server, and reverse
+- Both sides derive identical 60-byte keying material
+- State validation (no encrypt before handshake, no double start)
+- E2E ICE → DTLS loopback via nano_rtc FSM
+
+**Key decisions:**
+- ECDSA P-256 over RSA: smaller certs (fits 2KB buffer), faster keygen on embedded
+- Cookies disabled: WebRTC uses ICE for peer verification, DTLS cookies add complexity without security benefit
+- Heap allocation in crypto providers: mbedtls/OpenSSL need internal malloc; `crypto/` is allowed
+- mbedtls 3.x API: `mbedtls_ssl_set_export_keys_cb` replaces 2.x `_ext_cb`
+
+**Files created/modified:** nano_dtls.c/h, nano_crypto.h, nano_crypto_mbedtls.c, nano_crypto_openssl.c, nano_rtc.c, nano_rtc_internal.h, test_dtls.c (new), test_e2e.c
 
 ## Risks
 

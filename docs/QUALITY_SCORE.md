@@ -18,10 +18,10 @@ Per-module quality grades for NanoRTC. Updated as implementation progresses.
 
 | Module | File | Grade | Tests | Coverage | Notes |
 |--------|------|-------|-------|----------|-------|
-| Main FSM | `nano_rtc.c` | **C** | init/destroy, poll, demux, timeout | — | RFC 7983 packet demux + ICE timeout; SDP/DC stubs remain |
+| Main FSM | `nano_rtc.c` | **C** | init/destroy, poll, demux, timeout | — | RFC 7983 demux + ICE→DTLS transition; SDP/DC stubs remain |
 | STUN codec | `nano_stun.c` | **B** | 40 tests (RFC 5769 vectors, str0m, roundtrip, edge cases) | — | Full parser/encoder, MI (HMAC-SHA1), FP (CRC-32), ERROR-CODE |
 | ICE | `nano_ice.c` | **B** | 17 tests (§7.1.1, §7.2.1, §7.3, §8, credentials) | — | Dual-role FSM, controlled + controlling, pacing, nomination |
-| DTLS | `nano_dtls.c` | **D** | — | — | BIO adapter stub |
+| DTLS | `nano_dtls.c` | **B** | 9 tests (handshake loopback, encrypt/decrypt, keying material, fingerprint) | — | Sans I/O BIO adapter, ECDSA P-256 self-signed cert, RFC 5764 key export |
 | SCTP-Lite | `nano_sctp.c` | **D** | — | — | Most complex module |
 | DataChannel | `nano_datachannel.c` | **D** | — | — | DCEP stub |
 | SDP | `nano_sdp.c` | **D** | — | — | Parser/generator stub |
@@ -47,9 +47,9 @@ Per-module quality grades for NanoRTC. Updated as implementation progresses.
 
 | Component | Grade | Notes |
 |-----------|-------|-------|
-| Crypto provider interface | **B** | Interface complete; hmac_sha1 + random_bytes implemented (both backends); DTLS stubs remain |
+| Crypto provider interface | **B** | Interface complete; HMAC-SHA1 + CSPRNG + DTLS (both backends); SRTP stubs remain |
 | Build system (CMake) | **B** | 3 profiles, 2 crypto backends, ESP-IDF detection, `-fvisibility=hidden` |
-| Test infrastructure | **B** | Shared macros (`nano_test.h`), 69 tests across 4 suites, RFC 5769 vectors, e2e ICE loopback |
+| Test infrastructure | **B** | Shared macros (`nano_test.h`), 79 tests across 5 suites, RFC 5769 vectors, e2e ICE+DTLS loopback |
 | CI pipeline | **B** | GitHub Actions: 3-profile × 2-crypto matrix, constraints, ASan. Local: `scripts/ci-check.sh` |
 | Examples | **C** | Linux datachannel + media_send templates, media sample submodule. Not yet tested with real connections. |
 | Documentation | **B** | AGENTS.md, ARCHITECTURE.md, exec plans, quality scores, core beliefs, RFC index |
@@ -68,7 +68,7 @@ Per-module quality grades for NanoRTC. Updated as implementation progresses.
 **Critical gaps (must fix before Phase 1 milestones):**
 1. ~~STUN parser needs real implementation (D → B)~~ **DONE** — RFC 8489 codec with RFC 5769 test vectors
 2. ~~Crypto hmac_sha1 + random_bytes~~ **DONE** — both mbedtls and OpenSSL backends
-3. DTLS handshake needs real implementation (D → B) — Phase 1 Step 2
+3. ~~DTLS handshake needs real implementation (D → B)~~ **DONE** — Sans I/O BIO adapter + both crypto backends
 4. SCTP, DataChannel, SDP all still D — Phase 1 Steps 3-4
 
 **Acceptable gaps (address in later phases):**
