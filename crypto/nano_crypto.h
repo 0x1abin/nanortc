@@ -33,11 +33,20 @@ typedef int (*nano_dtls_recv_fn)(void *userdata, uint8_t *buf, size_t buf_len);
  * Crypto Provider
  * ---------------------------------------------------------------- */
 
-typedef struct nano_crypto_provider {
+#ifndef NANO_CRYPTO_PROVIDER_T_DECLARED
+#define NANO_CRYPTO_PROVIDER_T_DECLARED
+typedef struct nano_crypto_provider nano_crypto_provider_t;
+#endif
+
+struct nano_crypto_provider {
     const char *name; /* e.g. "mbedtls", "wolfssl", "hw-aes" */
 
     /* ---- DTLS (required) ---- */
-    int (*dtls_init)(nano_crypto_dtls_ctx_t *ctx, int is_server);
+
+    /* Allocate and initialize a DTLS context. Returns NULL on failure.
+     * is_server: 1 = DTLS server (answerer), 0 = DTLS client (offerer). */
+    nano_crypto_dtls_ctx_t *(*dtls_ctx_new)(int is_server);
+
     int (*dtls_set_bio)(nano_crypto_dtls_ctx_t *ctx, void *userdata, nano_dtls_send_fn send_cb,
                         nano_dtls_recv_fn recv_cb);
     int (*dtls_handshake)(nano_crypto_dtls_ctx_t *ctx);
@@ -64,8 +73,7 @@ typedef struct nano_crypto_provider {
     void (*hmac_sha1_80)(const uint8_t *key, size_t key_len, const uint8_t *data, size_t data_len,
                          uint8_t out[10]);
 #endif
-
-} nano_crypto_provider_t;
+};
 
 /* Built-in crypto providers (availability depends on NANORTC_CRYPTO_* define) */
 #if defined(NANORTC_CRYPTO_OPENSSL)

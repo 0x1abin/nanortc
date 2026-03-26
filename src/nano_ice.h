@@ -11,13 +11,21 @@
 #ifndef NANO_ICE_H_
 #define NANO_ICE_H_
 
+#include "nanortc_config.h"
+
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
 
 /* Forward declarations — avoid including heavy headers */
+#ifndef NANO_ADDR_T_DECLARED
+#define NANO_ADDR_T_DECLARED
 typedef struct nano_addr nano_addr_t;
+#endif
+#ifndef NANO_CRYPTO_PROVIDER_T_DECLARED
+#define NANO_CRYPTO_PROVIDER_T_DECLARED
 typedef struct nano_crypto_provider nano_crypto_provider_t;
+#endif
 
 typedef enum {
     NANO_ICE_STATE_NEW,
@@ -26,7 +34,7 @@ typedef enum {
     NANO_ICE_STATE_FAILED,
 } nano_ice_state_t;
 
-#define ICE_MAX_CHECKS 25
+/* ICE_MAX_CHECKS is now NANO_ICE_MAX_CHECKS in nanortc_config.h */
 
 typedef struct nano_ice {
     nano_ice_state_t state;

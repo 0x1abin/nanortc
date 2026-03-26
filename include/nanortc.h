@@ -7,6 +7,8 @@
 #ifndef NANORTC_H_
 #define NANORTC_H_
 
+#include "nanortc_config.h"
+
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
@@ -41,9 +43,7 @@ extern "C" {
 #define NANO_PROFILE_AUDIO 2 /* DataChannel + audio (RTP/SRTP) */
 #define NANO_PROFILE_MEDIA 3 /* DataChannel + audio + video */
 
-#ifndef NANORTC_PROFILE
-#define NANORTC_PROFILE NANO_PROFILE_DATA
-#endif
+/* NANORTC_PROFILE default is set in nanortc_config.h */
 
 /* ----------------------------------------------------------------
  * Self-contained byte order (no platform htons/ntohs)
@@ -85,32 +85,31 @@ static inline uint32_t nano_ntohl(uint32_t x)
 #define NANO_ERR_NO_DATA          -8
 #define NANO_ERR_INTERNAL         -9
 
-/* ----------------------------------------------------------------
- * Configuration Limits
- * ---------------------------------------------------------------- */
-
-#define NANO_MAX_DATACHANNELS   8
-#define NANO_MAX_ICE_CANDIDATES 4
-#define NANO_DTLS_BUF_SIZE      2048
-#define NANO_SDP_BUF_SIZE       2048
-#define NANO_SCTP_SEND_BUF_SIZE (64 * 1024)
-#define NANO_SCTP_RECV_BUF_SIZE (64 * 1024)
+/* Configuration limits are defined in nanortc_config.h */
 
 /* ----------------------------------------------------------------
  * Forward declarations
  * ---------------------------------------------------------------- */
 
+#ifndef NANO_CRYPTO_PROVIDER_T_DECLARED
+#define NANO_CRYPTO_PROVIDER_T_DECLARED
 typedef struct nano_crypto_provider nano_crypto_provider_t;
+#endif
 
 /* ----------------------------------------------------------------
  * Address type (network-agnostic)
  * ---------------------------------------------------------------- */
 
-typedef struct nano_addr {
+#ifndef NANO_ADDR_T_DECLARED
+#define NANO_ADDR_T_DECLARED
+typedef struct nano_addr nano_addr_t;
+#endif
+
+struct nano_addr {
     uint8_t family; /* 4 = IPv4, 6 = IPv6 */
     uint8_t addr[16];
     uint16_t port;
-} nano_addr_t;
+};
 
 /* ----------------------------------------------------------------
  * Output / Event enums

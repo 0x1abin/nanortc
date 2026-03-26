@@ -7,10 +7,10 @@
 #ifndef NANO_JITTER_H_
 #define NANO_JITTER_H_
 
+#include "nanortc_config.h"
+
 #include <stdint.h>
 #include <stddef.h>
-
-#define NANO_JITTER_SLOTS 64
 
 typedef struct nano_jitter_slot {
     uint8_t data[1500];
