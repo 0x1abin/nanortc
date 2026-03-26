@@ -459,6 +459,172 @@ TEST(test_sctp_logging_on_parse)
 }
 
 /* ================================================================
+ * Two-instance loopback tests (FSM)
+ * ================================================================ */
+
+/** Helper: pump output from src to dst. Returns bytes transferred. */
+static size_t pump(nano_sctp_t *src, nano_sctp_t *dst)
+{
+    uint8_t buf[NANO_SCTP_MTU];
+    size_t out_len = 0;
+    size_t total = 0;
+
+    while (sctp_poll_output(src, buf, sizeof(buf), &out_len) == NANO_OK &&
+           out_len > 0) {
+        sctp_handle_data(dst, buf, out_len);
+        total += out_len;
+        out_len = 0;
+    }
+    return total;
+}
+
+TEST(test_two_instance_handshake_server_client)
+{
+    /* Server (answerer) and Client (offerer) handshake */
+    nano_sctp_t server, client;
+    sctp_init(&server);
+    sctp_init(&client);
+
+    const nano_crypto_provider_t *crypto = nano_test_crypto();
+    server.crypto = crypto;
+    client.crypto = crypto;
+
+    /* Client sends INIT */
+    ASSERT_OK(sctp_start(&client));
+    ASSERT_EQ(client.state, NANO_SCTP_STATE_COOKIE_WAIT);
+
+    /* INIT → Server → INIT-ACK */
+    pump(&client, &server);
+
+    /* INIT-ACK → Client → COOKIE-ECHO */
+    pump(&server, &client);
+    ASSERT_EQ(client.state, NANO_SCTP_STATE_COOKIE_ECHOED);
+
+    /* COOKIE-ECHO → Server → COOKIE-ACK + ESTABLISHED */
+    pump(&client, &server);
+    ASSERT_EQ(server.state, NANO_SCTP_STATE_ESTABLISHED);
+
+    /* COOKIE-ACK → Client → ESTABLISHED */
+    pump(&server, &client);
+    ASSERT_EQ(client.state, NANO_SCTP_STATE_ESTABLISHED);
+}
+
+TEST(test_two_instance_data_exchange)
+{
+    nano_sctp_t a, b;
+    sctp_init(&a);
+    sctp_init(&b);
+
+    const nano_crypto_provider_t *crypto = nano_test_crypto();
+    a.crypto = crypto;
+    b.crypto = crypto;
+
+    /* Handshake: a=client, b=server */
+    ASSERT_OK(sctp_start(&a));
+    pump(&a, &b);  /* INIT */
+    pump(&b, &a);  /* INIT-ACK */
+    pump(&a, &b);  /* COOKIE-ECHO */
+    pump(&b, &a);  /* COOKIE-ACK */
+    ASSERT_EQ(a.state, NANO_SCTP_STATE_ESTABLISHED);
+    ASSERT_EQ(b.state, NANO_SCTP_STATE_ESTABLISHED);
+
+    /* A sends DATA to B */
+    uint8_t msg[] = "Hello SCTP";
+    ASSERT_OK(sctp_send(&a, 0, 51, msg, sizeof(msg) - 1));
+
+    /* Pump DATA from A to B */
+    pump(&a, &b);
+
+    /* Verify B received the data */
+    ASSERT_TRUE(b.has_delivered);
+    ASSERT_EQ(b.delivered_len, sizeof(msg) - 1);
+    ASSERT_EQ(b.delivered_ppid, 51u);
+    ASSERT_MEM_EQ(b.delivered_data, msg, sizeof(msg) - 1);
+
+    /* B should send SACK back */
+    pump(&b, &a);
+
+    /* A's send queue should be drained */
+    /* (SACK was processed, entry acked) */
+}
+
+TEST(test_two_instance_bidirectional)
+{
+    nano_sctp_t a, b;
+    sctp_init(&a);
+    sctp_init(&b);
+
+    const nano_crypto_provider_t *crypto = nano_test_crypto();
+    a.crypto = crypto;
+    b.crypto = crypto;
+
+    /* Handshake */
+    ASSERT_OK(sctp_start(&a));
+    pump(&a, &b);
+    pump(&b, &a);
+    pump(&a, &b);
+    pump(&b, &a);
+    ASSERT_EQ(a.state, NANO_SCTP_STATE_ESTABLISHED);
+    ASSERT_EQ(b.state, NANO_SCTP_STATE_ESTABLISHED);
+
+    /* A → B */
+    uint8_t msg1[] = "from A";
+    ASSERT_OK(sctp_send(&a, 0, 51, msg1, sizeof(msg1) - 1));
+    pump(&a, &b);
+    ASSERT_TRUE(b.has_delivered);
+    ASSERT_EQ(b.delivered_ppid, 51u);
+    ASSERT_MEM_EQ(b.delivered_data, msg1, sizeof(msg1) - 1);
+    pump(&b, &a); /* SACK */
+
+    /* B → A */
+    uint8_t msg2[] = "from B";
+    ASSERT_OK(sctp_send(&b, 0, 53, msg2, sizeof(msg2) - 1));
+    pump(&b, &a);
+    ASSERT_TRUE(a.has_delivered);
+    ASSERT_EQ(a.delivered_ppid, 53u);
+    ASSERT_MEM_EQ(a.delivered_data, msg2, sizeof(msg2) - 1);
+    pump(&a, &b); /* SACK */
+}
+
+TEST(test_send_before_established)
+{
+    nano_sctp_t sctp;
+    sctp_init(&sctp);
+
+    uint8_t data[] = "test";
+    ASSERT_EQ(sctp_send(&sctp, 0, 51, data, 4), NANO_ERR_STATE);
+}
+
+TEST(test_forward_tsn_advances)
+{
+    nano_sctp_t a, b;
+    sctp_init(&a);
+    sctp_init(&b);
+
+    const nano_crypto_provider_t *crypto = nano_test_crypto();
+    a.crypto = crypto;
+    b.crypto = crypto;
+
+    /* Handshake */
+    ASSERT_OK(sctp_start(&a));
+    pump(&a, &b);
+    pump(&b, &a);
+    pump(&a, &b);
+    pump(&b, &a);
+
+    /* Send FORWARD-TSN from A to B, advancing B's cumulative TSN */
+    uint32_t old_tsn = b.cumulative_tsn;
+
+    uint8_t pkt[64];
+    size_t pos = sctp_encode_header(pkt, 5000, 5000, b.local_vtag);
+    pos += sctp_encode_forward_tsn(pkt + pos, old_tsn + 5);
+    sctp_finalize_checksum(pkt, pos);
+
+    sctp_handle_data(&b, pkt, pos);
+    ASSERT_EQ(b.cumulative_tsn, old_tsn + 5);
+}
+
+/* ================================================================
  * Test runner
  * ================================================================ */
 
@@ -497,4 +663,10 @@ TEST_MAIN_BEGIN("test_sctp")
     RUN(test_cookie_echo_padding);
     /* Logging */
     RUN(test_sctp_logging_on_parse);
+    /* FSM — two-instance loopback */
+    RUN(test_two_instance_handshake_server_client);
+    RUN(test_two_instance_data_exchange);
+    RUN(test_two_instance_bidirectional);
+    RUN(test_send_before_established);
+    RUN(test_forward_tsn_advances);
 TEST_MAIN_END
