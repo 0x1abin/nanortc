@@ -73,7 +73,6 @@ struct nano_crypto_provider {
     void (*hmac_sha1_80)(const uint8_t *key, size_t key_len, const uint8_t *data, size_t data_len,
                          uint8_t out[10]);
 #endif
-
 };
 
 /* Built-in crypto providers (availability depends on NANORTC_CRYPTO_* define) */
