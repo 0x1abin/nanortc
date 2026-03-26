@@ -34,7 +34,7 @@ typedef struct nano_sctp {
 int sctp_init(nano_sctp_t *sctp);
 int sctp_handle_data(nano_sctp_t *sctp, const uint8_t *data, size_t len);
 int sctp_poll_output(nano_sctp_t *sctp, uint8_t *buf, size_t buf_len, size_t *out_len);
-int sctp_send(nano_sctp_t *sctp, uint16_t stream_id, uint32_t ppid,
-              const uint8_t *data, size_t len);
+int sctp_send(nano_sctp_t *sctp, uint16_t stream_id, uint32_t ppid, const uint8_t *data,
+              size_t len);
 
 #endif /* NANO_SCTP_H_ */

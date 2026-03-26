@@ -13,9 +13,8 @@
 
 /* ---- HMAC-SHA1 (for STUN MESSAGE-INTEGRITY, RFC 8489 §14.5) ---- */
 
-static void mbed_hmac_sha1(const uint8_t *key, size_t key_len,
-                            const uint8_t *data, size_t data_len,
-                            uint8_t out[20])
+static void mbed_hmac_sha1(const uint8_t *key, size_t key_len, const uint8_t *data, size_t data_len,
+                           uint8_t out[20])
 {
     const mbedtls_md_info_t *info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA1);
     mbedtls_md_hmac(info, key, key_len, data, data_len, out);
@@ -35,9 +34,8 @@ static int mbed_rng_init(void)
     mbedtls_entropy_init(&mbed_entropy);
     mbedtls_ctr_drbg_init(&mbed_ctr_drbg);
     const char *pers = "nanortc";
-    int ret = mbedtls_ctr_drbg_seed(&mbed_ctr_drbg, mbedtls_entropy_func,
-                                     &mbed_entropy,
-                                     (const unsigned char *)pers, 7);
+    int ret = mbedtls_ctr_drbg_seed(&mbed_ctr_drbg, mbedtls_entropy_func, &mbed_entropy,
+                                    (const unsigned char *)pers, 7);
     if (ret != 0) {
         return -1;
     }
@@ -65,8 +63,8 @@ static int stub_dtls_init(nano_crypto_dtls_ctx_t *ctx, int is_server)
     return -1;
 }
 
-static int stub_dtls_set_bio(nano_crypto_dtls_ctx_t *ctx, void *userdata,
-                             nano_dtls_send_fn send_cb, nano_dtls_recv_fn recv_cb)
+static int stub_dtls_set_bio(nano_crypto_dtls_ctx_t *ctx, void *userdata, nano_dtls_send_fn send_cb,
+                             nano_dtls_recv_fn recv_cb)
 {
     (void)ctx;
     (void)userdata;
@@ -81,8 +79,7 @@ static int stub_dtls_handshake(nano_crypto_dtls_ctx_t *ctx)
     return -1;
 }
 
-static int stub_dtls_encrypt(nano_crypto_dtls_ctx_t *ctx,
-                             const uint8_t *in, size_t in_len,
+static int stub_dtls_encrypt(nano_crypto_dtls_ctx_t *ctx, const uint8_t *in, size_t in_len,
                              uint8_t *out, size_t *out_len)
 {
     (void)ctx;
@@ -93,8 +90,7 @@ static int stub_dtls_encrypt(nano_crypto_dtls_ctx_t *ctx,
     return -1;
 }
 
-static int stub_dtls_decrypt(nano_crypto_dtls_ctx_t *ctx,
-                             const uint8_t *in, size_t in_len,
+static int stub_dtls_decrypt(nano_crypto_dtls_ctx_t *ctx, const uint8_t *in, size_t in_len,
                              uint8_t *out, size_t *out_len)
 {
     (void)ctx;
@@ -105,8 +101,7 @@ static int stub_dtls_decrypt(nano_crypto_dtls_ctx_t *ctx,
     return -1;
 }
 
-static int stub_dtls_export_keying_material(nano_crypto_dtls_ctx_t *ctx,
-                                            const char *label,
+static int stub_dtls_export_keying_material(nano_crypto_dtls_ctx_t *ctx, const char *label,
                                             uint8_t *out, size_t out_len)
 {
     (void)ctx;
@@ -116,8 +111,7 @@ static int stub_dtls_export_keying_material(nano_crypto_dtls_ctx_t *ctx,
     return -1;
 }
 
-static int stub_dtls_get_fingerprint(nano_crypto_dtls_ctx_t *ctx,
-                                     char *buf, size_t buf_len)
+static int stub_dtls_get_fingerprint(nano_crypto_dtls_ctx_t *ctx, char *buf, size_t buf_len)
 {
     (void)ctx;
     (void)buf;
@@ -131,8 +125,8 @@ static void stub_dtls_free(nano_crypto_dtls_ctx_t *ctx)
 }
 
 #if NANORTC_PROFILE >= NANO_PROFILE_AUDIO
-static int stub_aes_128_cm(const uint8_t key[16], const uint8_t iv[16],
-                           const uint8_t *in, size_t len, uint8_t *out)
+static int stub_aes_128_cm(const uint8_t key[16], const uint8_t iv[16], const uint8_t *in,
+                           size_t len, uint8_t *out)
 {
     (void)key;
     (void)iv;
@@ -142,9 +136,8 @@ static int stub_aes_128_cm(const uint8_t key[16], const uint8_t iv[16],
     return -1;
 }
 
-static void stub_hmac_sha1_80(const uint8_t *key, size_t key_len,
-                              const uint8_t *data, size_t data_len,
-                              uint8_t out[10])
+static void stub_hmac_sha1_80(const uint8_t *key, size_t key_len, const uint8_t *data,
+                              size_t data_len, uint8_t out[10])
 {
     (void)key;
     (void)key_len;

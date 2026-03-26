@@ -18,9 +18,9 @@
 #define DCEP_DATA_CHANNEL_ACK  0x02
 
 /* SCTP PPIDs for DataChannel */
-#define DCEP_PPID_CONTROL    50
-#define DCEP_PPID_STRING     51
-#define DCEP_PPID_BINARY     53
+#define DCEP_PPID_CONTROL      50
+#define DCEP_PPID_STRING       51
+#define DCEP_PPID_BINARY       53
 #define DCEP_PPID_STRING_EMPTY 56
 #define DCEP_PPID_BINARY_EMPTY 57
 
@@ -44,9 +44,8 @@ typedef struct nano_dc {
 } nano_dc_t;
 
 int dc_init(nano_dc_t *dc);
-int dc_handle_dcep(nano_dc_t *dc, uint16_t stream_id,
-                   const uint8_t *data, size_t len);
-int dc_open(nano_dc_t *dc, uint16_t stream_id, const char *label,
-            uint8_t *out_buf, size_t *out_len);
+int dc_handle_dcep(nano_dc_t *dc, uint16_t stream_id, const uint8_t *data, size_t len);
+int dc_open(nano_dc_t *dc, uint16_t stream_id, const char *label, uint8_t *out_buf,
+            size_t *out_len);
 
 #endif /* NANO_DATACHANNEL_H_ */

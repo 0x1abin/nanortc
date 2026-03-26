@@ -97,10 +97,9 @@ static uint8_t addr_to_stun_family(uint8_t addr_family)
  * ice_handle_stun — process incoming STUN message (both roles)
  * ---------------------------------------------------------------- */
 
-int ice_handle_stun(nano_ice_t *ice, const uint8_t *data, size_t len,
-                    const nano_addr_t *src,
-                    const nano_crypto_provider_t *crypto,
-                    uint8_t *resp_buf, size_t resp_buf_len, size_t *resp_len)
+int ice_handle_stun(nano_ice_t *ice, const uint8_t *data, size_t len, const nano_addr_t *src,
+                    const nano_crypto_provider_t *crypto, uint8_t *resp_buf, size_t resp_buf_len,
+                    size_t *resp_len)
 {
     if (!ice || !data || !src || !crypto || !resp_buf || !resp_len) {
         return NANO_ERR_INVALID_PARAM;
@@ -133,10 +132,8 @@ int ice_handle_stun(nano_ice_t *ice, const uint8_t *data, size_t len,
         }
 
         if (msg.has_integrity) {
-            rc = stun_verify_integrity(data, len, &msg,
-                                       (const uint8_t *)ice->local_pwd,
-                                       strlen(ice->local_pwd),
-                                       crypto->hmac_sha1);
+            rc = stun_verify_integrity(data, len, &msg, (const uint8_t *)ice->local_pwd,
+                                       strlen(ice->local_pwd), crypto->hmac_sha1);
             if (rc != NANO_OK) {
                 return rc;
             }
@@ -149,10 +146,8 @@ int ice_handle_stun(nano_ice_t *ice, const uint8_t *data, size_t len,
         }
 
         rc = stun_encode_binding_response(&msg, src->addr, stun_family, src->port,
-                                          (const uint8_t *)ice->local_pwd,
-                                          strlen(ice->local_pwd),
-                                          crypto->hmac_sha1,
-                                          resp_buf, resp_buf_len, resp_len);
+                                          (const uint8_t *)ice->local_pwd, strlen(ice->local_pwd),
+                                          crypto->hmac_sha1, resp_buf, resp_buf_len, resp_len);
         if (rc != NANO_OK) {
             return rc;
         }
@@ -195,10 +190,8 @@ int ice_handle_stun(nano_ice_t *ice, const uint8_t *data, size_t len,
         }
 
         if (msg.has_integrity) {
-            rc = stun_verify_integrity(data, len, &msg,
-                                       (const uint8_t *)ice->remote_pwd,
-                                       strlen(ice->remote_pwd),
-                                       crypto->hmac_sha1);
+            rc = stun_verify_integrity(data, len, &msg, (const uint8_t *)ice->remote_pwd,
+                                       strlen(ice->remote_pwd), crypto->hmac_sha1);
             if (rc != NANO_OK) {
                 return rc;
             }
@@ -224,8 +217,7 @@ int ice_handle_stun(nano_ice_t *ice, const uint8_t *data, size_t len,
  * ice_generate_check — controlling role STUN Binding Request
  * ---------------------------------------------------------------- */
 
-int ice_generate_check(nano_ice_t *ice, uint32_t now_ms,
-                       const nano_crypto_provider_t *crypto,
+int ice_generate_check(nano_ice_t *ice, uint32_t now_ms, const nano_crypto_provider_t *crypto,
                        uint8_t *buf, size_t buf_len, size_t *out_len)
 {
     if (!ice || !crypto || !buf || !out_len) {
@@ -240,8 +232,7 @@ int ice_generate_check(nano_ice_t *ice, uint32_t now_ms,
     }
 
     /* Don't generate checks once connected or failed */
-    if (ice->state == NANO_ICE_STATE_CONNECTED ||
-        ice->state == NANO_ICE_STATE_FAILED) {
+    if (ice->state == NANO_ICE_STATE_CONNECTED || ice->state == NANO_ICE_STATE_FAILED) {
         return NANO_OK;
     }
 
@@ -274,16 +265,11 @@ int ice_generate_check(nano_ice_t *ice, uint32_t now_ms,
     size_t ulen = rlen + 1 + llen;
 
     /* Encode Binding Request — sign with remote_pwd (RFC 8445 §7.1.1) */
-    int rc = stun_encode_binding_request(username, ulen,
-                                         ICE_HOST_PRIORITY,
-                                         true, /* use_candidate (controlling) */
-                                         true, /* is_controlling */
-                                         ice->tie_breaker,
-                                         ice->last_txid,
-                                         (const uint8_t *)ice->remote_pwd,
-                                         strlen(ice->remote_pwd),
-                                         crypto->hmac_sha1,
-                                         buf, buf_len, out_len);
+    int rc = stun_encode_binding_request(
+        username, ulen, ICE_HOST_PRIORITY, true, /* use_candidate (controlling) */
+        true,                                    /* is_controlling */
+        ice->tie_breaker, ice->last_txid, (const uint8_t *)ice->remote_pwd, strlen(ice->remote_pwd),
+        crypto->hmac_sha1, buf, buf_len, out_len);
     if (rc != NANO_OK) {
         return rc;
     }

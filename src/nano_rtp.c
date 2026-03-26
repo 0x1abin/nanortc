@@ -18,8 +18,7 @@ int rtp_init(nano_rtp_t *rtp, uint32_t ssrc, uint8_t pt)
     return 0;
 }
 
-int rtp_pack(nano_rtp_t *rtp, uint32_t timestamp,
-             const uint8_t *payload, size_t payload_len,
+int rtp_pack(nano_rtp_t *rtp, uint32_t timestamp, const uint8_t *payload, size_t payload_len,
              uint8_t *buf, size_t buf_len, size_t *out_len)
 {
     (void)rtp;
@@ -32,9 +31,8 @@ int rtp_pack(nano_rtp_t *rtp, uint32_t timestamp,
     return -1;
 }
 
-int rtp_unpack(const uint8_t *data, size_t len,
-               uint8_t *pt, uint16_t *seq, uint32_t *ts, uint32_t *ssrc,
-               const uint8_t **payload, size_t *payload_len)
+int rtp_unpack(const uint8_t *data, size_t len, uint8_t *pt, uint16_t *seq, uint32_t *ts,
+               uint32_t *ssrc, const uint8_t **payload, size_t *payload_len)
 {
     (void)data;
     (void)len;

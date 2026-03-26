@@ -27,9 +27,9 @@ typedef struct nano_jitter {
 } nano_jitter_t;
 
 int jitter_init(nano_jitter_t *jb, uint32_t depth_ms);
-int jitter_push(nano_jitter_t *jb, uint16_t seq, uint32_t timestamp,
-                const uint8_t *data, size_t len);
-int jitter_pop(nano_jitter_t *jb, uint32_t now_ms,
-               uint8_t *buf, size_t buf_len, size_t *out_len, uint32_t *timestamp);
+int jitter_push(nano_jitter_t *jb, uint16_t seq, uint32_t timestamp, const uint8_t *data,
+                size_t len);
+int jitter_pop(nano_jitter_t *jb, uint32_t now_ms, uint8_t *buf, size_t buf_len, size_t *out_len,
+               uint32_t *timestamp);
 
 #endif /* NANO_JITTER_H_ */

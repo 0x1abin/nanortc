@@ -17,8 +17,7 @@ int bwe_init(nano_bwe_t *bwe)
     return 0;
 }
 
-int bwe_on_rtcp_feedback(nano_bwe_t *bwe, const uint8_t *data, size_t len,
-                         uint32_t now_ms)
+int bwe_on_rtcp_feedback(nano_bwe_t *bwe, const uint8_t *data, size_t len, uint32_t now_ms)
 {
     (void)bwe;
     (void)data;

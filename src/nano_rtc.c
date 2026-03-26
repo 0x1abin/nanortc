@@ -48,8 +48,7 @@ void nano_rtc_destroy(nano_rtc_t *rtc)
     rtc->state = NANO_STATE_CLOSED;
 }
 
-int nano_accept_offer(nano_rtc_t *rtc, const char *offer,
-                      char *answer_buf, size_t answer_buf_len)
+int nano_accept_offer(nano_rtc_t *rtc, const char *offer, char *answer_buf, size_t answer_buf_len)
 {
     (void)rtc;
     (void)offer;
@@ -105,8 +104,7 @@ int nano_poll_output(nano_rtc_t *rtc, nano_output_t *out)
  * nano_handle_receive — RFC 7983 demux
  * ---------------------------------------------------------------- */
 
-int nano_handle_receive(nano_rtc_t *rtc, uint32_t now_ms,
-                        const uint8_t *data, size_t len,
+int nano_handle_receive(nano_rtc_t *rtc, uint32_t now_ms, const uint8_t *data, size_t len,
                         const nano_addr_t *src)
 {
     if (!rtc || !data || len == 0 || !src) {
@@ -120,10 +118,8 @@ int nano_handle_receive(nano_rtc_t *rtc, uint32_t now_ms,
     if (first <= 3) {
         /* STUN [0x00-0x03] */
         size_t resp_len = 0;
-        int rc = ice_handle_stun(&rtc->ice, data, len, src,
-                                  rtc->config.crypto,
-                                  rtc->stun_buf, sizeof(rtc->stun_buf),
-                                  &resp_len);
+        int rc = ice_handle_stun(&rtc->ice, data, len, src, rtc->config.crypto, rtc->stun_buf,
+                                 sizeof(rtc->stun_buf), &resp_len);
         if (rc != NANO_OK) {
             return rc;
         }
@@ -140,8 +136,7 @@ int nano_handle_receive(nano_rtc_t *rtc, uint32_t now_ms,
         }
 
         /* Check for ICE state transition → emit event */
-        if (rtc->ice.state == NANO_ICE_STATE_CONNECTED &&
-            rtc->state < NANO_STATE_ICE_CONNECTED) {
+        if (rtc->ice.state == NANO_ICE_STATE_CONNECTED && rtc->state < NANO_STATE_ICE_CONNECTED) {
             rtc->state = NANO_STATE_ICE_CONNECTED;
 
             nano_output_t evt;
@@ -178,14 +173,11 @@ int nano_handle_timeout(nano_rtc_t *rtc, uint32_t now_ms)
     rtc->now_ms = now_ms;
 
     /* ICE: generate connectivity checks (controlling role) */
-    if (rtc->ice.is_controlling &&
-        rtc->ice.state != NANO_ICE_STATE_CONNECTED &&
+    if (rtc->ice.is_controlling && rtc->ice.state != NANO_ICE_STATE_CONNECTED &&
         rtc->ice.state != NANO_ICE_STATE_FAILED) {
         size_t out_len = 0;
-        int rc = ice_generate_check(&rtc->ice, now_ms,
-                                     rtc->config.crypto,
-                                     rtc->stun_buf, sizeof(rtc->stun_buf),
-                                     &out_len);
+        int rc = ice_generate_check(&rtc->ice, now_ms, rtc->config.crypto, rtc->stun_buf,
+                                    sizeof(rtc->stun_buf), &out_len);
         if (rc != NANO_OK) {
             return rc;
         }
@@ -225,8 +217,7 @@ int nano_handle_timeout(nano_rtc_t *rtc, uint32_t now_ms)
  * DataChannel API stubs
  * ---------------------------------------------------------------- */
 
-int nano_send_datachannel(nano_rtc_t *rtc, uint16_t stream_id,
-                          const void *data, size_t len)
+int nano_send_datachannel(nano_rtc_t *rtc, uint16_t stream_id, const void *data, size_t len)
 {
     (void)rtc;
     (void)stream_id;
@@ -235,8 +226,7 @@ int nano_send_datachannel(nano_rtc_t *rtc, uint16_t stream_id,
     return NANO_ERR_NOT_IMPLEMENTED;
 }
 
-int nano_send_datachannel_string(nano_rtc_t *rtc, uint16_t stream_id,
-                                 const char *str)
+int nano_send_datachannel_string(nano_rtc_t *rtc, uint16_t stream_id, const char *str)
 {
     (void)rtc;
     (void)stream_id;
@@ -245,8 +235,7 @@ int nano_send_datachannel_string(nano_rtc_t *rtc, uint16_t stream_id,
 }
 
 #if NANORTC_PROFILE >= NANO_PROFILE_AUDIO
-int nano_send_audio(nano_rtc_t *rtc, uint32_t timestamp,
-                    const void *data, size_t len)
+int nano_send_audio(nano_rtc_t *rtc, uint32_t timestamp, const void *data, size_t len)
 {
     (void)rtc;
     (void)timestamp;
@@ -257,8 +246,8 @@ int nano_send_audio(nano_rtc_t *rtc, uint32_t timestamp,
 #endif
 
 #if NANORTC_PROFILE >= NANO_PROFILE_MEDIA
-int nano_send_video(nano_rtc_t *rtc, uint32_t timestamp,
-                    const void *data, size_t len, int is_keyframe)
+int nano_send_video(nano_rtc_t *rtc, uint32_t timestamp, const void *data, size_t len,
+                    int is_keyframe)
 {
     (void)rtc;
     (void)timestamp;

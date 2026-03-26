@@ -34,8 +34,7 @@ int sctp_poll_output(nano_sctp_t *sctp, uint8_t *buf, size_t buf_len, size_t *ou
     return -1;
 }
 
-int sctp_send(nano_sctp_t *sctp, uint16_t stream_id, uint32_t ppid,
-              const uint8_t *data, size_t len)
+int sctp_send(nano_sctp_t *sctp, uint16_t stream_id, uint32_t ppid, const uint8_t *data, size_t len)
 {
     (void)sctp;
     (void)stream_id;

@@ -38,25 +38,20 @@ typedef struct nano_crypto_provider {
 
     /* ---- DTLS (required) ---- */
     int (*dtls_init)(nano_crypto_dtls_ctx_t *ctx, int is_server);
-    int (*dtls_set_bio)(nano_crypto_dtls_ctx_t *ctx, void *userdata,
-                        nano_dtls_send_fn send_cb, nano_dtls_recv_fn recv_cb);
+    int (*dtls_set_bio)(nano_crypto_dtls_ctx_t *ctx, void *userdata, nano_dtls_send_fn send_cb,
+                        nano_dtls_recv_fn recv_cb);
     int (*dtls_handshake)(nano_crypto_dtls_ctx_t *ctx);
-    int (*dtls_encrypt)(nano_crypto_dtls_ctx_t *ctx,
-                        const uint8_t *in, size_t in_len,
-                        uint8_t *out, size_t *out_len);
-    int (*dtls_decrypt)(nano_crypto_dtls_ctx_t *ctx,
-                        const uint8_t *in, size_t in_len,
-                        uint8_t *out, size_t *out_len);
-    int (*dtls_export_keying_material)(nano_crypto_dtls_ctx_t *ctx,
-                                       const char *label,
-                                       uint8_t *out, size_t out_len);
-    int (*dtls_get_fingerprint)(nano_crypto_dtls_ctx_t *ctx,
-                                char *buf, size_t buf_len);
+    int (*dtls_encrypt)(nano_crypto_dtls_ctx_t *ctx, const uint8_t *in, size_t in_len, uint8_t *out,
+                        size_t *out_len);
+    int (*dtls_decrypt)(nano_crypto_dtls_ctx_t *ctx, const uint8_t *in, size_t in_len, uint8_t *out,
+                        size_t *out_len);
+    int (*dtls_export_keying_material)(nano_crypto_dtls_ctx_t *ctx, const char *label, uint8_t *out,
+                                       size_t out_len);
+    int (*dtls_get_fingerprint)(nano_crypto_dtls_ctx_t *ctx, char *buf, size_t buf_len);
     void (*dtls_free)(nano_crypto_dtls_ctx_t *ctx);
 
     /* ---- HMAC-SHA1 (required, for STUN MESSAGE-INTEGRITY) ---- */
-    void (*hmac_sha1)(const uint8_t *key, size_t key_len,
-                      const uint8_t *data, size_t data_len,
+    void (*hmac_sha1)(const uint8_t *key, size_t key_len, const uint8_t *data, size_t data_len,
                       uint8_t out[20]);
 
     /* ---- CSPRNG (required) ---- */
@@ -64,10 +59,9 @@ typedef struct nano_crypto_provider {
 
     /* ---- SRTP (required for AUDIO/MEDIA profiles) ---- */
 #if NANORTC_PROFILE >= NANO_PROFILE_AUDIO
-    int (*aes_128_cm)(const uint8_t key[16], const uint8_t iv[16],
-                      const uint8_t *in, size_t len, uint8_t *out);
-    void (*hmac_sha1_80)(const uint8_t *key, size_t key_len,
-                         const uint8_t *data, size_t data_len,
+    int (*aes_128_cm)(const uint8_t key[16], const uint8_t iv[16], const uint8_t *in, size_t len,
+                      uint8_t *out);
+    void (*hmac_sha1_80)(const uint8_t *key, size_t key_len, const uint8_t *data, size_t data_len,
                          uint8_t out[10]);
 #endif
 

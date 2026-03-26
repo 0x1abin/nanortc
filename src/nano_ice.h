@@ -30,7 +30,7 @@ typedef enum {
 
 typedef struct nano_ice {
     nano_ice_state_t state;
-    int is_controlling;     /* 0 = controlled (answerer), 1 = controlling (offerer) */
+    int is_controlling; /* 0 = controlled (answerer), 1 = controlling (offerer) */
     char local_ufrag[8];
     char local_pwd[32];
     char remote_ufrag[32];
@@ -42,30 +42,28 @@ typedef struct nano_ice {
     uint32_t next_check_ms;
 
     /* Controlling role state */
-    uint64_t tie_breaker;          /* 8-byte random for ICE-CONTROLLING/CONTROLLED */
-    uint8_t last_txid[12];         /* transaction ID of last outgoing request */
-    uint8_t check_count;           /* number of checks sent */
-    bool nominated;                /* selected pair nominated */
+    uint64_t tie_breaker;  /* 8-byte random for ICE-CONTROLLING/CONTROLLED */
+    uint8_t last_txid[12]; /* transaction ID of last outgoing request */
+    uint8_t check_count;   /* number of checks sent */
+    bool nominated;        /* selected pair nominated */
 
     /* Remote candidate address (for controlling role outgoing checks) */
     uint8_t remote_addr[16];
     uint16_t remote_port;
-    uint8_t remote_family;         /* 4 = IPv4, 6 = IPv6 */
+    uint8_t remote_family; /* 4 = IPv4, 6 = IPv6 */
 } nano_ice_t;
 
 int ice_init(nano_ice_t *ice, int is_controlling);
 
 /* Handle incoming STUN message (both roles).
  * Writes response to resp_buf if needed; sets *resp_len to 0 if no response. */
-int ice_handle_stun(nano_ice_t *ice, const uint8_t *data, size_t len,
-                    const nano_addr_t *src,
-                    const nano_crypto_provider_t *crypto,
-                    uint8_t *resp_buf, size_t resp_buf_len, size_t *resp_len);
+int ice_handle_stun(nano_ice_t *ice, const uint8_t *data, size_t len, const nano_addr_t *src,
+                    const nano_crypto_provider_t *crypto, uint8_t *resp_buf, size_t resp_buf_len,
+                    size_t *resp_len);
 
 /* Generate outgoing STUN Binding Request (controlling role only).
  * Returns NANO_OK with *out_len=0 if not time to send yet. */
-int ice_generate_check(nano_ice_t *ice, uint32_t now_ms,
-                       const nano_crypto_provider_t *crypto,
+int ice_generate_check(nano_ice_t *ice, uint32_t now_ms, const nano_crypto_provider_t *crypto,
                        uint8_t *buf, size_t buf_len, size_t *out_len);
 
 bool ice_is_stun(const uint8_t *data, size_t len);

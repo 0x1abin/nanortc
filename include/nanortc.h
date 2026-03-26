@@ -61,8 +61,8 @@ static inline uint16_t nano_ntohs(uint16_t x)
 
 static inline uint32_t nano_htonl(uint32_t x)
 {
-    return ((x >> 24) & 0x000000FFu) | ((x >> 8) & 0x0000FF00u) |
-           ((x << 8) & 0x00FF0000u) | ((x << 24) & 0xFF000000u);
+    return ((x >> 24) & 0x000000FFu) | ((x >> 8) & 0x0000FF00u) | ((x << 8) & 0x00FF0000u) |
+           ((x << 24) & 0xFF000000u);
 }
 
 static inline uint32_t nano_ntohl(uint32_t x)
@@ -74,27 +74,27 @@ static inline uint32_t nano_ntohl(uint32_t x)
  * Error Codes
  * ---------------------------------------------------------------- */
 
-#define NANO_OK                  0
-#define NANO_ERR_INVALID_PARAM  -1
+#define NANO_OK                   0
+#define NANO_ERR_INVALID_PARAM    -1
 #define NANO_ERR_BUFFER_TOO_SMALL -2
-#define NANO_ERR_STATE           -3
-#define NANO_ERR_CRYPTO          -4
-#define NANO_ERR_PROTOCOL        -5
-#define NANO_ERR_NOT_IMPLEMENTED -6
-#define NANO_ERR_PARSE           -7
-#define NANO_ERR_NO_DATA         -8
-#define NANO_ERR_INTERNAL        -9
+#define NANO_ERR_STATE            -3
+#define NANO_ERR_CRYPTO           -4
+#define NANO_ERR_PROTOCOL         -5
+#define NANO_ERR_NOT_IMPLEMENTED  -6
+#define NANO_ERR_PARSE            -7
+#define NANO_ERR_NO_DATA          -8
+#define NANO_ERR_INTERNAL         -9
 
 /* ----------------------------------------------------------------
  * Configuration Limits
  * ---------------------------------------------------------------- */
 
-#define NANO_MAX_DATACHANNELS    8
-#define NANO_MAX_ICE_CANDIDATES  4
-#define NANO_DTLS_BUF_SIZE       2048
-#define NANO_SDP_BUF_SIZE        2048
-#define NANO_SCTP_SEND_BUF_SIZE  (64 * 1024)
-#define NANO_SCTP_RECV_BUF_SIZE  (64 * 1024)
+#define NANO_MAX_DATACHANNELS   8
+#define NANO_MAX_ICE_CANDIDATES 4
+#define NANO_DTLS_BUF_SIZE      2048
+#define NANO_SDP_BUF_SIZE       2048
+#define NANO_SCTP_SEND_BUF_SIZE (64 * 1024)
+#define NANO_SCTP_RECV_BUF_SIZE (64 * 1024)
 
 /* ----------------------------------------------------------------
  * Forward declarations
@@ -153,11 +153,11 @@ typedef enum {
 
 typedef struct nano_event {
     nano_event_type_t type;
-    uint16_t stream_id;    /* DataChannel stream ID */
+    uint16_t stream_id; /* DataChannel stream ID */
     const uint8_t *data;
     size_t len;
-    uint32_t timestamp;    /* RTP timestamp (media events) */
-    bool is_keyframe;      /* video only */
+    uint32_t timestamp; /* RTP timestamp (media events) */
+    bool is_keyframe;   /* video only */
 } nano_event_t;
 
 /* ----------------------------------------------------------------
@@ -254,8 +254,8 @@ NANO_API void nano_rtc_destroy(nano_rtc_t *rtc);
  * SDP API
  * ---------------------------------------------------------------- */
 
-NANO_API int nano_accept_offer(nano_rtc_t *rtc, const char *offer,
-                               char *answer_buf, size_t answer_buf_len);
+NANO_API int nano_accept_offer(nano_rtc_t *rtc, const char *offer, char *answer_buf,
+                               size_t answer_buf_len);
 NANO_API int nano_create_offer(nano_rtc_t *rtc, char *offer_buf, size_t offer_buf_len);
 NANO_API int nano_accept_answer(nano_rtc_t *rtc, const char *answer);
 
@@ -271,8 +271,7 @@ NANO_API int nano_add_remote_candidate(nano_rtc_t *rtc, const char *candidate_st
  * ---------------------------------------------------------------- */
 
 NANO_API int nano_poll_output(nano_rtc_t *rtc, nano_output_t *out);
-NANO_API int nano_handle_receive(nano_rtc_t *rtc, uint32_t now_ms,
-                                 const uint8_t *data, size_t len,
+NANO_API int nano_handle_receive(nano_rtc_t *rtc, uint32_t now_ms, const uint8_t *data, size_t len,
                                  const nano_addr_t *src);
 NANO_API int nano_handle_timeout(nano_rtc_t *rtc, uint32_t now_ms);
 
@@ -280,23 +279,21 @@ NANO_API int nano_handle_timeout(nano_rtc_t *rtc, uint32_t now_ms);
  * DataChannel API (all profiles)
  * ---------------------------------------------------------------- */
 
-NANO_API int nano_send_datachannel(nano_rtc_t *rtc, uint16_t stream_id,
-                                   const void *data, size_t len);
-NANO_API int nano_send_datachannel_string(nano_rtc_t *rtc, uint16_t stream_id,
-                                          const char *str);
+NANO_API int nano_send_datachannel(nano_rtc_t *rtc, uint16_t stream_id, const void *data,
+                                   size_t len);
+NANO_API int nano_send_datachannel_string(nano_rtc_t *rtc, uint16_t stream_id, const char *str);
 
 /* ----------------------------------------------------------------
  * Media API (conditional)
  * ---------------------------------------------------------------- */
 
 #if NANORTC_PROFILE >= NANO_PROFILE_AUDIO
-NANO_API int nano_send_audio(nano_rtc_t *rtc, uint32_t timestamp,
-                             const void *data, size_t len);
+NANO_API int nano_send_audio(nano_rtc_t *rtc, uint32_t timestamp, const void *data, size_t len);
 #endif
 
 #if NANORTC_PROFILE >= NANO_PROFILE_MEDIA
-NANO_API int nano_send_video(nano_rtc_t *rtc, uint32_t timestamp,
-                             const void *data, size_t len, int is_keyframe);
+NANO_API int nano_send_video(nano_rtc_t *rtc, uint32_t timestamp, const void *data, size_t len,
+                             int is_keyframe);
 NANO_API int nano_request_keyframe(nano_rtc_t *rtc);
 #endif
 

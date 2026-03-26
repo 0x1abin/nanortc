@@ -41,9 +41,8 @@
 #define STUN_FAMILY_IPV6 0x02
 
 /* HMAC-SHA1 function pointer type (decouples STUN from crypto provider) */
-typedef void (*stun_hmac_sha1_fn)(const uint8_t *key, size_t key_len,
-                                  const uint8_t *data, size_t data_len,
-                                  uint8_t out[20]);
+typedef void (*stun_hmac_sha1_fn)(const uint8_t *key, size_t key_len, const uint8_t *data,
+                                  size_t data_len, uint8_t out[20]);
 
 typedef struct stun_msg {
     uint16_t type;
@@ -88,28 +87,20 @@ int stun_verify_fingerprint(const uint8_t *data, size_t len);
 
 /* Verify MESSAGE-INTEGRITY using HMAC-SHA1 (RFC 8489 §14.5).
  * Returns NANO_OK or NANO_ERR_PROTOCOL. */
-int stun_verify_integrity(const uint8_t *data, size_t len,
-                          const stun_msg_t *msg,
-                          const uint8_t *key, size_t key_len,
-                          stun_hmac_sha1_fn hmac_sha1);
+int stun_verify_integrity(const uint8_t *data, size_t len, const stun_msg_t *msg,
+                          const uint8_t *key, size_t key_len, stun_hmac_sha1_fn hmac_sha1);
 
 /* Encode STUN Binding Response (RFC 8489 §7.3.1) */
-int stun_encode_binding_response(const stun_msg_t *req,
-                                 const uint8_t *src_addr, uint8_t src_family,
-                                 uint16_t src_port,
-                                 const uint8_t *key, size_t key_len,
-                                 stun_hmac_sha1_fn hmac_sha1,
-                                 uint8_t *buf, size_t buf_len,
+int stun_encode_binding_response(const stun_msg_t *req, const uint8_t *src_addr, uint8_t src_family,
+                                 uint16_t src_port, const uint8_t *key, size_t key_len,
+                                 stun_hmac_sha1_fn hmac_sha1, uint8_t *buf, size_t buf_len,
                                  size_t *out_len);
 
 /* Encode STUN Binding Request for ICE connectivity check (RFC 8445 §7.1.1) */
-int stun_encode_binding_request(const char *username, size_t username_len,
-                                uint32_t priority, bool use_candidate,
-                                bool is_controlling, uint64_t tie_breaker,
-                                const uint8_t transaction_id[12],
-                                const uint8_t *key, size_t key_len,
-                                stun_hmac_sha1_fn hmac_sha1,
-                                uint8_t *buf, size_t buf_len,
-                                size_t *out_len);
+int stun_encode_binding_request(const char *username, size_t username_len, uint32_t priority,
+                                bool use_candidate, bool is_controlling, uint64_t tie_breaker,
+                                const uint8_t transaction_id[12], const uint8_t *key,
+                                size_t key_len, stun_hmac_sha1_fn hmac_sha1, uint8_t *buf,
+                                size_t buf_len, size_t *out_len);
 
 #endif /* NANO_STUN_H_ */

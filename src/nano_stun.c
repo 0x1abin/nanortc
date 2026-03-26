@@ -22,8 +22,7 @@ static uint16_t read_u16(const uint8_t *p)
 /* Read big-endian uint32 from wire */
 static uint32_t read_u32(const uint8_t *p)
 {
-    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
-           ((uint32_t)p[2] << 8) | (uint32_t)p[3];
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | (uint32_t)p[3];
 }
 
 /* Read big-endian uint64 from wire */
@@ -161,8 +160,7 @@ int stun_parse(const uint8_t *data, size_t len, stun_msg_t *msg)
             msg->mapped_family = val[1];
             if (msg->mapped_family == STUN_FAMILY_IPV4) {
                 /* Port XOR top 16 bits of magic cookie */
-                msg->mapped_port = read_u16(val + 2) ^
-                                   (uint16_t)(STUN_MAGIC_COOKIE >> 16);
+                msg->mapped_port = read_u16(val + 2) ^ (uint16_t)(STUN_MAGIC_COOKIE >> 16);
                 /* Address XOR magic cookie (network order) */
                 uint32_t xaddr = read_u32(val + 4) ^ STUN_MAGIC_COOKIE;
                 write_u32(msg->mapped_addr, xaddr);
@@ -170,8 +168,7 @@ int stun_parse(const uint8_t *data, size_t len, stun_msg_t *msg)
                 if (attr_len < 20) {
                     return NANO_ERR_PARSE;
                 }
-                msg->mapped_port = read_u16(val + 2) ^
-                                   (uint16_t)(STUN_MAGIC_COOKIE >> 16);
+                msg->mapped_port = read_u16(val + 2) ^ (uint16_t)(STUN_MAGIC_COOKIE >> 16);
                 /* Address XOR (magic_cookie || transaction_id) = 16 bytes */
                 uint8_t mask[16];
                 write_u32(mask, STUN_MAGIC_COOKIE);
@@ -287,10 +284,8 @@ int stun_verify_fingerprint(const uint8_t *data, size_t len)
  * stun_verify_integrity — RFC 8489 §14.5
  * ---------------------------------------------------------------- */
 
-int stun_verify_integrity(const uint8_t *data, size_t len,
-                          const stun_msg_t *msg,
-                          const uint8_t *key, size_t key_len,
-                          stun_hmac_sha1_fn hmac_sha1)
+int stun_verify_integrity(const uint8_t *data, size_t len, const stun_msg_t *msg,
+                          const uint8_t *key, size_t key_len, stun_hmac_sha1_fn hmac_sha1)
 {
     if (!data || !msg || !key || !hmac_sha1) {
         return NANO_ERR_INVALID_PARAM;
@@ -346,8 +341,7 @@ static uint8_t *write_attr_hdr(uint8_t *buf, uint16_t type, uint16_t length)
 }
 
 /* Write STUN header (20 bytes) */
-static void write_stun_header(uint8_t *buf, uint16_t type, uint16_t length,
-                               const uint8_t txid[12])
+static void write_stun_header(uint8_t *buf, uint16_t type, uint16_t length, const uint8_t txid[12])
 {
     write_u16(buf, type);
     write_u16(buf + 2, length);
@@ -360,8 +354,7 @@ static void write_stun_header(uint8_t *buf, uint16_t type, uint16_t length,
  * `pos` is the current write position (offset from buf start).
  * Returns the final message length, or negative on error.
  */
-static int append_integrity_fingerprint(uint8_t *buf, size_t buf_len,
-                                        size_t pos,
+static int append_integrity_fingerprint(uint8_t *buf, size_t buf_len, size_t pos,
                                         const uint8_t *key, size_t key_len,
                                         stun_hmac_sha1_fn hmac_sha1)
 {
@@ -397,12 +390,9 @@ static int append_integrity_fingerprint(uint8_t *buf, size_t buf_len,
  * stun_encode_binding_response — RFC 8489 §7.3.1
  * ---------------------------------------------------------------- */
 
-int stun_encode_binding_response(const stun_msg_t *req,
-                                 const uint8_t *src_addr, uint8_t src_family,
-                                 uint16_t src_port,
-                                 const uint8_t *key, size_t key_len,
-                                 stun_hmac_sha1_fn hmac_sha1,
-                                 uint8_t *buf, size_t buf_len,
+int stun_encode_binding_response(const stun_msg_t *req, const uint8_t *src_addr, uint8_t src_family,
+                                 uint16_t src_port, const uint8_t *key, size_t key_len,
+                                 stun_hmac_sha1_fn hmac_sha1, uint8_t *buf, size_t buf_len,
                                  size_t *out_len)
 {
     if (!req || !src_addr || !key || !hmac_sha1 || !buf || !out_len) {
@@ -447,8 +437,7 @@ int stun_encode_binding_response(const stun_msg_t *req,
     }
 
     /* MESSAGE-INTEGRITY + FINGERPRINT */
-    int total = append_integrity_fingerprint(buf, buf_len, pos, key, key_len,
-                                             hmac_sha1);
+    int total = append_integrity_fingerprint(buf, buf_len, pos, key, key_len, hmac_sha1);
     if (total < 0) {
         return total;
     }
@@ -461,14 +450,11 @@ int stun_encode_binding_response(const stun_msg_t *req,
  * stun_encode_binding_request — RFC 8445 §7.1.1
  * ---------------------------------------------------------------- */
 
-int stun_encode_binding_request(const char *username, size_t username_len,
-                                uint32_t priority, bool use_candidate,
-                                bool is_controlling, uint64_t tie_breaker,
-                                const uint8_t transaction_id[12],
-                                const uint8_t *key, size_t key_len,
-                                stun_hmac_sha1_fn hmac_sha1,
-                                uint8_t *buf, size_t buf_len,
-                                size_t *out_len)
+int stun_encode_binding_request(const char *username, size_t username_len, uint32_t priority,
+                                bool use_candidate, bool is_controlling, uint64_t tie_breaker,
+                                const uint8_t transaction_id[12], const uint8_t *key,
+                                size_t key_len, stun_hmac_sha1_fn hmac_sha1, uint8_t *buf,
+                                size_t buf_len, size_t *out_len)
 {
     if (!username || !transaction_id || !key || !hmac_sha1 || !buf || !out_len) {
         return NANO_ERR_INVALID_PARAM;
@@ -476,8 +462,8 @@ int stun_encode_binding_request(const char *username, size_t username_len,
 
     /* Estimate: header(20) + USERNAME(4+padded) + PRIORITY(8) + ICE-*(12)
      * + USE-CANDIDATE(4) + MI(24) + FP(8) ≈ 80 + username_len */
-    size_t needed = STUN_HEADER_SIZE + (4 + attr_padded((uint16_t)username_len)) +
-                    8 + 12 + (use_candidate ? 4 : 0) + 24 + 8;
+    size_t needed = STUN_HEADER_SIZE + (4 + attr_padded((uint16_t)username_len)) + 8 + 12 +
+                    (use_candidate ? 4 : 0) + 24 + 8;
     if (buf_len < needed) {
         return NANO_ERR_BUFFER_TOO_SMALL;
     }
@@ -487,8 +473,7 @@ int stun_encode_binding_request(const char *username, size_t username_len,
     size_t pos = STUN_HEADER_SIZE;
 
     /* USERNAME (RFC 8489 §14.3) */
-    uint8_t *uval = write_attr_hdr(buf + pos, STUN_ATTR_USERNAME,
-                                   (uint16_t)username_len);
+    uint8_t *uval = write_attr_hdr(buf + pos, STUN_ATTR_USERNAME, (uint16_t)username_len);
     memcpy(uval, username, username_len);
     /* Zero-pad to 4-byte boundary */
     size_t pad = attr_padded((uint16_t)username_len) - username_len;
@@ -520,8 +505,7 @@ int stun_encode_binding_request(const char *username, size_t username_len,
     }
 
     /* MESSAGE-INTEGRITY + FINGERPRINT */
-    int total = append_integrity_fingerprint(buf, buf_len, pos, key, key_len,
-                                             hmac_sha1);
+    int total = append_integrity_fingerprint(buf, buf_len, pos, key, key_len, hmac_sha1);
     if (total < 0) {
         return total;
     }
