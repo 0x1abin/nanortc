@@ -1,30 +1,30 @@
-# nanortc — 架构设计文档
+# NanoRTC — 架构设计文档
 
 > 一个面向 RTOS/嵌入式系统的 Sans I/O、可裁剪 WebRTC 纯 C 实现。
 >
-> 本文档作为 nanortc 的权威设计参考，用于指导在 Claude Code 中进行 AI 辅助开发。
+> 本文档作为 NanoRTC 的权威设计参考，用于指导 AI 辅助开发。
 
 ---
 
 ## 1. 项目概述
 
-### 1.1 nanortc 是什么
+### 1.1 NanoRTC 是什么
 
-nanortc 是一个**纯 C**、**Sans I/O** 架构的 WebRTC 实现，面向运行 FreeRTOS、Zephyr、
+NanoRTC 是一个**纯 C**、**Sans I/O** 架构的 WebRTC 实现，面向运行 FreeRTOS、Zephyr、
 RT-Thread 等 RTOS 的资源受限微控制器。从第一行代码开始就为嵌入式设备设计。
 
-nanortc 支持**编译时特性裁剪**，开发者可以根据产品需求只包含必要的功能——从最小的
+NanoRTC 支持**编译时特性裁剪**，开发者可以根据产品需求只包含必要的功能——从最小的
 DataChannel-only 构建（~60KB RAM）到完整的音视频媒体传输。
 
 ### 1.2 设计原则
 
 | # | 原则 | 理由 |
 |---|------|------|
-| 1 | **Sans I/O** | nanortc 不持有 socket，不创建线程，不调用任何操作系统 API。它是一个纯粹的状态机，完全由外部输入驱动。这使其天然具备可移植性和可测试性。 |
-| 2 | **唯一外部依赖** | 唯一必需的第三方库是 **mbedtls**（用于 DTLS），该库在所有主流 RTOS 平台上都是内置组件。加密操作通过可插拔的 provider 接口抽象。 |
+| 1 | **Sans I/O** | NanoRTC 不持有 socket，不创建线程，不调用任何操作系统 API。它是一个纯粹的状态机，完全由外部输入驱动。这使其天然具备可移植性和可测试性。 |
+| 2 | **可插拔加密** | 默认加密库是 **mbedtls**（嵌入式平台内置），也支持 **OpenSSL**（Linux 主机开发）。加密操作通过可插拔的 provider 接口抽象，编译时选择后端。 |
 | 3 | **编译时可裁剪** | 三个构建 profile 控制功能包含关系，每个 profile 是前一个的严格超集。代码体积和 RAM 占用按比例缩放。 |
-| 4 | **以 lwIP BSD Socket 为网络基线** | nanortc 自身从不调用 socket API。应用层的事件循环使用 lwIP BSD socket API（≥ 2.1.0）进行网络 I/O，该接口在几乎所有嵌入式平台上都可用。 |
-| 5 | **RTOS 无关** | nanortc 核心内部不包含任何 FreeRTOS 特定 API。平台差异（线程、定时器、熵源）完全在应用层事件循环中处理，不在库内部。 |
+| 4 | **以 lwIP BSD Socket 为网络基线** | NanoRTC 自身从不调用 socket API。应用层的事件循环使用 lwIP BSD socket API（≥ 2.1.0）进行网络 I/O，该接口在几乎所有嵌入式平台上都可用。 |
+| 5 | **RTOS 无关** | NanoRTC 核心内部不包含任何 FreeRTOS 特定 API。平台差异（线程、定时器、熵源）完全在应用层事件循环中处理，不在库内部。 |
 
 ### 1.3 构建 Profile
 
@@ -72,7 +72,7 @@ DataChannel-only 构建（~60KB RAM）到完整的音视频媒体传输。
 
 ### 2.1 Sans I/O 模型（借鉴 str0m）
 
-nanortc 遵循 [Sans I/O](https://sans-io.readthedocs.io) 模式，参照
+NanoRTC 遵循 [Sans I/O](https://sans-io.readthedocs.io) 模式，参照
 [str0m](https://github.com/algesten/str0m)（Rust WebRTC 实现）的设计。
 核心 `nano_rtc_t` 是一个无副作用的纯状态机：
 
@@ -89,12 +89,12 @@ nanortc 遵循 [Sans I/O](https://sans-io.readthedocs.io) 模式，参照
 
 **关键特性：**
 
-- nanortc **绝不**调用 `socket()`, `sendto()`, `select()` 或任何网络 API
-- nanortc **绝不**调用 `malloc()` 或 `free()`（使用调用者提供的 buffer 或静态池）
-- nanortc **绝不**调用 `pthread_create()` 或任何线程 API
-- nanortc **绝不**调用 `clock_gettime()` 或任何时钟 API——时间由外部传入
-- nanortc **可以超实时速度测试**——通过注入合成时间戳驱动
-- nanortc **没有内部互斥锁**——线程安全由调用者负责
+- NanoRTC **绝不**调用 `socket()`, `sendto()`, `select()` 或任何网络 API
+- NanoRTC **绝不**调用 `malloc()` 或 `free()`（使用调用者提供的 buffer 或静态池）
+- NanoRTC **绝不**调用 `pthread_create()` 或任何线程 API
+- NanoRTC **绝不**调用 `clock_gettime()` 或任何时钟 API——时间由外部传入
+- NanoRTC **可以超实时速度测试**——通过注入合成时间戳驱动
+- NanoRTC **没有内部互斥锁**——线程安全由调用者负责
 
 ### 2.2 公共 API
 
@@ -344,8 +344,8 @@ NanoRTC 的 ICE agent 支持两种模式：
 
 **范围**：DTLS 1.2 握手和记录层，委托给 crypto provider。
 
-nanortc 不自行实现 DTLS。crypto provider（通常是 mbedtls）处理完整的 DTLS 状态机。
-nanortc 提供 BIO（缓冲 I/O）接口：
+NanoRTC 不自行实现 DTLS。crypto provider（通常是 mbedtls）处理完整的 DTLS 状态机。
+NanoRTC 提供 BIO（缓冲 I/O）接口：
 
 ```c
 // nano_dtls.c 驱动 DTLS 握手，不触碰 socket
@@ -372,7 +372,7 @@ typedef struct {
 
 **范围**：RFC 4960 的最小 SCTP 子集，用于 WebRTC DataChannel 传输。
 
-这是最具挑战性的自研模块。nanortc 仅实现 WebRTC Data Channel 规范（RFC 8831）
+这是最具挑战性的自研模块。NanoRTC 仅实现 WebRTC Data Channel 规范（RFC 8831）
 所需的功能：
 
 **已实现：**
@@ -482,8 +482,9 @@ CLOSED ──(收到 INIT)──> COOKIE_WAIT
 
 ### 4.1 设计
 
-nanortc 将所有加密操作抽象在可插拔的 provider 接口后面。用户可以将 mbedtls
-替换为 wolfSSL、BearSSL、硬件加密加速器或平台特定实现，无需修改 nanortc 核心代码。
+NanoRTC 将所有加密操作抽象在可插拔的 provider 接口后面。用户可以将 mbedtls
+替换为 wolfSSL、BearSSL、OpenSSL、硬件加密加速器或平台特定实现，无需修改 NanoRTC 核心代码。
+Linux 主机开发可使用 OpenSSL 后端（`-DNANORTC_CRYPTO=openssl`）。
 
 ```c
 // nano_crypto.h
@@ -530,7 +531,7 @@ typedef struct nano_crypto_provider {
 
 } nano_crypto_provider_t;
 
-// 默认 mbedtls 实现（随 nanortc 一起发布）
+// 默认 mbedtls 实现（随 NanoRTC 一起发布）
 const nano_crypto_provider_t *nano_crypto_mbedtls(void);
 ```
 
@@ -564,7 +565,7 @@ nano_rtc_config_t cfg = {
 
 ## 5. 平台集成
 
-### 5.1 nanortc 不做的事（应用层职责）
+### 5.1 NanoRTC 不做的事（应用层职责）
 
 | 职责 | 应用层如何处理 |
 |------|--------------|
@@ -576,7 +577,7 @@ nano_rtc_config_t cfg = {
 | 信令（SDP 交换） | MQTT / WebSocket / HTTP — 用户自选 |
 | 网卡枚举 | 读取 lwIP `netif_list` 或硬编码 IP |
 | STUN/TURN 服务器发现 | 用户配置服务器地址 |
-| 信令层 TLS | 与 nanortc 独立（如 `esp-tls`） |
+| 信令层 TLS | 与 NanoRTC 独立（如 `esp-tls`） |
 | 音视频采集与编码 | 应用层编解码器 + 硬件 |
 
 ### 5.2 lwIP 要求
@@ -769,8 +770,9 @@ void nano_stop_easy(nano_rtc_t *rtc);
 
 | 依赖 | 类型 | 被什么使用 | 说明 |
 |------|------|-----------|------|
-| **mbedtls** | 加密库 | DTLS, HMAC-SHA1, CSPRNG, AES (SRTP) | ESP-IDF、Zephyr、RT-Thread、STM32 均内置。通过 `nano_crypto_provider_t` 抽象。 |
-| **lwIP**（≥ 2.1.0） | TCP/IP 协议栈 | 仅应用层事件循环 | nanortc 核心**绝不**调用 lwIP。应用层使用 lwIP BSD socket API 进行 UDP I/O。 |
+| **mbedtls** | 加密库（默认） | DTLS, HMAC-SHA1, CSPRNG, AES (SRTP) | ESP-IDF、Zephyr、RT-Thread、STM32 均内置。通过 `nano_crypto_provider_t` 抽象。编译时选择：`-DNANORTC_CRYPTO=mbedtls` |
+| **OpenSSL** | 加密库（可选） | 同上 | Linux/macOS 主机开发。系统通常已安装。编译时选择：`-DNANORTC_CRYPTO=openssl` |
+| **lwIP**（≥ 2.1.0） | TCP/IP 协议栈 | 仅应用层事件循环 | NanoRTC 核心**绝不**调用 lwIP。应用层使用 lwIP BSD socket API 进行 UDP I/O。 |
 
 **不需要任何其他第三方库。** 不需要 usrsctp、libsrtp、libjuice、cJSON、plog。
 所有协议逻辑都是自包含的。
@@ -828,7 +830,7 @@ void nano_stop_easy(nano_rtc_t *rtc);
 ├── 第 4 周: DataChannel + SDP + 集成
 │   ├── nano_datachannel.c — DCEP 协议
 │   ├── nano_sdp.c — DataChannel 最小 SDP
-│   ├── 端到端测试: nanortc ↔ 浏览器 DataChannel
+│   ├── 端到端测试: NanoRTC ↔ 浏览器 DataChannel
 │   └── ESP32 示例: MQTT 信令 + DataChannel echo
 
 阶段 2: 音频（AUDIO profile）                          [2-3 周]
@@ -859,7 +861,7 @@ void nano_stop_easy(nano_rtc_t *rtc);
 
 ### 7.2 测试策略
 
-nanortc 是 Sans I/O 架构，每个模块都可以**无需网络**进行单元测试：
+NanoRTC 是 Sans I/O 架构，每个模块都可以**无需网络**进行单元测试：
 
 ```c
 // 示例: 在内存中完整测试 SCTP 握手
@@ -910,7 +912,7 @@ HTTP 信令适配层。
 
 ### 7.4 AI 辅助开发指南（Claude Code）
 
-在 Claude Code 中开发 nanortc 时遵循以下规范：
+使用 AI 编码代理开发 NanoRTC 时遵循以下规范（参见 `AGENTS.md`）：
 
 1. **逐模块实现**：一次只实现一个模块。每个模块应能独立编译并通过单元测试，
    再进行集成。
@@ -958,7 +960,7 @@ HTTP 信令适配层。
 
 ## 8. 相关项目与参考
 
-| 项目 | 语言 | I/O 模型 | 对 nanortc 的借鉴意义 |
+| 项目 | 语言 | I/O 模型 | 对 NanoRTC 的借鉴意义 |
 |------|------|----------|----------------------|
 | [str0m](https://github.com/algesten/str0m) | Rust | **Sans I/O** | 架构灵感：poll/handle 模式、无内部线程、时间作为外部输入 |
 | [libdatachannel](https://github.com/paullouisageneau/libdatachannel) | C++ | 内部 I/O | 完整 WebRTC 参考；对 MCU 太重但协议实现参考价值高 |
@@ -971,7 +973,7 @@ HTTP 信令适配层。
 
 ## 9. 许可证
 
-nanortc 采用 **MIT License** 发布。
+NanoRTC 采用 **MIT License** 发布。
 
 - 兼容所有商业和开源使用
 - 无 copyleft 义务，适合产品集成

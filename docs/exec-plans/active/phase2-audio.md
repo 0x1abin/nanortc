@@ -1,7 +1,7 @@
 # Phase 2: Audio Support
 
 **Status:** Queued (blocked on Phase 1 completion)
-**Estimated duration:** 2-3 weeks
+**Estimated effort:** 2-3 agent sessions (~1-2 days elapsed)
 **Goal:** Bidirectional audio between NanoRTC (ESP32) and browser
 
 ## Acceptance Criteria
@@ -18,9 +18,9 @@
 - [ ] Integration: bidirectional audio with browser
 - [ ] ESP32 example: audio intercom
 
-## Module Implementation Order
+## Implementation Steps
 
-### Week 1: SRTP + RTP
+### Step 1: SRTP + RTP (1 agent session)
 
 | Task | File | RFC |
 |------|------|-----|
@@ -32,7 +32,9 @@
 | Opus packetization | `nano_rtp.c` | RFC 7587 |
 | G.711 packetization | `nano_rtp.c` | RFC 3551 §4.5 |
 
-### Week 2: RTCP + Jitter Buffer
+**Gate:** SRTP round-trip test, RTP pack/unpack tests in CI
+
+### Step 2: RTCP + Jitter Buffer + Integration (1 agent session)
 
 | Task | File | RFC |
 |------|------|-----|
@@ -42,19 +44,24 @@
 | Jitter buffer (fixed ring) | `nano_jitter.c` | — |
 | Sequence reordering | `nano_jitter.c` | — |
 | SDP audio m-line | `nano_sdp.c` | RFC 8866 |
+| Audio path in main FSM | `nano_rtc.c` | — |
+| E2E audio test (synthetic) | `test_audio.c` | — |
 
-### Week 3: Integration + ESP32
+**Gate:** Audio loopback in e2e test (synthetic data)
+**Human gate:** Browser bidirectional audio verification
+
+### Step 3: ESP32 example (1 agent session, optional — can parallel)
 
 | Task | File |
 |------|------|
-| Audio path in main FSM | `nano_rtc.c` |
-| E2E audio test (synthetic) | `test_audio.c` |
-| Linux audio example | `examples/linux_echo/` |
+| Linux media send with Opus samples | `examples/linux_media_send/` |
 | ESP32 audio intercom | `examples/esp32_audio_intercom/` |
+
+**Human gate:** ESP32 hardware audio test
 
 ## Risks
 
 | Risk | Mitigation |
 |------|-----------|
-| SRTP crypto provider gaps | Test mbedtls AES-CM and HMAC paths early in week 1 |
+| SRTP crypto provider gaps | Test mbedtls + OpenSSL AES-CM and HMAC paths in Step 1 |
 | Jitter buffer tuning | Start with fixed 100ms depth; parameterize for later optimization |

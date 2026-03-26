@@ -2,19 +2,25 @@
 
 Plans are first-class artifacts in NanoRTC. They are versioned, tracked, and co-located with the code.
 
+## Effort Model
+
+NanoRTC is built by AI coding agents. Estimates use **agent sessions** (one focused run, typically 2-6 hours of agent work) rather than human-weeks. The primary bottleneck is human review and browser-level verification, not coding speed.
+
 ## Active Plans
 
-| Plan | Phase | Status | Target |
-|------|-------|--------|--------|
-| [Phase 1: DataChannel E2E](exec-plans/active/phase1-datachannel.md) | 1 | **Active** | DataChannel working with browser |
-| [Phase 2: Audio](exec-plans/active/phase2-audio.md) | 2 | Queued | Bidirectional audio with browser |
-| [Phase 3: Video](exec-plans/active/phase3-video.md) | 3 | Queued | Camera streaming to browser |
+| Plan | Phase | Status | Effort | Target |
+|------|-------|--------|--------|--------|
+| [Phase 1: DataChannel E2E](exec-plans/active/phase1-datachannel.md) | 1 | **Active** | 4-6 sessions | DataChannel working with browser |
+| [Phase 2: Audio](exec-plans/active/phase2-audio.md) | 2 | Queued | 2-3 sessions | Bidirectional audio with browser |
+| [Phase 3: Video](exec-plans/active/phase3-video.md) | 3 | Queued | 2 sessions | Camera streaming to browser |
+
+**Total Phase 1-3:** ~8-11 agent sessions (~1-2 weeks elapsed)
 
 ## Completed Plans
 
-| Plan | Completed | Outcome |
-|------|-----------|---------|
-| [Phase 0: Skeleton](exec-plans/completed/phase0-skeleton.md) | 2026-03-26 | All 3 profiles build, tests pass |
+| Plan | Completed | Effort | Outcome |
+|------|-----------|--------|---------|
+| [Phase 0: Skeleton](exec-plans/completed/phase0-skeleton.md) | 2026-03-26 | 1 session | 75 files, all 3 profiles build, 12 tests pass |
 
 ## Technical Debt
 

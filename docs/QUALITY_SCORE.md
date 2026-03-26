@@ -1,6 +1,6 @@
 # Quality Score
 
-Per-module quality grades. Updated as implementation progresses.
+Per-module quality grades for NanoRTC. Updated as implementation progresses.
 
 ## Grading Scale
 
@@ -46,11 +46,12 @@ Per-module quality grades. Updated as implementation progresses.
 
 | Component | Grade | Notes |
 |-----------|-------|-------|
-| Crypto provider interface | **B** | Interface complete, mbedtls stub only |
-| Build system (CMake) | **B** | 3 profiles work, ESP-IDF detection, `-fvisibility=hidden` |
+| Crypto provider interface | **B** | Interface complete, dual backend (mbedtls + OpenSSL stubs) |
+| Build system (CMake) | **B** | 3 profiles, 2 crypto backends, ESP-IDF detection, `-fvisibility=hidden` |
 | Test infrastructure | **B** | Shared macros (`nano_test.h`), 12 tests across 3 suites, e2e framework |
-| CI pipeline | **C** | GitHub Actions: 3-profile matrix, constraints, ASan. Local: `scripts/ci-check.sh` |
-| Documentation | **B** | CLAUDE.md, ARCHITECTURE.md, workflow docs, exec plans, core beliefs |
+| CI pipeline | **B** | GitHub Actions: 3-profile × 2-crypto matrix, constraints, ASan. Local: `scripts/ci-check.sh` |
+| Examples | **C** | Linux datachannel + media_send templates, media sample submodule. Not yet tested with real connections. |
+| Documentation | **B** | AGENTS.md, ARCHITECTURE.md, exec plans, quality scores, core beliefs, RFC index |
 
 ## Quality Targets
 
@@ -65,10 +66,9 @@ Per-module quality grades. Updated as implementation progresses.
 
 **Critical gaps (must fix before Phase 1 milestones):**
 1. STUN parser needs real implementation (D → B)
-2. Crypto provider needs real mbedtls implementation (D → B)
+2. Crypto provider needs real mbedtls + OpenSSL implementations (D → B)
 
 **Acceptable gaps (address in later phases):**
 1. No fuzz testing yet (Phase 4)
 2. No ESP32 hardware validation yet (Phase 1 Week 4)
 3. No code coverage measurement (Phase 4)
-4. clang-format not installed on CI runner (need `sudo apt-get install clang-format`)
