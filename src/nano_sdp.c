@@ -17,11 +17,11 @@
  * ================================================================ */
 
 /** Append a string to buf at *pos, advance *pos. Returns false if overflow. */
-static bool sdp_append(char *buf, size_t buf_len, size_t *pos,
-                        const char *str)
+static bool sdp_append(char *buf, size_t buf_len, size_t *pos, const char *str)
 {
     size_t slen = 0;
-    while (str[slen]) slen++;
+    while (str[slen])
+        slen++;
 
     if (*pos + slen >= buf_len) {
         return false;
@@ -33,8 +33,7 @@ static bool sdp_append(char *buf, size_t buf_len, size_t *pos,
 }
 
 /** Append uint16_t as decimal to buf. */
-static bool sdp_append_u16(char *buf, size_t buf_len, size_t *pos,
-                            uint16_t val)
+static bool sdp_append_u16(char *buf, size_t buf_len, size_t *pos, uint16_t val)
 {
     char tmp[8];
     int i = 0;
@@ -78,28 +77,31 @@ static size_t find_eol(const char *s, size_t len, size_t start)
 }
 
 /** Check if line at pos starts with prefix. */
-static bool line_starts_with(const char *line, size_t line_len,
-                              const char *prefix)
+static bool line_starts_with(const char *line, size_t line_len, const char *prefix)
 {
     size_t plen = 0;
-    while (prefix[plen]) plen++;
-    if (line_len < plen) return false;
+    while (prefix[plen])
+        plen++;
+    if (line_len < plen)
+        return false;
     return memcmp(line, prefix, plen) == 0;
 }
 
 /** Copy value after prefix into dst, up to dst_size-1. */
-static void extract_value(const char *line, size_t line_len,
-                           const char *prefix, char *dst, size_t dst_size)
+static void extract_value(const char *line, size_t line_len, const char *prefix, char *dst,
+                          size_t dst_size)
 {
     size_t plen = 0;
-    while (prefix[plen]) plen++;
+    while (prefix[plen])
+        plen++;
 
     size_t vlen = 0;
     const char *val = line + plen;
     /* Skip to end of line, exclude \r\n */
     while (plen + vlen < line_len) {
         char c = val[vlen];
-        if (c == '\r' || c == '\n') break;
+        if (c == '\r' || c == '\n')
+            break;
         vlen++;
     }
 
@@ -134,14 +136,12 @@ int sdp_parse(nano_sdp_t *sdp, const char *sdp_str, size_t len)
         size_t line_len = eol - pos;
 
         if (line_starts_with(line, line_len, "a=ice-ufrag:")) {
-            extract_value(line, line_len, "a=ice-ufrag:",
-                          sdp->remote_ufrag, sizeof(sdp->remote_ufrag));
+            extract_value(line, line_len, "a=ice-ufrag:", sdp->remote_ufrag,
+                          sizeof(sdp->remote_ufrag));
         } else if (line_starts_with(line, line_len, "a=ice-pwd:")) {
-            extract_value(line, line_len, "a=ice-pwd:",
-                          sdp->remote_pwd, sizeof(sdp->remote_pwd));
+            extract_value(line, line_len, "a=ice-pwd:", sdp->remote_pwd, sizeof(sdp->remote_pwd));
         } else if (line_starts_with(line, line_len, "a=fingerprint:")) {
-            extract_value(line, line_len, "a=fingerprint:",
-                          sdp->remote_fingerprint,
+            extract_value(line, line_len, "a=fingerprint:", sdp->remote_fingerprint,
                           sizeof(sdp->remote_fingerprint));
         } else if (line_starts_with(line, line_len, "a=sctp-port:")) {
             /* Parse sctp port number */
@@ -156,8 +156,7 @@ int sdp_parse(nano_sdp_t *sdp, const char *sdp_str, size_t len)
             }
         } else if (line_starts_with(line, line_len, "a=setup:")) {
             char setup_str[16];
-            extract_value(line, line_len, "a=setup:",
-                          setup_str, sizeof(setup_str));
+            extract_value(line, line_len, "a=setup:", setup_str, sizeof(setup_str));
             if (memcmp(setup_str, "active", 6) == 0) {
                 sdp->remote_setup = NANO_SDP_SETUP_ACTIVE;
             } else if (memcmp(setup_str, "passive", 7) == 0) {
@@ -185,8 +184,7 @@ int sdp_parse(nano_sdp_t *sdp, const char *sdp_str, size_t len)
  * Generator
  * ================================================================ */
 
-int sdp_generate_answer(nano_sdp_t *sdp, char *buf, size_t buf_len,
-                        size_t *out_len)
+int sdp_generate_answer(nano_sdp_t *sdp, char *buf, size_t buf_len, size_t *out_len)
 {
     if (!sdp || !buf || !out_len || buf_len < 256) {
         return NANO_ERR_INVALID_PARAM;
@@ -195,30 +193,39 @@ int sdp_generate_answer(nano_sdp_t *sdp, char *buf, size_t buf_len,
     size_t pos = 0;
 
     /* Session-level */
-    if (!sdp_append(buf, buf_len, &pos, "v=0\r\n")) goto overflow;
-    if (!sdp_append(buf, buf_len, &pos,
-                    "o=- 1 1 IN IP4 0.0.0.0\r\n")) goto overflow;
-    if (!sdp_append(buf, buf_len, &pos, "s=-\r\n")) goto overflow;
-    if (!sdp_append(buf, buf_len, &pos, "t=0 0\r\n")) goto overflow;
-    if (!sdp_append(buf, buf_len, &pos,
-                    "a=group:BUNDLE 0\r\n")) goto overflow;
+    if (!sdp_append(buf, buf_len, &pos, "v=0\r\n"))
+        goto overflow;
+    if (!sdp_append(buf, buf_len, &pos, "o=- 1 1 IN IP4 0.0.0.0\r\n"))
+        goto overflow;
+    if (!sdp_append(buf, buf_len, &pos, "s=-\r\n"))
+        goto overflow;
+    if (!sdp_append(buf, buf_len, &pos, "t=0 0\r\n"))
+        goto overflow;
+    if (!sdp_append(buf, buf_len, &pos, "a=group:BUNDLE 0\r\n"))
+        goto overflow;
 
     /* Media line */
-    if (!sdp_append(buf, buf_len, &pos,
-                    "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n"))
+    if (!sdp_append(buf, buf_len, &pos, "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n"))
         goto overflow;
-    if (!sdp_append(buf, buf_len, &pos,
-                    "c=IN IP4 0.0.0.0\r\n")) goto overflow;
-    if (!sdp_append(buf, buf_len, &pos, "a=mid:0\r\n")) goto overflow;
+    if (!sdp_append(buf, buf_len, &pos, "c=IN IP4 0.0.0.0\r\n"))
+        goto overflow;
+    if (!sdp_append(buf, buf_len, &pos, "a=mid:0\r\n"))
+        goto overflow;
 
     /* ICE credentials */
-    if (!sdp_append(buf, buf_len, &pos, "a=ice-ufrag:")) goto overflow;
-    if (!sdp_append(buf, buf_len, &pos, sdp->local_ufrag)) goto overflow;
-    if (!sdp_append(buf, buf_len, &pos, "\r\n")) goto overflow;
+    if (!sdp_append(buf, buf_len, &pos, "a=ice-ufrag:"))
+        goto overflow;
+    if (!sdp_append(buf, buf_len, &pos, sdp->local_ufrag))
+        goto overflow;
+    if (!sdp_append(buf, buf_len, &pos, "\r\n"))
+        goto overflow;
 
-    if (!sdp_append(buf, buf_len, &pos, "a=ice-pwd:")) goto overflow;
-    if (!sdp_append(buf, buf_len, &pos, sdp->local_pwd)) goto overflow;
-    if (!sdp_append(buf, buf_len, &pos, "\r\n")) goto overflow;
+    if (!sdp_append(buf, buf_len, &pos, "a=ice-pwd:"))
+        goto overflow;
+    if (!sdp_append(buf, buf_len, &pos, sdp->local_pwd))
+        goto overflow;
+    if (!sdp_append(buf, buf_len, &pos, "\r\n"))
+        goto overflow;
 
     /* Fingerprint */
     if (sdp->local_fingerprint[0] != '\0') {
@@ -226,7 +233,8 @@ int sdp_generate_answer(nano_sdp_t *sdp, char *buf, size_t buf_len,
             goto overflow;
         if (!sdp_append(buf, buf_len, &pos, sdp->local_fingerprint))
             goto overflow;
-        if (!sdp_append(buf, buf_len, &pos, "\r\n")) goto overflow;
+        if (!sdp_append(buf, buf_len, &pos, "\r\n"))
+            goto overflow;
     }
 
     /* Setup role */
@@ -236,17 +244,20 @@ int sdp_generate_answer(nano_sdp_t *sdp, char *buf, size_t buf_len,
     } else if (sdp->local_setup == NANO_SDP_SETUP_ACTPASS) {
         setup_str = "a=setup:actpass\r\n";
     }
-    if (!sdp_append(buf, buf_len, &pos, setup_str)) goto overflow;
+    if (!sdp_append(buf, buf_len, &pos, setup_str))
+        goto overflow;
 
     /* SCTP port */
-    if (!sdp_append(buf, buf_len, &pos, "a=sctp-port:")) goto overflow;
+    if (!sdp_append(buf, buf_len, &pos, "a=sctp-port:"))
+        goto overflow;
     if (!sdp_append_u16(buf, buf_len, &pos, sdp->local_sctp_port))
         goto overflow;
-    if (!sdp_append(buf, buf_len, &pos, "\r\n")) goto overflow;
+    if (!sdp_append(buf, buf_len, &pos, "\r\n"))
+        goto overflow;
 
     /* Max message size */
-    if (!sdp_append(buf, buf_len, &pos,
-                    "a=max-message-size:262144\r\n")) goto overflow;
+    if (!sdp_append(buf, buf_len, &pos, "a=max-message-size:262144\r\n"))
+        goto overflow;
 
     *out_len = pos;
     NANO_LOGD("SDP", "answer generated");

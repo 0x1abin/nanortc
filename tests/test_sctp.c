@@ -19,8 +19,7 @@
  * Helper: build a valid SCTP packet with correct CRC-32c
  * ================================================================ */
 
-static size_t build_sctp_packet(uint8_t *buf, uint16_t src_port,
-                                uint16_t dst_port, uint32_t vtag,
+static size_t build_sctp_packet(uint8_t *buf, uint16_t src_port, uint16_t dst_port, uint32_t vtag,
                                 const uint8_t *chunk_data, size_t chunk_len)
 {
     size_t pos = sctp_encode_header(buf, src_port, dst_port, vtag);
@@ -72,8 +71,8 @@ TEST(test_checksum_roundtrip)
     memset(pkt, 0, sizeof(pkt));
 
     size_t pos = sctp_encode_header(pkt, 5000, 5000, 0);
-    pos += sctp_encode_init(pkt + pos, SCTP_CHUNK_INIT, 0xAABBCCDD,
-                            0x100000, 0xFFFF, 0xFFFF, 1234, NULL, 0);
+    pos += sctp_encode_init(pkt + pos, SCTP_CHUNK_INIT, 0xAABBCCDD, 0x100000, 0xFFFF, 0xFFFF, 1234,
+                            NULL, 0);
     sctp_finalize_checksum(pkt, pos);
 
     ASSERT_OK(sctp_verify_checksum(pkt, pos));
@@ -85,8 +84,8 @@ TEST(test_checksum_corruption)
     memset(pkt, 0, sizeof(pkt));
 
     size_t pos = sctp_encode_header(pkt, 5000, 5000, 0);
-    pos += sctp_encode_init(pkt + pos, SCTP_CHUNK_INIT, 0xAABBCCDD,
-                            0x100000, 0xFFFF, 0xFFFF, 1234, NULL, 0);
+    pos += sctp_encode_init(pkt + pos, SCTP_CHUNK_INIT, 0xAABBCCDD, 0x100000, 0xFFFF, 0xFFFF, 1234,
+                            NULL, 0);
     sctp_finalize_checksum(pkt, pos);
 
     /* Corrupt one byte */
@@ -97,8 +96,7 @@ TEST(test_checksum_corruption)
 TEST(test_encode_parse_init_roundtrip)
 {
     uint8_t chunk[64];
-    size_t n = sctp_encode_init(chunk, SCTP_CHUNK_INIT, 0x12345678,
-                                0x100000, 10, 10, 42, NULL, 0);
+    size_t n = sctp_encode_init(chunk, SCTP_CHUNK_INIT, 0x12345678, 0x100000, 10, 10, 42, NULL, 0);
 
     ASSERT_EQ(chunk[0], SCTP_CHUNK_INIT);
     ASSERT_TRUE(n >= 20); /* 4 hdr + 16 body */
@@ -118,9 +116,8 @@ TEST(test_encode_parse_init_ack_with_cookie)
 {
     uint8_t chunk[64];
     uint8_t cookie[] = {0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03, 0x04};
-    size_t n = sctp_encode_init(chunk, SCTP_CHUNK_INIT_ACK, 0xABCD0001,
-                                0x100000, 0xFFFF, 0xFFFF, 100,
-                                cookie, sizeof(cookie));
+    size_t n = sctp_encode_init(chunk, SCTP_CHUNK_INIT_ACK, 0xABCD0001, 0x100000, 0xFFFF, 0xFFFF,
+                                100, cookie, sizeof(cookie));
 
     ASSERT_EQ(chunk[0], SCTP_CHUNK_INIT_ACK);
 
@@ -139,8 +136,7 @@ TEST(test_encode_parse_data_roundtrip)
     uint8_t payload[] = "Hello, SCTP!";
     uint8_t flags = SCTP_DATA_FLAG_BEGIN | SCTP_DATA_FLAG_END; /* 0x03 */
 
-    size_t n = sctp_encode_data(chunk, 42, 0, 1, 51, flags,
-                                payload, sizeof(payload) - 1);
+    size_t n = sctp_encode_data(chunk, 42, 0, 1, 51, flags, payload, sizeof(payload) - 1);
 
     sctp_data_t data;
     ASSERT_OK(sctp_parse_data(chunk, n, &data));
@@ -275,8 +271,8 @@ TEST(test_handle_data_init_packet)
     memset(pkt, 0, sizeof(pkt));
 
     uint8_t chunk[32];
-    size_t clen = sctp_encode_init(chunk, SCTP_CHUNK_INIT, 0xAABBCCDD,
-                                   0x100000, 0xFFFF, 0xFFFF, 100, NULL, 0);
+    size_t clen = sctp_encode_init(chunk, SCTP_CHUNK_INIT, 0xAABBCCDD, 0x100000, 0xFFFF, 0xFFFF,
+                                   100, NULL, 0);
     size_t plen = build_sctp_packet(pkt, 5000, 5000, 0, chunk, clen);
 
     /* Should parse without error (FSM not yet implemented) */
@@ -292,8 +288,8 @@ TEST(test_handle_data_checksum_fail)
     memset(pkt, 0, sizeof(pkt));
 
     uint8_t chunk[32];
-    size_t clen = sctp_encode_init(chunk, SCTP_CHUNK_INIT, 0x11111111,
-                                   0x100000, 0xFFFF, 0xFFFF, 1, NULL, 0);
+    size_t clen =
+        sctp_encode_init(chunk, SCTP_CHUNK_INIT, 0x11111111, 0x100000, 0xFFFF, 0xFFFF, 1, NULL, 0);
     size_t plen = build_sctp_packet(pkt, 5000, 5000, 0, chunk, clen);
 
     /* Corrupt payload */
@@ -314,8 +310,7 @@ TEST(test_handle_data_multi_chunk)
 
     /* DATA chunk */
     uint8_t payload[] = {0x48, 0x69}; /* "Hi" */
-    pos += sctp_encode_data(pkt + pos, 1, 0, 0, 51,
-                            SCTP_DATA_FLAG_BEGIN | SCTP_DATA_FLAG_END,
+    pos += sctp_encode_data(pkt + pos, 1, 0, 0, 51, SCTP_DATA_FLAG_BEGIN | SCTP_DATA_FLAG_END,
                             payload, sizeof(payload));
 
     /* SACK chunk right after */
@@ -381,8 +376,7 @@ TEST(test_poll_output_empty)
 
     uint8_t buf[256];
     size_t out_len = 0;
-    ASSERT_EQ(sctp_poll_output(&sctp, buf, sizeof(buf), &out_len),
-              NANO_ERR_NO_DATA);
+    ASSERT_EQ(sctp_poll_output(&sctp, buf, sizeof(buf), &out_len), NANO_ERR_NO_DATA);
 }
 
 /* ================================================================
@@ -394,8 +388,7 @@ TEST(test_data_chunk_padding)
     /* Encode DATA with 3-byte payload — should pad to 4 */
     uint8_t buf[32];
     uint8_t payload[] = {0x41, 0x42, 0x43}; /* "ABC" */
-    size_t n = sctp_encode_data(buf, 1, 0, 0, 51, 0x03,
-                                payload, sizeof(payload));
+    size_t n = sctp_encode_data(buf, 1, 0, 0, 51, 0x03, payload, sizeof(payload));
 
     /* chunk_len = 4+12+3 = 19, padded to 20 */
     ASSERT_EQ(n, 20u);
@@ -446,8 +439,8 @@ TEST(test_sctp_logging_on_parse)
     uint8_t pkt[64];
     memset(pkt, 0, sizeof(pkt));
     uint8_t chunk[32];
-    size_t clen = sctp_encode_init(chunk, SCTP_CHUNK_INIT, 0x11111111,
-                                   0x100000, 0xFFFF, 0xFFFF, 1, NULL, 0);
+    size_t clen =
+        sctp_encode_init(chunk, SCTP_CHUNK_INIT, 0x11111111, 0x100000, 0xFFFF, 0xFFFF, 1, NULL, 0);
     size_t plen = build_sctp_packet(pkt, 5000, 5000, 0, chunk, clen);
 
     sctp_handle_data(&rtc.sctp, pkt, plen);
@@ -469,8 +462,7 @@ static size_t pump(nano_sctp_t *src, nano_sctp_t *dst)
     size_t out_len = 0;
     size_t total = 0;
 
-    while (sctp_poll_output(src, buf, sizeof(buf), &out_len) == NANO_OK &&
-           out_len > 0) {
+    while (sctp_poll_output(src, buf, sizeof(buf), &out_len) == NANO_OK && out_len > 0) {
         sctp_handle_data(dst, buf, out_len);
         total += out_len;
         out_len = 0;
@@ -521,10 +513,10 @@ TEST(test_two_instance_data_exchange)
 
     /* Handshake: a=client, b=server */
     ASSERT_OK(sctp_start(&a));
-    pump(&a, &b);  /* INIT */
-    pump(&b, &a);  /* INIT-ACK */
-    pump(&a, &b);  /* COOKIE-ECHO */
-    pump(&b, &a);  /* COOKIE-ACK */
+    pump(&a, &b); /* INIT */
+    pump(&b, &a); /* INIT-ACK */
+    pump(&a, &b); /* COOKIE-ECHO */
+    pump(&b, &a); /* COOKIE-ACK */
     ASSERT_EQ(a.state, NANO_SCTP_STATE_ESTABLISHED);
     ASSERT_EQ(b.state, NANO_SCTP_STATE_ESTABLISHED);
 
@@ -629,44 +621,44 @@ TEST(test_forward_tsn_advances)
  * ================================================================ */
 
 TEST_MAIN_BEGIN("test_sctp")
-    /* Parser tests */
-    RUN(test_parse_header_basic);
-    RUN(test_parse_header_too_short);
-    RUN(test_parse_header_null);
-    RUN(test_checksum_roundtrip);
-    RUN(test_checksum_corruption);
-    RUN(test_encode_parse_init_roundtrip);
-    RUN(test_encode_parse_init_ack_with_cookie);
-    RUN(test_encode_parse_data_roundtrip);
-    RUN(test_encode_parse_data_empty_payload);
-    RUN(test_encode_parse_sack_roundtrip);
-    RUN(test_parse_data_too_short);
-    RUN(test_parse_sack_too_short);
-    RUN(test_encode_cookie_echo_roundtrip);
-    RUN(test_encode_cookie_ack);
-    RUN(test_encode_heartbeat_roundtrip);
-    RUN(test_encode_heartbeat_ack);
-    RUN(test_encode_forward_tsn);
-    RUN(test_encode_shutdown);
-    /* Full packet tests */
-    RUN(test_handle_data_init_packet);
-    RUN(test_handle_data_checksum_fail);
-    RUN(test_handle_data_multi_chunk);
-    RUN(test_handle_data_too_short);
-    RUN(test_handle_data_abort);
-    /* Init/lifecycle */
-    RUN(test_sctp_init_defaults);
-    RUN(test_sctp_init_null);
-    RUN(test_poll_output_empty);
-    /* Alignment */
-    RUN(test_data_chunk_padding);
-    RUN(test_cookie_echo_padding);
-    /* Logging */
-    RUN(test_sctp_logging_on_parse);
-    /* FSM — two-instance loopback */
-    RUN(test_two_instance_handshake_server_client);
-    RUN(test_two_instance_data_exchange);
-    RUN(test_two_instance_bidirectional);
-    RUN(test_send_before_established);
-    RUN(test_forward_tsn_advances);
+/* Parser tests */
+RUN(test_parse_header_basic);
+RUN(test_parse_header_too_short);
+RUN(test_parse_header_null);
+RUN(test_checksum_roundtrip);
+RUN(test_checksum_corruption);
+RUN(test_encode_parse_init_roundtrip);
+RUN(test_encode_parse_init_ack_with_cookie);
+RUN(test_encode_parse_data_roundtrip);
+RUN(test_encode_parse_data_empty_payload);
+RUN(test_encode_parse_sack_roundtrip);
+RUN(test_parse_data_too_short);
+RUN(test_parse_sack_too_short);
+RUN(test_encode_cookie_echo_roundtrip);
+RUN(test_encode_cookie_ack);
+RUN(test_encode_heartbeat_roundtrip);
+RUN(test_encode_heartbeat_ack);
+RUN(test_encode_forward_tsn);
+RUN(test_encode_shutdown);
+/* Full packet tests */
+RUN(test_handle_data_init_packet);
+RUN(test_handle_data_checksum_fail);
+RUN(test_handle_data_multi_chunk);
+RUN(test_handle_data_too_short);
+RUN(test_handle_data_abort);
+/* Init/lifecycle */
+RUN(test_sctp_init_defaults);
+RUN(test_sctp_init_null);
+RUN(test_poll_output_empty);
+/* Alignment */
+RUN(test_data_chunk_padding);
+RUN(test_cookie_echo_padding);
+/* Logging */
+RUN(test_sctp_logging_on_parse);
+/* FSM — two-instance loopback */
+RUN(test_two_instance_handshake_server_client);
+RUN(test_two_instance_data_exchange);
+RUN(test_two_instance_bidirectional);
+RUN(test_send_before_established);
+RUN(test_forward_tsn_advances);
 TEST_MAIN_END

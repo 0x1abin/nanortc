@@ -29,9 +29,8 @@
  * @param line      Source line (__LINE__), or 0.
  * @param func      Function name (__func__), or NULL.
  */
-void nano_log_emit(nano_log_level_t level, const char *subsystem,
-                   const char *message, const char *file, uint32_t line,
-                   const char *func);
+void nano_log_emit(nano_log_level_t level, const char *subsystem, const char *message,
+                   const char *file, uint32_t line, const char *func);
 
 /**
  * @brief Install the log callback (called from nano_rtc_init).
@@ -78,7 +77,7 @@ void nano_log_cleanup(void);
 
 #else /* !NANO_LOG_DISABLED */
 
-#define NANO_LOG_(lvl, subsys, msg)                                                              \
+#define NANO_LOG_(lvl, subsys, msg) \
     nano_log_emit((lvl), (subsys), (msg), NANO_LOG_FILE_, NANO_LOG_LINE_, NANO_LOG_FUNC_)
 
 #if NANO_LOG_LEVEL >= 0 /* NANO_LOG_ERROR */

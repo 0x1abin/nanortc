@@ -43,9 +43,8 @@ void nano_log_cleanup(void)
     g_log_ctx = (void *)0;
 }
 
-void nano_log_emit(nano_log_level_t level, const char *subsystem,
-                   const char *message, const char *file, uint32_t line,
-                   const char *func)
+void nano_log_emit(nano_log_level_t level, const char *subsystem, const char *message,
+                   const char *file, uint32_t line, const char *func)
 {
     if (!g_log_fn || (int)level > (int)g_log_level) {
         return;
@@ -64,14 +63,22 @@ void nano_log_emit(nano_log_level_t level, const char *subsystem,
 
 #else /* NANO_LOG_DISABLED */
 
-void nano_log_init(const nano_log_config_t *cfg) { (void)cfg; }
-void nano_log_cleanup(void) { }
-void nano_log_emit(nano_log_level_t level, const char *subsystem,
-                   const char *message, const char *file, uint32_t line,
-                   const char *func)
+void nano_log_init(const nano_log_config_t *cfg)
 {
-    (void)level; (void)subsystem; (void)message;
-    (void)file; (void)line; (void)func;
+    (void)cfg;
+}
+void nano_log_cleanup(void)
+{
+}
+void nano_log_emit(nano_log_level_t level, const char *subsystem, const char *message,
+                   const char *file, uint32_t line, const char *func)
+{
+    (void)level;
+    (void)subsystem;
+    (void)message;
+    (void)file;
+    (void)line;
+    (void)func;
 }
 
 #endif /* NANO_LOG_DISABLED */

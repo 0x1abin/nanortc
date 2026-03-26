@@ -67,7 +67,7 @@ typedef struct {
     uint16_t num_ostreams;
     uint16_t num_istreams;
     uint32_t initial_tsn;
-    const uint8_t *cookie;     /* pointer into packet buffer (INIT-ACK only) */
+    const uint8_t *cookie; /* pointer into packet buffer (INIT-ACK only) */
     uint16_t cookie_len;
 } sctp_init_t;
 
@@ -77,7 +77,7 @@ typedef struct {
     uint16_t stream_id;
     uint16_t ssn;
     uint32_t ppid;
-    uint8_t flags;             /* B/E/U bits */
+    uint8_t flags; /* B/E/U bits */
     const uint8_t *payload;
     uint16_t payload_len;
 } sctp_data_t;
@@ -104,11 +104,11 @@ typedef struct {
     uint16_t stream_id;
     uint16_t ssn;
     uint32_t ppid;
-    uint16_t data_offset;      /* offset into send_buf */
+    uint16_t data_offset; /* offset into send_buf */
     uint16_t data_len;
-    uint32_t sent_at_ms;       /* timestamp of last send (for RTO) */
+    uint32_t sent_at_ms; /* timestamp of last send (for RTO) */
     uint8_t retransmit_count;
-    uint8_t flags;             /* B/E/U bits */
+    uint8_t flags; /* B/E/U bits */
     bool acked;
     bool in_flight;
 } sctp_send_entry_t;
@@ -140,14 +140,14 @@ typedef struct nano_sctp {
     uint16_t remote_port;
 
     /* TSN counters */
-    uint32_t next_tsn;          /* next TSN to assign to outbound DATA */
+    uint32_t next_tsn; /* next TSN to assign to outbound DATA */
     uint32_t peer_initial_tsn;
 
     /* Stream sequence numbers (per outbound stream) */
     uint16_t next_ssn[NANO_MAX_DATACHANNELS];
 
     /* Receive state */
-    uint32_t cumulative_tsn;    /* highest TSN such that all TSN <= this received */
+    uint32_t cumulative_tsn; /* highest TSN such that all TSN <= this received */
     bool sack_needed;
 
     /* Send queue */
@@ -203,12 +203,11 @@ int sctp_init(nano_sctp_t *sctp);
 int sctp_handle_data(nano_sctp_t *sctp, const uint8_t *data, size_t len);
 
 /** Poll for outgoing SCTP packet (to be DTLS-encrypted). */
-int sctp_poll_output(nano_sctp_t *sctp, uint8_t *buf, size_t buf_len,
-                     size_t *out_len);
+int sctp_poll_output(nano_sctp_t *sctp, uint8_t *buf, size_t buf_len, size_t *out_len);
 
 /** Enqueue application data for transmission. */
-int sctp_send(nano_sctp_t *sctp, uint16_t stream_id, uint32_t ppid,
-              const uint8_t *data, size_t len);
+int sctp_send(nano_sctp_t *sctp, uint16_t stream_id, uint32_t ppid, const uint8_t *data,
+              size_t len);
 
 /** Initiate SCTP association (client role — sends INIT). */
 int sctp_start(nano_sctp_t *sctp);
@@ -226,26 +225,20 @@ int sctp_parse_init(const uint8_t *chunk, size_t chunk_len, sctp_init_t *out);
 int sctp_parse_data(const uint8_t *chunk, size_t chunk_len, sctp_data_t *out);
 int sctp_parse_sack(const uint8_t *chunk, size_t chunk_len, sctp_sack_t *out);
 
-size_t sctp_encode_header(uint8_t *buf, uint16_t src_port, uint16_t dst_port,
-                          uint32_t vtag);
+size_t sctp_encode_header(uint8_t *buf, uint16_t src_port, uint16_t dst_port, uint32_t vtag);
 void sctp_finalize_checksum(uint8_t *packet, size_t len);
 
-size_t sctp_encode_init(uint8_t *buf, uint8_t type, uint32_t initiate_tag,
-                        uint32_t a_rwnd, uint16_t num_ostreams,
-                        uint16_t num_istreams, uint32_t initial_tsn,
+size_t sctp_encode_init(uint8_t *buf, uint8_t type, uint32_t initiate_tag, uint32_t a_rwnd,
+                        uint16_t num_ostreams, uint16_t num_istreams, uint32_t initial_tsn,
                         const uint8_t *cookie, uint16_t cookie_len);
 
-size_t sctp_encode_cookie_echo(uint8_t *buf, const uint8_t *cookie,
-                               uint16_t cookie_len);
+size_t sctp_encode_cookie_echo(uint8_t *buf, const uint8_t *cookie, uint16_t cookie_len);
 size_t sctp_encode_cookie_ack(uint8_t *buf);
-size_t sctp_encode_data(uint8_t *buf, uint32_t tsn, uint16_t stream_id,
-                        uint16_t ssn, uint32_t ppid, uint8_t flags,
-                        const uint8_t *payload, uint16_t payload_len);
+size_t sctp_encode_data(uint8_t *buf, uint32_t tsn, uint16_t stream_id, uint16_t ssn, uint32_t ppid,
+                        uint8_t flags, const uint8_t *payload, uint16_t payload_len);
 size_t sctp_encode_sack(uint8_t *buf, uint32_t cumulative_tsn, uint32_t a_rwnd);
-size_t sctp_encode_heartbeat(uint8_t *buf, const uint8_t *info,
-                             uint16_t info_len);
-size_t sctp_encode_heartbeat_ack(uint8_t *buf, const uint8_t *info,
-                                 uint16_t info_len);
+size_t sctp_encode_heartbeat(uint8_t *buf, const uint8_t *info, uint16_t info_len);
+size_t sctp_encode_heartbeat_ack(uint8_t *buf, const uint8_t *info, uint16_t info_len);
 size_t sctp_encode_forward_tsn(uint8_t *buf, uint32_t new_cumulative_tsn);
 size_t sctp_encode_shutdown(uint8_t *buf, uint32_t cumulative_tsn);
 

@@ -94,8 +94,8 @@ static inline uint32_t nano_ntohl(uint32_t x)
 /** @brief Log severity levels. */
 typedef enum {
     NANO_LOG_ERROR = 0, /**< Unrecoverable errors that prevent operation. */
-    NANO_LOG_WARN  = 1, /**< Unusual but recoverable conditions. */
-    NANO_LOG_INFO  = 2, /**< Normal operation milestones. */
+    NANO_LOG_WARN = 1,  /**< Unusual but recoverable conditions. */
+    NANO_LOG_INFO = 2,  /**< Normal operation milestones. */
     NANO_LOG_DEBUG = 3, /**< Diagnostic information. */
     NANO_LOG_TRACE = 4, /**< Detailed packet-level diagnostics. */
 } nano_log_level_t;
@@ -107,12 +107,12 @@ typedef enum {
  * The application must copy any data it needs to retain.
  */
 typedef struct nano_log_message {
-    nano_log_level_t level;  /**< Severity level. */
-    const char *subsystem;   /**< Component tag (e.g. "ICE", "SCTP"). */
-    const char *message;     /**< Human-readable message (static string). */
-    const char *file;        /**< Source file name, or NULL. */
-    uint32_t line;           /**< Source line number, or 0. */
-    const char *function;    /**< Function name, or NULL. */
+    nano_log_level_t level; /**< Severity level. */
+    const char *subsystem;  /**< Component tag (e.g. "ICE", "SCTP"). */
+    const char *message;    /**< Human-readable message (static string). */
+    const char *file;       /**< Source file name, or NULL. */
+    uint32_t line;          /**< Source line number, or 0. */
+    const char *function;   /**< Function name, or NULL. */
 } nano_log_message_t;
 
 /**

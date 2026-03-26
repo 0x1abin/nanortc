@@ -35,28 +35,25 @@ int dcep_parse_open(const uint8_t *data, size_t len, dcep_open_t *out)
         return NANO_ERR_PROTOCOL;
     }
 
-    out->channel_type     = data[1];
-    out->priority         = nano_ntohs(*(const uint16_t *)(data + 2));
+    out->channel_type = data[1];
+    out->priority = nano_ntohs(*(const uint16_t *)(data + 2));
     out->reliability_param = nano_ntohl(*(const uint32_t *)(data + 4));
-    out->label_len        = nano_ntohs(*(const uint16_t *)(data + 8));
-    out->protocol_len     = nano_ntohs(*(const uint16_t *)(data + 10));
+    out->label_len = nano_ntohs(*(const uint16_t *)(data + 8));
+    out->protocol_len = nano_ntohs(*(const uint16_t *)(data + 10));
 
     if ((size_t)(12 + out->label_len + out->protocol_len) > len) {
         return NANO_ERR_PARSE;
     }
 
-    out->label    = (out->label_len > 0) ? (const char *)(data + 12) : "";
-    out->protocol = (out->protocol_len > 0)
-                        ? (const char *)(data + 12 + out->label_len)
-                        : "";
+    out->label = (out->label_len > 0) ? (const char *)(data + 12) : "";
+    out->protocol = (out->protocol_len > 0) ? (const char *)(data + 12 + out->label_len) : "";
 
     return NANO_OK;
 }
 
 size_t dcep_encode_open(uint8_t *buf, uint8_t channel_type, uint16_t priority,
-                        uint32_t reliability_param, const char *label,
-                        uint16_t label_len, const char *protocol,
-                        uint16_t protocol_len)
+                        uint32_t reliability_param, const char *label, uint16_t label_len,
+                        const char *protocol, uint16_t protocol_len)
 {
     buf[0] = DCEP_DATA_CHANNEL_OPEN;
     buf[1] = channel_type;
@@ -123,8 +120,8 @@ int dc_init(nano_dc_t *dc)
     return NANO_OK;
 }
 
-int dc_handle_message(nano_dc_t *dc, uint16_t stream_id, uint32_t ppid,
-                      const uint8_t *data, size_t len)
+int dc_handle_message(nano_dc_t *dc, uint16_t stream_id, uint32_t ppid, const uint8_t *data,
+                      size_t len)
 {
     if (!dc) {
         return NANO_ERR_INVALID_PARAM;
@@ -214,9 +211,8 @@ int dc_open(nano_dc_t *dc, uint16_t stream_id, const char *label)
     ch->label[label_len] = '\0';
 
     /* Encode DCEP OPEN */
-    dc->out_len = (uint16_t)dcep_encode_open(
-        dc->out_buf, DCEP_CHANNEL_RELIABLE, 0, 0,
-        label, label_len, NULL, 0);
+    dc->out_len = (uint16_t)dcep_encode_open(dc->out_buf, DCEP_CHANNEL_RELIABLE, 0, 0, label,
+                                             label_len, NULL, 0);
     dc->out_stream = stream_id;
     dc->has_output = true;
 
@@ -224,8 +220,8 @@ int dc_open(nano_dc_t *dc, uint16_t stream_id, const char *label)
     return NANO_OK;
 }
 
-int dc_poll_output(nano_dc_t *dc, uint8_t *buf, size_t buf_len,
-                   size_t *out_len, uint16_t *stream_id)
+int dc_poll_output(nano_dc_t *dc, uint8_t *buf, size_t buf_len, size_t *out_len,
+                   uint16_t *stream_id)
 {
     if (!dc || !buf || !out_len || !stream_id) {
         return NANO_ERR_INVALID_PARAM;

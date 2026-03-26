@@ -38,7 +38,8 @@ TEST(test_sdp_parse_chrome_offer)
     sdp_init(&sdp);
 
     size_t len = 0;
-    while (CHROME_OFFER[len]) len++;
+    while (CHROME_OFFER[len])
+        len++;
 
     ASSERT_OK(sdp_parse(&sdp, CHROME_OFFER, len));
     ASSERT_TRUE(sdp.parsed);
@@ -60,7 +61,8 @@ TEST(test_sdp_parse_missing_ufrag)
 
     const char *bad_sdp = "v=0\r\na=ice-pwd:test\r\n";
     size_t len = 0;
-    while (bad_sdp[len]) len++;
+    while (bad_sdp[len])
+        len++;
 
     ASSERT_FAIL(sdp_parse(&sdp, bad_sdp, len));
 }
@@ -78,13 +80,13 @@ TEST(test_sdp_parse_setup_active)
     nano_sdp_t sdp;
     sdp_init(&sdp);
 
-    const char *offer =
-        "v=0\r\n"
-        "a=ice-ufrag:test\r\n"
-        "a=ice-pwd:testpassword\r\n"
-        "a=setup:active\r\n";
+    const char *offer = "v=0\r\n"
+                        "a=ice-ufrag:test\r\n"
+                        "a=ice-pwd:testpassword\r\n"
+                        "a=setup:active\r\n";
     size_t len = 0;
-    while (offer[len]) len++;
+    while (offer[len])
+        len++;
 
     ASSERT_OK(sdp_parse(&sdp, offer, len));
     ASSERT_EQ(sdp.remote_setup, NANO_SDP_SETUP_ACTIVE);
@@ -193,12 +195,12 @@ TEST(test_accept_offer_generates_answer)
  * ================================================================ */
 
 TEST_MAIN_BEGIN("test_sdp")
-    RUN(test_sdp_parse_chrome_offer);
-    RUN(test_sdp_parse_missing_ufrag);
-    RUN(test_sdp_parse_null);
-    RUN(test_sdp_parse_setup_active);
-    RUN(test_sdp_generate_answer);
-    RUN(test_sdp_generate_overflow);
-    RUN(test_sdp_roundtrip);
-    RUN(test_accept_offer_generates_answer);
+RUN(test_sdp_parse_chrome_offer);
+RUN(test_sdp_parse_missing_ufrag);
+RUN(test_sdp_parse_null);
+RUN(test_sdp_parse_setup_active);
+RUN(test_sdp_generate_answer);
+RUN(test_sdp_generate_overflow);
+RUN(test_sdp_roundtrip);
+RUN(test_accept_offer_generates_answer);
 TEST_MAIN_END
