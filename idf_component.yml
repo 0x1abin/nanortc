@@ -1,0 +1,4 @@
+description: "Sans I/O WebRTC for embedded systems"
+version: "0.1.0"
+dependencies:
+  idf: ">=5.0"

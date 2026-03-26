@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    name: Build (${{ matrix.profile }} / ${{ matrix.crypto }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [DATA, AUDIO, MEDIA]
+        crypto: [mbedtls, openssl]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libmbedtls-dev libssl-dev
+
+      - name: Configure
+        run: cmake -B build -DNANORTC_PROFILE=${{ matrix.profile }} -DNANORTC_CRYPTO=${{ matrix.crypto }} -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        run: cmake --build build -j$(nproc)
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  constraints:
+    name: Architecture Constraints
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: "Check: no platform headers in src/"
+        run: |
+          ! grep -rn '#include <sys/' src/
+          ! grep -rn '#include <pthread' src/
+          ! grep -rn '#include <time\.h>' src/
+          ! grep -rn '#include <unistd' src/
+          ! grep -rn '#include <stdlib\.h>' src/
+
+      - name: "Check: no dynamic allocation in src/"
+        run: |
+          ! grep -rn '\bmalloc\b' src/
+          ! grep -rn '\bcalloc\b' src/
+          ! grep -rn '\brealloc\b' src/
+
+      - name: "Check: code formatting"
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq clang-format
+          clang-format --dry-run --Werror src/*.c src/*.h include/*.h crypto/*.h crypto/*.c
+
+      - name: "Check: symbol naming"
+        run: |
+          cmake -B build -DNANORTC_PROFILE=MEDIA -DCMAKE_BUILD_TYPE=Debug
+          cmake --build build -j$(nproc)
+          # All symbols must start with nano_ (public API) or a known module prefix (internal)
+          ALLOWED='nano_|stun_|ice_|dtls_|sctp_|dc_|sdp_|rtp_|rtcp_|srtp_|jitter_|bwe_'
+          violations=$(nm -g build/libnanortc.a 2>/dev/null | grep ' T ' | awk '{print $3}' | grep -v '^_' | grep -vE "^($ALLOWED)" || true)
+          if [ -n "$violations" ]; then
+            echo "Symbols with unknown prefix (expected nano_ or module prefix):"
+            echo "$violations"
+            exit 1
+          fi
+
+      - name: "Check: no global mutable state"
+        run: |
+          # B = uninitialized data, D = initialized data (both are mutable globals)
+          violations=$(nm build/libnanortc.a 2>/dev/null | grep ' [BD] ' | grep -v '__' | grep -v 'crc32c_table' || true)
+          if [ -n "$violations" ]; then
+            echo "Global mutable state found:"
+            echo "$violations"
+            exit 1
+          fi
+
+  sanitizer:
+    name: AddressSanitizer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure (MEDIA + ASan)
+        run: cmake -B build -DNANORTC_PROFILE=MEDIA -DCMAKE_BUILD_TYPE=Debug -DADDRESS_SANITIZER=ON
+
+      - name: Build
+        run: cmake --build build -j$(nproc)
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure

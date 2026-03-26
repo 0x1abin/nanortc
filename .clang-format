@@ -1,0 +1,12 @@
+BasedOnStyle: LLVM
+IndentWidth: 4
+ColumnLimit: 100
+BreakBeforeBraces: Linux
+SortIncludes: false
+AlignAfterOpenBracket: Align
+AllowShortFunctionsOnASingleLine: None
+PointerAlignment: Right
+SpaceAfterCStyleCast: false
+IndentCaseLabels: false
+AlignConsecutiveMacros: true
+AlignEscapedNewlines: Left

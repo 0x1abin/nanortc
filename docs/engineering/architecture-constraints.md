@@ -1,0 +1,58 @@
+# Architecture Constraints
+
+Mechanical enforcement of NanoRTC design invariants. These constraints should be checked in CI.
+
+## 1. Sans I/O Enforcement
+
+No platform headers in `src/`:
+```bash
+# Must return empty
+grep -rn '#include <sys/' src/
+grep -rn '#include <pthread' src/
+grep -rn '#include <time.h>' src/
+grep -rn '#include <unistd' src/
+grep -rn '#include <stdlib.h>' src/
+```
+
+## 2. No Dynamic Allocation
+
+No malloc family calls in `src/`:
+```bash
+# Must return empty
+grep -rn '\bmalloc\b\|calloc\b\|realloc\b\|\bfree\b' src/
+```
+
+Note: `memset`, `memcpy`, `memmove` from `<string.h>` are allowed.
+
+## 3. Profile Build Matrix
+
+All three profiles must compile and pass tests:
+```bash
+for profile in DATA AUDIO MEDIA; do
+    cmake -B build-${profile} -DNANORTC_PROFILE=${profile}
+    cmake --build build-${profile}
+    ctest --test-dir build-${profile} --output-on-failure
+done
+```
+
+## 4. Code Formatting
+
+```bash
+clang-format --dry-run --Werror src/*.c src/*.h include/*.h crypto/*.h crypto/*.c
+```
+
+## 5. Public Symbol Naming
+
+All exported symbols must start with `nano_`:
+```bash
+nm -g libnanortc.a | grep ' T ' | awk '{print $3}' | grep -v '^nano_' | grep -v '^_'
+# Must return empty (except compiler-generated symbols)
+```
+
+## 6. No Global Mutable State
+
+```bash
+# Must return empty (no non-const globals in src/)
+nm libnanortc.a | grep ' [BD] ' | grep -v '__' | grep -v 'crc32c_table'
+# Only const tables (like CRC lookup) are acceptable
+```

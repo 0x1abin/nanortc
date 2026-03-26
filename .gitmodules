@@ -1,0 +1,3 @@
+[submodule "examples/sample_data"]
+	path = examples/sample_data
+	url = https://github.com/0x1abin/media_sample_data.git
