@@ -16,7 +16,10 @@
 #include <stddef.h>
 
 /* Forward declaration */
+#ifndef NANO_CRYPTO_PROVIDER_T_DECLARED
+#define NANO_CRYPTO_PROVIDER_T_DECLARED
 typedef struct nano_crypto_provider nano_crypto_provider_t;
+#endif
 
 typedef enum {
     NANO_DTLS_STATE_INIT,

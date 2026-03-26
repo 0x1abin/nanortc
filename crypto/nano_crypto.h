@@ -33,7 +33,12 @@ typedef int (*nano_dtls_recv_fn)(void *userdata, uint8_t *buf, size_t buf_len);
  * Crypto Provider
  * ---------------------------------------------------------------- */
 
-typedef struct nano_crypto_provider {
+#ifndef NANO_CRYPTO_PROVIDER_T_DECLARED
+#define NANO_CRYPTO_PROVIDER_T_DECLARED
+typedef struct nano_crypto_provider nano_crypto_provider_t;
+#endif
+
+struct nano_crypto_provider {
     const char *name; /* e.g. "mbedtls", "wolfssl", "hw-aes" */
 
     /* ---- DTLS (required) ---- */
@@ -69,7 +74,7 @@ typedef struct nano_crypto_provider {
                          uint8_t out[10]);
 #endif
 
-} nano_crypto_provider_t;
+};
 
 /* Built-in crypto providers (availability depends on NANORTC_CRYPTO_* define) */
 #if defined(NANORTC_CRYPTO_OPENSSL)

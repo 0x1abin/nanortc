@@ -18,8 +18,14 @@
 #include <stdbool.h>
 
 /* Forward declarations — avoid including heavy headers */
+#ifndef NANO_ADDR_T_DECLARED
+#define NANO_ADDR_T_DECLARED
 typedef struct nano_addr nano_addr_t;
+#endif
+#ifndef NANO_CRYPTO_PROVIDER_T_DECLARED
+#define NANO_CRYPTO_PROVIDER_T_DECLARED
 typedef struct nano_crypto_provider nano_crypto_provider_t;
+#endif
 
 typedef enum {
     NANO_ICE_STATE_NEW,

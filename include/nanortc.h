@@ -91,17 +91,25 @@ static inline uint32_t nano_ntohl(uint32_t x)
  * Forward declarations
  * ---------------------------------------------------------------- */
 
+#ifndef NANO_CRYPTO_PROVIDER_T_DECLARED
+#define NANO_CRYPTO_PROVIDER_T_DECLARED
 typedef struct nano_crypto_provider nano_crypto_provider_t;
+#endif
 
 /* ----------------------------------------------------------------
  * Address type (network-agnostic)
  * ---------------------------------------------------------------- */
 
-typedef struct nano_addr {
+#ifndef NANO_ADDR_T_DECLARED
+#define NANO_ADDR_T_DECLARED
+typedef struct nano_addr nano_addr_t;
+#endif
+
+struct nano_addr {
     uint8_t family; /* 4 = IPv4, 6 = IPv6 */
     uint8_t addr[16];
     uint16_t port;
-} nano_addr_t;
+};
 
 /* ----------------------------------------------------------------
  * Output / Event enums

@@ -1,6 +1,7 @@
 /*
  * nanortc — mbedtls crypto provider
  *
+ * Supports mbedtls 2.x, 3.x, and 4.x (PSA Crypto).
  * For embedded targets (ESP32, etc.) and CI testing.
  *
  * SPDX-License-Identifier: MIT
@@ -8,6 +9,37 @@
 
 #include "nano_crypto.h"
 #include <mbedtls/version.h>
+
+/* ---- mbedtls version compatibility ---- */
+
+/* mbedtls 3.x vs 2.x: key export API and mbedtls_pk_ec() differ */
+#if MBEDTLS_VERSION_NUMBER >= 0x03000000
+#define NANO_MBEDTLS_3
+#endif
+
+/* mbedtls 4.x: PSA Crypto API replaces legacy low-level APIs.
+ * entropy/ctr_drbg/ecp/bignum/sha256 headers removed;
+ * pk_setup()/pk_info_from_type()/ecp_gen_key() removed;
+ * md_hmac() moved behind MBEDTLS_DECLARE_PRIVATE_IDENTIFIERS;
+ * x509write_crt_set_serial() replaced by _set_serial_raw();
+ * x509write_crt_pem()/der() no longer take RNG params;
+ * ssl_conf_rng() removed (SSL uses PSA RNG internally). */
+#if MBEDTLS_VERSION_NUMBER >= 0x04000000
+#define NANO_MBEDTLS_4
+#endif
+
+#ifdef NANO_MBEDTLS_4
+/* ---- mbedtls 4.x headers ---- */
+#include <psa/crypto.h>
+#include <mbedtls/ssl.h>
+#include <mbedtls/ssl_cookie.h>
+#include <mbedtls/x509_crt.h>
+#include <mbedtls/pk.h>
+#include <mbedtls/md.h>
+#include <mbedtls/timing.h>
+#include <mbedtls/error.h>
+#else
+/* ---- mbedtls 2.x/3.x headers ---- */
 #include <mbedtls/md.h>
 #include <mbedtls/entropy.h>
 #include <mbedtls/ctr_drbg.h>
@@ -20,17 +52,15 @@
 #include <mbedtls/timing.h>
 #include <mbedtls/error.h>
 #include <mbedtls/bignum.h>
+#endif
+
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 
-/* ---- mbedtls version compatibility ---- */
+/* ---- Version-adaptive macros (2.x/3.x only) ---- */
 
-/* mbedtls 3.x vs 2.x: key export API and mbedtls_pk_ec() differ */
-#if MBEDTLS_VERSION_NUMBER >= 0x03000000
-#define NANO_MBEDTLS_3
-#endif
-
+#ifndef NANO_MBEDTLS_4
 /* mbedtls 3.6+: mbedtls_pk_ec() removed, use mbedtls_pk_ec_rw() */
 #if MBEDTLS_VERSION_NUMBER >= 0x03060000
 #define NANO_PK_EC(pk) mbedtls_pk_ec_rw(pk)
@@ -52,18 +82,81 @@
 #define nano_sha256_update mbedtls_sha256_update_ret
 #define nano_sha256_finish mbedtls_sha256_finish_ret
 #endif
+#endif /* !NANO_MBEDTLS_4 */
 
-/* ---- HMAC-SHA1 (for STUN MESSAGE-INTEGRITY, RFC 8489 §14.5) ---- */
+/* ================================================================
+ * PSA Crypto initialization (mbedtls 4.x)
+ * ================================================================ */
+
+#ifdef NANO_MBEDTLS_4
+static int psa_initialized = 0;
+
+static int mbed_psa_init(void)
+{
+    if (psa_initialized) {
+        return 0;
+    }
+    psa_status_t status = psa_crypto_init();
+    if (status != PSA_SUCCESS) {
+        return -1;
+    }
+    psa_initialized = 1;
+    return 0;
+}
+#endif
+
+/* ================================================================
+ * HMAC-SHA1 (for STUN MESSAGE-INTEGRITY, RFC 8489 §14.5)
+ * ================================================================ */
 
 static void mbed_hmac_sha1(const uint8_t *key, size_t key_len, const uint8_t *data, size_t data_len,
                            uint8_t out[20])
 {
+#ifdef NANO_MBEDTLS_4
+    /* PSA one-shot HMAC: import key → compute → destroy */
+    if (mbed_psa_init() != 0) {
+        memset(out, 0, 20);
+        return;
+    }
+    psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
+    psa_set_key_type(&attr, PSA_KEY_TYPE_HMAC);
+    psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_SIGN_MESSAGE);
+    psa_set_key_algorithm(&attr, PSA_ALG_HMAC(PSA_ALG_SHA_1));
+    psa_set_key_bits(&attr, (size_t)(key_len * 8));
+
+    psa_key_id_t key_id = 0;
+    psa_status_t status = psa_import_key(&attr, key, key_len, &key_id);
+    if (status != PSA_SUCCESS) {
+        memset(out, 0, 20);
+        return;
+    }
+    size_t mac_len = 0;
+    psa_mac_compute(key_id, PSA_ALG_HMAC(PSA_ALG_SHA_1), data, data_len, out, 20, &mac_len);
+    psa_destroy_key(key_id);
+#else
     const mbedtls_md_info_t *info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA1);
     mbedtls_md_hmac(info, key, key_len, data, data_len, out);
+#endif
 }
 
-/* ---- CSPRNG (lazy-init static context) ---- */
+/* ================================================================
+ * CSPRNG
+ * ================================================================ */
 
+#ifdef NANO_MBEDTLS_4
+/* mbedtls 4.x: PSA provides psa_generate_random() directly */
+static int mbed_random_bytes(uint8_t *buf, size_t len)
+{
+    if (mbed_psa_init() != 0) {
+        return -1;
+    }
+    if (psa_generate_random(buf, len) != PSA_SUCCESS) {
+        return -1;
+    }
+    return 0;
+}
+#else
+/* mbedtls 2.x/3.x: entropy + CTR-DRBG */
 static mbedtls_entropy_context mbed_entropy;
 static mbedtls_ctr_drbg_context mbed_ctr_drbg;
 static int mbed_rng_initialized = 0;
@@ -95,16 +188,21 @@ static int mbed_random_bytes(uint8_t *buf, size_t len)
     }
     return 0;
 }
+#endif
 
-/* ---- DTLS context (heap-allocated by provider) ---- */
+/* ================================================================
+ * DTLS context (heap-allocated by provider)
+ * ================================================================ */
 
 struct nano_crypto_dtls_ctx {
     mbedtls_ssl_context ssl;
     mbedtls_ssl_config conf;
     mbedtls_x509_crt cert;
     mbedtls_pk_context pkey;
+#ifndef NANO_MBEDTLS_4
     mbedtls_entropy_context entropy;
     mbedtls_ctr_drbg_context ctr_drbg;
+#endif
     mbedtls_timing_delay_context timer;
     mbedtls_ssl_cookie_ctx cookie_ctx;
     int is_server;
@@ -138,10 +236,10 @@ static int mbed_verify_cb(void *data, mbedtls_x509_crt *crt, int depth, uint32_t
     return 0;
 }
 
-/* ---- Key export callback (version-adaptive) ---- */
+/* ---- Key export callback (version-adaptive: 3.x/4.x vs 2.x) ---- */
 
 #ifdef NANO_MBEDTLS_3
-/* mbedtls 3.x: callback on ssl context with key_export_type enum */
+/* mbedtls 3.x/4.x: callback on ssl context with key_export_type enum */
 static void mbed_key_export_cb(void *p_expkey, mbedtls_ssl_key_export_type type,
                                const unsigned char *secret, size_t secret_len,
                                const unsigned char client_random[32],
@@ -213,7 +311,9 @@ static int mbed_bio_recv(void *ctx, unsigned char *buf, size_t len)
     return ret;
 }
 
-/* ---- Compute SHA-256 fingerprint of DER-encoded certificate ---- */
+/* ================================================================
+ * Compute SHA-256 fingerprint of DER-encoded certificate
+ * ================================================================ */
 
 static int mbed_compute_fingerprint(const mbedtls_x509_crt *crt, char *buf, size_t buf_len)
 {
@@ -221,12 +321,23 @@ static int mbed_compute_fingerprint(const mbedtls_x509_crt *crt, char *buf, size
         return -1;
     }
     unsigned char digest[32];
+
+#ifdef NANO_MBEDTLS_4
+    /* PSA one-shot hash (psa_crypto_init already called by mbed_dtls_ctx_new) */
+    size_t hash_len = 0;
+    psa_status_t status =
+        psa_hash_compute(PSA_ALG_SHA_256, crt->raw.p, crt->raw.len, digest, 32, &hash_len);
+    if (status != PSA_SUCCESS || hash_len != 32) {
+        return -1;
+    }
+#else
     mbedtls_sha256_context sha256;
     mbedtls_sha256_init(&sha256);
     nano_sha256_starts(&sha256, 0); /* 0 = SHA-256, not SHA-224 */
     nano_sha256_update(&sha256, crt->raw.p, crt->raw.len);
     nano_sha256_finish(&sha256, digest);
     mbedtls_sha256_free(&sha256);
+#endif
 
     /* Format as "XX:XX:XX:..." (95 chars for SHA-256) */
     for (int i = 0; i < 32; i++) {
@@ -236,13 +347,38 @@ static int mbed_compute_fingerprint(const mbedtls_x509_crt *crt, char *buf, size
     return 0;
 }
 
-/* ---- Self-signed ECDSA P-256 certificate generation ---- */
+/* ================================================================
+ * Self-signed ECDSA P-256 certificate generation
+ * ================================================================ */
 
 static int mbed_generate_cert(nano_crypto_dtls_ctx_t *ctx)
 {
     int ret;
 
-    /* Generate ECDSA P-256 private key */
+#ifdef NANO_MBEDTLS_4
+    /* mbedtls 4.x: generate key via PSA, then copy into PK context */
+    psa_key_attributes_t key_attr = PSA_KEY_ATTRIBUTES_INIT;
+    psa_set_key_type(&key_attr, PSA_KEY_TYPE_ECC_KEY_PAIR(PSA_ECC_FAMILY_SECP_R1));
+    psa_set_key_bits(&key_attr, 256);
+    psa_set_key_usage_flags(&key_attr, PSA_KEY_USAGE_SIGN_HASH | PSA_KEY_USAGE_SIGN_MESSAGE |
+                                           PSA_KEY_USAGE_EXPORT);
+    psa_set_key_algorithm(&key_attr, PSA_ALG_ECDSA(PSA_ALG_SHA_256));
+
+    psa_key_id_t psa_key_id = 0;
+    psa_status_t status = psa_generate_key(&key_attr, &psa_key_id);
+    if (status != PSA_SUCCESS) {
+        return -1;
+    }
+
+    /* Copy PSA key into mbedtls PK context for x509write */
+    mbedtls_pk_init(&ctx->pkey);
+    ret = mbedtls_pk_copy_from_psa(psa_key_id, &ctx->pkey);
+    psa_destroy_key(psa_key_id);
+    if (ret != 0) {
+        return ret;
+    }
+#else
+    /* mbedtls 2.x/3.x: legacy PK + ECP key generation */
     mbedtls_pk_init(&ctx->pkey);
     ret = mbedtls_pk_setup(&ctx->pkey, mbedtls_pk_info_from_type(MBEDTLS_PK_ECKEY));
     if (ret != 0) {
@@ -253,6 +389,7 @@ static int mbed_generate_cert(nano_crypto_dtls_ctx_t *ctx)
     if (ret != 0) {
         return ret;
     }
+#endif
 
     /* Build self-signed X.509 v3 certificate */
     mbedtls_x509write_cert crt;
@@ -281,32 +418,54 @@ static int mbed_generate_cert(nano_crypto_dtls_ctx_t *ctx)
     }
 
     /* Random serial number */
-    mbedtls_mpi serial;
-    mbedtls_mpi_init(&serial);
-    ret = mbedtls_mpi_fill_random(&serial, 16, mbedtls_ctr_drbg_random, &ctx->ctr_drbg);
+#ifdef NANO_MBEDTLS_4
+    /* mbedtls 4.x: set_serial_raw() with byte buffer */
+    unsigned char serial_buf[16];
+    if (psa_generate_random(serial_buf, sizeof(serial_buf)) != PSA_SUCCESS) {
+        mbedtls_x509write_crt_free(&crt);
+        return -1;
+    }
+    serial_buf[0] &= 0x7F; /* Ensure positive (clear MSB) */
+    ret = mbedtls_x509write_crt_set_serial_raw(&crt, serial_buf, sizeof(serial_buf));
     if (ret != 0) {
+        mbedtls_x509write_crt_free(&crt);
+        return ret;
+    }
+#else
+    {
+        mbedtls_mpi serial;
+        mbedtls_mpi_init(&serial);
+        ret = mbedtls_mpi_fill_random(&serial, 16, mbedtls_ctr_drbg_random, &ctx->ctr_drbg);
+        if (ret != 0) {
+            mbedtls_mpi_free(&serial);
+            mbedtls_x509write_crt_free(&crt);
+            return ret;
+        }
+        /* Ensure serial is positive */
+        ret = mbedtls_mpi_set_bit(&serial, 127, 0);
+        if (ret != 0) {
+            mbedtls_mpi_free(&serial);
+            mbedtls_x509write_crt_free(&crt);
+            return ret;
+        }
+        ret = mbedtls_x509write_crt_set_serial(&crt, &serial);
         mbedtls_mpi_free(&serial);
-        mbedtls_x509write_crt_free(&crt);
-        return ret;
+        if (ret != 0) {
+            mbedtls_x509write_crt_free(&crt);
+            return ret;
+        }
     }
-    /* Ensure serial is positive */
-    ret = mbedtls_mpi_set_bit(&serial, 127, 0);
-    if (ret != 0) {
-        mbedtls_mpi_free(&serial);
-        mbedtls_x509write_crt_free(&crt);
-        return ret;
-    }
-    ret = mbedtls_x509write_crt_set_serial(&crt, &serial);
-    mbedtls_mpi_free(&serial);
-    if (ret != 0) {
-        mbedtls_x509write_crt_free(&crt);
-        return ret;
-    }
+#endif
 
     /* Write to PEM */
     unsigned char cert_buf[1024];
+#ifdef NANO_MBEDTLS_4
+    /* mbedtls 4.x: no RNG params (ssl uses PSA RNG internally) */
+    ret = mbedtls_x509write_crt_pem(&crt, cert_buf, sizeof(cert_buf));
+#else
     ret = mbedtls_x509write_crt_pem(&crt, cert_buf, sizeof(cert_buf), mbedtls_ctr_drbg_random,
                                     &ctx->ctr_drbg);
+#endif
     mbedtls_x509write_crt_free(&crt);
     if (ret != 0) {
         return ret;
@@ -324,12 +483,21 @@ static int mbed_generate_cert(nano_crypto_dtls_ctx_t *ctx)
     return ret;
 }
 
-/* ---- DTLS provider functions ---- */
+/* ================================================================
+ * DTLS provider functions
+ * ================================================================ */
 
 /* Allocate and initialize DTLS context — returns heap-allocated ctx */
 static nano_crypto_dtls_ctx_t *mbed_dtls_ctx_new(int is_server)
 {
     int ret;
+
+#ifdef NANO_MBEDTLS_4
+    /* Ensure PSA crypto is initialized */
+    if (mbed_psa_init() != 0) {
+        return NULL;
+    }
+#endif
 
     nano_crypto_dtls_ctx_t *ctx = calloc(1, sizeof(*ctx));
     if (!ctx) {
@@ -337,7 +505,8 @@ static nano_crypto_dtls_ctx_t *mbed_dtls_ctx_new(int is_server)
     }
     ctx->is_server = is_server;
 
-    /* Initialize RNG */
+#ifndef NANO_MBEDTLS_4
+    /* mbedtls 2.x/3.x: Initialize per-context RNG */
     mbedtls_entropy_init(&ctx->entropy);
     mbedtls_ctr_drbg_init(&ctx->ctr_drbg);
     const char *pers = "nanortc-dtls";
@@ -346,6 +515,7 @@ static nano_crypto_dtls_ctx_t *mbed_dtls_ctx_new(int is_server)
     if (ret != 0) {
         goto fail;
     }
+#endif
 
     /* Generate self-signed ECDSA certificate */
     ret = mbed_generate_cert(ctx);
@@ -362,7 +532,10 @@ static nano_crypto_dtls_ctx_t *mbed_dtls_ctx_new(int is_server)
         goto fail;
     }
 
+#ifndef NANO_MBEDTLS_4
+    /* mbedtls 2.x/3.x: explicit RNG config (4.x uses PSA RNG internally) */
     mbedtls_ssl_conf_rng(&ctx->conf, mbedtls_ctr_drbg_random, &ctx->ctr_drbg);
+#endif
 
     /* Accept self-signed certificates */
     mbedtls_ssl_conf_authmode(&ctx->conf, MBEDTLS_SSL_VERIFY_OPTIONAL);
@@ -398,7 +571,7 @@ static nano_crypto_dtls_ctx_t *mbed_dtls_ctx_new(int is_server)
     mbedtls_ssl_set_timer_cb(&ctx->ssl, &ctx->timer, mbedtls_timing_set_delay,
                              mbedtls_timing_get_delay);
 
-    /* Register key export callback (mbedtls 3.x: on ssl context) */
+    /* Register key export callback (mbedtls 3.x/4.x: on ssl context) */
 #ifdef NANO_MBEDTLS_3
     mbedtls_ssl_set_export_keys_cb(&ctx->ssl, mbed_key_export_cb, ctx);
 #endif
@@ -411,8 +584,10 @@ fail:
     mbedtls_ssl_config_free(&ctx->conf);
     mbedtls_x509_crt_free(&ctx->cert);
     mbedtls_pk_free(&ctx->pkey);
+#ifndef NANO_MBEDTLS_4
     mbedtls_ctr_drbg_free(&ctx->ctr_drbg);
     mbedtls_entropy_free(&ctx->entropy);
+#endif
     /* cookie_ctx not used — cookies disabled for WebRTC */
     free(ctx);
     return NULL;
@@ -527,8 +702,10 @@ static void mbed_dtls_free(nano_crypto_dtls_ctx_t *ctx)
     mbedtls_ssl_config_free(&ctx->conf);
     mbedtls_x509_crt_free(&ctx->cert);
     mbedtls_pk_free(&ctx->pkey);
+#ifndef NANO_MBEDTLS_4
     mbedtls_ctr_drbg_free(&ctx->ctr_drbg);
     mbedtls_entropy_free(&ctx->entropy);
+#endif
     if (ctx->is_server) {
         mbedtls_ssl_cookie_free(&ctx->cookie_ctx);
     }
