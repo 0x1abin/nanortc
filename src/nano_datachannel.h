@@ -7,11 +7,11 @@
 #ifndef NANO_DATACHANNEL_H_
 #define NANO_DATACHANNEL_H_
 
+#include "nanortc_config.h"
+
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
-
-#define NANO_DC_MAX_CHANNELS 8
 
 /* DCEP message types */
 #define DCEP_DATA_CHANNEL_OPEN 0x03
@@ -39,7 +39,7 @@ typedef struct nano_dc_channel {
 } nano_dc_channel_t;
 
 typedef struct nano_dc {
-    nano_dc_channel_t channels[NANO_DC_MAX_CHANNELS];
+    nano_dc_channel_t channels[NANO_MAX_DATACHANNELS];
     uint8_t channel_count;
 } nano_dc_t;
 

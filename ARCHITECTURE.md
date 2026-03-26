@@ -63,6 +63,7 @@ Within the library, code is organized in strict layers:
 
 | Layer | Files | Rule |
 |-------|-------|------|
+| **Configuration** | `include/nanortc_config.h` | Compile-time tunables with `#ifndef` defaults. User overrides via `NANORTC_CONFIG_FILE` or ESP-IDF Kconfig. |
 | **Public API** | `include/nanortc.h` | Only file users `#include`. Defines all public types and functions. |
 | **State Machine** | `src/nano_rtc.c`, `src/nano_rtc_internal.h` | Orchestrates all modules. Only file that touches all subsystems. |
 | **Protocol Modules** | `src/nano_*.c` + `src/nano_*.h` | Each module owns one protocol. Communicates via return values and caller buffers — no callbacks between modules. |
@@ -124,6 +125,7 @@ nano_poll_output(rtc, &out)
 
 | Purpose | Path |
 |---------|------|
+| Configuration defaults | `include/nanortc_config.h` |
 | Public API | `include/nanortc.h` |
 | Main state machine | `src/nano_rtc.c` |
 | Internal state struct | `src/nano_rtc_internal.h` |

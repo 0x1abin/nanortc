@@ -39,10 +39,13 @@ cmake -B build -DNANORTC_CRYPTO=mbedtls
 # Build examples (Linux host, not default)
 cmake -B build -DNANORTC_PROFILE=MEDIA -DNANORTC_CRYPTO=openssl -DNANORTC_BUILD_EXAMPLES=ON
 
+# Custom configuration (override defaults without modifying repo)
+cmake -B build -DNANORTC_CONFIG_FILE=\"my_nanortc_config.h\"
+
 # With AddressSanitizer
 cmake -B build -DADDRESS_SANITIZER=ON
 
-# ESP-IDF (auto-detected via IDF_PATH)
+# ESP-IDF (auto-detected via IDF_PATH; use `idf.py menuconfig` for Kconfig)
 idf.py build
 
 # Format
@@ -56,7 +59,9 @@ clang-format -i src/*.c src/*.h include/*.h crypto/*.h crypto/*.c
 
 These rules are mechanically enforced. Violations will break the build or CI.
 
-**Sans I/O discipline:** `src/` files may only include `<string.h>`, `<stdint.h>`, `<stdbool.h>`, `<stddef.h>`, and internal `nano_*.h` / `nano_crypto.h`. No OS/platform headers.
+**Configuration:** All compile-time tunables (buffer sizes, limits, timeouts) must be defined in `include/nanortc_config.h` with `#ifndef` guards. Use `NANO_*` prefix. Internal headers include `nanortc_config.h` directly. Users override via `NANORTC_CONFIG_FILE` or ESP-IDF Kconfig.
+
+**Sans I/O discipline:** `src/` files may only include `<string.h>`, `<stdint.h>`, `<stdbool.h>`, `<stddef.h>`, and internal `nano_*.h` / `nano_crypto.h` / `nanortc_config.h`. No OS/platform headers.
 
 **No dynamic allocation:** No `malloc`/`free` in `src/`. Use caller-provided buffers.
 

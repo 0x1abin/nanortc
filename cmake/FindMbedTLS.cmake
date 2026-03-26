@@ -16,12 +16,19 @@ find_library(MBEDTLS_LIBRARY mbedtls)
 find_library(MBEDX509_LIBRARY mbedx509)
 find_library(MBEDCRYPTO_LIBRARY mbedcrypto)
 
+# Detect mbedtls version from version.h
+if(MBEDTLS_INCLUDE_DIR)
+    file(STRINGS "${MBEDTLS_INCLUDE_DIR}/mbedtls/version.h" _MBEDTLS_VERSION_LINE
+         REGEX "^#define MBEDTLS_VERSION_STRING ")
+    if(_MBEDTLS_VERSION_LINE)
+        string(REGEX REPLACE ".*\"(.*)\".*" "\\1" MbedTLS_VERSION "${_MBEDTLS_VERSION_LINE}")
+    endif()
+endif()
+
 include(FindPackageHandleStandardArgs)
-find_package_handle_standard_args(MbedTLS DEFAULT_MSG
-    MBEDTLS_INCLUDE_DIR
-    MBEDTLS_LIBRARY
-    MBEDX509_LIBRARY
-    MBEDCRYPTO_LIBRARY
+find_package_handle_standard_args(MbedTLS
+    REQUIRED_VARS MBEDTLS_INCLUDE_DIR MBEDTLS_LIBRARY MBEDX509_LIBRARY MBEDCRYPTO_LIBRARY
+    VERSION_VAR MbedTLS_VERSION
 )
 
 if(MbedTLS_FOUND)

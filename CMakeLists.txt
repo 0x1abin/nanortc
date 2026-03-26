@@ -49,6 +49,9 @@ set_property(CACHE NANORTC_CRYPTO PROPERTY STRINGS mbedtls openssl)
 
 message(STATUS "nanortc crypto: ${NANORTC_CRYPTO}")
 
+# User configuration file override (e.g. -DNANORTC_CONFIG_FILE=\"my_config.h\")
+set(NANORTC_CONFIG_FILE "" CACHE STRING "Path to user nanortc config header override")
+
 # ---- Core sources (all profiles) ----
 set(NANORTC_SOURCES
     src/nano_rtc.c
@@ -93,6 +96,11 @@ add_library(nanortc ${NANORTC_SOURCES})
 target_include_directories(nanortc PUBLIC include)
 target_include_directories(nanortc PRIVATE src crypto)
 target_compile_definitions(nanortc PUBLIC NANORTC_PROFILE=${PROFILE_NUM})
+
+if(NANORTC_CONFIG_FILE)
+    target_compile_definitions(nanortc PUBLIC NANORTC_CONFIG_FILE="${NANORTC_CONFIG_FILE}")
+    message(STATUS "nanortc config file: ${NANORTC_CONFIG_FILE}")
+endif()
 
 # ---- Link crypto library ----
 if(NANORTC_CRYPTO STREQUAL "openssl")

@@ -472,7 +472,7 @@ TEST(test_ice_state_checking_to_connected)
 
 TEST(test_ice_state_checking_to_failed)
 {
-    /* After ICE_MAX_CHECKS without response → FAILED */
+    /* After NANO_ICE_MAX_CHECKS without response → FAILED */
     nano_ice_t ctrl, ctld;
     setup_ice_pair(&ctrl, &ctld);
 
@@ -480,14 +480,14 @@ TEST(test_ice_state_checking_to_failed)
     size_t out_len = 0;
     uint32_t t = 0;
 
-    for (int i = 0; i < ICE_MAX_CHECKS; i++) {
+    for (int i = 0; i < NANO_ICE_MAX_CHECKS; i++) {
         out_len = 0;
         ASSERT_OK(ice_generate_check(&ctrl, t, crypto(),
                                       buf, sizeof(buf), &out_len));
         ASSERT_TRUE(out_len > 0);
         t += 50;
     }
-    ASSERT_EQ(ctrl.check_count, ICE_MAX_CHECKS);
+    ASSERT_EQ(ctrl.check_count, NANO_ICE_MAX_CHECKS);
     ASSERT_EQ(ctrl.state, NANO_ICE_STATE_CHECKING);
 
     /* One more attempt → FAILED */

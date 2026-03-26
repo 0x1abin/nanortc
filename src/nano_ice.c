@@ -13,7 +13,7 @@
 #include "nanortc.h"
 #include <string.h>
 
-#define ICE_DEFAULT_CHECK_INTERVAL_MS 50
+/* ICE check interval is now NANO_ICE_CHECK_INTERVAL_MS in nanortc_config.h */
 
 /* ICE candidate priority for host candidate, component 1 (RFC 8445 §5.1.2.1) */
 #define ICE_HOST_PRIORITY ((uint32_t)((126 << 24) | (65535 << 8) | 255))
@@ -30,7 +30,7 @@ int ice_init(nano_ice_t *ice, int is_controlling)
     memset(ice, 0, sizeof(*ice));
     ice->state = NANO_ICE_STATE_NEW;
     ice->is_controlling = is_controlling;
-    ice->check_interval_ms = ICE_DEFAULT_CHECK_INTERVAL_MS;
+    ice->check_interval_ms = NANO_ICE_CHECK_INTERVAL_MS;
     return NANO_OK;
 }
 
@@ -242,7 +242,7 @@ int ice_generate_check(nano_ice_t *ice, uint32_t now_ms, const nano_crypto_provi
     }
 
     /* Check count limit */
-    if (ice->check_count >= ICE_MAX_CHECKS) {
+    if (ice->check_count >= NANO_ICE_MAX_CHECKS) {
         ice->state = NANO_ICE_STATE_FAILED;
         return NANO_OK;
     }

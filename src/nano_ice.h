@@ -11,6 +11,8 @@
 #ifndef NANO_ICE_H_
 #define NANO_ICE_H_
 
+#include "nanortc_config.h"
+
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
@@ -26,7 +28,7 @@ typedef enum {
     NANO_ICE_STATE_FAILED,
 } nano_ice_state_t;
 
-#define ICE_MAX_CHECKS 25
+/* ICE_MAX_CHECKS is now NANO_ICE_MAX_CHECKS in nanortc_config.h */
 
 typedef struct nano_ice {
     nano_ice_state_t state;

@@ -10,13 +10,10 @@
 #ifndef NANO_DTLS_H_
 #define NANO_DTLS_H_
 
+#include "nanortc_config.h"
+
 #include <stdint.h>
 #include <stddef.h>
-
-/* Forward declaration — defined in nanortc.h */
-#ifndef NANO_DTLS_BUF_SIZE
-#define NANO_DTLS_BUF_SIZE 2048
-#endif
 
 /* Forward declaration */
 typedef struct nano_crypto_provider nano_crypto_provider_t;
