@@ -15,8 +15,8 @@ NanoRTC uses AI coding agents for implementation. Time estimates use **agent ses
 
 ## Acceptance Criteria
 
-- [ ] STUN Binding Request/Response with MESSAGE-INTEGRITY and FINGERPRINT
-- [ ] ICE connectivity: controlled role (answerer) and controlling role (offerer)
+- [x] STUN Binding Request/Response with MESSAGE-INTEGRITY and FINGERPRINT
+- [x] ICE connectivity: controlled role (answerer) and controlling role (offerer)
 - [ ] DTLS 1.2 handshake via mbedtls and OpenSSL crypto providers
 - [ ] SCTP four-way handshake (INIT → INIT-ACK → COOKIE-ECHO → COOKIE-ACK)
 - [ ] SCTP DATA/SACK reliable delivery
@@ -93,10 +93,32 @@ SCTP is the most complex module (~2500 lines). May need multiple sessions.
 | 2026-03-26 | Dual crypto backend (mbedtls + OpenSSL) | mbedtls for embedded, OpenSSL for Linux host dev/CI |
 | 2026-03-26 | ICE supports both controlled and controlling roles | Device can be offerer or answerer |
 | 2026-03-26 | Agent session-based planning | Coding speed is not the bottleneck; human verification is |
+| 2026-03-26 | CRC-32 vs CRC-32c: separate modules | STUN FINGERPRINT uses ISO HDLC (0xEDB88320); SCTP uses Castagnoli (0x82F63B78) |
+| 2026-03-26 | RFC 5769 test vectors mandatory | Byte-level interop verification — roundtrip tests alone cannot catch shared encoder/parser bugs |
+| 2026-03-26 | MI/FP ordering enforced in parser | After MI: ignore all attrs except FP. After FP: reject any further attrs (RFC 8489 §14.5/§14.7) |
 
 ## Progress
 
-_Updated as implementation proceeds._
+### Step 1: STUN + ICE (Completed 2026-03-26, 1 session)
+
+**Implemented:**
+- STUN message codec (RFC 8489): full parser/encoder with all ICE attributes
+- MESSAGE-INTEGRITY (HMAC-SHA1) via crypto provider interface
+- FINGERPRINT (CRC-32 ISO HDLC, separate from CRC-32c for SCTP)
+- ICE controlled role: validate incoming Binding Requests, respond with XOR-MAPPED-ADDRESS
+- ICE controlling role: generate Binding Requests with pacing (50ms), process responses
+- USE-CANDIDATE nomination (RFC 8445 §7.2.1.4)
+- Main FSM: RFC 7983 packet demux + timeout-driven ICE checks
+- Crypto backends: hmac_sha1 + random_bytes implemented for both mbedtls and OpenSSL
+
+**Tests (69 total across 4 suites):**
+- RFC 5769 byte-level test vectors (§2.1 request, §2.2 IPv4 response, §2.3 IPv6 response)
+- str0m real-world Binding Request (with unknown NETWORK-COST attribute)
+- ICE roundtrip: controlling → controlled → response → both CONNECTED
+- MI/FP ordering enforcement (RFC 8489 §14.5/§14.7)
+- Edge cases: bad credentials, pacing, max checks → FAILED, ERROR-CODE parsing
+
+**Files created/modified:** nano_crc32.c/h (new), nano_stun.c/h, nano_ice.c/h, nano_rtc.c, nano_rtc_internal.h, nano_crypto_openssl.c, nano_crypto_mbedtls.c, CMakeLists.txt, 4 test files
 
 ## Risks
 

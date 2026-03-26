@@ -57,11 +57,15 @@ static int e2e_relay(nano_rtc_t *from, nano_rtc_t *to, uint32_t now_ms)
             nano_addr_t src;
             memset(&src, 0, sizeof(src));
             src.family = 4;
+            src.addr[0] = 192;
+            src.addr[1] = 168;
+            src.addr[2] = 1;
+            src.addr[3] = 1;
             src.port = 9999;
 
             int rc = nano_handle_receive(to, now_ms, out.transmit.data,
                                          out.transmit.len, &src);
-            (void)rc; /* may return NOT_IMPLEMENTED during stub phase */
+            (void)rc;
             relayed++;
         }
     }
@@ -114,7 +118,7 @@ TEST(test_e2e_init_pair)
 
 TEST(test_e2e_stubs_not_implemented)
 {
-    /* All stub APIs should return NANO_ERR_NOT_IMPLEMENTED */
+    /* APIs that are still stubs should return NANO_ERR_NOT_IMPLEMENTED */
     nano_rtc_t rtc;
     nano_rtc_config_t cfg = e2e_default_config();
     ASSERT_OK(nano_rtc_init(&rtc, &cfg));
@@ -131,14 +135,10 @@ TEST(test_e2e_stubs_not_implemented)
     ASSERT_EQ(nano_add_remote_candidate(&rtc, "candidate:..."),
               NANO_ERR_NOT_IMPLEMENTED);
 
-    uint8_t data[] = {0x00, 0x01, 0x00, 0x00};
-    nano_addr_t addr;
-    memset(&addr, 0, sizeof(addr));
-    ASSERT_EQ(nano_handle_receive(&rtc, 0, data, sizeof(data), &addr),
-              NANO_ERR_NOT_IMPLEMENTED);
-    ASSERT_EQ(nano_handle_timeout(&rtc, 0),
-              NANO_ERR_NOT_IMPLEMENTED);
+    /* nano_handle_receive and nano_handle_timeout are now implemented
+     * (no longer stubs) — tested separately in demux and ICE tests */
 
+    uint8_t data[] = {0x00, 0x01, 0x00, 0x00};
     ASSERT_EQ(nano_send_datachannel(&rtc, 0, data, sizeof(data)),
               NANO_ERR_NOT_IMPLEMENTED);
     ASSERT_EQ(nano_send_datachannel_string(&rtc, 0, "hello"),
@@ -167,8 +167,8 @@ TEST(test_e2e_loopback_skeleton)
      *   client: init → create_offer → poll_output
      *   pump: relay outputs between them
      *
-     * Currently all stubs return NOT_IMPLEMENTED, so no data flows.
-     * As modules are implemented, this test verifies the full path.
+     * SDP is still a stub, so no data flows from SDP path.
+     * ICE loopback tested separately below.
      */
     nano_rtc_t server, client;
     nano_rtc_config_t cfg = e2e_default_config();
@@ -179,10 +179,9 @@ TEST(test_e2e_loopback_skeleton)
     /* Client creates offer (stub: returns NOT_IMPLEMENTED) */
     char offer[2048];
     int rc = nano_create_offer(&client, offer, sizeof(offer));
-    /* Stub phase: offer generation not implemented yet */
     ASSERT_EQ(rc, NANO_ERR_NOT_IMPLEMENTED);
 
-    /* No output should be queued in stub phase */
+    /* No output should be queued */
     nano_output_t out;
     ASSERT_EQ(nano_poll_output(&server, &out), NANO_ERR_NO_DATA);
     ASSERT_EQ(nano_poll_output(&client, &out), NANO_ERR_NO_DATA);
@@ -191,15 +190,6 @@ TEST(test_e2e_loopback_skeleton)
     uint32_t now_ms = 0;
     int relayed = e2e_pump(&server, &client, now_ms, 10);
     ASSERT_EQ(relayed, 0);
-
-    /* Timeout handling (stub) */
-    now_ms = 100;
-    nano_handle_timeout(&server, now_ms);
-    nano_handle_timeout(&client, now_ms);
-
-    /* Still no output */
-    ASSERT_EQ(nano_poll_output(&server, &out), NANO_ERR_NO_DATA);
-    ASSERT_EQ(nano_poll_output(&client, &out), NANO_ERR_NO_DATA);
 
     nano_rtc_destroy(&server);
     nano_rtc_destroy(&client);
@@ -235,7 +225,8 @@ TEST(test_e2e_demux_byte_ranges)
 {
     /*
      * Verify RFC 7983 demux byte ranges are handled without crash.
-     * Stub phase: all return NOT_IMPLEMENTED, but must not segfault.
+     * STUN path now returns parse errors for malformed packets.
+     * DTLS/SRTP still return NOT_IMPLEMENTED.
      */
     nano_rtc_t rtc;
     nano_rtc_config_t cfg = e2e_default_config();
@@ -245,24 +236,153 @@ TEST(test_e2e_demux_byte_ranges)
     memset(&addr, 0, sizeof(addr));
     addr.family = 4;
 
-    /* STUN range: 0x00-0x03 */
+    /* STUN range: 0x00-0x03 (malformed — no valid STUN, returns parse error) */
     uint8_t stun_pkt[20] = {0x00, 0x01, 0x00, 0x00};
-    nano_handle_receive(&rtc, 0, stun_pkt, sizeof(stun_pkt), &addr);
+    int rc = nano_handle_receive(&rtc, 0, stun_pkt, sizeof(stun_pkt), &addr);
+    ASSERT_TRUE(rc < 0); /* parse error expected for malformed STUN */
 
     /* DTLS range: 0x14-0x40 */
     uint8_t dtls_pkt[20] = {0x14, 0xFE, 0xFD};
-    nano_handle_receive(&rtc, 0, dtls_pkt, sizeof(dtls_pkt), &addr);
+    ASSERT_EQ(nano_handle_receive(&rtc, 0, dtls_pkt, sizeof(dtls_pkt), &addr),
+              NANO_ERR_NOT_IMPLEMENTED);
 
     /* SRTP range: 0x80-0xBF */
     uint8_t srtp_pkt[20] = {0x80, 0x60};
-    nano_handle_receive(&rtc, 0, srtp_pkt, sizeof(srtp_pkt), &addr);
+    ASSERT_EQ(nano_handle_receive(&rtc, 0, srtp_pkt, sizeof(srtp_pkt), &addr),
+              NANO_ERR_NOT_IMPLEMENTED);
 
-    /* Edge cases: empty, 1 byte, huge first byte */
-    nano_handle_receive(&rtc, 0, NULL, 0, &addr);
+    /* Edge cases: null data returns INVALID_PARAM */
+    ASSERT_EQ(nano_handle_receive(&rtc, 0, NULL, 0, &addr),
+              NANO_ERR_INVALID_PARAM);
+
+    /* Unknown byte range */
     uint8_t one = 0xFF;
-    nano_handle_receive(&rtc, 0, &one, 1, &addr);
+    ASSERT_EQ(nano_handle_receive(&rtc, 0, &one, 1, &addr),
+              NANO_ERR_PROTOCOL);
 
     nano_rtc_destroy(&rtc);
+}
+
+TEST(test_e2e_ice_loopback)
+{
+    /*
+     * Full ICE loopback: controlling sends STUN check,
+     * controlled responds, controlling receives response.
+     * Both reach ICE_CONNECTED.
+     */
+    nano_rtc_t offerer, answerer;
+
+    /* Offerer = controlling role */
+    nano_rtc_config_t off_cfg = e2e_default_config();
+    off_cfg.role = NANO_ROLE_CONTROLLING;
+    ASSERT_OK(nano_rtc_init(&offerer, &off_cfg));
+
+    /* Answerer = controlled role */
+    nano_rtc_config_t ans_cfg = e2e_default_config();
+    ans_cfg.role = NANO_ROLE_CONTROLLED;
+    ASSERT_OK(nano_rtc_init(&answerer, &ans_cfg));
+
+    /* Set matching ICE credentials */
+    memcpy(offerer.ice.local_ufrag, "OFF", 4);
+    memcpy(offerer.ice.local_pwd, "offerer-password-1234", 22);
+    memcpy(offerer.ice.remote_ufrag, "ANS", 4);
+    memcpy(offerer.ice.remote_pwd, "answerer-password-5678", 23);
+    offerer.ice.tie_breaker = 0x1234567890ABCDEFull;
+
+    memcpy(answerer.ice.local_ufrag, "ANS", 4);
+    memcpy(answerer.ice.local_pwd, "answerer-password-5678", 23);
+    memcpy(answerer.ice.remote_ufrag, "OFF", 4);
+    memcpy(answerer.ice.remote_pwd, "offerer-password-1234", 22);
+
+    /* Set remote candidate address on offerer (where to send checks) */
+    offerer.ice.remote_family = 4;
+    offerer.ice.remote_addr[0] = 192;
+    offerer.ice.remote_addr[1] = 168;
+    offerer.ice.remote_addr[2] = 1;
+    offerer.ice.remote_addr[3] = 2;
+    offerer.ice.remote_port = 5000;
+
+    /* Step 1: offerer generates STUN Binding Request via timeout */
+    uint32_t now_ms = 100;
+    ASSERT_OK(nano_handle_timeout(&offerer, now_ms));
+    ASSERT_EQ(offerer.ice.state, NANO_ICE_STATE_CHECKING);
+
+    /* Step 2: relay offerer's STUN request to answerer */
+    nano_output_t out;
+    ASSERT_OK(nano_poll_output(&offerer, &out));
+    ASSERT_EQ(out.type, NANO_OUTPUT_TRANSMIT);
+    ASSERT_TRUE(out.transmit.len > 0);
+
+    /* Save request data (pointer references rtc->stun_buf, must copy) */
+    uint8_t saved_req[256];
+    size_t saved_req_len = out.transmit.len;
+    memcpy(saved_req, out.transmit.data, saved_req_len);
+
+    /* Drain the TIMEOUT output from handle_timeout */
+    nano_output_t tout;
+    ASSERT_OK(nano_poll_output(&offerer, &tout));
+    ASSERT_EQ(tout.type, NANO_OUTPUT_TIMEOUT);
+
+    /* Feed the STUN request into the answerer */
+    nano_addr_t offerer_addr;
+    memset(&offerer_addr, 0, sizeof(offerer_addr));
+    offerer_addr.family = 4;
+    offerer_addr.addr[0] = 192;
+    offerer_addr.addr[1] = 168;
+    offerer_addr.addr[2] = 1;
+    offerer_addr.addr[3] = 1;
+    offerer_addr.port = 9999;
+
+    ASSERT_OK(nano_handle_receive(&answerer, now_ms,
+                                   saved_req, saved_req_len,
+                                   &offerer_addr));
+
+    /* Answerer should now be CONNECTED (USE-CANDIDATE was in the request) */
+    ASSERT_EQ(answerer.ice.state, NANO_ICE_STATE_CONNECTED);
+    ASSERT_EQ(answerer.state, NANO_STATE_ICE_CONNECTED);
+
+    /* Step 3: relay answerer's STUN response back to offerer */
+    nano_output_t ans_out;
+    ASSERT_OK(nano_poll_output(&answerer, &ans_out));
+    ASSERT_EQ(ans_out.type, NANO_OUTPUT_TRANSMIT);
+
+    /* Save response data (pointer references rtc->stun_buf) */
+    uint8_t saved_resp[256];
+    size_t saved_resp_len = ans_out.transmit.len;
+    memcpy(saved_resp, ans_out.transmit.data, saved_resp_len);
+
+    /* Check for ICE_CONNECTED event on answerer */
+    nano_output_t evt;
+    ASSERT_OK(nano_poll_output(&answerer, &evt));
+    ASSERT_EQ(evt.type, NANO_OUTPUT_EVENT);
+    ASSERT_EQ(evt.event.type, NANO_EVENT_ICE_CONNECTED);
+
+    /* Feed response into offerer */
+    nano_addr_t answerer_addr;
+    memset(&answerer_addr, 0, sizeof(answerer_addr));
+    answerer_addr.family = 4;
+    answerer_addr.addr[0] = 192;
+    answerer_addr.addr[1] = 168;
+    answerer_addr.addr[2] = 1;
+    answerer_addr.addr[3] = 2;
+    answerer_addr.port = 5000;
+
+    ASSERT_OK(nano_handle_receive(&offerer, now_ms,
+                                   saved_resp, saved_resp_len,
+                                   &answerer_addr));
+
+    /* Offerer should now be CONNECTED */
+    ASSERT_EQ(offerer.ice.state, NANO_ICE_STATE_CONNECTED);
+    ASSERT_EQ(offerer.state, NANO_STATE_ICE_CONNECTED);
+
+    /* ICE_CONNECTED event should be queued for offerer */
+    nano_output_t off_evt;
+    ASSERT_OK(nano_poll_output(&offerer, &off_evt));
+    ASSERT_EQ(off_evt.type, NANO_OUTPUT_EVENT);
+    ASSERT_EQ(off_evt.event.type, NANO_EVENT_ICE_CONNECTED);
+
+    nano_rtc_destroy(&offerer);
+    nano_rtc_destroy(&answerer);
 }
 
 /* ---- Runner ---- */
@@ -273,4 +393,5 @@ TEST_MAIN_BEGIN("nanortc E2E tests")
     RUN(test_e2e_loopback_skeleton);
     RUN(test_e2e_multiple_instances);
     RUN(test_e2e_demux_byte_ranges);
+    RUN(test_e2e_ice_loopback);
 TEST_MAIN_END

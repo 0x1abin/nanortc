@@ -72,6 +72,15 @@ TEST(test_crc32c)
     ASSERT_EQ(crc, 0xE3069283);
 }
 
+TEST(test_crc32)
+{
+    /* Known CRC-32 (ISO HDLC) test vector: "123456789" -> 0xCBF43926 */
+    extern uint32_t nano_crc32(const uint8_t *data, size_t len);
+    const uint8_t data[] = "123456789";
+    uint32_t crc = nano_crc32(data, 9);
+    ASSERT_EQ(crc, 0xCBF43926);
+}
+
 /* ---- Runner ---- */
 
 TEST_MAIN_BEGIN("nanortc basic tests")
@@ -80,4 +89,5 @@ TEST_MAIN_BEGIN("nanortc basic tests")
     RUN(test_poll_empty);
     RUN(test_byte_order);
     RUN(test_crc32c);
+    RUN(test_crc32);
 TEST_MAIN_END

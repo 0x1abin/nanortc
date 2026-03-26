@@ -1,5 +1,5 @@
 /*
- * nanortc — OpenSSL crypto provider (stub)
+ * nanortc — OpenSSL crypto provider
  *
  * For Linux/desktop host builds and CI testing.
  * OpenSSL is widely available on Linux and macOS.
@@ -8,14 +8,36 @@
  */
 
 #include "nano_crypto.h"
+#include <openssl/hmac.h>
+#include <openssl/rand.h>
 
-/* ---- Stub implementations ---- */
+/* ---- HMAC-SHA1 (for STUN MESSAGE-INTEGRITY, RFC 8489 §14.5) ---- */
+
+static void ossl_hmac_sha1(const uint8_t *key, size_t key_len,
+                            const uint8_t *data, size_t data_len,
+                            uint8_t out[20])
+{
+    unsigned int md_len = 20;
+    HMAC(EVP_sha1(), key, (int)key_len, data, data_len, out, &md_len);
+}
+
+/* ---- CSPRNG ---- */
+
+static int ossl_random_bytes(uint8_t *buf, size_t len)
+{
+    if (RAND_bytes(buf, (int)len) != 1) {
+        return -1;
+    }
+    return 0;
+}
+
+/* ---- DTLS stubs (Phase 1 Step 2) ---- */
 
 static int stub_dtls_init(nano_crypto_dtls_ctx_t *ctx, int is_server)
 {
     (void)ctx;
     (void)is_server;
-    return -1; /* NANO_ERR_NOT_IMPLEMENTED */
+    return -1;
 }
 
 static int stub_dtls_set_bio(nano_crypto_dtls_ctx_t *ctx, void *userdata,
@@ -83,24 +105,6 @@ static void stub_dtls_free(nano_crypto_dtls_ctx_t *ctx)
     (void)ctx;
 }
 
-static void stub_hmac_sha1(const uint8_t *key, size_t key_len,
-                           const uint8_t *data, size_t data_len,
-                           uint8_t out[20])
-{
-    (void)key;
-    (void)key_len;
-    (void)data;
-    (void)data_len;
-    (void)out;
-}
-
-static int stub_random_bytes(uint8_t *buf, size_t len)
-{
-    (void)buf;
-    (void)len;
-    return -1;
-}
-
 #if NANORTC_PROFILE >= NANO_PROFILE_AUDIO
 static int stub_aes_128_cm(const uint8_t key[16], const uint8_t iv[16],
                            const uint8_t *in, size_t len, uint8_t *out)
@@ -128,7 +132,7 @@ static void stub_hmac_sha1_80(const uint8_t *key, size_t key_len,
 /* ---- Provider instance ---- */
 
 static const nano_crypto_provider_t openssl_provider = {
-    .name = "openssl-stub",
+    .name = "openssl",
     .dtls_init = stub_dtls_init,
     .dtls_set_bio = stub_dtls_set_bio,
     .dtls_handshake = stub_dtls_handshake,
@@ -137,8 +141,8 @@ static const nano_crypto_provider_t openssl_provider = {
     .dtls_export_keying_material = stub_dtls_export_keying_material,
     .dtls_get_fingerprint = stub_dtls_get_fingerprint,
     .dtls_free = stub_dtls_free,
-    .hmac_sha1 = stub_hmac_sha1,
-    .random_bytes = stub_random_bytes,
+    .hmac_sha1 = ossl_hmac_sha1,
+    .random_bytes = ossl_random_bytes,
 #if NANORTC_PROFILE >= NANO_PROFILE_AUDIO
     .aes_128_cm = stub_aes_128_cm,
     .hmac_sha1_80 = stub_hmac_sha1_80,

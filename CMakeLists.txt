@@ -11,6 +11,7 @@ if(DEFINED ENV{IDF_PATH})
         src/nano_sctp.c
         src/nano_datachannel.c
         src/nano_crc32c.c
+        src/nano_crc32.c
         crypto/nano_crypto_mbedtls.c
     )
     # Audio/Media sources added via NANORTC_PROFILE in Kconfig
@@ -56,6 +57,7 @@ set(NANORTC_SOURCES
     src/nano_sctp.c
     src/nano_datachannel.c
     src/nano_crc32c.c
+    src/nano_crc32.c
 )
 
 # ---- Audio sources (AUDIO and MEDIA profiles) ----
