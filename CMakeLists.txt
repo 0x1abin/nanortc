@@ -27,6 +27,8 @@ endif()
 # ---- Host build ----
 project(nanortc VERSION 0.1.0 LANGUAGES C)
 
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+
 # Profile selection
 set(NANORTC_PROFILE "DATA" CACHE STRING "Build profile: DATA, AUDIO, or MEDIA")
 set_property(CACHE NANORTC_PROFILE PROPERTY STRINGS DATA AUDIO MEDIA)
@@ -82,6 +84,7 @@ if(NANORTC_CRYPTO STREQUAL "openssl")
     find_package(OpenSSL REQUIRED)
     list(APPEND NANORTC_SOURCES crypto/nano_crypto_openssl.c)
 else()
+    find_package(MbedTLS REQUIRED)
     list(APPEND NANORTC_SOURCES crypto/nano_crypto_mbedtls.c)
 endif()
 
@@ -96,12 +99,7 @@ if(NANORTC_CRYPTO STREQUAL "openssl")
     target_link_libraries(nanortc PRIVATE OpenSSL::SSL OpenSSL::Crypto)
     target_compile_definitions(nanortc PUBLIC NANORTC_CRYPTO_OPENSSL=1)
 else()
-    find_library(MBEDTLS_LIB mbedtls)
-    find_library(MBEDX509_LIB mbedx509)
-    find_library(MBEDCRYPTO_LIB mbedcrypto)
-    if(MBEDTLS_LIB AND MBEDX509_LIB AND MBEDCRYPTO_LIB)
-        target_link_libraries(nanortc PRIVATE ${MBEDTLS_LIB} ${MBEDX509_LIB} ${MBEDCRYPTO_LIB})
-    endif()
+    target_link_libraries(nanortc PRIVATE MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
     target_compile_definitions(nanortc PUBLIC NANORTC_CRYPTO_MBEDTLS=1)
 endif()
 

@@ -36,6 +36,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libmbedtls-dev
+
       - name: "Check: no platform headers in src/"
         run: |
           ! grep -rn '#include <sys/' src/
@@ -83,6 +86,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libmbedtls-dev
 
       - name: Configure (MEDIA + ASan)
         run: cmake -B build -DNANORTC_PROFILE=MEDIA -DCMAKE_BUILD_TYPE=Debug -DADDRESS_SANITIZER=ON
