@@ -40,11 +40,7 @@ typedef enum {
     NANO_STATE_CLOSED,
 } nano_conn_state_t;
 
-/* ----------------------------------------------------------------
- * Output queue helper
- * ---------------------------------------------------------------- */
-
-#define NANO_OUT_QUEUE_SIZE 8
+/* NANO_OUT_QUEUE_SIZE is defined in nanortc_config.h */
 
 /* ----------------------------------------------------------------
  * Main state machine
