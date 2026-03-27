@@ -57,6 +57,35 @@ if (result != NANO_OK) {
 - `//` for short inline comments
 - RFC references: `/* RFC 8489 Section 6.1 */`
 
+## Array Size Naming
+
+Every struct array member must use a named macro for its size — never a bare integer literal.
+
+| Category | Defined in | Example |
+|----------|-----------|---------|
+| Configurable buffer | `nanortc_config.h` (`#ifndef` guard) | `NANO_ICE_UFRAG_SIZE`, `NANO_STUN_BUF_SIZE` |
+| Protocol-fixed constant | Module header (`#define`) | `STUN_TXID_SIZE`, `NANO_SRTP_KEY_SIZE` |
+
+```c
+/* Good */
+char local_ufrag[NANO_ICE_UFRAG_SIZE];
+uint8_t transaction_id[STUN_TXID_SIZE];
+
+/* Bad */
+char local_ufrag[8];
+uint8_t transaction_id[12];
+```
+
+Boundary checks in `.c` files must reference the same macro:
+
+```c
+/* Good */
+if (addr_len >= NANO_IPV6_STR_SIZE) { return NANO_ERR_PARSE; }
+
+/* Bad */
+if (addr_len > 45) { return NANO_ERR_PARSE; }
+```
+
 ## Code Style
 
 Enforced by `.clang-format`:

@@ -87,6 +87,8 @@ These rules are mechanically enforced. Violations will break the build or CI.
 
 **Safe C functions:** No `strlen`, `sprintf`, `snprintf`, `strcpy`, `strncpy`, `strcat`, `strncat`, `sscanf`, `atoi`, `atol`, `gets` in `src/` or `crypto/`. Use explicit `(buffer, length)` pairs and `memcpy`. API boundary functions (`nano_*`) may use `strlen` once per parameter with `/* NANO_SAFE: API boundary */` annotation. See `docs/engineering/safe-c-guidelines.md`.
 
+**Named array sizes:** Every struct array member must use a named macro for its size, never a bare integer literal. Configurable buffer sizes use `NANO_*` macros in `nanortc_config.h` with `#ifndef` guards. Protocol-fixed sizes (RFC-mandated) use `MODULE_*_SIZE` macros in the relevant module header. Boundary checks in `.c` files must reference the same macro.
+
 ## Reference Implementations
 
 - `.local-reference/str0m/` — Rust Sans I/O WebRTC (architecture reference for poll/handle pattern)

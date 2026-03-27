@@ -66,3 +66,13 @@ No `strlen`, `sprintf`, `snprintf`, `strcpy`, `strncpy`, `strcat`, `strncat`, `s
 grep -rnE '\b(strlen|sprintf|snprintf|strcpy|strncpy|strcat|strncat|sscanf|atoi|atol|gets)\b' src/ crypto/ \
   | grep -v 'NANO_SAFE'
 ```
+
+## 8. No Hardcoded Array Sizes
+
+Struct array members in headers must use named macros, not bare integer literals:
+
+```bash
+# Must return empty (excluding comments)
+grep -rnE '\b(uint8_t|char|int8_t|uint16_t|uint32_t)\s+\w+\[\s*[0-9]+\s*\];' src/*.h include/nanortc.h \
+  | grep -v '//'
+```

@@ -47,6 +47,9 @@ BANNED='strlen|sprintf|snprintf|strcpy|strncpy|strcat|strncat|sscanf|atoi|atol|g
 run_check "No unbounded string functions in src/+crypto/" \
     bash -c '! grep -rnE "\b('"$BANNED"')\b" src/ crypto/ | grep -v "NANO_SAFE"'
 
+run_check "No hardcoded array sizes in struct headers" \
+    bash -c '! grep -rnE "\b(uint8_t|char|int8_t|uint16_t|uint32_t)\s+\w+\[\s*[0-9]+\s*\];" src/*.h include/nanortc.h | grep -v "//"'
+
 # ============================================================
 # 2. Code formatting
 # ============================================================
