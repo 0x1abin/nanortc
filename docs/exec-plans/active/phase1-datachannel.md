@@ -15,6 +15,7 @@ NanoRTC uses AI coding agents for implementation. Time estimates use **agent ses
 
 ## Acceptance Criteria
 
+### Unit tests (synthetic data, no network)
 - [x] STUN Binding Request/Response with MESSAGE-INTEGRITY and FINGERPRINT
 - [x] ICE connectivity: controlled role (answerer) and controlling role (offerer)
 - [x] DTLS 1.2 handshake via mbedtls and OpenSSL crypto providers
@@ -24,6 +25,15 @@ NanoRTC uses AI coding agents for implementation. Time estimates use **agent ses
 - [ ] DataChannel string and binary messages flow bidirectionally
 - [ ] SDP offer/answer with DataChannel m-line
 - [ ] All unit tests pass with synthetic data (no network)
+
+### Interop tests (libdatachannel over localhost UDP) — **mandatory gate**
+- [ ] `test_interop_handshake` — Full ICE + DTLS + SCTP handshake with libdatachannel
+- [ ] `test_interop_dc_open` — DataChannel opens on both sides
+- [ ] `test_interop_dc_string_libdc_to_nano` — Text message from libdatachannel → nanortc
+- [ ] `test_interop_dc_string_nano_to_libdc` — Text message from nanortc → libdatachannel
+- [ ] `test_interop_dc_binary` — Binary data from libdatachannel → nanortc
+
+### Integration tests (human gate)
 - [ ] Integration test: NanoRTC ↔ browser on Linux (`examples/linux_datachannel`)
 - [ ] ESP32 example: MQTT signaling + DataChannel echo
 
@@ -86,6 +96,19 @@ SCTP is the most complex module (~2500 lines). May need multiple sessions.
 **Gate:** E2E DataChannel loopback in CI
 **Human gate:** Browser DataChannel echo test, ESP32 hardware test
 
+### Step 5: Interop testing against libdatachannel (1 agent session)
+
+| Task | File | Tests |
+|------|------|-------|
+| Interop test framework setup | `tests/interop/CMakeLists.txt` | FetchContent for libdatachannel v0.22.5 |
+| Signaling pipe (socketpair) | `interop_common.{h,c}` | SDP/ICE exchange over AF_UNIX |
+| nanortc peer wrapper (thread + run_loop) | `interop_nanortc_peer.{h,c}` | Answerer role with real UDP socket |
+| libdatachannel peer wrapper (C API) | `interop_libdc_peer.{h,c}` | Offerer role with internal threads |
+| DataChannel interop tests | `test_interop_dc.c` | Handshake, DC open, text/binary messages |
+
+**Gate:** All 5 interop tests pass (`ctest -R interop`)
+**Dependency:** Steps 3-4 must be complete (SCTP + DataChannel + SDP fully working)
+
 ## Decision Log
 
 | Date | Decision | Rationale |
@@ -96,6 +119,8 @@ SCTP is the most complex module (~2500 lines). May need multiple sessions.
 | 2026-03-26 | CRC-32 vs CRC-32c: separate modules | STUN FINGERPRINT uses ISO HDLC (0xEDB88320); SCTP uses Castagnoli (0x82F63B78) |
 | 2026-03-26 | RFC 5769 test vectors mandatory | Byte-level interop verification — roundtrip tests alone cannot catch shared encoder/parser bugs |
 | 2026-03-26 | MI/FP ordering enforced in parser | After MI: ignore all attrs except FP. After FP: reject any further attrs (RFC 8489 §14.5/§14.7) |
+| 2026-03-27 | libdatachannel as interop reference peer | Known-good C/C++ WebRTC implementation with C API; validates full protocol stack over real UDP. apt not available; fetched via CMake FetchContent. |
+| 2026-03-27 | Interop tests as mandatory Phase 1 gate | Unit tests alone cannot catch SDP format mismatches, DTLS parameter negotiation bugs, or SCTP interop issues. Interop tests are required for Phase 1 sign-off. |
 
 ## Progress
 
@@ -150,6 +175,29 @@ SCTP is the most complex module (~2500 lines). May need multiple sessions.
 
 **Files created/modified:** nano_dtls.c/h, nano_crypto.h, nano_crypto_mbedtls.c, nano_crypto_openssl.c, nano_rtc.c, nano_rtc_internal.h, test_dtls.c (new), test_e2e.c
 
+### Step 5: Interop test framework (Completed 2026-03-27, 1 session)
+
+**Implemented:**
+- Interop test framework using libdatachannel v0.22.5 as reference WebRTC peer
+- Single-process, dual-threaded architecture: nanortc (answerer) + libdatachannel (offerer)
+- Signaling via socketpair: SDP offer/answer + ICE candidates with framed message protocol
+- nanortc peer wrapper: reuses `run_loop_linux.c` event loop in a dedicated thread
+- libdatachannel peer wrapper: C API callbacks with thread-safe state observation
+- 5 test cases: handshake, DC open, bidirectional text/binary messages
+- CMake integration via FetchContent (OFF by default: `NANORTC_BUILD_INTEROP_TESTS`)
+- Resolves sctp_init symbol collision with usrsctp via `--allow-multiple-definition`
+
+**Tests (5 interop test cases):**
+- `test_interop_handshake` — Full ICE → DTLS → SCTP handshake
+- `test_interop_dc_open` — DataChannel opens on both sides
+- `test_interop_dc_string_libdc_to_nano` — Text message libdc → nanortc
+- `test_interop_dc_string_nano_to_libdc` — Text message nanortc → libdc
+- `test_interop_dc_binary` — Binary payload (256 bytes) libdc → nanortc
+
+**Status:** Framework compiles and links. Tests currently fail because `nano_accept_offer` does not yet fully parse libdatachannel's SDP format. Tests will pass incrementally as Steps 3-4 complete.
+
+**Files created:** tests/interop/ (8 new files), CMakeLists.txt modified
+
 ## Risks
 
 | Risk | Mitigation |
@@ -158,3 +206,5 @@ SCTP is the most complex module (~2500 lines). May need multiple sessions.
 | mbedtls DTLS BIO integration issues | Reference libpeer's `dtls_srtp.c` for proven BIO pattern |
 | OpenSSL DTLS BIO adapter differs from mbedtls | Abstract BIO in `nano_dtls.c`, test both backends in CI |
 | Browser SDP format variations | Test with Chrome, Firefox, Safari; parse conservatively |
+| libdatachannel SDP differs from browser SDP | Interop tests catch this; fix SDP parser to handle both |
+| sctp_init symbol collision with usrsctp | Resolved via `--allow-multiple-definition` linker flag in interop CMake |

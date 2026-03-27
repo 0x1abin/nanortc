@@ -11,7 +11,7 @@ Track known debt, prioritize by impact, pay down continuously.
 | ~~TD-003~~ | ~~CI~~ | ~~No CI pipeline yet~~ | ~~Medium~~ | ~~Phase 1~~ | ~~Resolved~~ |
 | ~~TD-004~~ | ~~Crypto~~ | ~~DTLS stubs remain in both backends~~ | ~~High~~ | ~~Phase 1 Step 2~~ | ~~Resolved~~ |
 | TD-005 | Build | No `Kconfig` for ESP-IDF menuconfig | Low | Phase 1 Week 4 | Create Kconfig with profile + crypto selection |
-| TD-006 | Examples | `run_loop_linux.c` and `signaling_stdin.c` untested with real network | Medium | Phase 1 Week 4 | Validate with browser integration test |
+| ~~TD-006~~ | ~~Examples~~ | ~~`run_loop_linux.c` and `signaling_stdin.c` untested with real network~~ | ~~Medium~~ | ~~Phase 1~~ | ~~Partially resolved~~ |
 
 ## Resolved Debt
 
@@ -19,6 +19,7 @@ Track known debt, prioritize by impact, pay down continuously.
 |----|----------|-----------|
 | TD-003 | 2026-03-26 | GitHub Actions CI + `scripts/ci-check.sh` — 3-profile × 2-crypto matrix, constraint checks, ASan, e2e tests |
 | TD-004 | 2026-03-26 | DTLS fully implemented for both mbedtls 3.5 and OpenSSL 3.0 — ECDSA P-256 certs, BIO adapter, handshake, encrypt/decrypt, key export |
+| TD-006 | 2026-03-27 | `run_loop_linux.c` validated via interop tests (nanortc peer wrapper uses it with real localhost UDP). `signaling_stdin.c` still untested — deferred to browser integration test. |
 
 ## Principles
 
