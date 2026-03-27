@@ -16,7 +16,7 @@
 | §4 Crypto Provider | `crypto/nano_crypto.h` | Verified (mbedtls + OpenSSL dual backend) |
 | §5 Platform Integration | `examples/` | Verified (Linux examples: datachannel, media_send) |
 | §6 External Dependencies | `CMakeLists.txt` | Verified (mbedtls default, OpenSSL optional) |
-| §7 Implementation Plan | `docs/exec-plans/` | Active (Phase 1 in progress) |
+| §7 Implementation Plan | `docs/exec-plans/` | Phase 1 code complete; Phase 2 active |
 | §9 AI Development Guidelines | `AGENTS.md` | Verified (rules encoded) |
 
 ## How to Use

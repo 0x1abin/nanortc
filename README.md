@@ -115,11 +115,13 @@ include/nanortc.h          Single public API header
 src/                        Protocol modules (Sans I/O, no platform deps)
 crypto/                     Pluggable crypto providers (mbedtls, openssl)
 tests/                      Unit tests + end-to-end tests (no network needed)
+tests/interop/              Interop tests against libdatachannel (C++)
 examples/                   Linux application templates
   common/                   Reusable event loop, signaling, media source
   linux_datachannel/        DataChannel echo server
   linux_media_send/         H.264/Opus sender from sample files
   sample_data/              Media samples (git submodule)
+browser_interop/            Browser-based interop test harness
 docs/                       Design docs, execution plans, engineering standards
 ```
 
@@ -153,7 +155,7 @@ The repository structure itself is designed for agent legibility: [AGENTS.md](AG
 
 ## Contributing
 
-NanoRTC is in early development (Phase 0 — skeleton complete, Phase 1 — DataChannel in progress).
+NanoRTC is in active development — Phase 1 code complete (DataChannel: 130+ unit tests, 5/5 interop pass with libdatachannel), Phase 2 audio in progress.
 
 Contributions welcome. Please read [AGENTS.md](AGENTS.md) for build instructions and mandatory rules before submitting changes.
 

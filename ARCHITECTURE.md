@@ -139,5 +139,6 @@ nano_poll_output(rtc, &out)
 | Design document (authoritative) | `docs/design-docs/nanortc-design-draft.md` |
 | Quality tracking | `docs/QUALITY_SCORE.md` |
 | Active execution plans | `docs/exec-plans/active/` |
+| Interop tests (libdatachannel) | `tests/interop/` |
 | Development workflow | `docs/engineering/development-workflow.md` |
 | Architecture constraints | `docs/engineering/architecture-constraints.md` |

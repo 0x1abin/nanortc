@@ -811,7 +811,7 @@ void nano_stop_easy(nano_rtc_t *rtc);
 ### 7.1 阶段划分
 
 ```
-阶段 0: 项目骨架                                      [1-2 天]
+阶段 0: 项目骨架 [✓ 完成]                               [1-2 天]
 ├── 仓库结构、CMakeLists.txt、头文件
 ├── nano_rtc_t 结构体定义
 ├── 公共 API 桩（nanortc.h）
@@ -819,7 +819,9 @@ void nano_stop_easy(nano_rtc_t *rtc);
 ├── nano_crypto_mbedtls.c（DTLS + HMAC + random）
 └── Linux 测试环境（合成数据，无需真实网络）
 
-阶段 1: DataChannel 端到端（NANO_FEATURE_DATACHANNEL）  [3-4 周]
+阶段 1: DataChannel 端到端 [✓ 代码完成]                  [3-4 周]
+│   成果: 130+ 单元测试, 5/5 libdatachannel 互通测试通过
+│         SDP 兼容性已验证 (controlled + controlling)
 ├── 第 1 周: STUN + ICE
 │   ├── nano_stun.c — STUN 消息编解码
 │   ├── nano_ice.c — ICE 状态机（controlled + controlling）
@@ -840,9 +842,10 @@ void nano_stop_easy(nano_rtc_t *rtc);
 │   ├── nano_datachannel.c — DCEP 协议
 │   ├── nano_sdp.c — DataChannel 最小 SDP
 │   ├── 端到端测试: NanoRTC ↔ 浏览器 DataChannel
-│   └── ESP32 示例: MQTT 信令 + DataChannel echo
+│   └── ESP32 示例: HTTP 信令 + DataChannel echo（复用 http_signaling.c）
 
-阶段 2: 音频（NANO_FEATURE_AUDIO）                      [2-3 周]
+阶段 2: 音频（NANO_FEATURE_AUDIO）[进行中]              [2-3 周]
+│   已完成: Step 1 RTP/SRTP, Step 2 RTCP/Jitter/SDP audio m-line
 ├── nano_srtp.c — SRTP 加解密
 ├── nano_rtp.c — RTP 打包/解包（Opus, G.711）
 ├── nano_rtcp.c — SR/RR/NACK 生成
