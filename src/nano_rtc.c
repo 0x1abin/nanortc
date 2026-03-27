@@ -13,6 +13,7 @@
 #include "nano_datachannel.h"
 #include "nano_sdp.h"
 #include "nano_log.h"
+#include "nanortc_util.h"
 #include <string.h>
 
 int nano_rtc_init(nano_rtc_t *rtc, const nano_rtc_config_t *cfg)
@@ -31,10 +32,16 @@ int nano_rtc_init(nano_rtc_t *rtc, const nano_rtc_config_t *cfg)
     NANO_LOGI("RTC", "nano_rtc_init");
 
     ice_init(&rtc->ice, cfg->role == NANO_ROLE_CONTROLLING);
-    /* DTLS init is deferred until ICE connects (needs crypto + role) */
+    /* DTLS context is created early in accept_offer (for SDP fingerprint);
+     * handshake starts when ICE connects. */
     nsctp_init(&rtc->sctp);
     dc_init(&rtc->datachannel);
     sdp_init(&rtc->sdp);
+
+    /* Default DTLS setup from ICE role (overridden by SDP negotiation in accept_offer) */
+    if (cfg->role == NANO_ROLE_CONTROLLING) {
+        rtc->sdp.local_setup = NANO_SDP_SETUP_ACTIVE;
+    }
 
 #if NANORTC_PROFILE >= NANO_PROFILE_AUDIO
     rtp_init(&rtc->rtp, 0, 0);
@@ -61,15 +68,28 @@ void nano_rtc_destroy(nano_rtc_t *rtc)
     rtc->state = NANO_STATE_CLOSED;
 }
 
+/* Cache DTLS fingerprint with "sha-256 " prefix into SDP state (RFC 8122 §5) */
+static void rtc_cache_fingerprint(nano_rtc_t *rtc)
+{
+    if (rtc->sdp.local_fingerprint[0] != '\0')
+        return;
+    const char *fp = dtls_get_fingerprint(&rtc->dtls);
+    if (!fp)
+        return;
+    size_t fplen = nano_strnlen(fp, sizeof(rtc->dtls.local_fingerprint));
+    if (8 + fplen < sizeof(rtc->sdp.local_fingerprint)) {
+        memcpy(rtc->sdp.local_fingerprint, "sha-256 ", 8);
+        memcpy(rtc->sdp.local_fingerprint + 8, fp, fplen + 1);
+    }
+}
+
 int nano_accept_offer(nano_rtc_t *rtc, const char *offer, char *answer_buf, size_t answer_buf_len)
 {
     if (!rtc || !offer || !answer_buf) {
         return NANO_ERR_INVALID_PARAM;
     }
 
-    size_t offer_len = 0;
-    while (offer[offer_len])
-        offer_len++;
+    size_t offer_len = strlen(offer); /* NANO_SAFE: API boundary */
 
     /* Parse remote SDP */
     int rc = sdp_parse(&rtc->sdp, offer, offer_len);
@@ -80,6 +100,8 @@ int nano_accept_offer(nano_rtc_t *rtc, const char *offer, char *answer_buf, size
     /* Copy remote ICE credentials to ICE state */
     memcpy(rtc->ice.remote_ufrag, rtc->sdp.remote_ufrag, sizeof(rtc->ice.remote_ufrag));
     memcpy(rtc->ice.remote_pwd, rtc->sdp.remote_pwd, sizeof(rtc->ice.remote_pwd));
+    rtc->ice.remote_ufrag_len = strlen(rtc->sdp.remote_ufrag); /* NANO_SAFE: API boundary */
+    rtc->ice.remote_pwd_len = strlen(rtc->sdp.remote_pwd);     /* NANO_SAFE: API boundary */
 
     /* Set SCTP remote port from SDP */
     if (rtc->sdp.remote_sctp_port > 0) {
@@ -111,13 +133,28 @@ int nano_accept_offer(nano_rtc_t *rtc, const char *offer, char *answer_buf, size
         /* Copy to ICE state */
         memcpy(rtc->ice.local_ufrag, rtc->sdp.local_ufrag, sizeof(rtc->ice.local_ufrag));
         memcpy(rtc->ice.local_pwd, rtc->sdp.local_pwd, sizeof(rtc->ice.local_pwd));
+        rtc->ice.local_ufrag_len = 8;
+        rtc->ice.local_pwd_len = 22;
     }
 
-    /* Determine DTLS role from remote setup */
+    /* Determine DTLS role from remote setup (RFC 8842 §5.2) */
     if (rtc->sdp.remote_setup == NANO_SDP_SETUP_ACTIVE) {
         rtc->sdp.local_setup = NANO_SDP_SETUP_PASSIVE;
-    } else {
+    } else if (rtc->sdp.remote_setup == NANO_SDP_SETUP_PASSIVE) {
         rtc->sdp.local_setup = NANO_SDP_SETUP_ACTIVE;
+    } else {
+        /* Remote is actpass (offerer default) — answerer chooses passive */
+        rtc->sdp.local_setup = NANO_SDP_SETUP_PASSIVE;
+    }
+
+    /* Early DTLS init: create certificate for SDP fingerprint (RFC 8827 §5) */
+    if (rtc->config.crypto && !rtc->dtls.crypto_ctx) {
+        int is_dtls_server = (rtc->sdp.local_setup == NANO_SDP_SETUP_PASSIVE);
+        int drc = dtls_init(&rtc->dtls, rtc->config.crypto, is_dtls_server);
+        if (drc != NANO_OK) {
+            return drc;
+        }
+        rtc_cache_fingerprint(rtc);
     }
 
     /* Generate answer SDP */
@@ -148,10 +185,21 @@ int nano_accept_answer(nano_rtc_t *rtc, const char *answer)
 
 int nano_add_local_candidate(nano_rtc_t *rtc, const char *ip, uint16_t port)
 {
-    (void)rtc;
-    (void)ip;
-    (void)port;
-    return NANO_ERR_NOT_IMPLEMENTED;
+    if (!rtc || !ip) {
+        return NANO_ERR_INVALID_PARAM;
+    }
+
+    /* Store in SDP state for answer generation (a=candidate: line) */
+    size_t ip_len = strlen(ip); /* NANO_SAFE: API boundary */
+    if (ip_len >= sizeof(rtc->sdp.local_candidate_ip)) {
+        return NANO_ERR_BUFFER_TOO_SMALL;
+    }
+    memcpy(rtc->sdp.local_candidate_ip, ip, ip_len + 1);
+    rtc->sdp.local_candidate_port = port;
+    rtc->sdp.has_local_candidate = true;
+
+    NANO_LOGI("RTC", "local candidate added");
+    return NANO_OK;
 }
 
 int nano_add_remote_candidate(nano_rtc_t *rtc, const char *candidate_str)
@@ -278,6 +326,40 @@ int nano_poll_output(nano_rtc_t *rtc, nano_output_t *out)
     return NANO_OK;
 }
 
+/* Init DTLS (if needed) and begin handshake after ICE connects */
+static int rtc_begin_dtls_handshake(nano_rtc_t *rtc, const nano_addr_t *src)
+{
+    int is_server = (rtc->sdp.local_setup == NANO_SDP_SETUP_PASSIVE);
+
+    /* accept_offer() does early init; this guard covers create_offer() path */
+    if (!rtc->dtls.crypto_ctx) {
+        int rc = dtls_init(&rtc->dtls, rtc->config.crypto, is_server);
+        if (rc != NANO_OK)
+            return rc;
+    }
+
+    rtc->state = NANO_STATE_DTLS_HANDSHAKING;
+
+    if (!is_server) {
+        int rc = dtls_start(&rtc->dtls);
+        if (rc != NANO_OK)
+            return rc;
+        size_t dout_len = 0;
+        if (dtls_poll_output(&rtc->dtls, rtc->dtls_scratch, sizeof(rtc->dtls_scratch), &dout_len) ==
+                NANO_OK &&
+            dout_len > 0) {
+            nano_output_t tout;
+            memset(&tout, 0, sizeof(tout));
+            tout.type = NANO_OUTPUT_TRANSMIT;
+            tout.transmit.data = rtc->dtls_scratch;
+            tout.transmit.len = dout_len;
+            tout.transmit.dest = *src;
+            rtc_enqueue_output(rtc, &tout);
+        }
+    }
+    return NANO_OK;
+}
+
 /* ----------------------------------------------------------------
  * Internal: drain SCTP output through DTLS encrypt → transmit queue
  * ---------------------------------------------------------------- */
@@ -351,34 +433,9 @@ int nano_handle_receive(nano_rtc_t *rtc, uint32_t now_ms, const uint8_t *data, s
             evt.event.type = NANO_EVENT_ICE_CONNECTED;
             rtc_enqueue_output(rtc, &evt);
 
-            /* Initialize DTLS — answerer=server, offerer=client */
-            int is_dtls_server = (rtc->config.role == NANO_ROLE_CONTROLLED);
-            int drc = dtls_init(&rtc->dtls, rtc->config.crypto, is_dtls_server);
+            int drc = rtc_begin_dtls_handshake(rtc, src);
             if (drc != NANO_OK) {
                 return drc;
-            }
-
-            rtc->state = NANO_STATE_DTLS_HANDSHAKING;
-
-            /* Client role: send ClientHello immediately */
-            if (!is_dtls_server) {
-                drc = dtls_start(&rtc->dtls);
-                if (drc != NANO_OK) {
-                    return drc;
-                }
-                /* Drain DTLS output (ClientHello) */
-                size_t dout_len = 0;
-                if (dtls_poll_output(&rtc->dtls, rtc->dtls_scratch, sizeof(rtc->dtls_scratch),
-                                     &dout_len) == NANO_OK &&
-                    dout_len > 0) {
-                    nano_output_t tout;
-                    memset(&tout, 0, sizeof(tout));
-                    tout.type = NANO_OUTPUT_TRANSMIT;
-                    tout.transmit.data = rtc->dtls_scratch;
-                    tout.transmit.len = dout_len;
-                    tout.transmit.dest = *src;
-                    rtc_enqueue_output(rtc, &tout);
-                }
             }
         }
 
@@ -422,20 +479,10 @@ int nano_handle_receive(nano_rtc_t *rtc, uint32_t now_ms, const uint8_t *data, s
             devt.event.type = NANO_EVENT_DTLS_CONNECTED;
             rtc_enqueue_output(rtc, &devt);
 
-            /* Get local fingerprint for SDP */
-            const char *fp = dtls_get_fingerprint(&rtc->dtls);
-            if (fp) {
-                size_t fplen = 0;
-                while (fp[fplen])
-                    fplen++;
-                if (fplen < sizeof(rtc->sdp.local_fingerprint)) {
-                    memcpy(rtc->sdp.local_fingerprint, fp, fplen + 1);
-                }
-            }
+            rtc_cache_fingerprint(rtc);
 
             /* Initiate SCTP: DTLS client sends INIT (RFC 8831) */
             if (!rtc->dtls.is_server) {
-                rtc->sctp.crypto = rtc->config.crypto;
                 nsctp_start(&rtc->sctp);
                 rtc->state = NANO_STATE_SCTP_CONNECTING;
 
@@ -450,7 +497,6 @@ int nano_handle_receive(nano_rtc_t *rtc, uint32_t now_ms, const uint8_t *data, s
             size_t app_len = 0;
             while (dtls_poll_app_data(&rtc->dtls, &app_data, &app_len) == NANO_OK && app_len > 0) {
                 /* Feed decrypted data to SCTP */
-                rtc->sctp.crypto = rtc->config.crypto;
                 nsctp_handle_data(&rtc->sctp, app_data, app_len);
 
                 /* Check for SCTP state transition */
@@ -622,9 +668,7 @@ int nano_send_datachannel_string(nano_rtc_t *rtc, uint16_t stream_id, const char
         return NANO_ERR_STATE;
     }
 
-    size_t len = 0;
-    while (str[len])
-        len++;
+    size_t len = strlen(str); /* NANO_SAFE: API boundary */
 
     uint32_t ppid = (len > 0) ? DCEP_PPID_STRING : DCEP_PPID_STRING_EMPTY;
     return nsctp_send(&rtc->sctp, stream_id, ppid, (const uint8_t *)str, len);

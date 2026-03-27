@@ -110,7 +110,7 @@ static int nanortc_do_signaling(interop_nanortc_peer_t *peer)
     /* Generate answer */
     char answer[8192];
     int rc = nano_accept_offer(&peer->rtc, buf, answer, sizeof(answer));
-    if (rc != NANO_OK) {
+    if (rc < 0) {
         fprintf(stderr, "[nanortc] nano_accept_offer failed: %d\n", rc);
         return -1;
     }

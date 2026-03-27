@@ -35,6 +35,11 @@ typedef struct nano_sdp {
     uint16_t local_sctp_port;
     nano_sdp_setup_t local_setup;
 
+    /* Local candidate (for SDP answer generation) */
+    char local_candidate_ip[46];
+    uint16_t local_candidate_port;
+    bool has_local_candidate;
+
     bool parsed; /* true after successful parse */
 } nano_sdp_t;
 

@@ -259,6 +259,20 @@ int sdp_generate_answer(nano_sdp_t *sdp, char *buf, size_t buf_len, size_t *out_
     if (!sdp_append(buf, buf_len, &pos, "a=max-message-size:262144\r\n"))
         goto overflow;
 
+    /* Local ICE candidate (RFC 8839 §5.1) */
+    if (sdp->has_local_candidate && sdp->local_candidate_ip[0] != '\0') {
+        if (!sdp_append(buf, buf_len, &pos, "a=candidate:1 1 UDP 2122252543 "))
+            goto overflow;
+        if (!sdp_append(buf, buf_len, &pos, sdp->local_candidate_ip))
+            goto overflow;
+        if (!sdp_append(buf, buf_len, &pos, " "))
+            goto overflow;
+        if (!sdp_append_u16(buf, buf_len, &pos, sdp->local_candidate_port))
+            goto overflow;
+        if (!sdp_append(buf, buf_len, &pos, " typ host\r\n"))
+            goto overflow;
+    }
+
     *out_len = pos;
     NANO_LOGD("SDP", "answer generated");
     return NANO_OK;

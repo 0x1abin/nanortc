@@ -145,6 +145,15 @@ static int libdatachannel_recv_answer(interop_libdatachannel_peer_t *peer)
         return -1;
     }
 
+    /* Explicitly add nanortc's candidate as fallback (RFC 8839 §5.1) */
+    if (peer->remote_port > 0) {
+        char cand[128];
+        snprintf(cand, sizeof(cand),
+                 "candidate:1 1 UDP 2122252543 127.0.0.1 %d typ host",
+                 peer->remote_port);
+        rtcAddRemoteCandidate(peer->pc, cand, "0");
+    }
+
     return 0;
 }
 
@@ -163,6 +172,7 @@ int interop_libdatachannel_start(interop_libdatachannel_peer_t *peer, int sig_fd
     peer->sig_fd = sig_fd;
     peer->pc = -1;
     peer->dc = -1;
+    peer->remote_port = remote_port;
     pthread_mutex_init(&peer->msg_mutex, NULL);
 
     /* Init libdatachannel logging */

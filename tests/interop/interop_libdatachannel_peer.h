@@ -41,6 +41,9 @@ typedef struct {
 
     /* Gathering state */
     atomic_int gathering_done;
+
+    /* Remote nanortc port (for explicit candidate addition) */
+    uint16_t remote_port;
 } interop_libdatachannel_peer_t;
 
 /*

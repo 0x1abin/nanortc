@@ -33,9 +33,13 @@ static void setup_ice_pair(nano_ice_t *controlling, nano_ice_t *controlled)
     ice_init(controlled, 0);
 
     memcpy(controlling->local_ufrag, "CTRL", 5);
+    controlling->local_ufrag_len = 4;
     memcpy(controlling->local_pwd, "ctrl-password-abcdef", 21);
+    controlling->local_pwd_len = 20;
     memcpy(controlling->remote_ufrag, "PEER", 5);
+    controlling->remote_ufrag_len = 4;
     memcpy(controlling->remote_pwd, "peer-password-123456", 21);
+    controlling->remote_pwd_len = 20;
     controlling->tie_breaker = 0xAABBCCDDEEFF0011ull;
     controlling->remote_family = 4;
     controlling->remote_addr[0] = 10;
@@ -43,9 +47,13 @@ static void setup_ice_pair(nano_ice_t *controlling, nano_ice_t *controlled)
     controlling->remote_port = 5000;
 
     memcpy(controlled->local_ufrag, "PEER", 5);
+    controlled->local_ufrag_len = 4;
     memcpy(controlled->local_pwd, "peer-password-123456", 21);
+    controlled->local_pwd_len = 20;
     memcpy(controlled->remote_ufrag, "CTRL", 5);
+    controlled->remote_ufrag_len = 4;
     memcpy(controlled->remote_pwd, "ctrl-password-abcdef", 21);
+    controlled->remote_pwd_len = 20;
 }
 
 /* Helper: generate a check and feed to peer */
@@ -192,6 +200,7 @@ TEST(test_ice_controlled_does_not_generate)
     nano_ice_t ice;
     ice_init(&ice, 0); /* controlled */
     memcpy(ice.remote_pwd, "pw", 3);
+    ice.remote_pwd_len = 2;
 
     uint8_t buf[256];
     size_t out_len = 0;
@@ -251,7 +260,9 @@ TEST(test_ice_reject_bad_username)
     nano_ice_t ctld;
     ice_init(&ctld, 0);
     memcpy(ctld.local_ufrag, "ME", 3);
+    ctld.local_ufrag_len = 2;
     memcpy(ctld.local_pwd, "my-password", 12);
+    ctld.local_pwd_len = 11;
 
     uint8_t txid[12] = {0};
     uint8_t key[] = "my-password";
@@ -279,7 +290,9 @@ TEST(test_ice_reject_bad_password)
     nano_ice_t ctld;
     ice_init(&ctld, 0);
     memcpy(ctld.local_ufrag, "ME", 3);
+    ctld.local_ufrag_len = 2;
     memcpy(ctld.local_pwd, "correct-pw", 11);
+    ctld.local_pwd_len = 10;
 
     uint8_t txid[12] = {0};
     uint8_t wrong_key[] = "wrong-pw";
@@ -353,8 +366,11 @@ TEST(test_ice_no_use_candidate_no_nomination)
     nano_ice_t ctld;
     ice_init(&ctld, 0);
     memcpy(ctld.local_ufrag, "PEER", 5);
+    ctld.local_ufrag_len = 4;
     memcpy(ctld.local_pwd, "peer-password-123456", 21);
+    ctld.local_pwd_len = 20;
     memcpy(ctld.remote_ufrag, "CTRL", 5);
+    ctld.remote_ufrag_len = 4;
 
     uint8_t txid[12] = {0};
     uint8_t key[] = "peer-password-123456";
