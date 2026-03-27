@@ -22,9 +22,9 @@ All external data (UDP packets, SDP strings) is validated at the entry point. On
 
 ## 4. Compile-time, not runtime
 
-Feature selection happens at compile time via `NANORTC_PROFILE`, not at runtime. There is no dead code in a built binary — if a profile doesn't include video, no video code is compiled.
+Feature selection happens at compile time via orthogonal feature flags (`NANO_FEATURE_DATACHANNEL`, `NANO_FEATURE_AUDIO`, `NANO_FEATURE_VIDEO`), not at runtime. There is no dead code in a built binary — if video is not enabled, no video code is compiled.
 
-**Implication:** Use `#if NANORTC_PROFILE >= ...` guards, not runtime `if` checks. This keeps the binary small and deterministic for embedded targets.
+**Implication:** Use `#if NANO_FEATURE_*` guards, not runtime `if` checks. This keeps the binary small and deterministic for embedded targets.
 
 ## 5. Caller owns resources
 

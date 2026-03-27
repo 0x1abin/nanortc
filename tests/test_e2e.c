@@ -29,14 +29,14 @@ static nano_rtc_config_t e2e_default_config(void)
     memset(&cfg, 0, sizeof(cfg));
     cfg.crypto = nano_test_crypto();
     cfg.role = NANO_ROLE_CONTROLLED;
-#if NANORTC_PROFILE >= NANO_PROFILE_AUDIO
+#if NANO_FEATURE_AUDIO
     cfg.jitter_depth_ms = 100;
     cfg.audio_codec = NANO_CODEC_OPUS;
     cfg.audio_sample_rate = 48000;
     cfg.audio_channels = 1;
     cfg.audio_direction = NANO_DIR_SENDRECV;
 #endif
-#if NANORTC_PROFILE >= NANO_PROFILE_MEDIA
+#if NANO_FEATURE_VIDEO
     cfg.video_codec = NANO_CODEC_H264;
     cfg.video_direction = NANO_DIR_SENDRECV;
 #endif
@@ -136,16 +136,19 @@ TEST(test_e2e_stubs_not_implemented)
 
     /* nano_handle_receive and nano_handle_timeout are now implemented */
 
-    /* nano_send_datachannel now returns NANO_ERR_STATE (not connected) */
     uint8_t data[] = {0x00, 0x01, 0x00, 0x00};
+
+#if NANO_FEATURE_DATACHANNEL
+    /* nano_send_datachannel now returns NANO_ERR_STATE (not connected) */
     ASSERT_EQ(nano_send_datachannel(&rtc, 0, data, sizeof(data)), NANO_ERR_STATE);
     ASSERT_EQ(nano_send_datachannel_string(&rtc, 0, "hello"), NANO_ERR_STATE);
+#endif
 
-#if NANORTC_PROFILE >= NANO_PROFILE_AUDIO
+#if NANO_FEATURE_AUDIO
     ASSERT_EQ(nano_send_audio(&rtc, 0, data, sizeof(data)), NANO_ERR_NOT_IMPLEMENTED);
 #endif
 
-#if NANORTC_PROFILE >= NANO_PROFILE_MEDIA
+#if NANO_FEATURE_VIDEO
     ASSERT_EQ(nano_send_video(&rtc, 0, data, sizeof(data), 1), NANO_ERR_NOT_IMPLEMENTED);
     ASSERT_EQ(nano_request_keyframe(&rtc), NANO_ERR_NOT_IMPLEMENTED);
 #endif

@@ -36,16 +36,6 @@ extern "C" {
 #define NANORTC_VERSION_PATCH 0
 
 /* ----------------------------------------------------------------
- * Build Profiles
- * ---------------------------------------------------------------- */
-
-#define NANO_PROFILE_DATA  1 /* DataChannel only */
-#define NANO_PROFILE_AUDIO 2 /* DataChannel + audio (RTP/SRTP) */
-#define NANO_PROFILE_MEDIA 3 /* DataChannel + audio + video */
-
-/* NANORTC_PROFILE default is set in nanortc_config.h */
-
-/* ----------------------------------------------------------------
  * Self-contained byte order (no platform htons/ntohs)
  * ---------------------------------------------------------------- */
 
@@ -213,27 +203,23 @@ typedef enum {
 
 typedef enum {
     /* Connection lifecycle */
-    NANO_EVENT_ICE_CONNECTED,
-    NANO_EVENT_DTLS_CONNECTED,
-    NANO_EVENT_SCTP_CONNECTED,
-    NANO_EVENT_DISCONNECTED,
+    NANO_EVENT_ICE_CONNECTED = 0,
+    NANO_EVENT_DTLS_CONNECTED = 1,
+    NANO_EVENT_SCTP_CONNECTED = 2,
+    NANO_EVENT_DISCONNECTED = 3,
 
-    /* DataChannel (all profiles) */
-    NANO_EVENT_DATACHANNEL_OPEN,
-    NANO_EVENT_DATACHANNEL_CLOSE,
-    NANO_EVENT_DATACHANNEL_DATA,
-    NANO_EVENT_DATACHANNEL_STRING,
+    /* DataChannel */
+    NANO_EVENT_DATACHANNEL_OPEN = 4,
+    NANO_EVENT_DATACHANNEL_CLOSE = 5,
+    NANO_EVENT_DATACHANNEL_DATA = 6,
+    NANO_EVENT_DATACHANNEL_STRING = 7,
 
-#if NANORTC_PROFILE >= NANO_PROFILE_AUDIO
-    /* Audio (AUDIO / MEDIA profiles) */
-    NANO_EVENT_AUDIO_DATA,
-#endif
+    /* Audio */
+    NANO_EVENT_AUDIO_DATA = 8,
 
-#if NANORTC_PROFILE >= NANO_PROFILE_MEDIA
-    /* Video (MEDIA profile) */
-    NANO_EVENT_VIDEO_DATA,
-    NANO_EVENT_KEYFRAME_REQUEST,
-#endif
+    /* Video */
+    NANO_EVENT_VIDEO_DATA = 9,
+    NANO_EVENT_KEYFRAME_REQUEST = 10,
 } nano_event_type_t;
 
 /* ----------------------------------------------------------------
@@ -314,7 +300,7 @@ typedef struct nano_rtc_config {
     uint32_t sctp_send_buf_size;
     uint32_t sctp_recv_buf_size;
 
-#if NANORTC_PROFILE >= NANO_PROFILE_AUDIO
+#if NANO_FEATURE_AUDIO
     nano_codec_t audio_codec;
     uint32_t audio_sample_rate;
     uint8_t audio_channels;
@@ -322,7 +308,7 @@ typedef struct nano_rtc_config {
     uint32_t jitter_depth_ms;
 #endif
 
-#if NANORTC_PROFILE >= NANO_PROFILE_MEDIA
+#if NANO_FEATURE_VIDEO
     nano_codec_t video_codec;
     nano_direction_t video_direction;
 #endif
@@ -368,22 +354,24 @@ NANO_API int nano_handle_receive(nano_rtc_t *rtc, uint32_t now_ms, const uint8_t
 NANO_API int nano_handle_timeout(nano_rtc_t *rtc, uint32_t now_ms);
 
 /* ----------------------------------------------------------------
- * DataChannel API (all profiles)
+ * DataChannel API
  * ---------------------------------------------------------------- */
 
+#if NANO_FEATURE_DATACHANNEL
 NANO_API int nano_send_datachannel(nano_rtc_t *rtc, uint16_t stream_id, const void *data,
                                    size_t len);
 NANO_API int nano_send_datachannel_string(nano_rtc_t *rtc, uint16_t stream_id, const char *str);
+#endif
 
 /* ----------------------------------------------------------------
- * Media API (conditional)
+ * Media API
  * ---------------------------------------------------------------- */
 
-#if NANORTC_PROFILE >= NANO_PROFILE_AUDIO
+#if NANO_FEATURE_AUDIO
 NANO_API int nano_send_audio(nano_rtc_t *rtc, uint32_t timestamp, const void *data, size_t len);
 #endif
 
-#if NANORTC_PROFILE >= NANO_PROFILE_MEDIA
+#if NANO_FEATURE_VIDEO
 NANO_API int nano_send_video(nano_rtc_t *rtc, uint32_t timestamp, const void *data, size_t len,
                              int is_keyframe);
 NANO_API int nano_request_keyframe(nano_rtc_t *rtc);

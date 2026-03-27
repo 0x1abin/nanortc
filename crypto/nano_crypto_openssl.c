@@ -417,7 +417,7 @@ static void ossl_dtls_free(nano_crypto_dtls_ctx_t *ctx)
     free(ctx);
 }
 
-#if NANORTC_PROFILE >= NANO_PROFILE_AUDIO
+#if NANO_HAVE_MEDIA_TRANSPORT
 static int stub_aes_128_cm(const uint8_t key[16], const uint8_t iv[16], const uint8_t *in,
                            size_t len, uint8_t *out)
 {
@@ -454,7 +454,7 @@ static const nano_crypto_provider_t openssl_provider = {
     .dtls_free = ossl_dtls_free,
     .hmac_sha1 = ossl_hmac_sha1,
     .random_bytes = ossl_random_bytes,
-#if NANORTC_PROFILE >= NANO_PROFILE_AUDIO
+#if NANO_HAVE_MEDIA_TRANSPORT
     .aes_128_cm = stub_aes_128_cm,
     .hmac_sha1_80 = stub_hmac_sha1_80,
 #endif

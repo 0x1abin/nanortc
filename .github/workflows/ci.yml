@@ -8,12 +8,18 @@ on:
 
 jobs:
   build:
-    name: Build (${{ matrix.profile }} / ${{ matrix.crypto }})
+    name: Build (${{ matrix.combo }} / ${{ matrix.crypto }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        profile: [DATA, AUDIO, MEDIA]
+        combo:
+          - { name: DATA,       dc: ON,  audio: OFF, video: OFF }
+          - { name: AUDIO,      dc: ON,  audio: ON,  video: OFF }
+          - { name: MEDIA,      dc: ON,  audio: ON,  video: ON  }
+          - { name: AUDIO_ONLY, dc: OFF, audio: ON,  video: OFF }
+          - { name: MEDIA_ONLY, dc: OFF, audio: ON,  video: ON  }
+          - { name: CORE_ONLY,  dc: OFF, audio: OFF, video: OFF }
         crypto: [mbedtls, openssl]
     steps:
       - uses: actions/checkout@v4
@@ -22,7 +28,13 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y -qq libmbedtls-dev libssl-dev
 
       - name: Configure
-        run: cmake -B build -DNANORTC_PROFILE=${{ matrix.profile }} -DNANORTC_CRYPTO=${{ matrix.crypto }} -DCMAKE_BUILD_TYPE=Debug
+        run: |
+          cmake -B build \
+            -DNANO_FEATURE_DATACHANNEL=${{ matrix.combo.dc }} \
+            -DNANO_FEATURE_AUDIO=${{ matrix.combo.audio }} \
+            -DNANO_FEATURE_VIDEO=${{ matrix.combo.video }} \
+            -DNANORTC_CRYPTO=${{ matrix.crypto }} \
+            -DCMAKE_BUILD_TYPE=Debug
 
       - name: Build
         run: cmake --build build -j$(nproc)
@@ -60,7 +72,7 @@ jobs:
 
       - name: "Check: symbol naming"
         run: |
-          cmake -B build -DNANORTC_PROFILE=MEDIA -DCMAKE_BUILD_TYPE=Debug
+          cmake -B build -DNANO_FEATURE_DATACHANNEL=ON -DNANO_FEATURE_AUDIO=ON -DNANO_FEATURE_VIDEO=ON -DCMAKE_BUILD_TYPE=Debug
           cmake --build build -j$(nproc)
           # All symbols must start with nano_ (public API) or a known module prefix (internal)
           ALLOWED='nano_|stun_|ice_|dtls_|nsctp_|sctp_|dc_|sdp_|rtp_|rtcp_|srtp_|jitter_|bwe_'
@@ -81,6 +93,17 @@ jobs:
             exit 1
           fi
 
+      - name: "Check: DC-OFF has no SCTP symbols"
+        run: |
+          cmake -B build-nodc -DNANO_FEATURE_DATACHANNEL=OFF -DNANO_FEATURE_AUDIO=ON -DCMAKE_BUILD_TYPE=Debug
+          cmake --build build-nodc -j$(nproc)
+          violations=$(nm build-nodc/libnanortc.a 2>/dev/null | grep ' T ' | grep 'nsctp_' || true)
+          if [ -n "$violations" ]; then
+            echo "SCTP symbols found in DC-OFF build:"
+            echo "$violations"
+            exit 1
+          fi
+
   sanitizer:
     name: AddressSanitizer
     runs-on: ubuntu-latest
@@ -91,7 +114,7 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y -qq libmbedtls-dev
 
       - name: Configure (MEDIA + ASan)
-        run: cmake -B build -DNANORTC_PROFILE=MEDIA -DCMAKE_BUILD_TYPE=Debug -DADDRESS_SANITIZER=ON
+        run: cmake -B build -DNANO_FEATURE_DATACHANNEL=ON -DNANO_FEATURE_AUDIO=ON -DNANO_FEATURE_VIDEO=ON -DCMAKE_BUILD_TYPE=Debug -DADDRESS_SANITIZER=ON
 
       - name: Build
         run: cmake --build build -j$(nproc)

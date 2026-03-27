@@ -106,12 +106,83 @@
 #define NANO_STUN_BUF_SIZE CONFIG_NANO_STUN_BUF_SIZE
 #endif
 
+/* Feature flag Kconfig mapping (ESP-IDF booleans) */
+#if defined(IDF_VER) && !defined(NANO_FEATURE_DATACHANNEL)
+#ifdef CONFIG_NANO_FEATURE_DATACHANNEL
+#define NANO_FEATURE_DATACHANNEL 1
+#else
+#define NANO_FEATURE_DATACHANNEL 0
+#endif
+#endif
+
+#if defined(IDF_VER) && !defined(NANO_FEATURE_DC_RELIABLE)
+#ifdef CONFIG_NANO_FEATURE_DC_RELIABLE
+#define NANO_FEATURE_DC_RELIABLE 1
+#else
+#define NANO_FEATURE_DC_RELIABLE 0
+#endif
+#endif
+
+#if defined(IDF_VER) && !defined(NANO_FEATURE_DC_ORDERED)
+#ifdef CONFIG_NANO_FEATURE_DC_ORDERED
+#define NANO_FEATURE_DC_ORDERED 1
+#else
+#define NANO_FEATURE_DC_ORDERED 0
+#endif
+#endif
+
+#if defined(IDF_VER) && !defined(NANO_FEATURE_AUDIO)
+#ifdef CONFIG_NANO_FEATURE_AUDIO
+#define NANO_FEATURE_AUDIO 1
+#else
+#define NANO_FEATURE_AUDIO 0
+#endif
+#endif
+
+#if defined(IDF_VER) && !defined(NANO_FEATURE_VIDEO)
+#ifdef CONFIG_NANO_FEATURE_VIDEO
+#define NANO_FEATURE_VIDEO 1
+#else
+#define NANO_FEATURE_VIDEO 0
+#endif
+#endif
+
 /* ----------------------------------------------------------------
- * Build profile
+ * Feature flags (orthogonal, user-configurable)
+ *
+ * Each flag enables a set of modules independently:
+ *   NANO_FEATURE_DATACHANNEL  — SCTP + DCEP
+ *   NANO_FEATURE_DC_RELIABLE  — retransmission (sub-feature of DC)
+ *   NANO_FEATURE_DC_ORDERED   — SSN-based ordered delivery (sub-feature of DC)
+ *   NANO_FEATURE_AUDIO        — Audio (RTP/SRTP/Jitter)
+ *   NANO_FEATURE_VIDEO        — Video (RTP/SRTP/BWE)
  * ---------------------------------------------------------------- */
 
-#ifndef NANORTC_PROFILE
-#define NANORTC_PROFILE 1 /* NANO_PROFILE_DATA */
+#ifndef NANO_FEATURE_DATACHANNEL
+#define NANO_FEATURE_DATACHANNEL 1
+#endif
+
+#ifndef NANO_FEATURE_DC_RELIABLE
+#define NANO_FEATURE_DC_RELIABLE NANO_FEATURE_DATACHANNEL
+#endif
+
+#ifndef NANO_FEATURE_DC_ORDERED
+#define NANO_FEATURE_DC_ORDERED NANO_FEATURE_DATACHANNEL
+#endif
+
+#ifndef NANO_FEATURE_AUDIO
+#define NANO_FEATURE_AUDIO 0
+#endif
+
+#ifndef NANO_FEATURE_VIDEO
+#define NANO_FEATURE_VIDEO 0
+#endif
+
+/* Derived (internal): true when any media transport is needed */
+#if NANO_FEATURE_AUDIO || NANO_FEATURE_VIDEO
+#define NANO_HAVE_MEDIA_TRANSPORT 1
+#else
+#define NANO_HAVE_MEDIA_TRANSPORT 0
 #endif
 
 /* ----------------------------------------------------------------
@@ -273,7 +344,7 @@
 #endif
 
 /* ----------------------------------------------------------------
- * Jitter buffer slots (AUDIO/MEDIA profiles only)
+ * Jitter buffer slots (AUDIO feature only)
  * ---------------------------------------------------------------- */
 
 #ifndef NANO_JITTER_SLOTS
@@ -315,7 +386,7 @@
 #error "NANO_OUT_QUEUE_SIZE must be a power of 2"
 #endif
 
-#if NANO_MAX_DATACHANNELS < 1
+#if NANO_FEATURE_DATACHANNEL && NANO_MAX_DATACHANNELS < 1
 #error "NANO_MAX_DATACHANNELS must be at least 1"
 #endif
 

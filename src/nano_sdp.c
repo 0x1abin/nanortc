@@ -204,9 +204,15 @@ int sdp_generate_answer(nano_sdp_t *sdp, char *buf, size_t buf_len, size_t *out_
     if (!sdp_append(buf, buf_len, &pos, "a=group:BUNDLE 0\r\n"))
         goto overflow;
 
-    /* Media line */
+#if NANO_FEATURE_DATACHANNEL
+    /* DataChannel media line */
     if (!sdp_append(buf, buf_len, &pos, "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n"))
         goto overflow;
+#else
+    /* Media-only: use a dummy m-line for DTLS/ICE bundle */
+    if (!sdp_append(buf, buf_len, &pos, "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n"))
+        goto overflow;
+#endif
     if (!sdp_append(buf, buf_len, &pos, "c=IN IP4 0.0.0.0\r\n"))
         goto overflow;
     if (!sdp_append(buf, buf_len, &pos, "a=mid:0\r\n"))
@@ -247,6 +253,7 @@ int sdp_generate_answer(nano_sdp_t *sdp, char *buf, size_t buf_len, size_t *out_
     if (!sdp_append(buf, buf_len, &pos, setup_str))
         goto overflow;
 
+#if NANO_FEATURE_DATACHANNEL
     /* SCTP port */
     if (!sdp_append(buf, buf_len, &pos, "a=sctp-port:"))
         goto overflow;
@@ -258,6 +265,7 @@ int sdp_generate_answer(nano_sdp_t *sdp, char *buf, size_t buf_len, size_t *out_
     /* Max message size */
     if (!sdp_append(buf, buf_len, &pos, "a=max-message-size:262144\r\n"))
         goto overflow;
+#endif
 
     /* Local ICE candidate (RFC 8839 §5.1) */
     if (sdp->has_local_candidate && sdp->local_candidate_ip[0] != '\0') {

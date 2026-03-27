@@ -75,7 +75,7 @@ The interop test framework (`tests/interop/`) validates nanortc against libdatac
 
 ```bash
 # Build (requires OpenSSL + C++ compiler for libdatachannel)
-cmake -B build -DNANORTC_PROFILE=DATA -DNANORTC_CRYPTO=openssl \
+cmake -B build -DNANORTC_CRYPTO=openssl \
       -DNANORTC_BUILD_INTEROP_TESTS=ON -DCMAKE_BUILD_TYPE=Debug
 cmake --build build -j$(nproc)
 

@@ -50,13 +50,13 @@ static void on_event(nano_rtc_t *rtc, const nano_event_t *evt, void *userdata)
         fprintf(stderr, "[event] DC: %.*s\n", (int)evt->len, (char *)evt->data);
         break;
 
-#if NANORTC_PROFILE >= NANO_PROFILE_AUDIO
+#if NANO_FEATURE_AUDIO
     case NANO_EVENT_AUDIO_DATA:
         /* Received audio from remote — could play it */
         break;
 #endif
 
-#if NANORTC_PROFILE >= NANO_PROFILE_MEDIA
+#if NANO_FEATURE_VIDEO
     case NANO_EVENT_KEYFRAME_REQUEST:
         fprintf(stderr, "[event] Keyframe requested\n");
         break;
@@ -110,7 +110,7 @@ int main(int argc, char *argv[])
     nano_media_source_t video_src, audio_src;
     int has_video = 0, has_audio = 0;
 
-#if NANORTC_PROFILE >= NANO_PROFILE_MEDIA
+#if NANO_FEATURE_VIDEO
     if (video_dir) {
         if (nano_media_source_init(&video_src, NANO_MEDIA_H264, video_dir) == 0) {
             has_video = 1;
@@ -121,7 +121,7 @@ int main(int argc, char *argv[])
     }
 #endif
 
-#if NANORTC_PROFILE >= NANO_PROFILE_AUDIO
+#if NANO_FEATURE_AUDIO
     if (audio_dir) {
         if (nano_media_source_init(&audio_src, NANO_MEDIA_OPUS, audio_dir) == 0) {
             has_audio = 1;
@@ -149,7 +149,7 @@ int main(int argc, char *argv[])
 #endif
     cfg.role = NANO_ROLE_CONTROLLED;
 
-#if NANORTC_PROFILE >= NANO_PROFILE_AUDIO
+#if NANO_FEATURE_AUDIO
     if (has_audio) {
         cfg.audio_codec = NANO_CODEC_OPUS;
         cfg.audio_sample_rate = 48000;
@@ -159,7 +159,7 @@ int main(int argc, char *argv[])
     }
 #endif
 
-#if NANORTC_PROFILE >= NANO_PROFILE_MEDIA
+#if NANO_FEATURE_VIDEO
     if (has_video) {
         cfg.video_codec = NANO_CODEC_H264;
         cfg.video_direction = NANO_DIR_SENDONLY;
@@ -180,7 +180,8 @@ int main(int argc, char *argv[])
     }
     nano_run_loop_set_event_cb(&loop, on_event, NULL);
 
-    fprintf(stderr, "nanortc media sender (port=%d, profile=%d)\n", port, NANORTC_PROFILE);
+    fprintf(stderr, "nanortc media sender (port=%d, DC=%d AUDIO=%d VIDEO=%d)\n", port,
+            NANO_FEATURE_DATACHANNEL, NANO_FEATURE_AUDIO, NANO_FEATURE_VIDEO);
 
     /* 4. Signaling */
     nano_signaling_t sig;
@@ -219,7 +220,7 @@ int main(int argc, char *argv[])
 
         uint32_t now = nano_get_millis();
 
-#if NANORTC_PROFILE >= NANO_PROFILE_MEDIA
+#if NANO_FEATURE_VIDEO
         /* Send video frame at 25fps */
         if (has_video && now >= next_video_ms) {
             size_t frame_len;
@@ -233,7 +234,7 @@ int main(int argc, char *argv[])
         }
 #endif
 
-#if NANORTC_PROFILE >= NANO_PROFILE_AUDIO
+#if NANO_FEATURE_AUDIO
         /* Send audio frame at 50fps (20ms) */
         if (has_audio && now >= next_audio_ms) {
             size_t frame_len;

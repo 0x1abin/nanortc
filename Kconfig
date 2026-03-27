@@ -1,24 +1,48 @@
 menu "NanoRTC Configuration"
 
-    choice NANO_PROFILE_SELECT
-        prompt "Build profile"
-        default NANO_PROFILE_DATA
+    config NANO_FEATURE_DATACHANNEL
+        bool "Enable DataChannel (SCTP+DCEP)"
+        default y
         help
-            Select the NanoRTC build profile. Higher profiles include all
-            modules from lower profiles.
+            Enable WebRTC DataChannel support. Compiles SCTP, DCEP,
+            and CRC-32c modules. Disable to save ~2500 lines of code
+            for media-only devices.
 
-        config NANO_PROFILE_DATA
-            bool "DATA - DataChannel only"
-        config NANO_PROFILE_AUDIO
-            bool "AUDIO - DataChannel + Audio (RTP/SRTP)"
-        config NANO_PROFILE_MEDIA
-            bool "MEDIA - DataChannel + Audio + Video"
-    endchoice
+    config NANO_FEATURE_DC_RELIABLE
+        bool "Enable reliable DataChannel delivery"
+        default y
+        depends on NANO_FEATURE_DATACHANNEL
+        help
+            Enable DATA chunk retransmission (RTO backoff, SACK-driven).
+            When OFF, all DataChannels are fire-and-forget (unreliable).
+
+    config NANO_FEATURE_DC_ORDERED
+        bool "Enable ordered DataChannel delivery"
+        default y
+        depends on NANO_FEATURE_DATACHANNEL
+        help
+            Enable SSN-based ordered delivery. When OFF, all DATA chunks
+            are sent with the Unordered flag set.
+
+    config NANO_FEATURE_AUDIO
+        bool "Enable audio (RTP/SRTP/Jitter)"
+        default n
+        help
+            Enable audio media transport. Compiles RTP, RTCP, SRTP,
+            and jitter buffer modules.
+
+    config NANO_FEATURE_VIDEO
+        bool "Enable video (RTP/SRTP/BWE)"
+        default n
+        help
+            Enable video media transport. Compiles RTP, RTCP, SRTP,
+            and bandwidth estimation modules.
 
     config NANO_MAX_DATACHANNELS
         int "Maximum number of DataChannels"
         default 8
         range 1 64
+        depends on NANO_FEATURE_DATACHANNEL
         help
             Maximum number of DataChannels that can be open simultaneously.
             Each channel uses approximately 40 bytes of RAM.
@@ -65,6 +89,7 @@ menu "NanoRTC Configuration"
         int "SCTP send buffer size (bytes)"
         default 65536
         range 4096 262144
+        depends on NANO_FEATURE_DATACHANNEL
         help
             Size of the SCTP send buffer for outgoing DataChannel messages.
 
@@ -72,6 +97,7 @@ menu "NanoRTC Configuration"
         int "SCTP receive buffer size (bytes)"
         default 65536
         range 4096 262144
+        depends on NANO_FEATURE_DATACHANNEL
         help
             Size of the SCTP receive buffer for incoming DataChannel messages.
 
@@ -83,10 +109,10 @@ menu "NanoRTC Configuration"
             Depth of the output event ring buffer. Must be a power of 2.
 
     config NANO_JITTER_SLOTS
-        int "Jitter buffer slots (AUDIO/MEDIA only)"
+        int "Jitter buffer slots"
         default 64
         range 8 256
-        depends on NANO_PROFILE_AUDIO || NANO_PROFILE_MEDIA
+        depends on NANO_FEATURE_AUDIO
         help
             Number of slots in the jitter buffer. Each slot holds one
             RTP packet (up to 1500 bytes).

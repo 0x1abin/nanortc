@@ -9,11 +9,15 @@
 #include "nano_crypto.h"
 #include "nano_ice.h"
 #include "nano_stun.h"
-#include "nano_sctp.h"
-#include "nano_datachannel.h"
 #include "nano_sdp.h"
 #include "nano_log.h"
 #include "nanortc_util.h"
+
+#if NANO_FEATURE_DATACHANNEL
+#include "nano_sctp.h"
+#include "nano_datachannel.h"
+#endif
+
 #include <string.h>
 
 int nano_rtc_init(nano_rtc_t *rtc, const nano_rtc_config_t *cfg)
@@ -34,23 +38,29 @@ int nano_rtc_init(nano_rtc_t *rtc, const nano_rtc_config_t *cfg)
     ice_init(&rtc->ice, cfg->role == NANO_ROLE_CONTROLLING);
     /* DTLS context is created early in accept_offer (for SDP fingerprint);
      * handshake starts when ICE connects. */
+    sdp_init(&rtc->sdp);
+
+#if NANO_FEATURE_DATACHANNEL
     nsctp_init(&rtc->sctp);
     dc_init(&rtc->datachannel);
-    sdp_init(&rtc->sdp);
+#endif
 
     /* Default DTLS setup from ICE role (overridden by SDP negotiation in accept_offer) */
     if (cfg->role == NANO_ROLE_CONTROLLING) {
         rtc->sdp.local_setup = NANO_SDP_SETUP_ACTIVE;
     }
 
-#if NANORTC_PROFILE >= NANO_PROFILE_AUDIO
+#if NANO_HAVE_MEDIA_TRANSPORT
     rtp_init(&rtc->rtp, 0, 0);
     rtcp_init(&rtc->rtcp, 0);
     srtp_init(&rtc->srtp);
+#endif
+
+#if NANO_FEATURE_AUDIO
     jitter_init(&rtc->jitter, cfg->jitter_depth_ms);
 #endif
 
-#if NANORTC_PROFILE >= NANO_PROFILE_MEDIA
+#if NANO_FEATURE_VIDEO
     bwe_init(&rtc->bwe);
 #endif
 
@@ -103,6 +113,7 @@ int nano_accept_offer(nano_rtc_t *rtc, const char *offer, char *answer_buf, size
     rtc->ice.remote_ufrag_len = strlen(rtc->sdp.remote_ufrag); /* NANO_SAFE: API boundary */
     rtc->ice.remote_pwd_len = strlen(rtc->sdp.remote_pwd);     /* NANO_SAFE: API boundary */
 
+#if NANO_FEATURE_DATACHANNEL
     /* Set SCTP remote port from SDP */
     if (rtc->sdp.remote_sctp_port > 0) {
         rtc->sctp.remote_port = rtc->sdp.remote_sctp_port;
@@ -110,6 +121,7 @@ int nano_accept_offer(nano_rtc_t *rtc, const char *offer, char *answer_buf, size
 
     /* Set crypto provider on SCTP for cookie generation */
     rtc->sctp.crypto = rtc->config.crypto;
+#endif
 
     /* Generate local ICE credentials via crypto random */
     if (rtc->config.crypto) {
@@ -360,6 +372,7 @@ static int rtc_begin_dtls_handshake(nano_rtc_t *rtc, const nano_addr_t *src)
     return NANO_OK;
 }
 
+#if NANO_FEATURE_DATACHANNEL
 /* ----------------------------------------------------------------
  * Internal: drain SCTP output through DTLS encrypt → transmit queue
  * ---------------------------------------------------------------- */
@@ -387,6 +400,7 @@ static void rtc_pump_sctp_through_dtls(nano_rtc_t *rtc, const nano_addr_t *dest)
         nsctp_out = 0;
     }
 }
+#endif /* NANO_FEATURE_DATACHANNEL */
 
 /* ----------------------------------------------------------------
  * nano_handle_receive — RFC 7983 demux
@@ -481,6 +495,7 @@ int nano_handle_receive(nano_rtc_t *rtc, uint32_t now_ms, const uint8_t *data, s
 
             rtc_cache_fingerprint(rtc);
 
+#if NANO_FEATURE_DATACHANNEL
             /* Initiate SCTP: DTLS client sends INIT (RFC 8831) */
             if (!rtc->dtls.is_server) {
                 nsctp_start(&rtc->sctp);
@@ -489,8 +504,13 @@ int nano_handle_receive(nano_rtc_t *rtc, uint32_t now_ms, const uint8_t *data, s
                 /* Drain SCTP output (INIT) through DTLS encrypt */
                 rtc_pump_sctp_through_dtls(rtc, src);
             }
+#else
+            /* No DataChannel — DTLS connected is final state */
+            rtc->state = NANO_STATE_CONNECTED;
+#endif
         }
 
+#if NANO_FEATURE_DATACHANNEL
         /* If DTLS is established, check for decrypted app data → SCTP */
         if (rtc->dtls.state == NANO_DTLS_STATE_ESTABLISHED) {
             const uint8_t *app_data = NULL;
@@ -570,6 +590,7 @@ int nano_handle_receive(nano_rtc_t *rtc, uint32_t now_ms, const uint8_t *data, s
                 app_len = 0;
             }
         }
+#endif /* NANO_FEATURE_DATACHANNEL */
 
         return NANO_OK;
 
@@ -631,6 +652,7 @@ int nano_handle_timeout(nano_rtc_t *rtc, uint32_t now_ms)
         }
     }
 
+#if NANO_FEATURE_DATACHANNEL
     /* SCTP: retransmission + heartbeat timers */
     if (rtc->sctp.state == NANO_SCTP_STATE_ESTABLISHED) {
         nsctp_handle_timeout(&rtc->sctp, now_ms);
@@ -638,14 +660,16 @@ int nano_handle_timeout(nano_rtc_t *rtc, uint32_t now_ms)
         /* Pump any SCTP output (retransmits, heartbeats, pending DATA) through DTLS */
         rtc_pump_sctp_through_dtls(rtc, &rtc->remote_addr);
     }
+#endif
 
     return NANO_OK;
 }
 
 /* ----------------------------------------------------------------
- * DataChannel API stubs
+ * DataChannel API
  * ---------------------------------------------------------------- */
 
+#if NANO_FEATURE_DATACHANNEL
 int nano_send_datachannel(nano_rtc_t *rtc, uint16_t stream_id, const void *data, size_t len)
 {
     if (!rtc || !data) {
@@ -673,8 +697,9 @@ int nano_send_datachannel_string(nano_rtc_t *rtc, uint16_t stream_id, const char
     uint32_t ppid = (len > 0) ? DCEP_PPID_STRING : DCEP_PPID_STRING_EMPTY;
     return nsctp_send(&rtc->sctp, stream_id, ppid, (const uint8_t *)str, len);
 }
+#endif /* NANO_FEATURE_DATACHANNEL */
 
-#if NANORTC_PROFILE >= NANO_PROFILE_AUDIO
+#if NANO_FEATURE_AUDIO
 int nano_send_audio(nano_rtc_t *rtc, uint32_t timestamp, const void *data, size_t len)
 {
     (void)rtc;
@@ -685,7 +710,7 @@ int nano_send_audio(nano_rtc_t *rtc, uint32_t timestamp, const void *data, size_
 }
 #endif
 
-#if NANORTC_PROFILE >= NANO_PROFILE_MEDIA
+#if NANO_FEATURE_VIDEO
 int nano_send_video(nano_rtc_t *rtc, uint32_t timestamp, const void *data, size_t len,
                     int is_keyframe)
 {

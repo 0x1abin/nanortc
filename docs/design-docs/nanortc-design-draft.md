@@ -22,49 +22,50 @@ DataChannel-only 构建（~60KB RAM）到完整的音视频媒体传输。
 |---|------|------|
 | 1 | **Sans I/O** | NanoRTC 不持有 socket，不创建线程，不调用任何操作系统 API。它是一个纯粹的状态机，完全由外部输入驱动。这使其天然具备可移植性和可测试性。 |
 | 2 | **可插拔加密** | 默认加密库是 **mbedtls**（嵌入式平台内置），也支持 **OpenSSL**（Linux 主机开发）。加密操作通过可插拔的 provider 接口抽象，编译时选择后端。 |
-| 3 | **编译时可裁剪** | 三个构建 profile 控制功能包含关系，每个 profile 是前一个的严格超集。代码体积和 RAM 占用按比例缩放。 |
+| 3 | **编译时可裁剪** | 正交特性标志（`NANO_FEATURE_DATACHANNEL`、`NANO_FEATURE_AUDIO`、`NANO_FEATURE_VIDEO`）允许任意组合，代码体积和 RAM 占用按功能缩放。 |
 | 4 | **以 lwIP BSD Socket 为网络基线** | NanoRTC 自身从不调用 socket API。应用层的事件循环使用 lwIP BSD socket API（≥ 2.1.0）进行网络 I/O，该接口在几乎所有嵌入式平台上都可用。 |
 | 5 | **RTOS 无关** | NanoRTC 核心内部不包含任何 FreeRTOS 特定 API。平台差异（线程、定时器、熵源）完全在应用层事件循环中处理，不在库内部。 |
 
-### 1.3 构建 Profile
+### 1.3 特性标志
 
 ```c
-// nanortc_config.h — 选择一个 profile
+// nanortc_config.h — 正交特性标志，任意组合
 
-#define NANO_PROFILE_DATA       1   // 仅 DataChannel
-#define NANO_PROFILE_AUDIO      2   // DataChannel + 音频 (RTP/SRTP)
-#define NANO_PROFILE_MEDIA      3   // DataChannel + 音频 + 视频 (RTP/SRTP)
-
-// 用户定义其中一个：
-#define NANORTC_PROFILE  NANO_PROFILE_DATA
+#define NANO_FEATURE_DATACHANNEL  1   // SCTP + DCEP DataChannel
+#define NANO_FEATURE_DC_RELIABLE  1   // 可靠重传（DC 子特性）
+#define NANO_FEATURE_DC_ORDERED   1   // 有序交付（DC 子特性）
+#define NANO_FEATURE_AUDIO        0   // 音频 (RTP/SRTP/Jitter)
+#define NANO_FEATURE_VIDEO        0   // 视频 (RTP/SRTP/BWE)
 ```
 
-各 profile 功能矩阵：
+特性标志 → 模块映射：
 
-| 功能 | `DATA` | `AUDIO` | `MEDIA` |
-|------|--------|---------|---------|
-| ICE (STUN) | ✅ | ✅ | ✅ |
-| DTLS 1.2 | ✅ | ✅ | ✅ |
-| SCTP | ✅ | ✅ | ✅ |
-| DataChannel（可靠/不可靠） | ✅ | ✅ | ✅ |
-| SDP（DataChannel m-line） | ✅ | ✅ | ✅ |
-| SRTP 密钥导出 | — | ✅ | ✅ |
-| RTP 打包/解包 | — | ✅ | ✅ |
-| RTCP（SR/RR/NACK） | — | ✅ | ✅ |
-| 音频编解码（Opus/G.711） | — | ✅ | ✅ |
-| SDP（audio m-line） | — | ✅ | ✅ |
-| 视频编解码（H.264/VP8） | — | — | ✅ |
-| SDP（video m-line） | — | — | ✅ |
-| Jitter Buffer | — | ✅ | ✅ |
-| 带宽估计 | — | — | ✅（可选） |
+| 特性标志 | 编译的模块 |
+|----------|-----------|
+| *(核心，始终包含)* | rtc, ice, stun, dtls, sdp, crc32 |
+| `NANO_FEATURE_DATACHANNEL` | sctp, datachannel, crc32c |
+| `NANO_FEATURE_AUDIO` 或 `VIDEO` | rtp, rtcp, srtp |
+| `NANO_FEATURE_AUDIO` | jitter |
+| `NANO_FEATURE_VIDEO` | bwe |
+
+CI 测试的 6 种组合：
+
+| 名称 | DC | AUDIO | VIDEO |
+|------|-----|-------|-------|
+| DATA | ON | OFF | OFF |
+| AUDIO | ON | ON | OFF |
+| MEDIA | ON | ON | ON |
+| AUDIO_ONLY | OFF | ON | OFF |
+| MEDIA_ONLY | OFF | ON | ON |
+| CORE_ONLY | OFF | OFF | OFF |
 
 预估资源占用（ESP32，-Os 编译）：
 
-| Profile | Flash | RAM（空闲） | RAM（1 连接） |
-|---------|-------|------------|---------------|
-| `DATA` | ~80KB | ~8KB | ~50-60KB |
-| `AUDIO` | ~130KB | ~10KB | ~80-100KB |
-| `MEDIA` | ~180KB | ~12KB | ~120-160KB |
+| 组合 | Flash | RAM（空闲） | RAM（1 连接） |
+|------|-------|------------|---------------|
+| DC only | ~80KB | ~8KB | ~50-60KB |
+| DC + AUDIO | ~130KB | ~10KB | ~80-100KB |
+| DC + AUDIO + VIDEO | ~180KB | ~12KB | ~120-160KB |
 
 ---
 
@@ -123,19 +124,21 @@ int  nano_handle_receive(nano_rtc_t *rtc, uint32_t now_ms,
                          const nano_addr_t *src);
 int  nano_handle_timeout(nano_rtc_t *rtc, uint32_t now_ms);
 
-// ---- DataChannel（所有 profile）----
+// ---- DataChannel ----
+#if NANO_FEATURE_DATACHANNEL
 int  nano_send_datachannel(nano_rtc_t *rtc, uint16_t stream_id,
                            const void *data, size_t len);
 int  nano_send_datachannel_string(nano_rtc_t *rtc, uint16_t stream_id,
                                   const char *str);
+#endif
 
-// ---- 媒体（仅 AUDIO / MEDIA profile）----
-#if NANORTC_PROFILE >= NANO_PROFILE_AUDIO
+// ---- 媒体 ----
+#if NANO_FEATURE_AUDIO
 int  nano_send_audio(nano_rtc_t *rtc, uint32_t timestamp,
                      const void *data, size_t len);
 #endif
 
-#if NANORTC_PROFILE >= NANO_PROFILE_MEDIA
+#if NANO_FEATURE_VIDEO
 int  nano_send_video(nano_rtc_t *rtc, uint32_t timestamp,
                      const void *data, size_t len, int is_keyframe);
 int  nano_request_keyframe(nano_rtc_t *rtc);
@@ -158,20 +161,16 @@ typedef enum {
     NANO_EVENT_SCTP_CONNECTED,
     NANO_EVENT_DISCONNECTED,
 
-    // DataChannel（所有 profile）
-    NANO_EVENT_DATACHANNEL_OPEN,
-    NANO_EVENT_DATACHANNEL_CLOSE,
-    NANO_EVENT_DATACHANNEL_DATA,
-    NANO_EVENT_DATACHANNEL_STRING,
+    // DataChannel
+    NANO_EVENT_DATACHANNEL_OPEN   = 4,
+    NANO_EVENT_DATACHANNEL_CLOSE  = 5,
+    NANO_EVENT_DATACHANNEL_DATA   = 6,
+    NANO_EVENT_DATACHANNEL_STRING = 7,
 
-    // 媒体（AUDIO / MEDIA profile）
-#if NANORTC_PROFILE >= NANO_PROFILE_AUDIO
-    NANO_EVENT_AUDIO_DATA,
-#endif
-#if NANORTC_PROFILE >= NANO_PROFILE_MEDIA
-    NANO_EVENT_VIDEO_DATA,
-    NANO_EVENT_KEYFRAME_REQUEST,
-#endif
+    // 媒体（枚举值始终定义，代码在特性标志下编译）
+    NANO_EVENT_AUDIO_DATA         = 8,
+    NANO_EVENT_VIDEO_DATA         = 9,
+    NANO_EVENT_KEYFRAME_REQUEST   = 10,
 } nano_event_type_t;
 ```
 
@@ -192,14 +191,14 @@ nanortc/
 │   ├── nano_datachannel.c         // DCEP 协议 + DataChannel 逻辑
 │   ├── nano_crc32c.c              // CRC-32c（SCTP 校验和，查表实现）
 │   │
-│   │   // 条件编译: AUDIO 和 MEDIA profile
+│   │   // 条件编译: NANO_FEATURE_AUDIO || NANO_FEATURE_VIDEO
 │   ├── nano_rtp.c                 // RTP 打包/解包
 │   ├── nano_rtcp.c                // RTCP SR/RR/NACK/PLI
 │   ├── nano_srtp.c                // SRTP 加解密
-│   ├── nano_jitter.c              // Jitter buffer
+│   ├── nano_jitter.c              // Jitter buffer (NANO_FEATURE_AUDIO)
 │   │
-│   │   // 条件编译: 仅 MEDIA profile
-│   └── nano_bwe.c                 // 带宽估计（可选）
+│   │   // 条件编译: NANO_FEATURE_VIDEO
+│   └── nano_bwe.c                 // 带宽估计
 │
 ├── crypto/
 │   ├── nano_crypto.h              // 可插拔 crypto provider 接口
@@ -232,42 +231,50 @@ nanortc/
 ### 2.5 条件编译
 
 ```c
-// nano_rtc.c 内部 — 基于 profile 包含模块
+// nano_rtc.c 内部 — 基于特性标志包含模块
 
 #include "nano_sdp.h"
 #include "nano_ice.h"
 #include "nano_dtls.h"
+
+#if NANO_FEATURE_DATACHANNEL
 #include "nano_sctp.h"
 #include "nano_datachannel.h"
+#endif
 
-#if NANORTC_PROFILE >= NANO_PROFILE_AUDIO
+#if NANO_HAVE_MEDIA_TRANSPORT
 #include "nano_rtp.h"
 #include "nano_rtcp.h"
 #include "nano_srtp.h"
+#endif
+
+#if NANO_FEATURE_AUDIO
 #include "nano_jitter.h"
 #endif
 
-#if NANORTC_PROFILE >= NANO_PROFILE_MEDIA
+#if NANO_FEATURE_VIDEO
 #include "nano_bwe.h"
 #endif
 ```
 
-SDP 生成根据 profile 自适应：
+SDP 生成根据特性标志自适应：
 
 ```c
 // nano_sdp.c
 void nano_sdp_generate(nano_sdp_t *sdp, char *buf, size_t len) {
     // 始终包含: 会话级字段 (v=, o=, s=, t=, ice-ufrag, ice-pwd, fingerprint)
 
-    // 始终包含: DataChannel m-line
+#if NANO_FEATURE_DATACHANNEL
+    // DataChannel m-line
     sdp_append_datachannel_mline(sdp, buf, len);
+#endif
 
-#if NANORTC_PROFILE >= NANO_PROFILE_AUDIO
+#if NANO_FEATURE_AUDIO
     // 音频 m-line（含编解码器协商）
     sdp_append_audio_mline(sdp, buf, len);
 #endif
 
-#if NANORTC_PROFILE >= NANO_PROFILE_MEDIA
+#if NANO_FEATURE_VIDEO
     // 视频 m-line（含编解码器协商）
     sdp_append_video_mline(sdp, buf, len);
 #endif
@@ -295,13 +302,13 @@ void nano_sdp_generate(nano_sdp_t *sdp, char *buf, size_t len) {
        │                   ┌────────┴────────┐
        │                   ▼                 ▼
        │              SCTP chunk        SRTP 密钥相关
-       │              nano_sctp.c       (仅 AUDIO/MEDIA profile)
+       │              nano_sctp.c       (NANO_FEATURE_DATACHANNEL)
        │                   │
        │                   ▼
        │           DataChannel 消息
        │           nano_datachannel.c
        │
-       └── [0x80-0xBF]  → SRTP (仅 AUDIO/MEDIA profile)
+       └── [0x80-0xBF]  → SRTP (NANO_HAVE_MEDIA_TRANSPORT)
                             → nano_srtp.c → nano_rtp.c
 ```
 
@@ -431,7 +438,7 @@ CLOSED ──(收到 INIT)──> COOKIE_WAIT
 
 **预估实现量**：约 300-500 行 C 代码。
 
-### 3.6 RTP/RTCP（nano_rtp.c, nano_rtcp.c）— AUDIO/MEDIA profile
+### 3.6 RTP/RTCP（nano_rtp.c, nano_rtcp.c）— NANO_HAVE_MEDIA_TRANSPORT
 
 **RTP（nano_rtp.c）：**
 
@@ -439,24 +446,24 @@ CLOSED ──(收到 INIT)──> COOKIE_WAIT
 - 从 SDP 协商映射 payload type
 - 序列号和时间戳管理
 - 音频打包：Opus, G.711（A-law / μ-law）
-- 视频打包（MEDIA profile）：H.264（FU-A）, VP8
+- 视频打包（NANO_FEATURE_VIDEO）：H.264（FU-A）, VP8
 
 **RTCP（nano_rtcp.c）：**
 
 - 发送方报告（SR）生成
 - 接收方报告（RR）生成
 - NACK（通用否定确认，RFC 4585）
-- PLI（图片丢失指示）— 关键帧请求（MEDIA profile）
-- REMB（接收方估计最大带宽）— 可选，MEDIA profile
+- PLI（图片丢失指示）— 关键帧请求（NANO_FEATURE_VIDEO）
+- REMB（接收方估计最大带宽）— 可选，NANO_FEATURE_VIDEO
 
-### 3.7 SRTP（nano_srtp.c）— AUDIO/MEDIA profile
+### 3.7 SRTP（nano_srtp.c）— NANO_HAVE_MEDIA_TRANSPORT
 
 - AES-128-CM + HMAC-SHA1-80（RFC 8827 强制要求）
 - 从 DTLS `export_keying_material()` 导出密钥
 - 滑动窗口重放保护
 - 通过 crypto provider 调用 AES 和 HMAC 原语
 
-### 3.8 Jitter Buffer（nano_jitter.c）— AUDIO/MEDIA profile
+### 3.8 Jitter Buffer（nano_jitter.c）— NANO_FEATURE_AUDIO
 
 - 固定大小环形缓冲区（可配置深度）
 - 基于序列号重排序
@@ -466,11 +473,11 @@ CLOSED ──(收到 INIT)──> COOKIE_WAIT
 
 ### 3.9 SDP（nano_sdp.c）
 
-根据 profile 自适应的 SDP 生成和解析：
+根据特性标志自适应的 SDP 生成和解析：
 
-- `DATA`：仅生成 `m=application` 行（SCTP/DTLS）
-- `AUDIO`：增加 `m=audio` 行及协商的编解码器
-- `MEDIA`：增加 `m=audio` 和 `m=video` 行
+- `NANO_FEATURE_DATACHANNEL`：生成 `m=application` 行（SCTP/DTLS）
+- `NANO_FEATURE_AUDIO`：增加 `m=audio` 行及协商的编解码器
+- `NANO_FEATURE_VIDEO`：增加 `m=video` 行
 
 解析提取：ICE 凭据（ufrag/pwd）、DTLS 指纹、候选地址、编解码器参数、m-line 方向性。
 
@@ -521,7 +528,7 @@ typedef struct nano_crypto_provider {
     int  (*random_bytes)(uint8_t *buf, size_t len);
 
     // ---- SRTP（AUDIO/MEDIA profile 必需）----
-#if NANORTC_PROFILE >= NANO_PROFILE_AUDIO
+#if NANO_HAVE_MEDIA_TRANSPORT
     int  (*aes_128_cm)(const uint8_t key[16], const uint8_t iv[16],
                        const uint8_t *in, size_t len, uint8_t *out);
     void (*hmac_sha1_80)(const uint8_t *key, size_t key_len,
@@ -546,7 +553,7 @@ nano_rtc_config_t cfg = {
     .sctp_send_buf_size = 64 * 1024,    // 64KB 发送缓冲区
     .sctp_recv_buf_size = 64 * 1024,    // 64KB 接收缓冲区
 
-#if NANORTC_PROFILE >= NANO_PROFILE_AUDIO
+#if NANO_HAVE_MEDIA_TRANSPORT
     .audio_codec = NANO_CODEC_OPUS,
     .audio_sample_rate = 48000,
     .audio_channels = 1,
@@ -554,7 +561,7 @@ nano_rtc_config_t cfg = {
     .jitter_depth_ms = 100,
 #endif
 
-#if NANORTC_PROFILE >= NANO_PROFILE_MEDIA
+#if NANO_FEATURE_VIDEO
     .video_codec = NANO_CODEC_H264,
     .video_direction = NANO_DIR_SENDONLY,
 #endif
@@ -716,12 +723,12 @@ static void handle_event(nano_rtc_t *rtc, nano_event_t *evt) {
     case NANO_EVENT_DATACHANNEL_STRING:
         printf("收到: %.*s\n", (int)evt->len, (char *)evt->data);
         break;
-#if NANORTC_PROFILE >= NANO_PROFILE_AUDIO
+#if NANO_HAVE_MEDIA_TRANSPORT
     case NANO_EVENT_AUDIO_DATA:
         audio_play(evt->data, evt->len, evt->timestamp);
         break;
 #endif
-#if NANORTC_PROFILE >= NANO_PROFILE_MEDIA
+#if NANO_FEATURE_VIDEO
     case NANO_EVENT_VIDEO_DATA:
         video_decode(evt->data, evt->len, evt->timestamp, evt->is_keyframe);
         break;
@@ -781,19 +788,19 @@ void nano_stop_easy(nano_rtc_t *rtc);
 
 | 组件 | 行数（预估） | 说明 |
 |------|-------------|------|
-| STUN 编解码 | ~400 | 所有 profile |
-| ICE agent | ~400 | 所有 profile |
-| SCTP-Lite | ~2500 | 所有 profile |
-| SDP 解析/生成 | ~600-800 | 随 profile 扩展 |
-| DataChannel（DCEP） | ~400 | 所有 profile |
-| CRC-32c | ~30 | 所有 profile |
-| RTP 打包器 | ~500 | AUDIO/MEDIA profile |
-| RTCP | ~600 | AUDIO/MEDIA profile |
-| SRTP | ~400 | AUDIO/MEDIA profile |
-| Jitter Buffer | ~400 | AUDIO/MEDIA profile |
-| 带宽估计 | ~300 | MEDIA profile（可选） |
+| STUN 编解码 | ~400 | 核心（始终） |
+| ICE agent | ~400 | 核心（始终） |
+| SCTP-Lite | ~2500 | NANO_FEATURE_DATACHANNEL |
+| SDP 解析/生成 | ~600-800 | 核心 + 按特性扩展 |
+| DataChannel（DCEP） | ~400 | NANO_FEATURE_DATACHANNEL |
+| CRC-32c | ~30 | NANO_FEATURE_DATACHANNEL |
+| RTP 打包器 | ~500 | NANO_HAVE_MEDIA_TRANSPORT |
+| RTCP | ~600 | NANO_HAVE_MEDIA_TRANSPORT |
+| SRTP | ~400 | NANO_HAVE_MEDIA_TRANSPORT |
+| Jitter Buffer | ~400 | NANO_FEATURE_AUDIO |
+| 带宽估计 | ~300 | NANO_FEATURE_VIDEO |
 
-总计：DATA ~4200 行，AUDIO ~6100 行，MEDIA ~6400 行。
+总计：核心 ~1400 行，+DC ~4200 行，+音视频 ~6400 行。
 
 ---
 
@@ -810,7 +817,7 @@ void nano_stop_easy(nano_rtc_t *rtc);
 ├── nano_crypto_mbedtls.c（DTLS + HMAC + random）
 └── Linux 测试环境（合成数据，无需真实网络）
 
-阶段 1: DataChannel 端到端（DATA profile）             [3-4 周]
+阶段 1: DataChannel 端到端（NANO_FEATURE_DATACHANNEL）  [3-4 周]
 ├── 第 1 周: STUN + ICE
 │   ├── nano_stun.c — STUN 消息编解码
 │   ├── nano_ice.c — ICE 状态机（controlled + controlling）
@@ -833,7 +840,7 @@ void nano_stop_easy(nano_rtc_t *rtc);
 │   ├── 端到端测试: NanoRTC ↔ 浏览器 DataChannel
 │   └── ESP32 示例: MQTT 信令 + DataChannel echo
 
-阶段 2: 音频（AUDIO profile）                          [2-3 周]
+阶段 2: 音频（NANO_FEATURE_AUDIO）                      [2-3 周]
 ├── nano_srtp.c — SRTP 加解密
 ├── nano_rtp.c — RTP 打包/解包（Opus, G.711）
 ├── nano_rtcp.c — SR/RR/NACK 生成
@@ -842,7 +849,7 @@ void nano_stop_easy(nano_rtc_t *rtc);
 ├── 测试: 与浏览器双向音频
 └── ESP32 示例: 音频对讲
 
-阶段 3: 视频（MEDIA profile）                          [2-3 周]
+阶段 3: 视频（NANO_FEATURE_VIDEO）                      [2-3 周]
 ├── nano_rtp.c — 增加 H.264 FU-A / VP8 打包
 ├── nano_rtcp.c — 增加 PLI（关键帧请求）
 ├── nano_sdp.c — 增加 video m-line 支持
@@ -936,8 +943,8 @@ HTTP 信令适配层。
 5. **解析器优先写测试**：STUN、SDP、SCTP chunk 编解码应以测试驱动开发，
    使用从浏览器流量捕获的已知正确字节序列作为测试数据。
 
-6. **Profile 守卫**：每个与媒体相关的函数、结构体字段和 include 都必须用
-   `#if NANORTC_PROFILE >= NANO_PROFILE_AUDIO`（或 `MEDIA`）包裹。
+6. **特性标志守卫**：使用正交特性标志：`#if NANO_FEATURE_DATACHANNEL`（SCTP/DC）、
+   `#if NANO_HAVE_MEDIA_TRANSPORT`（RTP/SRTP）、`#if NANO_FEATURE_AUDIO`、`#if NANO_FEATURE_VIDEO`。
 
 7. **无全局状态**：所有状态存在于 `nano_rtc_t` 内部。多个 `nano_rtc_t` 实例
    必须能独立共存。

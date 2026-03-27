@@ -50,7 +50,8 @@ static int nano_tests_failed = 0;
 #define TEST_MAIN_BEGIN(suite_name)                                                      \
     int main(void)                                                                       \
     {                                                                                    \
-        printf("%s (profile=%d)\n", suite_name, NANORTC_PROFILE);
+        printf("%s (DC=%d AUDIO=%d VIDEO=%d)\n", suite_name, \
+               NANO_FEATURE_DATACHANNEL, NANO_FEATURE_AUDIO, NANO_FEATURE_VIDEO);
 
 #define RUN(name) run_##name()
 

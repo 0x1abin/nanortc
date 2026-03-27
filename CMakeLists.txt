@@ -9,13 +9,10 @@ if(DEFINED ENV{IDF_PATH})
         src/nano_ice.c
         src/nano_stun.c
         src/nano_dtls.c
-        src/nano_sctp.c
-        src/nano_datachannel.c
-        src/nano_crc32c.c
         src/nano_crc32.c
         crypto/nano_crypto_mbedtls.c
     )
-    # Audio/Media sources added via NANORTC_PROFILE in Kconfig
+    # Feature-conditional sources added via Kconfig (see nanortc_config.h)
     idf_component_register(
         SRCS ${NANORTC_CORE_SRCS}
         INCLUDE_DIRS include
@@ -30,19 +27,14 @@ project(nanortc VERSION 0.1.0 LANGUAGES C)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
-# Profile selection
-set(NANORTC_PROFILE "DATA" CACHE STRING "Build profile: DATA, AUDIO, or MEDIA")
-set_property(CACHE NANORTC_PROFILE PROPERTY STRINGS DATA AUDIO MEDIA)
+# Feature flags (orthogonal)
+option(NANO_FEATURE_DATACHANNEL "Enable DataChannel (SCTP+DCEP)" ON)
+option(NANO_FEATURE_DC_RELIABLE "Enable reliable DataChannel delivery" ON)
+option(NANO_FEATURE_DC_ORDERED  "Enable ordered DataChannel delivery" ON)
+option(NANO_FEATURE_AUDIO "Enable audio (RTP/SRTP/Jitter)" OFF)
+option(NANO_FEATURE_VIDEO "Enable video (RTP/SRTP/BWE)" OFF)
 
-if(NANORTC_PROFILE STREQUAL "AUDIO")
-    set(PROFILE_NUM 2)
-elseif(NANORTC_PROFILE STREQUAL "MEDIA")
-    set(PROFILE_NUM 3)
-else()
-    set(PROFILE_NUM 1)
-endif()
-
-message(STATUS "nanortc profile: ${NANORTC_PROFILE} (${PROFILE_NUM})")
+message(STATUS "nanortc features: DC=${NANO_FEATURE_DATACHANNEL} DC_REL=${NANO_FEATURE_DC_RELIABLE} DC_ORD=${NANO_FEATURE_DC_ORDERED} AUDIO=${NANO_FEATURE_AUDIO} VIDEO=${NANO_FEATURE_VIDEO}")
 
 # Crypto backend selection
 set(NANORTC_CRYPTO "mbedtls" CACHE STRING "Crypto backend: mbedtls or openssl")
@@ -53,7 +45,7 @@ message(STATUS "nanortc crypto: ${NANORTC_CRYPTO}")
 # User configuration file override (e.g. -DNANORTC_CONFIG_FILE=\"my_config.h\")
 set(NANORTC_CONFIG_FILE "" CACHE STRING "Path to user nanortc config header override")
 
-# ---- Core sources (all profiles) ----
+# ---- Core sources (always compiled) ----
 set(NANORTC_SOURCES
     src/nano_rtc.c
     src/nano_log.c
@@ -61,24 +53,36 @@ set(NANORTC_SOURCES
     src/nano_ice.c
     src/nano_stun.c
     src/nano_dtls.c
-    src/nano_sctp.c
-    src/nano_datachannel.c
-    src/nano_crc32c.c
     src/nano_crc32.c
 )
 
-# ---- Audio sources (AUDIO and MEDIA profiles) ----
-if(PROFILE_NUM GREATER_EQUAL 2)
+# ---- DataChannel sources ----
+if(NANO_FEATURE_DATACHANNEL)
+    list(APPEND NANORTC_SOURCES
+        src/nano_sctp.c
+        src/nano_datachannel.c
+        src/nano_crc32c.c
+    )
+endif()
+
+# ---- Media transport sources (shared by audio and video) ----
+if(NANO_FEATURE_AUDIO OR NANO_FEATURE_VIDEO)
     list(APPEND NANORTC_SOURCES
         src/nano_rtp.c
         src/nano_rtcp.c
         src/nano_srtp.c
+    )
+endif()
+
+# ---- Audio-specific sources ----
+if(NANO_FEATURE_AUDIO)
+    list(APPEND NANORTC_SOURCES
         src/nano_jitter.c
     )
 endif()
 
-# ---- Media sources (MEDIA profile only) ----
-if(PROFILE_NUM GREATER_EQUAL 3)
+# ---- Video-specific sources ----
+if(NANO_FEATURE_VIDEO)
     list(APPEND NANORTC_SOURCES
         src/nano_bwe.c
     )
@@ -97,7 +101,15 @@ endif()
 add_library(nanortc ${NANORTC_SOURCES})
 target_include_directories(nanortc PUBLIC include)
 target_include_directories(nanortc PRIVATE src crypto)
-target_compile_definitions(nanortc PUBLIC NANORTC_PROFILE=${PROFILE_NUM})
+
+# Pass feature flags as compile definitions
+target_compile_definitions(nanortc PUBLIC
+    NANO_FEATURE_DATACHANNEL=$<BOOL:${NANO_FEATURE_DATACHANNEL}>
+    NANO_FEATURE_DC_RELIABLE=$<BOOL:${NANO_FEATURE_DC_RELIABLE}>
+    NANO_FEATURE_DC_ORDERED=$<BOOL:${NANO_FEATURE_DC_ORDERED}>
+    NANO_FEATURE_AUDIO=$<BOOL:${NANO_FEATURE_AUDIO}>
+    NANO_FEATURE_VIDEO=$<BOOL:${NANO_FEATURE_VIDEO}>
+)
 
 if(NANORTC_CONFIG_FILE)
     target_compile_definitions(nanortc PUBLIC NANORTC_CONFIG_FILE="${NANORTC_CONFIG_FILE}")

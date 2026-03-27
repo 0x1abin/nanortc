@@ -125,7 +125,7 @@ int main(int argc, char *argv[])
     }
     nano_run_loop_set_event_cb(&loop, on_event, NULL);
 
-    fprintf(stderr, "nanortc DataChannel echo (port=%d, profile=%d)\n", port, NANORTC_PROFILE);
+    fprintf(stderr, "nanortc DataChannel echo (port=%d, DC=%d)\n", port, NANO_FEATURE_DATACHANNEL);
 
     /* 3. Signaling: exchange SDP via stdin/stdout */
     nano_signaling_t sig;

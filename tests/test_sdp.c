@@ -117,8 +117,10 @@ TEST(test_sdp_generate_answer)
     ASSERT_TRUE(strstr(buf, "a=ice-ufrag:abcd1234") != NULL);
     ASSERT_TRUE(strstr(buf, "a=ice-pwd:password0123456789ab") != NULL);
     ASSERT_TRUE(strstr(buf, "a=setup:passive") != NULL);
+#if NANO_FEATURE_DATACHANNEL
     ASSERT_TRUE(strstr(buf, "a=sctp-port:5000") != NULL);
     ASSERT_TRUE(strstr(buf, "a=max-message-size:262144") != NULL);
+#endif
 }
 
 TEST(test_sdp_generate_overflow)
@@ -153,7 +155,9 @@ TEST(test_sdp_roundtrip)
     ASSERT_OK(sdp_parse(&sdp2, buf, out_len));
     ASSERT_MEM_EQ(sdp2.remote_ufrag, "myufrag", 7);
     ASSERT_MEM_EQ(sdp2.remote_pwd, "mypassword123456", 16);
+#if NANO_FEATURE_DATACHANNEL
     ASSERT_EQ(sdp2.remote_sctp_port, 5000);
+#endif
     ASSERT_EQ(sdp2.remote_setup, NANO_SDP_SETUP_ACTIVE);
 }
 
@@ -278,7 +282,9 @@ TEST(test_accept_offer_generates_answer)
     ASSERT_TRUE(strstr(answer, "v=0") != NULL);
     ASSERT_TRUE(strstr(answer, "a=ice-ufrag:") != NULL);
     ASSERT_TRUE(strstr(answer, "a=ice-pwd:") != NULL);
+#if NANO_FEATURE_DATACHANNEL
     ASSERT_TRUE(strstr(answer, "a=sctp-port:5000") != NULL);
+#endif
 
     /* Verify ICE credentials were set */
     ASSERT_TRUE(rtc.ice.remote_ufrag[0] != '\0');
