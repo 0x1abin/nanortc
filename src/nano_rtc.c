@@ -125,28 +125,30 @@ int nano_accept_offer(nano_rtc_t *rtc, const char *offer, char *answer_buf, size
 
     /* Generate local ICE credentials via crypto random */
     if (rtc->config.crypto) {
-        /* Generate 4-byte ufrag as hex */
-        uint8_t rnd[4];
+        /* Generate ufrag as hex (NANO_ICE_UFRAG_LEN/2 random bytes) */
+        uint8_t rnd[NANO_ICE_UFRAG_LEN / 2];
         rtc->config.crypto->random_bytes(rnd, sizeof(rnd));
         static const char hex[] = "0123456789abcdef";
-        for (int i = 0; i < 4; i++) {
+        for (int i = 0; i < (int)sizeof(rnd); i++) {
             rtc->sdp.local_ufrag[i * 2] = hex[(rnd[i] >> 4) & 0xF];
             rtc->sdp.local_ufrag[i * 2 + 1] = hex[rnd[i] & 0xF];
         }
+        rtc->sdp.local_ufrag[NANO_ICE_UFRAG_LEN] = '\0';
 
-        /* Generate 22-byte pwd as hex (first 11 random bytes) */
-        uint8_t rnd2[11];
+        /* Generate pwd as hex (NANO_ICE_PWD_LEN/2 random bytes) */
+        uint8_t rnd2[NANO_ICE_PWD_LEN / 2];
         rtc->config.crypto->random_bytes(rnd2, sizeof(rnd2));
-        for (int i = 0; i < 11; i++) {
+        for (int i = 0; i < (int)sizeof(rnd2); i++) {
             rtc->sdp.local_pwd[i * 2] = hex[(rnd2[i] >> 4) & 0xF];
             rtc->sdp.local_pwd[i * 2 + 1] = hex[rnd2[i] & 0xF];
         }
+        rtc->sdp.local_pwd[NANO_ICE_PWD_LEN] = '\0';
 
         /* Copy to ICE state */
         memcpy(rtc->ice.local_ufrag, rtc->sdp.local_ufrag, sizeof(rtc->ice.local_ufrag));
         memcpy(rtc->ice.local_pwd, rtc->sdp.local_pwd, sizeof(rtc->ice.local_pwd));
-        rtc->ice.local_ufrag_len = 8;
-        rtc->ice.local_pwd_len = 22;
+        rtc->ice.local_ufrag_len = NANO_ICE_UFRAG_LEN;
+        rtc->ice.local_pwd_len = NANO_ICE_PWD_LEN;
     }
 
     /* Determine DTLS role from remote setup (RFC 8842 §5.2) */

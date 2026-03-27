@@ -29,3 +29,11 @@ sdkconfig
 sdkconfig.old
 managed_components/
 dependencies.lock
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+env/
+venv/

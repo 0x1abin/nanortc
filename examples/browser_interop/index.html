@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>nanortc Browser Interop</title>
+<style>
+  body { font-family: monospace; max-width: 720px; margin: 2em auto; }
+  h1 { font-size: 1.2em; }
+  .row { margin: 0.5em 0; display: flex; gap: 0.5em; align-items: center; }
+  label { min-width: 60px; }
+  input[type=text] { flex: 1; padding: 4px; font-family: monospace; }
+  button { padding: 4px 12px; cursor: pointer; }
+  #log { border: 1px solid #ccc; padding: 8px; height: 300px; overflow-y: auto;
+         white-space: pre-wrap; font-size: 0.85em; background: #f8f8f8; }
+  .status { font-weight: bold; }
+  .ok { color: green; }
+  .err { color: red; }
+  .info { color: #666; }
+</style>
+</head>
+<body>
+<h1>nanortc Browser Interop Test</h1>
+
+<div class="row">
+  <label>Server:</label>
+  <input type="text" id="sigUrl" value="">
+  <select id="role">
+    <option value="offerer">Offerer (browser creates DC)</option>
+    <option value="answerer">Answerer (browser waits for DC)</option>
+  </select>
+  <button id="btnConnect" onclick="start()">Connect</button>
+</div>
+
+<div class="row">
+  <label>Status:</label>
+  <span id="status" class="status info">Not connected</span>
+</div>
+
+<div class="row">
+  <input type="text" id="msgInput" placeholder="Type a message..." disabled>
+  <button id="btnSend" onclick="sendMsg()" disabled>Send</button>
+</div>
+
+<div id="log"></div>
+
+<script>
+// Auto-detect signaling server URL (same origin)
+document.getElementById('sigUrl').value = location.origin;
+
+let peerId = -1;
+let pc = null;
+let dc = null;
+let pollTimer = null;
+
+function log(cls, msg) {
+  const el = document.getElementById('log');
+  const line = document.createElement('div');
+  line.className = cls;
+  line.textContent = '[' + new Date().toLocaleTimeString() + '] ' + msg;
+  el.appendChild(line);
+  el.scrollTop = el.scrollHeight;
+}
+
+function setStatus(cls, text) {
+  const el = document.getElementById('status');
+  el.className = 'status ' + cls;
+  el.textContent = text;
+}
+
+// --- HTTP signaling helpers ---
+
+async function sigJoin(base) {
+  const r = await fetch(base + '/join', {method: 'POST'});
+  if (!r.ok) throw new Error('join failed: ' + r.status);
+  const j = await r.json();
+  return j.id;
+}
+
+async function sigSend(base, id, msg) {
+  await fetch(base + '/send?id=' + id, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(msg)
+  });
+}
+
+async function sigRecv(base, id, timeout) {
+  const r = await fetch(base + '/recv?id=' + id + '&timeout=' + timeout);
+  if (r.status === 204) return null;
+  if (!r.ok) throw new Error('recv error: ' + r.status);
+  return await r.json();
+}
+
+async function sigLeave(base, id) {
+  await fetch(base + '/leave?id=' + id, {method: 'POST'}).catch(() => {});
+}
+
+// --- Poll for signaling messages ---
+
+function startPolling(base) {
+  if (pollTimer) return;
+  async function poll() {
+    try {
+      const msg = await sigRecv(base, peerId, 2);
+      if (msg) handleSignalingMessage(msg);
+    } catch(e) {
+      log('err', 'Poll error: ' + e.message);
+    }
+    if (pollTimer !== null) pollTimer = setTimeout(poll, 100);
+  }
+  pollTimer = setTimeout(poll, 100);
+}
+
+function stopPolling() {
+  if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+}
+
+// --- WebRTC ---
+
+function setupDC(channel) {
+  dc = channel;
+  dc.onopen = () => {
+    log('ok', 'DataChannel "' + dc.label + '" open');
+    setStatus('ok', 'DataChannel open');
+    document.getElementById('msgInput').disabled = false;
+    document.getElementById('btnSend').disabled = false;
+  };
+  dc.onclose = () => {
+    log('info', 'DataChannel closed');
+    setStatus('info', 'DataChannel closed');
+    document.getElementById('msgInput').disabled = true;
+    document.getElementById('btnSend').disabled = true;
+  };
+  dc.onmessage = (e) => {
+    log('info', '< ' + e.data);
+  };
+}
+
+async function handleSignalingMessage(msg) {
+  if (msg.type === 'offer' && pc) {
+    log('info', 'Got offer (' + msg.sdp.length + ' bytes)');
+    await pc.setRemoteDescription({type: 'offer', sdp: msg.sdp});
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    log('info', 'Sending answer');
+    await sigSend(document.getElementById('sigUrl').value, peerId,
+                  {type: 'answer', sdp: pc.localDescription.sdp});
+  } else if (msg.type === 'answer' && pc) {
+    log('info', 'Got answer (' + msg.sdp.length + ' bytes)');
+    await pc.setRemoteDescription({type: 'answer', sdp: msg.sdp});
+  } else if (msg.type === 'candidate' && pc && msg.candidate) {
+    log('info', 'Got ICE candidate');
+    await pc.addIceCandidate({candidate: msg.candidate, sdpMid: '0', sdpMLineIndex: 0});
+  }
+}
+
+async function start() {
+  const base = document.getElementById('sigUrl').value;
+  const role = document.getElementById('role').value;
+
+  document.getElementById('btnConnect').disabled = true;
+  setStatus('info', 'Joining signaling server...');
+
+  try {
+    peerId = await sigJoin(base);
+    log('ok', 'Joined as peer ' + peerId);
+  } catch(e) {
+    log('err', 'Join failed: ' + e.message);
+    setStatus('err', 'Join failed');
+    document.getElementById('btnConnect').disabled = false;
+    return;
+  }
+
+  // STUN server to get real IP candidates (mDNS candidates can't be parsed by nanortc)
+  pc = new RTCPeerConnection({
+    iceServers: [{urls: 'stun:stun.l.google.com:19302'}]
+  });
+
+  pc.oniceconnectionstatechange = () => {
+    log('info', 'ICE: ' + pc.iceConnectionState);
+    if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+      setStatus('ok', 'ICE connected');
+    } else if (pc.iceConnectionState === 'failed') {
+      setStatus('err', 'ICE failed');
+    }
+  };
+
+  pc.onicecandidate = async (e) => {
+    if (e.candidate) {
+      let c = e.candidate.candidate;
+      // Replace mDNS hostname with 127.0.0.1 (works for same-machine testing)
+      c = c.replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.local/g,
+                     '127.0.0.1');
+      await sigSend(base, peerId, {type: 'candidate', candidate: c});
+      log('info', 'Sent ICE candidate: ' + c.substring(0, 80));
+    } else {
+      await sigSend(base, peerId, {type: 'candidate', candidate: ''});
+      log('info', 'Sent end-of-candidates');
+    }
+  };
+
+  startPolling(base);
+
+  if (role === 'offerer') {
+    // Browser is offerer: create DC + offer
+    dc = pc.createDataChannel('test');
+    setupDC(dc);
+    log('info', 'Created DataChannel "test"');
+
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    log('info', 'Sending offer');
+    await sigSend(base, peerId, {type: 'offer', sdp: pc.localDescription.sdp});
+    setStatus('info', 'Offer sent, waiting for answer...');
+  } else {
+    // Browser is answerer: wait for remote DC
+    pc.ondatachannel = (e) => {
+      log('info', 'Got remote DataChannel "' + e.channel.label + '"');
+      setupDC(e.channel);
+    };
+    setStatus('info', 'Waiting for offer from remote...');
+  }
+}
+
+function sendMsg() {
+  const input = document.getElementById('msgInput');
+  const msg = input.value.trim();
+  if (!msg || !dc || dc.readyState !== 'open') return;
+  dc.send(msg);
+  log('ok', '> ' + msg);
+  input.value = '';
+}
+
+document.getElementById('msgInput').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') sendMsg();
+});
+
+window.addEventListener('beforeunload', () => {
+  stopPolling();
+  if (peerId >= 0) {
+    const base = document.getElementById('sigUrl').value;
+    navigator.sendBeacon(base + '/leave?id=' + peerId);
+  }
+});
+</script>
+</body>
+</html>

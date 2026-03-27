@@ -223,14 +223,18 @@
 #define NANO_ICE_CHECK_INTERVAL_MS 50
 #endif
 
-/* ICE credential buffer sizes */
+/* ICE credential lengths (chars, excluding NUL) */
+#define NANO_ICE_UFRAG_LEN 8  /* 4 random bytes → 8 hex chars */
+#define NANO_ICE_PWD_LEN   22 /* 11 random bytes → 22 hex chars */
+
+/* ICE credential buffer sizes (must fit LEN + NUL) */
 
 #ifndef NANO_ICE_UFRAG_SIZE
-#define NANO_ICE_UFRAG_SIZE 8
+#define NANO_ICE_UFRAG_SIZE (NANO_ICE_UFRAG_LEN + 1)
 #endif
 
 #ifndef NANO_ICE_PWD_SIZE
-#define NANO_ICE_PWD_SIZE 32
+#define NANO_ICE_PWD_SIZE (NANO_ICE_PWD_LEN + 2) /* +1 NUL +1 pad for alignment */
 #endif
 
 #ifndef NANO_ICE_REMOTE_UFRAG_SIZE
@@ -399,12 +403,12 @@
 #error "NANO_DTLS_BUF_SIZE must be at least 256"
 #endif
 
-#if NANO_ICE_UFRAG_SIZE < 4
-#error "NANO_ICE_UFRAG_SIZE must be at least 4"
+#if NANO_ICE_UFRAG_SIZE < (NANO_ICE_UFRAG_LEN + 1)
+#error "NANO_ICE_UFRAG_SIZE must be at least NANO_ICE_UFRAG_LEN + 1"
 #endif
 
-#if NANO_ICE_PWD_SIZE < 22
-#error "NANO_ICE_PWD_SIZE must be at least 22"
+#if NANO_ICE_PWD_SIZE < (NANO_ICE_PWD_LEN + 1)
+#error "NANO_ICE_PWD_SIZE must be at least NANO_ICE_PWD_LEN + 1"
 #endif
 
 #if NANO_STUN_BUF_SIZE < 128
