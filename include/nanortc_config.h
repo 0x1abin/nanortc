@@ -158,22 +158,27 @@
  *   NANO_FEATURE_VIDEO        — Video (RTP/SRTP/BWE)
  * ---------------------------------------------------------------- */
 
+/** @brief Enable DataChannel (SCTP + DCEP). Default: 1. */
 #ifndef NANO_FEATURE_DATACHANNEL
 #define NANO_FEATURE_DATACHANNEL 1
 #endif
 
+/** @brief Enable SCTP retransmission. Sub-feature of DataChannel. */
 #ifndef NANO_FEATURE_DC_RELIABLE
 #define NANO_FEATURE_DC_RELIABLE NANO_FEATURE_DATACHANNEL
 #endif
 
+/** @brief Enable SSN-based ordered delivery. Sub-feature of DataChannel. */
 #ifndef NANO_FEATURE_DC_ORDERED
 #define NANO_FEATURE_DC_ORDERED NANO_FEATURE_DATACHANNEL
 #endif
 
+/** @brief Enable audio transport (RTP/SRTP + jitter buffer). Default: 0. */
 #ifndef NANO_FEATURE_AUDIO
 #define NANO_FEATURE_AUDIO 0
 #endif
 
+/** @brief Enable video transport (RTP/SRTP + BWE). Default: 0. */
 #ifndef NANO_FEATURE_VIDEO
 #define NANO_FEATURE_VIDEO 0
 #endif
