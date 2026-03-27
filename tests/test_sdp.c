@@ -371,6 +371,149 @@ TEST(test_accept_offer_generates_answer)
 }
 
 /* ================================================================
+ * Audio SDP tests (NANO_HAVE_MEDIA_TRANSPORT)
+ * ================================================================ */
+
+#if NANO_HAVE_MEDIA_TRANSPORT
+
+/* Chrome audio+DC offer with Opus */
+static const char *CHROME_AUDIO_OFFER =
+    "v=0\r\n"
+    "o=- 1234567890 2 IN IP4 127.0.0.1\r\n"
+    "s=-\r\n"
+    "t=0 0\r\n"
+    "a=group:BUNDLE 0 1\r\n"
+    "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n"
+    "c=IN IP4 0.0.0.0\r\n"
+    "a=mid:0\r\n"
+    "a=ice-ufrag:audiofrag\r\n"
+    "a=ice-pwd:audiopassword1234567890\r\n"
+    "a=fingerprint:sha-256 AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:"
+    "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99\r\n"
+    "a=setup:actpass\r\n"
+    "a=sctp-port:5000\r\n"
+    "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n"
+    "c=IN IP4 0.0.0.0\r\n"
+    "a=mid:1\r\n"
+    "a=sendrecv\r\n"
+    "a=rtpmap:111 opus/48000/2\r\n"
+    "a=fmtp:111 minptime=10;useinbandfec=1\r\n";
+
+TEST(test_sdp_parse_audio_offer)
+{
+    nano_sdp_t sdp;
+    sdp_init(&sdp);
+
+    size_t len = 0;
+    while (CHROME_AUDIO_OFFER[len])
+        len++;
+
+    ASSERT_OK(sdp_parse(&sdp, CHROME_AUDIO_OFFER, len));
+    ASSERT_TRUE(sdp.parsed);
+
+    /* ICE/DTLS fields still parsed */
+    ASSERT_MEM_EQ(sdp.remote_ufrag, "audiofrag", 9);
+    ASSERT_EQ(sdp.remote_sctp_port, 5000);
+
+    /* Audio fields */
+    ASSERT_TRUE(sdp.has_audio);
+    ASSERT_EQ(sdp.audio_pt, 111);
+    ASSERT_EQ(sdp.audio_sample_rate, 48000);
+    ASSERT_EQ(sdp.audio_channels, 2);
+}
+
+/* Audio-only offer (no DataChannel) */
+static const char *AUDIO_ONLY_OFFER =
+    "v=0\r\n"
+    "o=- 1 1 IN IP4 0.0.0.0\r\n"
+    "s=-\r\n"
+    "t=0 0\r\n"
+    "a=group:BUNDLE 0\r\n"
+    "m=audio 9 UDP/TLS/RTP/SAVPF 96\r\n"
+    "c=IN IP4 0.0.0.0\r\n"
+    "a=mid:0\r\n"
+    "a=sendrecv\r\n"
+    "a=ice-ufrag:audioonly\r\n"
+    "a=ice-pwd:audiopassword1234\r\n"
+    "a=fingerprint:sha-256 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:"
+    "11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00\r\n"
+    "a=setup:actpass\r\n"
+    "a=rtpmap:96 opus/48000/2\r\n";
+
+TEST(test_sdp_parse_audio_only_offer)
+{
+    nano_sdp_t sdp;
+    sdp_init(&sdp);
+
+    size_t len = 0;
+    while (AUDIO_ONLY_OFFER[len])
+        len++;
+
+    ASSERT_OK(sdp_parse(&sdp, AUDIO_ONLY_OFFER, len));
+    ASSERT_TRUE(sdp.has_audio);
+    ASSERT_EQ(sdp.audio_pt, 96);
+    ASSERT_EQ(sdp.audio_sample_rate, 48000);
+    ASSERT_EQ(sdp.audio_channels, 2);
+}
+
+TEST(test_sdp_generate_audio_answer)
+{
+    nano_sdp_t sdp;
+    sdp_init(&sdp);
+
+    memcpy(sdp.local_ufrag, "myufrag", 7);
+    memcpy(sdp.local_pwd, "mypassword123456", 16);
+    sdp.local_sctp_port = 5000;
+    sdp.local_setup = NANO_SDP_SETUP_PASSIVE;
+    sdp.has_audio = true;
+    sdp.audio_pt = 111;
+    sdp.audio_sample_rate = 48000;
+    sdp.audio_channels = 2;
+
+    char buf[2048];
+    size_t out_len = 0;
+    ASSERT_OK(sdp_generate_answer(&sdp, buf, sizeof(buf), &out_len));
+    ASSERT_TRUE(out_len > 0);
+
+    /* Verify BUNDLE includes both MIDs */
+    ASSERT_TRUE(strstr(buf, "a=group:BUNDLE 0 1") != NULL);
+
+    /* Verify audio m-line */
+    ASSERT_TRUE(strstr(buf, "m=audio 9 UDP/TLS/RTP/SAVPF 111") != NULL);
+    ASSERT_TRUE(strstr(buf, "a=mid:1") != NULL);
+    ASSERT_TRUE(strstr(buf, "a=rtpmap:111 opus/48000/2") != NULL);
+}
+
+TEST(test_sdp_audio_roundtrip)
+{
+    nano_sdp_t sdp;
+    sdp_init(&sdp);
+    memcpy(sdp.local_ufrag, "rtufrag", 7);
+    memcpy(sdp.local_pwd, "rtpassword12345678", 18);
+    sdp.local_setup = NANO_SDP_SETUP_ACTIVE;
+    sdp.has_audio = true;
+    sdp.audio_pt = 111;
+    sdp.audio_sample_rate = 48000;
+    sdp.audio_channels = 2;
+
+    /* Generate */
+    char buf[2048];
+    size_t out_len = 0;
+    ASSERT_OK(sdp_generate_answer(&sdp, buf, sizeof(buf), &out_len));
+
+    /* Parse back */
+    nano_sdp_t sdp2;
+    sdp_init(&sdp2);
+    ASSERT_OK(sdp_parse(&sdp2, buf, out_len));
+    ASSERT_TRUE(sdp2.has_audio);
+    ASSERT_EQ(sdp2.audio_pt, 111);
+    ASSERT_EQ(sdp2.audio_sample_rate, 48000);
+    ASSERT_EQ(sdp2.audio_channels, 2);
+}
+
+#endif /* NANO_HAVE_MEDIA_TRANSPORT */
+
+/* ================================================================
  * Test runner
  * ================================================================ */
 
@@ -388,4 +531,10 @@ RUN(test_sdp_roundtrip);
 RUN(test_sdp_parse_libdatachannel_offer);
 RUN(test_sdp_parse_no_candidates);
 RUN(test_accept_offer_generates_answer);
+#if NANO_HAVE_MEDIA_TRANSPORT
+RUN(test_sdp_parse_audio_offer);
+RUN(test_sdp_parse_audio_only_offer);
+RUN(test_sdp_generate_audio_answer);
+RUN(test_sdp_audio_roundtrip);
+#endif
 TEST_MAIN_END

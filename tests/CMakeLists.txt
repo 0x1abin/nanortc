@@ -3,8 +3,18 @@
 
 file(GLOB TEST_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/test_*.c")
 
+# Tests that require media transport (AUDIO or VIDEO enabled)
+set(MEDIA_TESTS test_rtp test_srtp test_rtcp test_jitter)
+
 foreach(test_source ${TEST_SOURCES})
     get_filename_component(test_name ${test_source} NAME_WE)
+
+    # Skip media-transport tests when neither AUDIO nor VIDEO is enabled
+    list(FIND MEDIA_TESTS ${test_name} _is_media_test)
+    if(_is_media_test GREATER -1 AND NOT NANO_FEATURE_AUDIO AND NOT NANO_FEATURE_VIDEO)
+        continue()
+    endif()
+
     add_executable(${test_name} ${test_source})
     target_link_libraries(${test_name} PRIVATE nanortc)
     target_include_directories(${test_name} PRIVATE

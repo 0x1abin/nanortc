@@ -70,6 +70,18 @@
 #define NANO_JITTER_SLOTS CONFIG_NANO_JITTER_SLOTS
 #endif
 
+#if defined(CONFIG_NANO_JITTER_SLOT_DATA_SIZE) && !defined(NANO_JITTER_SLOT_DATA_SIZE)
+#define NANO_JITTER_SLOT_DATA_SIZE CONFIG_NANO_JITTER_SLOT_DATA_SIZE
+#endif
+
+#if defined(CONFIG_NANO_MEDIA_BUF_SIZE) && !defined(NANO_MEDIA_BUF_SIZE)
+#define NANO_MEDIA_BUF_SIZE CONFIG_NANO_MEDIA_BUF_SIZE
+#endif
+
+#if defined(CONFIG_NANO_RTCP_INTERVAL_MS) && !defined(NANO_RTCP_INTERVAL_MS)
+#define NANO_RTCP_INTERVAL_MS CONFIG_NANO_RTCP_INTERVAL_MS
+#endif
+
 #if defined(CONFIG_NANO_ICE_UFRAG_SIZE) && !defined(NANO_ICE_UFRAG_SIZE)
 #define NANO_ICE_UFRAG_SIZE CONFIG_NANO_ICE_UFRAG_SIZE
 #endif
@@ -358,11 +370,30 @@
 #endif
 
 /* ----------------------------------------------------------------
+ * Media transport configuration
+ * ---------------------------------------------------------------- */
+
+/* Media scratch buffer size (for RTP/SRTP processing) */
+#ifndef NANO_MEDIA_BUF_SIZE
+#define NANO_MEDIA_BUF_SIZE 1500
+#endif
+
+/* RTCP send interval in milliseconds (RFC 3550 §6.2) */
+#ifndef NANO_RTCP_INTERVAL_MS
+#define NANO_RTCP_INTERVAL_MS 5000
+#endif
+
+/* ----------------------------------------------------------------
  * Jitter buffer slots (AUDIO feature only)
  * ---------------------------------------------------------------- */
 
 #ifndef NANO_JITTER_SLOTS
 #define NANO_JITTER_SLOTS 64
+#endif
+
+/* Maximum RTP packet data per jitter slot (bytes) */
+#ifndef NANO_JITTER_SLOT_DATA_SIZE
+#define NANO_JITTER_SLOT_DATA_SIZE 1500
 #endif
 
 /* ----------------------------------------------------------------

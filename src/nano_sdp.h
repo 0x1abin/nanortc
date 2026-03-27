@@ -54,6 +54,15 @@ typedef struct nano_sdp {
     bool has_local_candidate;
 
     bool parsed; /* true after successful parse */
+
+#if NANO_HAVE_MEDIA_TRANSPORT
+    /* Audio m-line fields (parsed from remote / configured locally) */
+    bool has_audio;
+    uint8_t audio_pt;           /* Payload type number (e.g. 111 for Opus) */
+    uint32_t audio_sample_rate; /* e.g. 48000 */
+    uint8_t audio_channels;     /* e.g. 2 for stereo */
+    nano_direction_t audio_direction;
+#endif
 } nano_sdp_t;
 
 /** Initialize SDP state. */

@@ -718,25 +718,94 @@ static void mbed_dtls_free(nano_crypto_dtls_ctx_t *ctx)
 }
 
 #if NANO_HAVE_MEDIA_TRANSPORT
-static int stub_aes_128_cm(const uint8_t key[16], const uint8_t iv[16], const uint8_t *in,
+/* AES-128 Counter Mode (RFC 3711 section 4.1.1) */
+#ifdef NANO_MBEDTLS_4
+static int mbed_aes_128_cm(const uint8_t key[16], const uint8_t iv[16], const uint8_t *in,
                            size_t len, uint8_t *out)
 {
-    (void)key;
-    (void)iv;
-    (void)in;
-    (void)len;
-    (void)out;
-    return -1;
-}
+    if (mbed_psa_init() != 0) {
+        return -1;
+    }
 
-static void stub_hmac_sha1_80(const uint8_t *key, size_t key_len, const uint8_t *data,
+    psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
+    psa_set_key_type(&attr, PSA_KEY_TYPE_AES);
+    psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_ENCRYPT);
+    psa_set_key_algorithm(&attr, PSA_ALG_CTR);
+    psa_set_key_bits(&attr, 128);
+
+    psa_key_id_t key_id = 0;
+    psa_status_t status = psa_import_key(&attr, key, 16, &key_id);
+    if (status != PSA_SUCCESS) {
+        return -1;
+    }
+
+    /* PSA CTR: use multi-part cipher operation */
+    psa_cipher_operation_t op = PSA_CIPHER_OPERATION_INIT;
+    status = psa_cipher_encrypt_setup(&op, key_id, PSA_ALG_CTR);
+    if (status != PSA_SUCCESS) {
+        psa_destroy_key(key_id);
+        return -1;
+    }
+
+    status = psa_cipher_set_iv(&op, iv, 16);
+    if (status != PSA_SUCCESS) {
+        psa_cipher_abort(&op);
+        psa_destroy_key(key_id);
+        return -1;
+    }
+
+    size_t out_len = 0;
+    status = psa_cipher_update(&op, in, len, out, len, &out_len);
+    if (status != PSA_SUCCESS) {
+        psa_cipher_abort(&op);
+        psa_destroy_key(key_id);
+        return -1;
+    }
+
+    size_t finish_len = 0;
+    status = psa_cipher_finish(&op, out + out_len, len - out_len, &finish_len);
+    psa_destroy_key(key_id);
+    if (status != PSA_SUCCESS) {
+        return -1;
+    }
+
+    return 0;
+}
+#else
+#include <mbedtls/aes.h>
+
+static int mbed_aes_128_cm(const uint8_t key[16], const uint8_t iv[16], const uint8_t *in,
+                           size_t len, uint8_t *out)
+{
+    mbedtls_aes_context aes;
+    mbedtls_aes_init(&aes);
+
+    if (mbedtls_aes_setkey_enc(&aes, key, 128) != 0) {
+        mbedtls_aes_free(&aes);
+        return -1;
+    }
+
+    uint8_t nonce_counter[16];
+    uint8_t stream_block[16];
+    size_t nc_off = 0;
+
+    memcpy(nonce_counter, iv, 16);
+    memset(stream_block, 0, 16);
+
+    int ret = mbedtls_aes_crypt_ctr(&aes, len, &nc_off, nonce_counter, stream_block, in, out);
+    mbedtls_aes_free(&aes);
+
+    return ret == 0 ? 0 : -1;
+}
+#endif /* NANO_MBEDTLS_4 */
+
+/* HMAC-SHA1 truncated to 80 bits (RFC 3711 section 4.2.1) */
+static void mbed_hmac_sha1_80(const uint8_t *key, size_t key_len, const uint8_t *data,
                               size_t data_len, uint8_t out[10])
 {
-    (void)key;
-    (void)key_len;
-    (void)data;
-    (void)data_len;
-    (void)out;
+    uint8_t full[20];
+    mbed_hmac_sha1(key, key_len, data, data_len, full);
+    memcpy(out, full, 10);
 }
 #endif
 
@@ -755,8 +824,8 @@ static const nano_crypto_provider_t mbedtls_provider = {
     .hmac_sha1 = mbed_hmac_sha1,
     .random_bytes = mbed_random_bytes,
 #if NANO_HAVE_MEDIA_TRANSPORT
-    .aes_128_cm = stub_aes_128_cm,
-    .hmac_sha1_80 = stub_hmac_sha1_80,
+    .aes_128_cm = mbed_aes_128_cm,
+    .hmac_sha1_80 = mbed_hmac_sha1_80,
 #endif
 };
 
