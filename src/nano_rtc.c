@@ -53,7 +53,7 @@ int nano_rtc_init(nano_rtc_t *rtc, const nano_rtc_config_t *cfg)
 #if NANO_HAVE_MEDIA_TRANSPORT
     rtp_init(&rtc->rtp, 0, 0);
     rtcp_init(&rtc->rtcp, 0);
-    srtp_init(&rtc->srtp);
+    srtp_init(&rtc->srtp, cfg->crypto, 0);
 #endif
 
 #if NANO_FEATURE_AUDIO
