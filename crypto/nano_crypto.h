@@ -7,6 +7,7 @@
 #ifndef NANO_CRYPTO_H_
 #define NANO_CRYPTO_H_
 
+#include "nanortc_config.h"
 #include <stdint.h>
 #include <stddef.h>
 
@@ -70,8 +71,8 @@ struct nano_crypto_provider {
     /* ---- CSPRNG (required) ---- */
     int (*random_bytes)(uint8_t *buf, size_t len);
 
-    /* ---- SRTP (required for AUDIO/MEDIA profiles) ---- */
-#if NANORTC_PROFILE >= NANO_PROFILE_AUDIO
+    /* ---- SRTP (required when media transport is enabled) ---- */
+#if NANO_HAVE_MEDIA_TRANSPORT
     int (*aes_128_cm)(const uint8_t key[16], const uint8_t iv[16], const uint8_t *in, size_t len,
                       uint8_t *out);
     void (*hmac_sha1_80)(const uint8_t *key, size_t key_len, const uint8_t *data, size_t data_len,

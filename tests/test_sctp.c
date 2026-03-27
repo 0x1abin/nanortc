@@ -2,16 +2,23 @@
  * nanortc — SCTP codec tests
  *
  * Tests for SCTP chunk parser/encoder with real packet data.
- * Reference: RFC 4960, libpeer CORPUS_CONNECT captures.
+ * Reference: RFC 4960.
  *
  * SPDX-License-Identifier: MIT
  */
 
 #include "nanortc.h"
+#include "nano_test.h"
+
+#if !NANO_FEATURE_DATACHANNEL
+/* SCTP tests require DataChannel feature */
+TEST_MAIN_BEGIN("nanortc SCTP tests (skipped — DC disabled)")
+TEST_MAIN_END
+#else
+
 #include "nano_rtc_internal.h"
 #include "nano_sctp.h"
 #include "nano_crc32c.h"
-#include "nano_test.h"
 #include "nano_test_config.h"
 #include <string.h>
 
@@ -361,7 +368,9 @@ TEST(test_sctp_init_defaults)
     ASSERT_EQ(sctp.state, NANO_SCTP_STATE_CLOSED);
     ASSERT_EQ(sctp.local_port, 5000);
     ASSERT_EQ(sctp.remote_port, 5000);
+#if NANO_FEATURE_DC_RELIABLE
     ASSERT_EQ(sctp.rto_ms, (uint32_t)NANO_SCTP_RTO_INITIAL_MS);
+#endif
 }
 
 TEST(test_sctp_init_null)
@@ -752,3 +761,4 @@ RUN(test_forward_tsn_advances);
 RUN(test_sack_drains_send_queue);
 RUN(test_sctp_output_queue_multiple);
 TEST_MAIN_END
+#endif /* NANO_FEATURE_DATACHANNEL */

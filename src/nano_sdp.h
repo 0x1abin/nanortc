@@ -1,7 +1,7 @@
 /*
  * nanortc — SDP parser/generator internal interface (RFC 8866)
  *
- * Reference: libpeer src/sdp.c (format), RFC 8829 (WebRTC SDP).
+ * Reference: RFC 8829 (WebRTC SDP).
  *
  * SPDX-License-Identifier: MIT
  */
@@ -23,6 +23,12 @@ typedef enum {
     NANO_SDP_SETUP_PASSIVE, /* DTLS server */
 } nano_sdp_setup_t;
 
+/* ICE candidate parsed from SDP a=candidate: line (RFC 8839 §5.1) */
+typedef struct {
+    char addr[NANO_IPV6_STR_SIZE]; /* IP address string */
+    uint16_t port;
+} nano_sdp_candidate_t;
+
 typedef struct nano_sdp {
     /* Parsed from remote SDP */
     char remote_ufrag[NANO_ICE_REMOTE_UFRAG_SIZE];
@@ -30,6 +36,10 @@ typedef struct nano_sdp {
     char remote_fingerprint[NANO_SDP_FINGERPRINT_SIZE]; /* "sha-256 AA:BB:CC:..." */
     uint16_t remote_sctp_port;
     nano_sdp_setup_t remote_setup;
+
+    /* Remote ICE candidates embedded in SDP (RFC 8839) */
+    nano_sdp_candidate_t remote_candidates[NANO_SDP_MAX_CANDIDATES];
+    uint8_t candidate_count;
 
     /* Local SDP fields */
     char local_ufrag[NANO_ICE_UFRAG_SIZE];
@@ -44,6 +54,15 @@ typedef struct nano_sdp {
     bool has_local_candidate;
 
     bool parsed; /* true after successful parse */
+
+#if NANO_HAVE_MEDIA_TRANSPORT
+    /* Audio m-line fields (parsed from remote / configured locally) */
+    bool has_audio;
+    uint8_t audio_pt;           /* Payload type number (e.g. 111 for Opus) */
+    uint32_t audio_sample_rate; /* e.g. 48000 */
+    uint8_t audio_channels;     /* e.g. 2 for stereo */
+    nano_direction_t audio_direction;
+#endif
 } nano_sdp_t;
 
 /** Initialize SDP state. */

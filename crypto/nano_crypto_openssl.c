@@ -417,26 +417,38 @@ static void ossl_dtls_free(nano_crypto_dtls_ctx_t *ctx)
     free(ctx);
 }
 
-#if NANORTC_PROFILE >= NANO_PROFILE_AUDIO
-static int stub_aes_128_cm(const uint8_t key[16], const uint8_t iv[16], const uint8_t *in,
+#if NANO_HAVE_MEDIA_TRANSPORT
+/* AES-128 Counter Mode (RFC 3711 section 4.1.1) */
+static int ossl_aes_128_cm(const uint8_t key[16], const uint8_t iv[16], const uint8_t *in,
                            size_t len, uint8_t *out)
 {
-    (void)key;
-    (void)iv;
-    (void)in;
-    (void)len;
-    (void)out;
-    return -1;
+    EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
+    if (!ctx) {
+        return -1;
+    }
+
+    if (EVP_EncryptInit_ex(ctx, EVP_aes_128_ctr(), NULL, key, iv) != 1) {
+        EVP_CIPHER_CTX_free(ctx);
+        return -1;
+    }
+
+    int outl = 0;
+    if (EVP_EncryptUpdate(ctx, out, &outl, in, (int)len) != 1) {
+        EVP_CIPHER_CTX_free(ctx);
+        return -1;
+    }
+
+    EVP_CIPHER_CTX_free(ctx);
+    return 0;
 }
 
-static void stub_hmac_sha1_80(const uint8_t *key, size_t key_len, const uint8_t *data,
+/* HMAC-SHA1 truncated to 80 bits (RFC 3711 section 4.2.1) */
+static void ossl_hmac_sha1_80(const uint8_t *key, size_t key_len, const uint8_t *data,
                               size_t data_len, uint8_t out[10])
 {
-    (void)key;
-    (void)key_len;
-    (void)data;
-    (void)data_len;
-    (void)out;
+    uint8_t full[20];
+    ossl_hmac_sha1(key, key_len, data, data_len, full);
+    memcpy(out, full, 10);
 }
 #endif
 
@@ -454,9 +466,9 @@ static const nano_crypto_provider_t openssl_provider = {
     .dtls_free = ossl_dtls_free,
     .hmac_sha1 = ossl_hmac_sha1,
     .random_bytes = ossl_random_bytes,
-#if NANORTC_PROFILE >= NANO_PROFILE_AUDIO
-    .aes_128_cm = stub_aes_128_cm,
-    .hmac_sha1_80 = stub_hmac_sha1_80,
+#if NANO_HAVE_MEDIA_TRANSPORT
+    .aes_128_cm = ossl_aes_128_cm,
+    .hmac_sha1_80 = ossl_hmac_sha1_80,
 #endif
 };
 

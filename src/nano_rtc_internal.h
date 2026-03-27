@@ -10,18 +10,24 @@
 #include "nanortc.h"
 #include "nano_ice.h"
 #include "nano_dtls.h"
-#include "nano_sctp.h"
-#include "nano_datachannel.h"
 #include "nano_sdp.h"
 
-#if NANORTC_PROFILE >= NANO_PROFILE_AUDIO
+#if NANO_FEATURE_DATACHANNEL
+#include "nano_sctp.h"
+#include "nano_datachannel.h"
+#endif
+
+#if NANO_HAVE_MEDIA_TRANSPORT
 #include "nano_rtp.h"
 #include "nano_rtcp.h"
 #include "nano_srtp.h"
+#endif
+
+#if NANO_FEATURE_AUDIO
 #include "nano_jitter.h"
 #endif
 
-#if NANORTC_PROFILE >= NANO_PROFILE_MEDIA
+#if NANO_FEATURE_VIDEO
 #include "nano_bwe.h"
 #endif
 
@@ -54,18 +60,24 @@ struct nano_rtc {
     /* Subsystem state */
     nano_ice_t ice;
     nano_dtls_t dtls;
-    nano_sctp_t sctp;
-    nano_dc_t datachannel;
     nano_sdp_t sdp;
 
-#if NANORTC_PROFILE >= NANO_PROFILE_AUDIO
+#if NANO_FEATURE_DATACHANNEL
+    nano_sctp_t sctp;
+    nano_dc_t datachannel;
+#endif
+
+#if NANO_HAVE_MEDIA_TRANSPORT
     nano_rtp_t rtp;
     nano_rtcp_t rtcp;
     nano_srtp_t srtp;
+#endif
+
+#if NANO_FEATURE_AUDIO
     nano_jitter_t jitter;
 #endif
 
-#if NANORTC_PROFILE >= NANO_PROFILE_MEDIA
+#if NANO_FEATURE_VIDEO
     nano_bwe_t bwe;
 #endif
 

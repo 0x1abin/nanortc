@@ -2,7 +2,7 @@
  * nanortc — SCTP-Lite internal interface (RFC 4960, RFC 3758)
  *
  * Minimal SCTP for WebRTC DataChannel over DTLS.
- * Reference: libpeer sctp.h (struct layout), str0m sctp/mod.rs (Sans I/O).
+ * Reference: str0m sctp/mod.rs (Sans I/O).
  *
  * SPDX-License-Identifier: MIT
  */
@@ -110,8 +110,10 @@ typedef struct {
     uint32_t ppid;
     uint16_t data_offset; /* offset into send_buf */
     uint16_t data_len;
+#if NANO_FEATURE_DC_RELIABLE
     uint32_t sent_at_ms; /* timestamp of last send (for RTO) */
     uint8_t retransmit_count;
+#endif
     uint8_t flags; /* B/E/U bits */
     bool acked;
     bool in_flight;
@@ -147,8 +149,10 @@ typedef struct nano_sctp {
     uint32_t next_tsn; /* next TSN to assign to outbound DATA */
     uint32_t peer_initial_tsn;
 
+#if NANO_FEATURE_DC_ORDERED
     /* Stream sequence numbers (per outbound stream) */
     uint16_t next_ssn[NANO_MAX_DATACHANNELS];
+#endif
 
     /* Receive state */
     uint32_t cumulative_tsn; /* highest TSN such that all TSN <= this received */
@@ -161,9 +165,11 @@ typedef struct nano_sctp {
     uint8_t send_buf[NANO_SCTP_SEND_BUF_SIZE];
     uint16_t send_buf_used;
 
+#if NANO_FEATURE_DC_RELIABLE
     /* Retransmission */
     uint32_t rto_ms;
     uint32_t last_send_ms;
+#endif
 
     /* HEARTBEAT */
     uint32_t last_heartbeat_ms;

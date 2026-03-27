@@ -20,7 +20,7 @@ TEST(test_init_destroy)
     memset(&cfg, 0, sizeof(cfg));
     cfg.crypto = nano_test_crypto();
     cfg.role = NANO_ROLE_CONTROLLED;
-#if NANORTC_PROFILE >= NANO_PROFILE_AUDIO
+#if NANO_FEATURE_AUDIO
     cfg.jitter_depth_ms = 100;
 #endif
 
@@ -43,7 +43,7 @@ TEST(test_poll_empty)
     nano_rtc_config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.crypto = nano_test_crypto();
-#if NANORTC_PROFILE >= NANO_PROFILE_AUDIO
+#if NANO_FEATURE_AUDIO
     cfg.jitter_depth_ms = 100;
 #endif
 
@@ -63,6 +63,7 @@ TEST(test_byte_order)
     ASSERT_EQ(nano_ntohl(0x04030201), 0x01020304);
 }
 
+#if NANO_FEATURE_DATACHANNEL
 TEST(test_crc32c)
 {
     /* Known CRC-32c test vector: "123456789" -> 0xE3069283 */
@@ -71,6 +72,7 @@ TEST(test_crc32c)
     uint32_t crc = nano_crc32c(data, 9);
     ASSERT_EQ(crc, 0xE3069283);
 }
+#endif
 
 TEST(test_crc32)
 {
@@ -88,6 +90,8 @@ TEST_MAIN_BEGIN("nanortc basic tests")
     RUN(test_init_null_params);
     RUN(test_poll_empty);
     RUN(test_byte_order);
+#if NANO_FEATURE_DATACHANNEL
     RUN(test_crc32c);
+#endif
     RUN(test_crc32);
 TEST_MAIN_END

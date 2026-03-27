@@ -41,13 +41,13 @@ Dependencies flow strictly downward. No cycles allowed.
                               ┌────────┴────────┐
                               ▼                 ▼
                     ┌──────────────┐    ┌──────────────┐
-                    │  nano_srtp   │    │   nano_rtp   │  ← AUDIO/MEDIA only
+                    │  nano_srtp   │    │   nano_rtp   │  ← AUDIO or VIDEO
                     └──────────────┘    └──────┬───────┘
                                                │
                                     ┌──────────┼──────────┐
                                     ▼          ▼          ▼
                               ┌──────────┐ ┌────────┐ ┌────────┐
-                              │nano_rtcp │ │ jitter │ │  bwe   │ ← MEDIA only
+                              │nano_rtcp │ │ jitter │ │  bwe   │ ← AUDIO / VIDEO
                               └──────────┘ └────────┘ └────────┘
 
   Cross-cutting:
@@ -76,17 +76,23 @@ Within the library, code is organized in strict layers:
 - No module may include OS/platform headers (enforced by CI)
 - No module may call malloc (enforced by CI)
 
-## Build Profiles
+## Feature Flags
 
-Three compile-time profiles control which modules are included:
+Orthogonal compile-time feature flags control which modules are included:
 
-```
-DATA  (profile=1):  rtc + sdp + ice + stun + dtls + sctp + datachannel + crc32c
-AUDIO (profile=2):  DATA + rtp + rtcp + srtp + jitter
-MEDIA (profile=3):  AUDIO + bwe
-```
+| Feature flag | Modules compiled | Guard macro |
+|---|---|---|
+| *(core, always)* | rtc, ice, stun, dtls, sdp, crc32 | — |
+| `NANO_FEATURE_DATACHANNEL` | sctp, datachannel, crc32c | `#if NANO_FEATURE_DATACHANNEL` |
+| `NANO_FEATURE_AUDIO` or `VIDEO` | rtp, rtcp, srtp | `#if NANO_HAVE_MEDIA_TRANSPORT` |
+| `NANO_FEATURE_AUDIO` | jitter | `#if NANO_FEATURE_AUDIO` |
+| `NANO_FEATURE_VIDEO` | bwe | `#if NANO_FEATURE_VIDEO` |
 
-Profile guards use `#if NANORTC_PROFILE >= NANO_PROFILE_AUDIO`. The CMake build system excludes source files not in the active profile.
+Sub-features (only when `DATACHANNEL=1`):
+- `NANO_FEATURE_DC_RELIABLE` — retransmit/RTO logic (default ON)
+- `NANO_FEATURE_DC_ORDERED` — SSN-based ordered delivery (default ON)
+
+Six CI-tested combinations: DATA, AUDIO, MEDIA, AUDIO_ONLY, MEDIA_ONLY, CORE_ONLY.
 
 ## Data Flow (packet lifecycle)
 

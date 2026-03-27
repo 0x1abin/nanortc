@@ -57,6 +57,47 @@ if (result != NANO_OK) {
 - `//` for short inline comments
 - RFC references: `/* RFC 8489 Section 6.1 */`
 
+## Public API Documentation (Doxygen)
+
+All public headers in `include/` use Doxygen `/** */` format. Internal code in `src/` keeps plain `/* */`.
+
+**Functions:**
+```c
+/**
+ * @brief Initialize the RTC state machine.
+ *
+ * @param rtc   Caller-allocated state (must be zeroed).
+ * @param cfg   Configuration (pointer must stay valid during init).
+ * @return NANO_OK on success.
+ * @retval NANO_ERR_INVALID_PARAM  rtc or cfg is NULL.
+ */
+NANO_API int nano_rtc_init(nano_rtc_t *rtc, const nano_rtc_config_t *cfg);
+```
+
+**Types / structs:**
+```c
+/** @brief Network-agnostic socket address (IPv4 / IPv6). */
+typedef struct nano_addr { ... } nano_addr_t;
+```
+
+**Struct fields / enum values** (trailing comment):
+```c
+typedef enum {
+    NANO_LOG_ERROR = 0, /**< Unrecoverable errors. */
+    NANO_LOG_WARN  = 1, /**< Unusual but recoverable. */
+} nano_log_level_t;
+```
+
+**Macros (config):**
+```c
+/** @brief Maximum number of DataChannels. */
+#ifndef NANO_MAX_DATACHANNELS
+#define NANO_MAX_DATACHANNELS 8
+#endif
+```
+
+**File-level `@file`** is optional — not required.
+
 ## Array Size Naming
 
 Every struct array member must use a named macro for its size — never a bare integer literal.
@@ -84,6 +125,29 @@ if (addr_len >= NANO_IPV6_STR_SIZE) { return NANO_ERR_PARSE; }
 
 /* Bad */
 if (addr_len > 45) { return NANO_ERR_PARSE; }
+```
+
+## Return Value Convention
+
+All `nano_*` public API functions return `int` as a status code:
+
+- `NANO_OK` (0) = success
+- `NANO_ERR_*` (negative) = failure
+
+**Never return positive values.** Output lengths are passed via `size_t *out_len` parameters. Use `nano_err_to_name()` to convert error codes to human-readable strings for diagnostics.
+
+```c
+/* Good: status code + out_len */
+size_t answer_len = 0;
+int rc = nano_accept_offer(&rtc, offer, answer, sizeof(answer), &answer_len);
+if (rc != NANO_OK) {
+    fprintf(stderr, "failed: %s\n", nano_err_to_name(rc));
+    return rc;
+}
+
+/* Bad: using return value as length */
+int len = nano_accept_offer(&rtc, offer, answer, sizeof(answer), NULL);
+if (len > 0) { ... }  // WRONG — rc is always 0 or negative
 ```
 
 ## Code Style

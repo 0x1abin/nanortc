@@ -24,15 +24,18 @@ grep -rn '\bmalloc\b\|calloc\b\|realloc\b\|\bfree\b' src/
 
 Note: `memset`, `memcpy`, `memmove` from `<string.h>` are allowed.
 
-## 3. Profile Build Matrix
+## 3. Feature Flag Build Matrix
 
-All three profiles must compile and pass tests:
+All six feature combinations must compile and pass tests:
 ```bash
-for profile in DATA AUDIO MEDIA; do
-    cmake -B build-${profile} -DNANORTC_PROFILE=${profile}
-    cmake --build build-${profile}
-    ctest --test-dir build-${profile} --output-on-failure
-done
+# DATA:       DC=ON  AUDIO=OFF VIDEO=OFF
+# AUDIO:      DC=ON  AUDIO=ON  VIDEO=OFF
+# MEDIA:      DC=ON  AUDIO=ON  VIDEO=ON
+# AUDIO_ONLY: DC=OFF AUDIO=ON  VIDEO=OFF
+# MEDIA_ONLY: DC=OFF AUDIO=ON  VIDEO=ON
+# CORE_ONLY:  DC=OFF AUDIO=OFF VIDEO=OFF
+cmake -B build -DNANO_FEATURE_DATACHANNEL=ON -DNANO_FEATURE_AUDIO=OFF -DNANO_FEATURE_VIDEO=OFF
+cmake --build build && ctest --test-dir build --output-on-failure
 ```
 
 ## 4. Code Formatting
