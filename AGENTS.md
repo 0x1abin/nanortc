@@ -85,6 +85,8 @@ These rules are mechanically enforced. Violations will break the build or CI.
 
 **RFC testing:** Any RFC-based module MUST have tests generated independently from the RFC document — hardcoded byte-level test vectors from RFC appendices (e.g., RFC 5769 for STUN) plus real captures from reference implementations. Roundtrip tests (encode → parse own output) are supplementary only. See [development-workflow.md](docs/engineering/development-workflow.md) for full requirements.
 
+**Safe C functions:** No `strlen`, `sprintf`, `snprintf`, `strcpy`, `strncpy`, `strcat`, `strncat`, `sscanf`, `atoi`, `atol`, `gets` in `src/` or `crypto/`. Use explicit `(buffer, length)` pairs and `memcpy`. API boundary functions (`nano_*`) may use `strlen` once per parameter with `/* NANO_SAFE: API boundary */` annotation. See `docs/engineering/safe-c-guidelines.md`.
+
 ## Reference Implementations
 
 - `.local-reference/str0m/` — Rust Sans I/O WebRTC (architecture reference for poll/handle pattern)
