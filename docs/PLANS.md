@@ -10,11 +10,11 @@ NanoRTC is built by AI coding agents. Estimates use **agent sessions** (one focu
 
 | Plan | Phase | Status | Effort | Target |
 |------|-------|--------|--------|--------|
-| [Phase 1: DataChannel E2E](exec-plans/active/phase1-datachannel.md) | 1 | **Active** (Steps 1-3 mostly done) | 3 of 4-6 sessions | DataChannel working with browser |
+| [Phase 1: DataChannel E2E](exec-plans/active/phase1-datachannel.md) | 1 | **Active** (Steps 1-2 done, 5 done, 3-4 in progress) | 4 of 5-7 sessions | DataChannel working with libdatachannel + browser |
 | [Phase 2: Audio](exec-plans/active/phase2-audio.md) | 2 | Queued | 2-3 sessions | Bidirectional audio with browser |
 | [Phase 3: Video](exec-plans/active/phase3-video.md) | 3 | Queued | 2 sessions | Camera streaming to browser |
 
-**Total Phase 1-3:** ~8-11 agent sessions (~1-2 weeks elapsed)
+**Total Phase 1-3:** ~9-12 agent sessions (~1-2 weeks elapsed)
 
 ## Completed Plans
 

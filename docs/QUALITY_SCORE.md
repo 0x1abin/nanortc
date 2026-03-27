@@ -51,6 +51,7 @@ Per-module quality grades for NanoRTC. Updated as implementation progresses.
 | Crypto provider interface | **B** | Interface complete; HMAC-SHA1 + CSPRNG + DTLS (both backends); SRTP stubs remain |
 | Build system (CMake) | **B** | 3 profiles, 2 crypto backends, ESP-IDF detection, `-fvisibility=hidden` |
 | Test infrastructure | **B** | Shared macros (`nano_test.h`), 90+ tests across 7 suites, RFC 5769 vectors, e2e ICE+DTLS loopback |
+| Interop test framework | **B-** | libdatachannel v0.22.5 as reference peer, 5 interop tests (handshake, DC open, text/binary). Framework ready; tests pending full protocol stack completion. |
 | CI pipeline | **B** | GitHub Actions: 3-profile × 2-crypto matrix, constraints, ASan. Local: `scripts/ci-check.sh` |
 | Examples | **C** | Linux datachannel + media_send templates, media sample submodule. Not yet tested with real connections. |
 | Documentation | **B** | AGENTS.md, ARCHITECTURE.md, exec plans, quality scores, core beliefs, RFC index |
@@ -59,10 +60,10 @@ Per-module quality grades for NanoRTC. Updated as implementation progresses.
 
 | Phase | Target |
 |-------|--------|
-| Phase 1 complete | All core modules at **B** or above |
+| Phase 1 complete | All core modules at **B** or above + all interop tests pass |
 | Phase 2 complete | All audio modules at **B** or above |
 | Phase 3 complete | All modules at **B** or above |
-| Phase 4 | All modules at **A** (fuzz-tested, browser-verified) |
+| Phase 4 | All modules at **A** (fuzz-tested, browser-verified, interop-verified) |
 
 ## Gap Analysis
 
@@ -71,7 +72,9 @@ Per-module quality grades for NanoRTC. Updated as implementation progresses.
 2. ~~Crypto hmac_sha1 + random_bytes~~ **DONE** — both mbedtls and OpenSSL backends
 3. ~~DTLS handshake needs real implementation (D → B)~~ **DONE** — Sans I/O BIO adapter + both crypto backends
 4. ~~SCTP, DataChannel, SDP all still D~~ **DONE** — All at B- with full codec, FSM, tests
-5. Browser end-to-end validation — Phase 1 remaining milestone
+5. ~~No interop testing framework~~ **DONE** — libdatachannel interop framework with 5 test cases
+6. Interop tests must all pass — blocked on SDP parser compatibility with libdatachannel's offer format
+7. Browser end-to-end validation — Phase 1 remaining milestone
 
 **Acceptable gaps (address in later phases):**
 1. No fuzz testing yet (Phase 4)

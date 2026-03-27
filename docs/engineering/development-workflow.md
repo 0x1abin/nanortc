@@ -46,17 +46,61 @@ Audio/Media modules (Phase 2-3):
 
 5. **Edge cases from RFC text (mandatory)** — Each "MUST" / "MUST NOT" / "SHOULD" in the RFC becomes a test case. Organize tests by RFC section number in comments.
 
+6. **Interop testing against libdatachannel (mandatory for Phase 1+ acceptance)** — Every protocol module that participates in the full connection lifecycle (ICE, DTLS, SCTP, DataChannel, SDP) must pass end-to-end interop tests against libdatachannel. These tests validate that nanortc can establish a real WebRTC connection and exchange DataChannel messages with a known-good third-party implementation over localhost UDP. See `tests/interop/` for the framework.
+
 ### Test vector source index
 
-| Module | RFC Test Vectors | Reference Captures |
-|--------|------------------|--------------------|
-| STUN | RFC 5769 §2.1-2.3 (Request, IPv4/IPv6 Response) | str0m `stun.rs` test data |
-| SCTP | RFC 4960 §A (INIT, INIT-ACK, DATA, SACK examples) | libpeer pcap |
-| DTLS | — (use OpenSSL s_client captures) | browser DTLS handshake |
-| DataChannel | — | browser DCEP OPEN/ACK captures |
-| RTP | RFC 3550 §A.1 (SR/RR examples) | browser RTP captures |
-| SRTP | RFC 3711 §B (test vectors) | — |
-| SDP | — (use Chrome/Firefox offer strings) | browser SDP offers |
+| Module | RFC Test Vectors | Reference Captures | Interop |
+|--------|------------------|--------------------|---------|
+| STUN | RFC 5769 §2.1-2.3 (Request, IPv4/IPv6 Response) | str0m `stun.rs` test data | via ICE interop |
+| ICE | — | — | `test_interop_handshake` (libdatachannel) |
+| SCTP | RFC 4960 §A (INIT, INIT-ACK, DATA, SACK examples) | libpeer pcap | `test_interop_handshake` (libdatachannel) |
+| DTLS | — (use OpenSSL s_client captures) | browser DTLS handshake | `test_interop_handshake` (libdatachannel) |
+| DataChannel | — | browser DCEP OPEN/ACK captures | `test_interop_dc_*` (libdatachannel) |
+| SDP | — (use Chrome/Firefox offer strings) | browser SDP offers | `test_interop_handshake` (libdatachannel) |
+| RTP | RFC 3550 §A.1 (SR/RR examples) | browser RTP captures | — |
+| SRTP | RFC 3711 §B (test vectors) | — | — |
+
+## Interop Testing Workflow
+
+The interop test framework (`tests/interop/`) validates nanortc against libdatachannel over real localhost UDP sockets. This is a **mandatory acceptance gate** for Phase 1 completion and all subsequent phases.
+
+### Architecture
+
+- **Single process, dual-threaded**: nanortc runs as answerer (CONTROLLED) with a select()-based event loop; libdatachannel runs as offerer (CONTROLLING) with its internal thread pool
+- **Signaling**: SDP offer/answer and ICE candidates exchanged via a socketpair pipe
+- **Transport**: Real UDP on 127.0.0.1 — exercises the full protocol stack (ICE → DTLS → SCTP → DCEP)
+
+### Running interop tests
+
+```bash
+# Build (requires OpenSSL + C++ compiler for libdatachannel)
+cmake -B build -DNANORTC_PROFILE=DATA -DNANORTC_CRYPTO=openssl \
+      -DNANORTC_BUILD_INTEROP_TESTS=ON -DCMAKE_BUILD_TYPE=Debug
+cmake --build build -j$(nproc)
+
+# Run interop tests only
+ctest --test-dir build -R interop --output-on-failure
+
+# Run all tests (unit + interop)
+ctest --test-dir build --output-on-failure
+```
+
+### When to add interop tests
+
+Add a new interop test case when:
+- A protocol module gains enough functionality to participate in a real connection
+- A new DataChannel feature is implemented (e.g., multiple channels, large messages)
+- A bug is found via browser testing that the unit tests did not catch
+
+### Interop test files
+
+| File | Purpose |
+|------|---------|
+| `interop_common.{h,c}` | Signaling pipe (socketpair) + timing utilities |
+| `interop_nanortc_peer.{h,c}` | nanortc thread wrapper (reuses `run_loop_linux.c`) |
+| `interop_libdatachannel_peer.{h,c}` | libdatachannel C API wrapper (callback-based) |
+| `test_interop_dc.c` | DataChannel interop test cases |
 
 ## PR Workflow
 

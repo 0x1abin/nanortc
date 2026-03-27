@@ -42,6 +42,12 @@ cmake -B build -DNANORTC_PROFILE=MEDIA -DNANORTC_CRYPTO=openssl -DNANORTC_BUILD_
 # Custom configuration (override defaults without modifying repo)
 cmake -B build -DNANORTC_CONFIG_FILE=\"my_nanortc_config.h\"
 
+# Interop tests against libdatachannel (requires OpenSSL + C++ compiler)
+cmake -B build -DNANORTC_PROFILE=DATA -DNANORTC_CRYPTO=openssl \
+      -DNANORTC_BUILD_INTEROP_TESTS=ON
+cmake --build build -j$(nproc)
+ctest --test-dir build -R interop --output-on-failure
+
 # With AddressSanitizer
 cmake -B build -DADDRESS_SANITIZER=ON
 

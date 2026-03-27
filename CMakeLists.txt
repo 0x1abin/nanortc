@@ -144,3 +144,9 @@ option(NANORTC_BUILD_EXAMPLES "Build examples" OFF)
 if(NANORTC_BUILD_EXAMPLES)
     add_subdirectory(examples)
 endif()
+
+# ---- Interop tests (requires network + C++ compiler, not default) ----
+option(NANORTC_BUILD_INTEROP_TESTS "Build interop tests against libdatachannel" OFF)
+if(NANORTC_BUILD_INTEROP_TESTS)
+    add_subdirectory(tests/interop)
+endif()
