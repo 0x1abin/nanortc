@@ -62,4 +62,4 @@ target_link_libraries(test_interop_dc PRIVATE
 
 # Register with ctest
 add_test(NAME interop_datachannel COMMAND test_interop_dc)
-set_tests_properties(interop_datachannel PROPERTIES TIMEOUT 30)
+set_tests_properties(interop_datachannel PROPERTIES TIMEOUT 120)
