@@ -64,10 +64,10 @@ else
 fi
 
 # ============================================================
-# 3. Build all profiles
+# 3. Build all feature combinations
 # ============================================================
 echo ""
-echo "=== Profile Builds ==="
+echo "=== Feature Combo Builds ==="
 
 # Auto-detect available crypto backend
 if pkg-config --exists openssl 2>/dev/null || [ -f /usr/include/openssl/ssl.h ]; then
@@ -81,14 +81,23 @@ else
     exit 1
 fi
 
-for profile in DATA AUDIO MEDIA; do
-    build_dir="$ROOT/build-ci-${profile}"
+# 6 feature combinations
+declare -A COMBOS
+COMBOS[DATA]="         -DNANO_FEATURE_DATACHANNEL=ON  -DNANO_FEATURE_AUDIO=OFF -DNANO_FEATURE_VIDEO=OFF"
+COMBOS[AUDIO]="        -DNANO_FEATURE_DATACHANNEL=ON  -DNANO_FEATURE_AUDIO=ON  -DNANO_FEATURE_VIDEO=OFF"
+COMBOS[MEDIA]="        -DNANO_FEATURE_DATACHANNEL=ON  -DNANO_FEATURE_AUDIO=ON  -DNANO_FEATURE_VIDEO=ON"
+COMBOS[AUDIO_ONLY]="   -DNANO_FEATURE_DATACHANNEL=OFF -DNANO_FEATURE_AUDIO=ON  -DNANO_FEATURE_VIDEO=OFF"
+COMBOS[MEDIA_ONLY]="   -DNANO_FEATURE_DATACHANNEL=OFF -DNANO_FEATURE_AUDIO=ON  -DNANO_FEATURE_VIDEO=ON"
+COMBOS[CORE_ONLY]="    -DNANO_FEATURE_DATACHANNEL=OFF -DNANO_FEATURE_AUDIO=OFF -DNANO_FEATURE_VIDEO=OFF"
+
+for combo in DATA AUDIO MEDIA AUDIO_ONLY MEDIA_ONLY CORE_ONLY; do
+    build_dir="$ROOT/build-ci-${combo}"
     rm -rf "$build_dir"
 
-    run_check "Build $profile" \
-        bash -c "cmake -B '$build_dir' -DNANORTC_PROFILE=$profile $CRYPTO_FLAG -DCMAKE_BUILD_TYPE=Debug > /dev/null 2>&1 && cmake --build '$build_dir' -j\$(nproc) > /dev/null 2>&1"
+    run_check "Build $combo" \
+        bash -c "cmake -B '$build_dir' ${COMBOS[$combo]} $CRYPTO_FLAG -DCMAKE_BUILD_TYPE=Debug > /dev/null 2>&1 && cmake --build '$build_dir' -j\$(nproc) > /dev/null 2>&1"
 
-    run_check "Test  $profile" \
+    run_check "Test  $combo" \
         ctest --test-dir "$build_dir" --output-on-failure
 done
 
@@ -111,6 +120,15 @@ else
     printf "  %-50s SKIP (MEDIA build failed)\n" "Symbol checks"
 fi
 
+# DataChannel-OFF builds should NOT contain nsctp_ symbols
+AUDIO_ONLY_LIB="$ROOT/build-ci-AUDIO_ONLY/libnanortc.a"
+if [ -f "$AUDIO_ONLY_LIB" ]; then
+    run_check "AUDIO_ONLY: no nsctp_ symbols" \
+        bash -c 'test -z "$(nm '"$AUDIO_ONLY_LIB"' 2>/dev/null | grep " T " | grep "nsctp_")"'
+else
+    printf "  %-50s SKIP (AUDIO_ONLY build failed)\n" "AUDIO_ONLY: no nsctp_ symbols"
+fi
+
 # ============================================================
 # 5. AddressSanitizer build
 # ============================================================
@@ -121,7 +139,7 @@ asan_dir="$ROOT/build-ci-asan"
 rm -rf "$asan_dir"
 
 run_check "Build MEDIA + ASan" \
-    bash -c "cmake -B '$asan_dir' -DNANORTC_PROFILE=MEDIA $CRYPTO_FLAG -DCMAKE_BUILD_TYPE=Debug -DADDRESS_SANITIZER=ON > /dev/null 2>&1 && cmake --build '$asan_dir' -j\$(nproc) > /dev/null 2>&1"
+    bash -c "cmake -B '$asan_dir' -DNANO_FEATURE_DATACHANNEL=ON -DNANO_FEATURE_AUDIO=ON -DNANO_FEATURE_VIDEO=ON $CRYPTO_FLAG -DCMAKE_BUILD_TYPE=Debug -DADDRESS_SANITIZER=ON > /dev/null 2>&1 && cmake --build '$asan_dir' -j\$(nproc) > /dev/null 2>&1"
 
 run_check "Test  MEDIA + ASan" \
     ctest --test-dir "$asan_dir" --output-on-failure

@@ -10,9 +10,15 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* Bounded NUL scan -- safe alternative to strlen() for internal use.
- * Returns the index of the first NUL byte, or maxlen if none found.
- * C99-compatible equivalent of POSIX strnlen(). */
+/**
+ * @brief Bounded NUL scan — safe alternative to strlen().
+ *
+ * C99-compatible equivalent of POSIX strnlen().
+ *
+ * @param s      String to scan (must not be NULL).
+ * @param maxlen Maximum number of bytes to examine.
+ * @return Index of the first NUL byte, or @p maxlen if none found.
+ */
 static inline size_t nano_strnlen(const char *s, size_t maxlen)
 {
     size_t i = 0;
@@ -21,8 +27,14 @@ static inline size_t nano_strnlen(const char *s, size_t maxlen)
     return i;
 }
 
-/* Secure zeroing — prevents compiler from optimizing away the clear.
- * Use for key material, HMAC contexts, cipher state. */
+/**
+ * @brief Secure zeroing — prevents compiler from optimizing away the clear.
+ *
+ * Use for key material, HMAC contexts, and cipher state.
+ *
+ * @param buf  Buffer to zero.
+ * @param len  Number of bytes to clear.
+ */
 static inline void nano_memzero(void *buf, size_t len)
 {
     volatile uint8_t *p = (volatile uint8_t *)buf;
@@ -30,9 +42,16 @@ static inline void nano_memzero(void *buf, size_t len)
         p[i] = 0;
 }
 
-/* Safe unsigned integer parsing — replaces atoi/atol.
- * Parses decimal string (buf, len) into *out. Returns 0 on success, -1 on error.
- * Rejects empty input, leading zeros (except "0"), overflow beyond UINT32_MAX. */
+/**
+ * @brief Safe unsigned integer parsing — replaces atoi/atol.
+ *
+ * Rejects empty input, leading zeros (except "0"), and overflow beyond UINT32_MAX.
+ *
+ * @param buf  Decimal digit string (not necessarily NUL-terminated).
+ * @param len  Number of characters to parse.
+ * @param out  Receives the parsed value on success.
+ * @return 0 on success, -1 on error.
+ */
 static inline int nano_parse_uint32(const char *buf, size_t len, uint32_t *out)
 {
     if (!buf || len == 0 || !out)

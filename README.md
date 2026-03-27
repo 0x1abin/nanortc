@@ -23,13 +23,15 @@ NanoRTC is a WebRTC protocol stack designed from the ground up for resource-cons
 
 ## Features
 
-- **Compile-time profiles** — Include only what you need:
+- **Orthogonal feature flags** — Include only what you need:
 
-| Profile | Features | Flash | RAM (1 conn) |
-|---------|----------|-------|-------------|
-| `DATA` | DataChannel (reliable/unreliable) | ~80 KB | ~60 KB |
-| `AUDIO` | + RTP/SRTP, Opus, G.711, jitter buffer | ~130 KB | ~100 KB |
-| `MEDIA` | + H.264/VP8 video, bandwidth estimation | ~180 KB | ~160 KB |
+| Flag | What it adds | Flash | RAM (1 conn) |
+|------|-------------|-------|-------------|
+| `NANO_FEATURE_DATACHANNEL` | SCTP + DCEP DataChannels | ~80 KB | ~60 KB |
+| `+ NANO_FEATURE_AUDIO` | RTP/SRTP, jitter buffer | ~130 KB | ~100 KB |
+| `+ NANO_FEATURE_VIDEO` | H.264/VP8, bandwidth estimation | ~180 KB | ~160 KB |
+
+Any combination works — audio without DataChannel, video without audio, etc.
 
 - **ICE** — Controlled (answerer) and controlling (offerer) roles
 - **DTLS 1.2** — Via pluggable crypto provider (mbedtls or OpenSSL)
@@ -42,16 +44,20 @@ NanoRTC is a WebRTC protocol stack designed from the ground up for resource-cons
 ## Quick Start
 
 ```bash
-# Build (Linux/macOS)
-cmake -B build -DNANORTC_PROFILE=DATA -DCMAKE_BUILD_TYPE=Debug
+# Build (Linux/macOS) — default: DataChannel only
+cmake -B build -DCMAKE_BUILD_TYPE=Debug
 cmake --build build -j$(nproc)
 ctest --test-dir build --output-on-failure
+
+# Enable audio + video
+cmake -B build -DNANO_FEATURE_AUDIO=ON -DNANO_FEATURE_VIDEO=ON
 
 # With OpenSSL (for Linux host development)
 cmake -B build -DNANORTC_CRYPTO=openssl
 
-# Build examples
-cmake -B build -DNANORTC_PROFILE=MEDIA -DNANORTC_CRYPTO=openssl -DNANORTC_BUILD_EXAMPLES=ON
+# Build examples (full media)
+cmake -B build -DNANO_FEATURE_DATACHANNEL=ON -DNANO_FEATURE_AUDIO=ON \
+      -DNANO_FEATURE_VIDEO=ON -DNANORTC_CRYPTO=openssl -DNANORTC_BUILD_EXAMPLES=ON
 cmake --build build
 
 # ESP-IDF
@@ -72,7 +78,7 @@ nano_rtc_init(&rtc, &cfg);
 
 // Exchange SDP via your signaling channel
 char answer[2048];
-nano_accept_offer(&rtc, remote_offer, answer, sizeof(answer));
+nano_accept_offer(&rtc, remote_offer, answer, sizeof(answer), NULL);
 
 // Event loop (your application drives this)
 for (;;) {
@@ -127,7 +133,7 @@ What this means in practice:
 
 - **Architecture & design** — Human decisions, captured in `docs/design-docs/`
 - **All code** — Written by AI agents: library source, tests, CI, build system, documentation
-- **Quality gates** — Mechanically enforced via CI: forbidden includes, no malloc, symbol naming, format checks, 3-profile build matrix, AddressSanitizer
+- **Quality gates** — Mechanically enforced via CI: forbidden includes, no malloc, symbol naming, format checks, 6-combo feature flag build matrix, AddressSanitizer
 - **RFC compliance** — Protocol implementations follow RFCs as the authoritative standard, not reference code
 - **Continuous verification** — `./scripts/ci-check.sh` runs the same checks locally that run in GitHub Actions
 

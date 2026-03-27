@@ -38,7 +38,7 @@ Audio/Media modules (Phase 2-3):
 
 1. **RFC test vectors (mandatory)** — Hardcode the exact byte sequences from the RFC's test vector document (e.g., RFC 5769 for STUN, RFC 4960 §A for SCTP) as `static const uint8_t[]` arrays. Parse them and verify every field against the RFC's expected values.
 
-2. **External implementation captures (mandatory)** — Use real packet data from at least one reference implementation (str0m, libpeer, browser pcap). This catches encoding quirks that RFC vectors may not cover (e.g., attribute ordering, padding style, unknown extensions).
+2. **External implementation captures (mandatory)** — Use real packet data from at least one reference implementation (str0m, browser pcap). This catches encoding quirks that RFC vectors may not cover (e.g., attribute ordering, padding style, unknown extensions).
 
 3. **Integrity / checksum verification (mandatory if applicable)** — Verify MESSAGE-INTEGRITY (HMAC), FINGERPRINT (CRC), checksums against the RFC's known-good values using the documented password/key. Test with both correct and incorrect keys.
 
@@ -54,7 +54,7 @@ Audio/Media modules (Phase 2-3):
 |--------|------------------|--------------------|---------|
 | STUN | RFC 5769 §2.1-2.3 (Request, IPv4/IPv6 Response) | str0m `stun.rs` test data | via ICE interop |
 | ICE | — | — | `test_interop_handshake` (libdatachannel) |
-| SCTP | RFC 4960 §A (INIT, INIT-ACK, DATA, SACK examples) | libpeer pcap | `test_interop_handshake` (libdatachannel) |
+| SCTP | RFC 4960 §A (INIT, INIT-ACK, DATA, SACK examples) | browser pcap | `test_interop_handshake` (libdatachannel) |
 | DTLS | — (use OpenSSL s_client captures) | browser DTLS handshake | `test_interop_handshake` (libdatachannel) |
 | DataChannel | — | browser DCEP OPEN/ACK captures | `test_interop_dc_*` (libdatachannel) |
 | SDP | — (use Chrome/Firefox offer strings) | browser SDP offers | `test_interop_handshake` (libdatachannel) |
@@ -75,7 +75,7 @@ The interop test framework (`tests/interop/`) validates nanortc against libdatac
 
 ```bash
 # Build (requires OpenSSL + C++ compiler for libdatachannel)
-cmake -B build -DNANORTC_PROFILE=DATA -DNANORTC_CRYPTO=openssl \
+cmake -B build -DNANORTC_CRYPTO=openssl \
       -DNANORTC_BUILD_INTEROP_TESTS=ON -DCMAKE_BUILD_TYPE=Debug
 cmake --build build -j$(nproc)
 

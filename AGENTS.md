@@ -24,27 +24,35 @@ NanoRTC is a Sans I/O, pure C WebRTC implementation for RTOS/embedded systems.
 ## Build
 
 ```bash
-# Host build (default: DATA profile)
-cmake -B build -DNANORTC_PROFILE=DATA -DCMAKE_BUILD_TYPE=Debug
+# Host build (default: DataChannel only)
+cmake -B build -DCMAKE_BUILD_TYPE=Debug
 cmake --build build -j$(nproc)
 ctest --test-dir build --output-on-failure
 
-# Profiles: DATA (DC only), AUDIO (+RTP/SRTP), MEDIA (+video)
-cmake -B build -DNANORTC_PROFILE=AUDIO
+# Feature flags (orthogonal, any combination)
+cmake -B build -DNANO_FEATURE_DATACHANNEL=ON   # SCTP + DCEP (default ON)
+cmake -B build -DNANO_FEATURE_AUDIO=ON          # RTP/SRTP + jitter buffer
+cmake -B build -DNANO_FEATURE_VIDEO=ON           # RTP/SRTP + BWE
+cmake -B build -DNANO_FEATURE_DC_RELIABLE=OFF    # Disable retransmit (sub-feature of DC)
+cmake -B build -DNANO_FEATURE_DC_ORDERED=OFF     # Disable ordered delivery (sub-feature of DC)
+
+# Common combinations
+cmake -B build -DNANO_FEATURE_DATACHANNEL=ON -DNANO_FEATURE_AUDIO=ON -DNANO_FEATURE_VIDEO=ON  # Full media
+cmake -B build -DNANO_FEATURE_DATACHANNEL=OFF -DNANO_FEATURE_AUDIO=ON                          # Audio only (no SCTP)
 
 # Crypto backend: mbedtls (default, for embedded) or openssl (for Linux host)
 cmake -B build -DNANORTC_CRYPTO=openssl
 cmake -B build -DNANORTC_CRYPTO=mbedtls
 
 # Build examples (Linux host, not default)
-cmake -B build -DNANORTC_PROFILE=MEDIA -DNANORTC_CRYPTO=openssl -DNANORTC_BUILD_EXAMPLES=ON
+cmake -B build -DNANO_FEATURE_DATACHANNEL=ON -DNANO_FEATURE_AUDIO=ON -DNANO_FEATURE_VIDEO=ON \
+      -DNANORTC_CRYPTO=openssl -DNANORTC_BUILD_EXAMPLES=ON
 
 # Custom configuration (override defaults without modifying repo)
 cmake -B build -DNANORTC_CONFIG_FILE=\"my_nanortc_config.h\"
 
 # Interop tests against libdatachannel (requires OpenSSL + C++ compiler)
-cmake -B build -DNANORTC_PROFILE=DATA -DNANORTC_CRYPTO=openssl \
-      -DNANORTC_BUILD_INTEROP_TESTS=ON
+cmake -B build -DNANORTC_CRYPTO=openssl -DNANORTC_BUILD_INTEROP_TESTS=ON
 cmake --build build -j$(nproc)
 ctest --test-dir build -R interop --output-on-failure
 
@@ -77,7 +85,7 @@ These rules are mechanically enforced. Violations will break the build or CI.
 
 **Byte order:** Use `nano_htons`/`nano_ntohs`/`nano_htonl`/`nano_ntohl` from `nanortc.h`. Never platform `htons`.
 
-**Profile guards:** Media code wrapped in `#if NANORTC_PROFILE >= NANO_PROFILE_AUDIO`. DATA profile must compile without AUDIO/MEDIA code.
+**Feature guards:** Code guarded by orthogonal feature flags: `#if NANO_FEATURE_DATACHANNEL`, `#if NANO_FEATURE_AUDIO`, `#if NANO_FEATURE_VIDEO`, `#if NANO_HAVE_MEDIA_TRANSPORT`. All 6 feature combinations must compile and pass tests (DATA, AUDIO, MEDIA, AUDIO_ONLY, MEDIA_ONLY, CORE_ONLY).
 
 **No global state:** All state in `nano_rtc_t`. Multiple instances must coexist.
 
@@ -94,6 +102,5 @@ These rules are mechanically enforced. Violations will break the build or CI.
 - `.local-reference/str0m/` — Rust Sans I/O WebRTC (architecture reference for poll/handle pattern)
 - `.local-reference/libdatachannel/` — C/C++ WebRTC network library featuring Data Channels, Media Transport, and WebSockets
 - `.local-reference/amazon-kinesis-video-streams-webrtc-sdk-c/` — beta-reference-esp-port
-- `.local-reference/libpeer/` — C WebRTC for ESP32 (protocol implementation reference)
 
-Consult str0m for Sans I/O patterns. Consult libpeer for C protocol implementation details.
+Consult str0m for Sans I/O patterns.

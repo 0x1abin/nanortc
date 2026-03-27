@@ -10,7 +10,7 @@ NanoRTC is a pure state machine. This is not an optimization or a nice-to-have �
 
 ## 2. RFC is the authority, code is the implementation
 
-When implementing a protocol module, the relevant RFC is the specification. Reference implementations (str0m, libpeer, libdatachannel) are useful for understanding, but if they disagree with the RFC, the RFC wins.
+When implementing a protocol module, the relevant RFC is the specification. Reference implementations (str0m, libdatachannel) are useful for understanding, but if they disagree with the RFC, the RFC wins.
 
 **Implication:** Always cite the RFC section number in code comments when implementing wire formats or state machines. This makes the code verifiable.
 
@@ -22,9 +22,9 @@ All external data (UDP packets, SDP strings) is validated at the entry point. On
 
 ## 4. Compile-time, not runtime
 
-Feature selection happens at compile time via `NANORTC_PROFILE`, not at runtime. There is no dead code in a built binary — if a profile doesn't include video, no video code is compiled.
+Feature selection happens at compile time via orthogonal feature flags (`NANO_FEATURE_DATACHANNEL`, `NANO_FEATURE_AUDIO`, `NANO_FEATURE_VIDEO`), not at runtime. There is no dead code in a built binary — if video is not enabled, no video code is compiled.
 
-**Implication:** Use `#if NANORTC_PROFILE >= ...` guards, not runtime `if` checks. This keeps the binary small and deterministic for embedded targets.
+**Implication:** Use `#if NANO_FEATURE_*` guards, not runtime `if` checks. This keeps the binary small and deterministic for embedded targets.
 
 ## 5. Caller owns resources
 

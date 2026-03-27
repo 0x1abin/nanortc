@@ -2,7 +2,7 @@
  * nanortc — SCTP-Lite implementation (RFC 4960)
  *
  * Minimal SCTP for WebRTC DataChannel over DTLS.
- * Reference: libpeer src/sctp.c, str0m src/sctp/mod.rs.
+ * Reference: str0m src/sctp/mod.rs.
  *
  * SPDX-License-Identifier: MIT
  */
@@ -408,7 +408,9 @@ int nsctp_init(nano_sctp_t *sctp)
     sctp->state = NANO_SCTP_STATE_CLOSED;
     sctp->local_port = 5000; /* WebRTC default SCTP port */
     sctp->remote_port = 5000;
+#if NANO_FEATURE_DC_RELIABLE
     sctp->rto_ms = NANO_SCTP_RTO_INITIAL_MS;
+#endif
     return NANO_OK;
 }
 
@@ -477,7 +479,7 @@ static int nsctp_handle_init(nano_sctp_t *sctp, const uint8_t *chunk, size_t cle
 
     /* Build INIT-ACK with a simple cookie.
      * Cookie = cookie_secret XOR'd with initiate_tag (simple, DTLS provides auth).
-     * Like libpeer, we keep this minimal. */
+     * We keep this minimal. */
     uint8_t cookie[8];
     memcpy(cookie, sctp->cookie_secret, 8);
     /* Mix in peer's initiate tag for binding */
@@ -712,7 +714,7 @@ int nsctp_handle_data(nano_sctp_t *sctp, const uint8_t *data, size_t len)
     /* Clear delivered state from previous call */
     sctp->has_delivered = false;
 
-    /* Iterate chunks (libpeer pattern) */
+    /* Iterate chunks */
     size_t pos = SCTP_HEADER_SIZE;
     while (pos + SCTP_CHUNK_HDR_SIZE <= len) {
         uint8_t ctype = data[pos];
@@ -882,14 +884,21 @@ int nsctp_send(nano_sctp_t *sctp, uint16_t stream_id, uint32_t ppid, const uint8
     memset(e, 0, sizeof(*e));
     e->tsn = sctp->next_tsn++;
     e->stream_id = stream_id;
+#if NANO_FEATURE_DC_ORDERED
     e->ssn = sctp->next_ssn[stream_id % NANO_MAX_DATACHANNELS]++;
+    e->flags = SCTP_DATA_FLAG_BEGIN | SCTP_DATA_FLAG_END; /* single-chunk msg */
+#else
+    e->ssn = 0;
+    e->flags = SCTP_DATA_FLAG_BEGIN | SCTP_DATA_FLAG_END | SCTP_DATA_FLAG_UNORDERED;
+#endif
     e->ppid = ppid;
     e->data_offset = offset;
     e->data_len = (uint16_t)len;
-    e->flags = SCTP_DATA_FLAG_BEGIN | SCTP_DATA_FLAG_END; /* single-chunk msg */
     e->acked = false;
     e->in_flight = false;
+#if NANO_FEATURE_DC_RELIABLE
     e->retransmit_count = 0;
+#endif
 
     sctp->sq_tail++;
     NANO_LOGD("SCTP", "DATA enqueued");
@@ -908,6 +917,7 @@ int nsctp_handle_timeout(nano_sctp_t *sctp, uint32_t now_ms)
         return NANO_OK;
     }
 
+#if NANO_FEATURE_DC_RELIABLE
     /* Retransmission: check send queue for timed-out entries */
     uint8_t idx = sctp->sq_head;
     while (idx != sctp->sq_tail) {
@@ -935,6 +945,7 @@ int nsctp_handle_timeout(nano_sctp_t *sctp, uint32_t now_ms)
         }
         idx++;
     }
+#endif /* NANO_FEATURE_DC_RELIABLE */
 
     /* Heartbeat */
     if (!sctp->heartbeat_pending && sctp->crypto) {
