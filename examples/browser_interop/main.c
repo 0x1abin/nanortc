@@ -118,12 +118,13 @@ static int do_answer_signaling(http_sig_t *sig, nano_rtc_t *rtc)
     fprintf(stderr, "[sig] Got SDP offer (%zu bytes)\n", strlen(payload));
 
     char answer[HTTP_SIG_BUF_SIZE];
-    int rc = nano_accept_offer(rtc, payload, answer, sizeof(answer));
-    if (rc < 0) {
+    size_t answer_len = 0;
+    int rc = nano_accept_offer(rtc, payload, answer, sizeof(answer), &answer_len);
+    if (rc != NANO_OK) {
         fprintf(stderr, "nano_accept_offer failed: %d\n", rc);
         return rc;
     }
-    fprintf(stderr, "[sig] Generated SDP answer (%d bytes)\n", rc);
+    fprintf(stderr, "[sig] Generated SDP answer (%zu bytes)\n", answer_len);
 
     rc = http_sig_send(sig, "answer", answer, "sdp");
     if (rc < 0) {
@@ -141,7 +142,7 @@ static int do_answer_signaling(http_sig_t *sig, nano_rtc_t *rtc)
 static int do_offer_signaling(http_sig_t *sig, nano_rtc_t *rtc)
 {
     char offer[HTTP_SIG_BUF_SIZE];
-    int rc = nano_create_offer(rtc, offer, sizeof(offer));
+    int rc = nano_create_offer(rtc, offer, sizeof(offer), NULL);
     if (rc < 0) {
         fprintf(stderr, "nano_create_offer failed: %d\n", rc);
         return rc;

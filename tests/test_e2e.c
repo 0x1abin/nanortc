@@ -124,8 +124,8 @@ TEST(test_e2e_stubs_not_implemented)
 
     char buf[256];
     /* nano_accept_offer now works (parses SDP), but invalid SDP returns parse error */
-    ASSERT_FAIL(nano_accept_offer(&rtc, "v=0\r\n", buf, sizeof(buf)));
-    ASSERT_EQ(nano_create_offer(&rtc, buf, sizeof(buf)), NANO_ERR_NOT_IMPLEMENTED);
+    ASSERT_FAIL(nano_accept_offer(&rtc, "v=0\r\n", buf, sizeof(buf), NULL));
+    ASSERT_EQ(nano_create_offer(&rtc, buf, sizeof(buf), NULL), NANO_ERR_NOT_IMPLEMENTED);
     ASSERT_EQ(nano_accept_answer(&rtc, "v=0\r\n"), NANO_ERR_NOT_IMPLEMENTED);
     ASSERT_OK(nano_add_local_candidate(&rtc, "192.168.1.1", 9999));
     /* nano_add_remote_candidate now parses SDP candidate; invalid format returns parse error */
@@ -175,7 +175,7 @@ TEST(test_e2e_loopback_skeleton)
 
     /* Client creates offer (stub: returns NOT_IMPLEMENTED) */
     char offer[2048];
-    int rc = nano_create_offer(&client, offer, sizeof(offer));
+    int rc = nano_create_offer(&client, offer, sizeof(offer), NULL);
     ASSERT_EQ(rc, NANO_ERR_NOT_IMPLEMENTED);
 
     /* No output should be queued */

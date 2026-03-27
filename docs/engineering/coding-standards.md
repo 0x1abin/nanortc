@@ -127,6 +127,29 @@ if (addr_len >= NANO_IPV6_STR_SIZE) { return NANO_ERR_PARSE; }
 if (addr_len > 45) { return NANO_ERR_PARSE; }
 ```
 
+## Return Value Convention
+
+All `nano_*` public API functions return `int` as a status code:
+
+- `NANO_OK` (0) = success
+- `NANO_ERR_*` (negative) = failure
+
+**Never return positive values.** Output lengths are passed via `size_t *out_len` parameters. Use `nano_err_to_name()` to convert error codes to human-readable strings for diagnostics.
+
+```c
+/* Good: status code + out_len */
+size_t answer_len = 0;
+int rc = nano_accept_offer(&rtc, offer, answer, sizeof(answer), &answer_len);
+if (rc != NANO_OK) {
+    fprintf(stderr, "failed: %s\n", nano_err_to_name(rc));
+    return rc;
+}
+
+/* Bad: using return value as length */
+int len = nano_accept_offer(&rtc, offer, answer, sizeof(answer), NULL);
+if (len > 0) { ... }  // WRONG — rc is always 0 or negative
+```
+
 ## Code Style
 
 Enforced by `.clang-format`:

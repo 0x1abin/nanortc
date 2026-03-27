@@ -106,9 +106,11 @@ void nano_rtc_destroy(nano_rtc_t *rtc);
 
 // ---- SDP ----
 int  nano_accept_offer(nano_rtc_t *rtc, const char *offer,
-                       char *answer_buf, size_t answer_buf_len);
+                       char *answer_buf, size_t answer_buf_len,
+                       size_t *out_len);
 int  nano_create_offer(nano_rtc_t *rtc,
-                       char *offer_buf, size_t offer_buf_len);
+                       char *offer_buf, size_t offer_buf_len,
+                       size_t *out_len);
 int  nano_accept_answer(nano_rtc_t *rtc, const char *answer);
 
 // ---- ICE ----
@@ -661,7 +663,7 @@ void nanortc_task(void *arg) {
     // 4. 信令: 通过已有通道交换 SDP
     char *remote_offer = my_signaling_recv_offer();
     char answer[2048];
-    nano_accept_offer(&rtc, remote_offer, answer, sizeof(answer));
+    nano_accept_offer(&rtc, remote_offer, answer, sizeof(answer), NULL);
     my_signaling_send_answer(answer);
 
     // 5. 事件循环

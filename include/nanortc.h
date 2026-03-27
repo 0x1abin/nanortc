@@ -408,12 +408,13 @@ NANO_API void nano_rtc_destroy(nano_rtc_t *rtc);
  * @param offer          NUL-terminated remote SDP offer string.
  * @param answer_buf     Buffer to receive the generated SDP answer.
  * @param answer_buf_len Size of @p answer_buf in bytes.
+ * @param out_len        Receives answer length in bytes (may be NULL).
  * @return NANO_OK on success.
  * @retval NANO_ERR_BUFFER_TOO_SMALL  @p answer_buf_len is insufficient.
  * @retval NANO_ERR_PARSE             Malformed SDP offer.
  */
 NANO_API int nano_accept_offer(nano_rtc_t *rtc, const char *offer, char *answer_buf,
-                               size_t answer_buf_len);
+                               size_t answer_buf_len, size_t *out_len);
 
 /**
  * @brief Generate an SDP offer (controlling/offerer role).
@@ -421,10 +422,12 @@ NANO_API int nano_accept_offer(nano_rtc_t *rtc, const char *offer, char *answer_
  * @param rtc           Initialized RTC state.
  * @param offer_buf     Buffer to receive the SDP offer.
  * @param offer_buf_len Size of @p offer_buf in bytes.
+ * @param out_len       Receives offer length in bytes (may be NULL).
  * @return NANO_OK on success.
  * @retval NANO_ERR_BUFFER_TOO_SMALL  @p offer_buf_len is insufficient.
  */
-NANO_API int nano_create_offer(nano_rtc_t *rtc, char *offer_buf, size_t offer_buf_len);
+NANO_API int nano_create_offer(nano_rtc_t *rtc, char *offer_buf, size_t offer_buf_len,
+                               size_t *out_len);
 
 /**
  * @brief Parse a remote SDP answer (after creating an offer).
@@ -572,6 +575,18 @@ NANO_API int nano_send_video(nano_rtc_t *rtc, uint32_t timestamp, const void *da
  */
 NANO_API int nano_request_keyframe(nano_rtc_t *rtc);
 #endif
+
+/* ----------------------------------------------------------------
+ * Diagnostics
+ * ---------------------------------------------------------------- */
+
+/**
+ * @brief Return a human-readable name for an error code.
+ *
+ * @param err  Error code (NANO_OK, NANO_ERR_*, or unknown).
+ * @return Static string such as "NANO_OK" or "NANO_ERR_PARSE". Never NULL.
+ */
+NANO_API const char *nano_err_to_name(int err);
 
 #ifdef __cplusplus
 }

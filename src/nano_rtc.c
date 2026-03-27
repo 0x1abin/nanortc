@@ -93,7 +93,8 @@ static void rtc_cache_fingerprint(nano_rtc_t *rtc)
     }
 }
 
-int nano_accept_offer(nano_rtc_t *rtc, const char *offer, char *answer_buf, size_t answer_buf_len)
+int nano_accept_offer(nano_rtc_t *rtc, const char *offer, char *answer_buf, size_t answer_buf_len,
+                      size_t *out_len)
 {
     if (!rtc || !offer || !answer_buf) {
         return NANO_ERR_INVALID_PARAM;
@@ -178,15 +179,20 @@ int nano_accept_offer(nano_rtc_t *rtc, const char *offer, char *answer_buf, size
         return rc;
     }
 
+    if (out_len) {
+        *out_len = answer_len;
+    }
+
     NANO_LOGI("RTC", "offer accepted, answer generated");
-    return (int)answer_len;
+    return NANO_OK;
 }
 
-int nano_create_offer(nano_rtc_t *rtc, char *offer_buf, size_t offer_buf_len)
+int nano_create_offer(nano_rtc_t *rtc, char *offer_buf, size_t offer_buf_len, size_t *out_len)
 {
     (void)rtc;
     (void)offer_buf;
     (void)offer_buf_len;
+    (void)out_len;
     return NANO_ERR_NOT_IMPLEMENTED;
 }
 
@@ -730,3 +736,31 @@ int nano_request_keyframe(nano_rtc_t *rtc)
     return NANO_ERR_NOT_IMPLEMENTED;
 }
 #endif
+
+const char *nano_err_to_name(int err)
+{
+    switch (err) {
+    case NANO_OK:
+        return "NANO_OK";
+    case NANO_ERR_INVALID_PARAM:
+        return "NANO_ERR_INVALID_PARAM";
+    case NANO_ERR_BUFFER_TOO_SMALL:
+        return "NANO_ERR_BUFFER_TOO_SMALL";
+    case NANO_ERR_STATE:
+        return "NANO_ERR_STATE";
+    case NANO_ERR_CRYPTO:
+        return "NANO_ERR_CRYPTO";
+    case NANO_ERR_PROTOCOL:
+        return "NANO_ERR_PROTOCOL";
+    case NANO_ERR_NOT_IMPLEMENTED:
+        return "NANO_ERR_NOT_IMPLEMENTED";
+    case NANO_ERR_PARSE:
+        return "NANO_ERR_PARSE";
+    case NANO_ERR_NO_DATA:
+        return "NANO_ERR_NO_DATA";
+    case NANO_ERR_INTERNAL:
+        return "NANO_ERR_INTERNAL";
+    default:
+        return "NANO_ERR_UNKNOWN";
+    }
+}

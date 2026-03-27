@@ -275,8 +275,10 @@ TEST(test_accept_offer_generates_answer)
     ASSERT_OK(nano_rtc_init(&rtc, &cfg));
 
     char answer[2048];
-    int rc = nano_accept_offer(&rtc, CHROME_OFFER, answer, sizeof(answer));
-    ASSERT_TRUE(rc > 0); /* Returns answer length */
+    size_t answer_len = 0;
+    int rc = nano_accept_offer(&rtc, CHROME_OFFER, answer, sizeof(answer), &answer_len);
+    ASSERT_OK(rc);
+    ASSERT_TRUE(answer_len > 0);
 
     /* Verify answer contains key fields */
     ASSERT_TRUE(strstr(answer, "v=0") != NULL);

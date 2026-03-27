@@ -139,16 +139,12 @@ int main(int argc, char *argv[])
     }
 
     char answer[4096];
-    rc = nano_accept_offer(&rtc, offer, answer, sizeof(answer));
-    if (rc == NANO_ERR_NOT_IMPLEMENTED) {
-        fprintf(stderr, "nano_accept_offer not implemented yet (stub phase)\n");
-        fprintf(stderr, "This example will work once SDP/ICE/DTLS modules are implemented.\n");
-    } else if (rc != NANO_OK) {
-        fprintf(stderr, "nano_accept_offer failed: %d\n", rc);
+    rc = nano_accept_offer(&rtc, offer, answer, sizeof(answer), NULL);
+    if (rc != NANO_OK) {
+        fprintf(stderr, "nano_accept_offer failed: %d (%s)\n", rc, nano_err_to_name(rc));
         return 1;
-    } else {
-        nano_signaling_send_answer(&sig, answer);
     }
+    nano_signaling_send_answer(&sig, answer);
 
     nano_signaling_destroy(&sig);
 

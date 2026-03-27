@@ -109,14 +109,12 @@ static int nanortc_do_signaling(interop_nanortc_peer_t *peer)
 
     /* Generate answer */
     char answer[8192];
-    int rc = nano_accept_offer(&peer->rtc, buf, answer, sizeof(answer));
-    if (rc < 0) {
+    size_t answer_len = 0;
+    int rc = nano_accept_offer(&peer->rtc, buf, answer, sizeof(answer), &answer_len);
+    if (rc != NANO_OK) {
         fprintf(stderr, "[nanortc] nano_accept_offer failed: %d\n", rc);
         return -1;
     }
-
-    /* Send answer back */
-    size_t answer_len = strlen(answer);
     rc = interop_sig_send(peer->sig_fd, SIG_MSG_SDP_ANSWER, answer,
                           answer_len);
     if (rc != 0) {

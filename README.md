@@ -78,7 +78,7 @@ nano_rtc_init(&rtc, &cfg);
 
 // Exchange SDP via your signaling channel
 char answer[2048];
-nano_accept_offer(&rtc, remote_offer, answer, sizeof(answer));
+nano_accept_offer(&rtc, remote_offer, answer, sizeof(answer), NULL);
 
 // Event loop (your application drives this)
 for (;;) {
