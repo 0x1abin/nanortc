@@ -186,7 +186,7 @@ int sdp_parse(nano_sdp_t *sdp, const char *sdp_str, size_t len)
 
 int sdp_generate_answer(nano_sdp_t *sdp, char *buf, size_t buf_len, size_t *out_len)
 {
-    if (!sdp || !buf || !out_len || buf_len < 256) {
+    if (!sdp || !buf || !out_len || buf_len < NANO_SDP_MIN_BUF_SIZE) {
         return NANO_ERR_INVALID_PARAM;
     }
 

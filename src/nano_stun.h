@@ -7,6 +7,8 @@
 #ifndef NANO_STUN_H_
 #define NANO_STUN_H_
 
+#include "nanortc.h"
+
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
@@ -36,6 +38,9 @@
 /* STUN FINGERPRINT XOR constant — ASCII "STUN" (RFC 8489 §14.7) */
 #define STUN_FINGERPRINT_XOR 0x5354554E
 
+/* STUN transaction ID size (RFC 8489 §6) */
+#define STUN_TXID_SIZE 12
+
 /* XOR-MAPPED-ADDRESS family (RFC 8489 §14.1) */
 #define STUN_FAMILY_IPV4 0x01
 #define STUN_FAMILY_IPV6 0x02
@@ -47,7 +52,7 @@ typedef void (*stun_hmac_sha1_fn)(const uint8_t *key, size_t key_len, const uint
 typedef struct stun_msg {
     uint16_t type;
     uint16_t length; /* payload length from header (excluding 20-byte header) */
-    uint8_t transaction_id[12];
+    uint8_t transaction_id[STUN_TXID_SIZE];
 
     /* Parsed attributes */
     const char *username;
@@ -64,9 +69,9 @@ typedef struct stun_msg {
     uint32_t fingerprint_value; /* parsed fingerprint (host order) */
 
     /* XOR-MAPPED-ADDRESS (RFC 8489 §14.2) */
-    uint8_t mapped_addr[16]; /* decoded address (4 bytes IPv4, 16 bytes IPv6) */
-    uint16_t mapped_port;    /* decoded port (host order) */
-    uint8_t mapped_family;   /* STUN_FAMILY_IPV4/IPV6, 0 = not present */
+    uint8_t mapped_addr[NANO_ADDR_SIZE]; /* decoded address (4 bytes IPv4, 16 bytes IPv6) */
+    uint16_t mapped_port;                /* decoded port (host order) */
+    uint8_t mapped_family;               /* STUN_FAMILY_IPV4/IPV6, 0 = not present */
 
     /* ICE role attributes (RFC 8445 §7.1) */
     uint64_t ice_controlling; /* tie-breaker value */
@@ -99,7 +104,7 @@ int stun_encode_binding_response(const stun_msg_t *req, const uint8_t *src_addr,
 /* Encode STUN Binding Request for ICE connectivity check (RFC 8445 §7.1.1) */
 int stun_encode_binding_request(const char *username, size_t username_len, uint32_t priority,
                                 bool use_candidate, bool is_controlling, uint64_t tie_breaker,
-                                const uint8_t transaction_id[12], const uint8_t *key,
+                                const uint8_t transaction_id[STUN_TXID_SIZE], const uint8_t *key,
                                 size_t key_len, stun_hmac_sha1_fn hmac_sha1, uint8_t *buf,
                                 size_t buf_len, size_t *out_len);
 

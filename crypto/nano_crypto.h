@@ -22,6 +22,10 @@ extern "C" {
 #endif
 #endif
 
+/* DTLS certificate fingerprint format: "XX:XX:...:XX" SHA-256 */
+#define NANO_DTLS_FINGERPRINT_STR_SIZE 97 /* 95 hex:colon chars + NUL + 1 spare */
+#define NANO_DTLS_FINGERPRINT_MIN_BUF  96 /* 95 chars + NUL */
+
 /* Opaque DTLS context — sized by the provider implementation */
 typedef struct nano_crypto_dtls_ctx nano_crypto_dtls_ctx_t;
 

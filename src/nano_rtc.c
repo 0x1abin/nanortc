@@ -272,12 +272,12 @@ int nano_add_remote_candidate(nano_rtc_t *rtc, const char *candidate_str)
         }
     }
 
-    if (addr_len == 0 || addr_len > 45 || port == 0) {
+    if (addr_len == 0 || addr_len >= NANO_IPV6_STR_SIZE || port == 0) {
         return NANO_ERR_PARSE;
     }
 
     /* Parse IPv4 address (simple: a.b.c.d) */
-    char addr_buf[46];
+    char addr_buf[NANO_IPV6_STR_SIZE];
     memcpy(addr_buf, addr_str, addr_len);
     addr_buf[addr_len] = '\0';
 
@@ -305,7 +305,7 @@ int nano_add_remote_candidate(nano_rtc_t *rtc, const char *candidate_str)
 
     /* Store in ICE state */
     rtc->ice.remote_family = 4;
-    memset(rtc->ice.remote_addr, 0, 16);
+    memset(rtc->ice.remote_addr, 0, NANO_ADDR_SIZE);
     memcpy(rtc->ice.remote_addr, ip, 4);
     rtc->ice.remote_port = port;
 
@@ -556,7 +556,7 @@ int nano_handle_receive(nano_rtc_t *rtc, uint32_t now_ms, const uint8_t *data, s
                 rtc_pump_sctp_through_dtls(rtc, src);
 
                 /* Also drain DC output (DCEP ACK) → SCTP → DTLS */
-                uint8_t dc_buf[128];
+                uint8_t dc_buf[NANO_DC_OUT_BUF_SIZE];
                 size_t dc_len = 0;
                 uint16_t dc_stream = 0;
                 while (dc_poll_output(&rtc->datachannel, dc_buf, sizeof(dc_buf), &dc_len,
@@ -611,7 +611,7 @@ int nano_handle_timeout(nano_rtc_t *rtc, uint32_t now_ms)
             out.transmit.len = out_len;
             /* Destination: remote candidate address */
             out.transmit.dest.family = rtc->ice.remote_family;
-            memcpy(out.transmit.dest.addr, rtc->ice.remote_addr, 16);
+            memcpy(out.transmit.dest.addr, rtc->ice.remote_addr, NANO_ADDR_SIZE);
             out.transmit.dest.port = rtc->ice.remote_port;
             rtc_enqueue_output(rtc, &out);
         }

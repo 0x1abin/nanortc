@@ -73,7 +73,7 @@ typedef enum {
 typedef struct nano_dc_channel {
     nano_dc_state_t state;
     uint16_t stream_id;
-    char label[32];
+    char label[NANO_DC_LABEL_SIZE];
     uint8_t channel_type;
     bool ordered;
     uint16_t max_retransmits;
@@ -88,7 +88,7 @@ typedef struct nano_dc {
     uint8_t channel_count;
 
     /* Output: DCEP message to send via SCTP (PPID=50) */
-    uint8_t out_buf[128];
+    uint8_t out_buf[NANO_DC_OUT_BUF_SIZE];
     uint16_t out_len;
     uint16_t out_stream;
     bool has_output;

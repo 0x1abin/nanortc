@@ -48,6 +48,10 @@ typedef struct nano_crypto_provider nano_crypto_provider_t;
 /* State Cookie parameter type (RFC 4960 §3.3.3) */
 #define SCTP_PARAM_STATE_COOKIE 7
 
+/* SCTP internal buffer sizes */
+#define NSCTP_NONCE_SIZE  8  /* heartbeat nonce */
+#define NSCTP_SECRET_SIZE 16 /* cookie HMAC key */
+
 /* ----------------------------------------------------------------
  * Parsed chunk structures (for internal codec use)
  * ---------------------------------------------------------------- */
@@ -164,12 +168,12 @@ typedef struct nano_sctp {
     /* HEARTBEAT */
     uint32_t last_heartbeat_ms;
     bool heartbeat_pending;
-    uint8_t heartbeat_nonce[8];
+    uint8_t heartbeat_nonce[NSCTP_NONCE_SIZE];
 
     /* Handshake cookie storage */
     uint8_t cookie[NANO_SCTP_COOKIE_SIZE];
     uint16_t cookie_len;
-    uint8_t cookie_secret[16]; /* HMAC key for cookie generation (server) */
+    uint8_t cookie_secret[NSCTP_SECRET_SIZE]; /* HMAC key for cookie generation (server) */
 
     /* Peer parameters (from INIT/INIT-ACK) */
     uint32_t peer_a_rwnd;

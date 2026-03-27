@@ -220,7 +220,7 @@ struct nano_crypto_dtls_ctx {
     int keys_captured;
 
     /* Fingerprint cache */
-    char fingerprint[97]; /* "XX:XX:..." SHA-256, 95 chars + NUL */
+    char fingerprint[NANO_DTLS_FINGERPRINT_STR_SIZE]; /* "XX:XX:..." SHA-256, 95 chars + NUL */
 };
 
 /* ---- Certificate verification callback: accept self-signed ---- */
@@ -317,7 +317,7 @@ static int mbed_bio_recv(void *ctx, unsigned char *buf, size_t len)
 
 static int mbed_compute_fingerprint(const mbedtls_x509_crt *crt, char *buf, size_t buf_len)
 {
-    if (buf_len < 96) {
+    if (buf_len < NANO_DTLS_FINGERPRINT_MIN_BUF) {
         return -1;
     }
     unsigned char digest[32];
@@ -691,10 +691,10 @@ static int mbed_dtls_export_keying_material(nano_crypto_dtls_ctx_t *ctx, const c
 
 static int mbed_dtls_get_fingerprint(nano_crypto_dtls_ctx_t *ctx, char *buf, size_t buf_len)
 {
-    if (!ctx || buf_len < 96) {
+    if (!ctx || buf_len < NANO_DTLS_FINGERPRINT_MIN_BUF) {
         return -1;
     }
-    memcpy(buf, ctx->fingerprint, 96);
+    memcpy(buf, ctx->fingerprint, NANO_DTLS_FINGERPRINT_MIN_BUF);
     return 0;
 }
 

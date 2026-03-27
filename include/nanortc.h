@@ -191,9 +191,13 @@ typedef struct nano_crypto_provider nano_crypto_provider_t;
 typedef struct nano_addr nano_addr_t;
 #endif
 
+/* Protocol-fixed address sizes */
+#define NANO_ADDR_SIZE     16 /* IPv6 binary address (RFC 4291) */
+#define NANO_IPV6_STR_SIZE 46 /* INET6_ADDRSTRLEN */
+
 struct nano_addr {
     uint8_t family; /* 4 = IPv4, 6 = IPv6 */
-    uint8_t addr[16];
+    uint8_t addr[NANO_ADDR_SIZE];
     uint16_t port;
 };
 

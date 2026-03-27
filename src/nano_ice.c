@@ -157,7 +157,7 @@ int ice_handle_stun(nano_ice_t *ice, const uint8_t *data, size_t len, const nano
          * controlled, nominate this pair and transition to CONNECTED.
          */
         if (msg.use_candidate && !ice->is_controlling) {
-            memcpy(ice->selected_addr, src->addr, 16);
+            memcpy(ice->selected_addr, src->addr, NANO_ADDR_SIZE);
             ice->selected_port = src->port;
             ice->selected_family = src->family;
             ice->nominated = true;
@@ -178,7 +178,7 @@ int ice_handle_stun(nano_ice_t *ice, const uint8_t *data, size_t len, const nano
         }
 
         /* Verify transaction ID matches our last request */
-        if (memcmp(msg.transaction_id, ice->last_txid, 12) != 0) {
+        if (memcmp(msg.transaction_id, ice->last_txid, STUN_TXID_SIZE) != 0) {
             return NANO_ERR_PROTOCOL;
         }
 
@@ -198,7 +198,7 @@ int ice_handle_stun(nano_ice_t *ice, const uint8_t *data, size_t len, const nano
         }
 
         /* ICE connectivity established — record the remote address */
-        memcpy(ice->selected_addr, ice->remote_addr, 16);
+        memcpy(ice->selected_addr, ice->remote_addr, NANO_ADDR_SIZE);
         ice->selected_port = ice->remote_port;
         ice->selected_family = ice->remote_family;
         ice->nominated = true;
@@ -248,7 +248,7 @@ int ice_generate_check(nano_ice_t *ice, uint32_t now_ms, const nano_crypto_provi
     }
 
     /* Generate random transaction ID */
-    if (crypto->random_bytes(ice->last_txid, 12) != 0) {
+    if (crypto->random_bytes(ice->last_txid, STUN_TXID_SIZE) != 0) {
         return NANO_ERR_CRYPTO;
     }
 

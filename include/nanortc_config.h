@@ -70,6 +70,42 @@
 #define NANO_JITTER_SLOTS CONFIG_NANO_JITTER_SLOTS
 #endif
 
+#if defined(CONFIG_NANO_ICE_UFRAG_SIZE) && !defined(NANO_ICE_UFRAG_SIZE)
+#define NANO_ICE_UFRAG_SIZE CONFIG_NANO_ICE_UFRAG_SIZE
+#endif
+
+#if defined(CONFIG_NANO_ICE_PWD_SIZE) && !defined(NANO_ICE_PWD_SIZE)
+#define NANO_ICE_PWD_SIZE CONFIG_NANO_ICE_PWD_SIZE
+#endif
+
+#if defined(CONFIG_NANO_ICE_REMOTE_UFRAG_SIZE) && !defined(NANO_ICE_REMOTE_UFRAG_SIZE)
+#define NANO_ICE_REMOTE_UFRAG_SIZE CONFIG_NANO_ICE_REMOTE_UFRAG_SIZE
+#endif
+
+#if defined(CONFIG_NANO_ICE_REMOTE_PWD_SIZE) && !defined(NANO_ICE_REMOTE_PWD_SIZE)
+#define NANO_ICE_REMOTE_PWD_SIZE CONFIG_NANO_ICE_REMOTE_PWD_SIZE
+#endif
+
+#if defined(CONFIG_NANO_SDP_FINGERPRINT_SIZE) && !defined(NANO_SDP_FINGERPRINT_SIZE)
+#define NANO_SDP_FINGERPRINT_SIZE CONFIG_NANO_SDP_FINGERPRINT_SIZE
+#endif
+
+#if defined(CONFIG_NANO_SDP_MIN_BUF_SIZE) && !defined(NANO_SDP_MIN_BUF_SIZE)
+#define NANO_SDP_MIN_BUF_SIZE CONFIG_NANO_SDP_MIN_BUF_SIZE
+#endif
+
+#if defined(CONFIG_NANO_DC_LABEL_SIZE) && !defined(NANO_DC_LABEL_SIZE)
+#define NANO_DC_LABEL_SIZE CONFIG_NANO_DC_LABEL_SIZE
+#endif
+
+#if defined(CONFIG_NANO_DC_OUT_BUF_SIZE) && !defined(NANO_DC_OUT_BUF_SIZE)
+#define NANO_DC_OUT_BUF_SIZE CONFIG_NANO_DC_OUT_BUF_SIZE
+#endif
+
+#if defined(CONFIG_NANO_STUN_BUF_SIZE) && !defined(NANO_STUN_BUF_SIZE)
+#define NANO_STUN_BUF_SIZE CONFIG_NANO_STUN_BUF_SIZE
+#endif
+
 /* ----------------------------------------------------------------
  * Build profile
  * ---------------------------------------------------------------- */
@@ -84,6 +120,14 @@
 
 #ifndef NANO_MAX_DATACHANNELS
 #define NANO_MAX_DATACHANNELS 8
+#endif
+
+#ifndef NANO_DC_LABEL_SIZE
+#define NANO_DC_LABEL_SIZE 32
+#endif
+
+#ifndef NANO_DC_OUT_BUF_SIZE
+#define NANO_DC_OUT_BUF_SIZE 128
 #endif
 
 /* ----------------------------------------------------------------
@@ -103,6 +147,24 @@
 #define NANO_ICE_CHECK_INTERVAL_MS 50
 #endif
 
+/* ICE credential buffer sizes */
+
+#ifndef NANO_ICE_UFRAG_SIZE
+#define NANO_ICE_UFRAG_SIZE 8
+#endif
+
+#ifndef NANO_ICE_PWD_SIZE
+#define NANO_ICE_PWD_SIZE 32
+#endif
+
+#ifndef NANO_ICE_REMOTE_UFRAG_SIZE
+#define NANO_ICE_REMOTE_UFRAG_SIZE 32
+#endif
+
+#ifndef NANO_ICE_REMOTE_PWD_SIZE
+#define NANO_ICE_REMOTE_PWD_SIZE 128
+#endif
+
 /* ----------------------------------------------------------------
  * DTLS buffer size
  * ---------------------------------------------------------------- */
@@ -117,6 +179,24 @@
 
 #ifndef NANO_SDP_BUF_SIZE
 #define NANO_SDP_BUF_SIZE 2048
+#endif
+
+/* SDP field sizes */
+
+#ifndef NANO_SDP_FINGERPRINT_SIZE
+#define NANO_SDP_FINGERPRINT_SIZE 128
+#endif
+
+#ifndef NANO_SDP_MIN_BUF_SIZE
+#define NANO_SDP_MIN_BUF_SIZE 256
+#endif
+
+/* ----------------------------------------------------------------
+ * STUN scratch buffer size
+ * ---------------------------------------------------------------- */
+
+#ifndef NANO_STUN_BUF_SIZE
+#define NANO_STUN_BUF_SIZE 256
 #endif
 
 /* ----------------------------------------------------------------
@@ -241,6 +321,22 @@
 
 #if NANO_DTLS_BUF_SIZE < 256
 #error "NANO_DTLS_BUF_SIZE must be at least 256"
+#endif
+
+#if NANO_ICE_UFRAG_SIZE < 4
+#error "NANO_ICE_UFRAG_SIZE must be at least 4"
+#endif
+
+#if NANO_ICE_PWD_SIZE < 22
+#error "NANO_ICE_PWD_SIZE must be at least 22"
+#endif
+
+#if NANO_STUN_BUF_SIZE < 128
+#error "NANO_STUN_BUF_SIZE must be at least 128"
+#endif
+
+#if NANO_SDP_MIN_BUF_SIZE < 128
+#error "NANO_SDP_MIN_BUF_SIZE must be at least 128"
 #endif
 
 #endif /* NANORTC_CONFIG_H_ */

@@ -9,6 +9,9 @@
 #ifndef NANO_SDP_H_
 #define NANO_SDP_H_
 
+#include "nanortc_config.h"
+#include "nanortc.h"
+
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -22,21 +25,21 @@ typedef enum {
 
 typedef struct nano_sdp {
     /* Parsed from remote SDP */
-    char remote_ufrag[32];
-    char remote_pwd[128];
-    char remote_fingerprint[128]; /* "sha-256 AA:BB:CC:..." */
+    char remote_ufrag[NANO_ICE_REMOTE_UFRAG_SIZE];
+    char remote_pwd[NANO_ICE_REMOTE_PWD_SIZE];
+    char remote_fingerprint[NANO_SDP_FINGERPRINT_SIZE]; /* "sha-256 AA:BB:CC:..." */
     uint16_t remote_sctp_port;
     nano_sdp_setup_t remote_setup;
 
     /* Local SDP fields */
-    char local_ufrag[8];
-    char local_pwd[32];
-    char local_fingerprint[128];
+    char local_ufrag[NANO_ICE_UFRAG_SIZE];
+    char local_pwd[NANO_ICE_PWD_SIZE];
+    char local_fingerprint[NANO_SDP_FINGERPRINT_SIZE];
     uint16_t local_sctp_port;
     nano_sdp_setup_t local_setup;
 
     /* Local candidate (for SDP answer generation) */
-    char local_candidate_ip[46];
+    char local_candidate_ip[NANO_IPV6_STR_SIZE];
     uint16_t local_candidate_port;
     bool has_local_candidate;
 
