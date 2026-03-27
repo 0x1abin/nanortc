@@ -261,6 +261,79 @@ TEST(test_sdp_parse_minimal)
 }
 
 /* ================================================================
+ * libdatachannel SDP compatibility test (TD-007)
+ * ================================================================ */
+
+/* Real SDP offer from libdatachannel v0.22.5 — includes embedded candidates,
+ * a=sendrecv, a=ice-options:trickle, and setup:actpass */
+static const char *LIBDATACHANNEL_OFFER =
+    "v=0\r\n"
+    "o=rtc 2890844526 0 IN IP4 127.0.0.1\r\n"
+    "s=-\r\n"
+    "t=0 0\r\n"
+    "a=group:BUNDLE 0\r\n"
+    "a=msid-semantic:WMS *\r\n"
+    "a=ice-options:trickle\r\n"
+    "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n"
+    "c=IN IP4 0.0.0.0\r\n"
+    "a=mid:0\r\n"
+    "a=sendrecv\r\n"
+    "a=ice-ufrag:ldcufrag1\r\n"
+    "a=ice-pwd:ldcpassword123456789012\r\n"
+    "a=fingerprint:sha-256 A1:B2:C3:D4:E5:F6:07:18:29:3A:4B:5C:6D:7E:8F:90:"
+    "A1:B2:C3:D4:E5:F6:07:18:29:3A:4B:5C:6D:7E:8F:90\r\n"
+    "a=setup:actpass\r\n"
+    "a=sctp-port:5000\r\n"
+    "a=max-message-size:262144\r\n"
+    "a=candidate:1 1 UDP 2122252543 192.168.1.100 50000 typ host\r\n"
+    "a=candidate:2 1 UDP 2122187007 10.0.0.5 50001 typ host\r\n"
+    "a=end-of-candidates\r\n";
+
+TEST(test_sdp_parse_libdatachannel_offer)
+{
+    nano_sdp_t sdp;
+    sdp_init(&sdp);
+
+    size_t len = 0;
+    while (LIBDATACHANNEL_OFFER[len])
+        len++;
+
+    ASSERT_OK(sdp_parse(&sdp, LIBDATACHANNEL_OFFER, len));
+    ASSERT_TRUE(sdp.parsed);
+
+    /* Verify standard fields */
+    ASSERT_MEM_EQ(sdp.remote_ufrag, "ldcufrag1", 9);
+    ASSERT_MEM_EQ(sdp.remote_pwd, "ldcpassword123456789012", 23);
+    ASSERT_EQ(sdp.remote_sctp_port, 5000);
+    ASSERT_EQ(sdp.remote_setup, NANO_SDP_SETUP_ACTPASS);
+    ASSERT_TRUE(sdp.remote_fingerprint[0] != '\0');
+    ASSERT_MEM_EQ(sdp.remote_fingerprint, "sha-256 A1:B2:", 14);
+
+    /* Verify embedded ICE candidates */
+    ASSERT_EQ(sdp.candidate_count, 2);
+
+    ASSERT_MEM_EQ(sdp.remote_candidates[0].addr, "192.168.1.100", 13);
+    ASSERT_EQ(sdp.remote_candidates[0].port, 50000);
+
+    ASSERT_MEM_EQ(sdp.remote_candidates[1].addr, "10.0.0.5", 8);
+    ASSERT_EQ(sdp.remote_candidates[1].port, 50001);
+}
+
+/* Verify existing browser offers still parse correctly (no candidates) */
+TEST(test_sdp_parse_no_candidates)
+{
+    nano_sdp_t sdp;
+    sdp_init(&sdp);
+
+    size_t len = 0;
+    while (CHROME_OFFER[len])
+        len++;
+
+    ASSERT_OK(sdp_parse(&sdp, CHROME_OFFER, len));
+    ASSERT_EQ(sdp.candidate_count, 0);
+}
+
+/* ================================================================
  * Accept offer integration test
  * ================================================================ */
 
@@ -312,5 +385,7 @@ RUN(test_sdp_parse_minimal);
 RUN(test_sdp_generate_answer);
 RUN(test_sdp_generate_overflow);
 RUN(test_sdp_roundtrip);
+RUN(test_sdp_parse_libdatachannel_offer);
+RUN(test_sdp_parse_no_candidates);
 RUN(test_accept_offer_generates_answer);
 TEST_MAIN_END

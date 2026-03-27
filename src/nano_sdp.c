@@ -163,6 +163,53 @@ int sdp_parse(nano_sdp_t *sdp, const char *sdp_str, size_t len)
             } else {
                 sdp->remote_setup = NANO_SDP_SETUP_ACTPASS;
             }
+        } else if (line_starts_with(line, line_len, "a=candidate:")) {
+            /* Parse ICE candidate (RFC 8839 §5.1):
+             * a=candidate:<foundation> <component> <transport> <priority> <addr> <port> ...
+             * Fields are 1-indexed after "a=candidate:" prefix. We need field 5 (addr)
+             * and field 6 (port). */
+            if (sdp->candidate_count < NANO_SDP_MAX_CANDIDATES) {
+                const char *p = line + 12; /* skip "a=candidate:" */
+                const char *line_end = line + line_len;
+                int field = 1;
+
+                /* Skip to field 5 (addr) */
+                while (p < line_end && field < 5) {
+                    if (*p == ' ') {
+                        field++;
+                        while (p < line_end && *p == ' ')
+                            p++;
+                    } else {
+                        p++;
+                    }
+                }
+
+                /* Extract addr */
+                const char *addr_start = p;
+                while (p < line_end && *p != ' ')
+                    p++;
+                size_t addr_len = (size_t)(p - addr_start);
+
+                /* Skip to port field */
+                while (p < line_end && *p == ' ')
+                    p++;
+
+                /* Parse port */
+                uint16_t cand_port = 0;
+                while (p < line_end && *p >= '0' && *p <= '9') {
+                    cand_port = cand_port * 10 + (uint16_t)(*p - '0');
+                    p++;
+                }
+
+                if (addr_len > 0 && addr_len < NANO_IPV6_STR_SIZE && cand_port > 0) {
+                    nano_sdp_candidate_t *c = &sdp->remote_candidates[sdp->candidate_count];
+                    memcpy(c->addr, addr_start, addr_len);
+                    c->addr[addr_len] = '\0';
+                    c->port = cand_port;
+                    sdp->candidate_count++;
+                    NANO_LOGD("SDP", "parsed candidate from SDP");
+                }
+            }
         }
 
         pos = eol;
@@ -215,6 +262,10 @@ int sdp_generate_answer(nano_sdp_t *sdp, char *buf, size_t buf_len, size_t *out_
     if (!sdp_append(buf, buf_len, &pos, "c=IN IP4 0.0.0.0\r\n"))
         goto overflow;
     if (!sdp_append(buf, buf_len, &pos, "a=mid:0\r\n"))
+        goto overflow;
+    if (!sdp_append(buf, buf_len, &pos, "a=sendrecv\r\n"))
+        goto overflow;
+    if (!sdp_append(buf, buf_len, &pos, "a=ice-options:trickle\r\n"))
         goto overflow;
 
     /* ICE credentials */

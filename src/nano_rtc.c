@@ -183,6 +183,41 @@ int nano_accept_offer(nano_rtc_t *rtc, const char *offer, char *answer_buf, size
         *out_len = answer_len;
     }
 
+    /* Auto-add ICE candidates embedded in SDP (RFC 8839) */
+    for (uint8_t i = 0; i < rtc->sdp.candidate_count; i++) {
+        const nano_sdp_candidate_t *c = &rtc->sdp.remote_candidates[i];
+        /* Build candidate string for nano_add_remote_candidate */
+        char cand_str[NANO_IPV6_STR_SIZE + 16];
+        size_t addr_len = 0;
+        while (c->addr[addr_len] && addr_len < NANO_IPV6_STR_SIZE)
+            addr_len++;
+        /* Format: "<addr> <port>" (simple format) */
+        if (addr_len + 8 < sizeof(cand_str)) {
+            memcpy(cand_str, c->addr, addr_len);
+            cand_str[addr_len] = ' ';
+            /* Convert port to string */
+            size_t pos = addr_len + 1;
+            char tmp[8];
+            int ti = 0;
+            uint16_t v = c->port;
+            if (v == 0) {
+                tmp[ti++] = '0';
+            } else {
+                char rev[8];
+                int ri = 0;
+                while (v > 0) {
+                    rev[ri++] = '0' + (v % 10);
+                    v /= 10;
+                }
+                while (ri > 0)
+                    tmp[ti++] = rev[--ri];
+            }
+            memcpy(cand_str + pos, tmp, (size_t)ti);
+            cand_str[pos + (size_t)ti] = '\0';
+            nano_add_remote_candidate(rtc, cand_str);
+        }
+    }
+
     NANO_LOGI("RTC", "offer accepted, answer generated");
     return NANO_OK;
 }

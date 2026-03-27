@@ -204,6 +204,9 @@ int interop_nanortc_start(interop_nanortc_peer_t *peer, int sig_fd,
         return -1;
     }
 
+    /* Add local candidate so SDP answer includes a=candidate: line */
+    nano_add_local_candidate(&peer->rtc, "127.0.0.1", port);
+
     /* Init run loop (binds UDP socket) */
     rc = nano_run_loop_init(&peer->loop, &peer->rtc, "127.0.0.1", port);
     if (rc < 0) {

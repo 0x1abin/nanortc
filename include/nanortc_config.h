@@ -261,6 +261,11 @@
 #define NANO_SDP_BUF_SIZE 2048
 #endif
 
+/* Maximum ICE candidates parsed from a single SDP offer/answer */
+#ifndef NANO_SDP_MAX_CANDIDATES
+#define NANO_SDP_MAX_CANDIDATES 8
+#endif
+
 /* SDP field sizes */
 
 #ifndef NANO_SDP_FINGERPRINT_SIZE

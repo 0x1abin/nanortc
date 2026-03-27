@@ -23,6 +23,12 @@ typedef enum {
     NANO_SDP_SETUP_PASSIVE, /* DTLS server */
 } nano_sdp_setup_t;
 
+/* ICE candidate parsed from SDP a=candidate: line (RFC 8839 §5.1) */
+typedef struct {
+    char addr[NANO_IPV6_STR_SIZE]; /* IP address string */
+    uint16_t port;
+} nano_sdp_candidate_t;
+
 typedef struct nano_sdp {
     /* Parsed from remote SDP */
     char remote_ufrag[NANO_ICE_REMOTE_UFRAG_SIZE];
@@ -30,6 +36,10 @@ typedef struct nano_sdp {
     char remote_fingerprint[NANO_SDP_FINGERPRINT_SIZE]; /* "sha-256 AA:BB:CC:..." */
     uint16_t remote_sctp_port;
     nano_sdp_setup_t remote_setup;
+
+    /* Remote ICE candidates embedded in SDP (RFC 8839) */
+    nano_sdp_candidate_t remote_candidates[NANO_SDP_MAX_CANDIDATES];
+    uint8_t candidate_count;
 
     /* Local SDP fields */
     char local_ufrag[NANO_ICE_UFRAG_SIZE];
