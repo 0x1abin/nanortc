@@ -29,7 +29,7 @@ extern "C" {
 #define SIG_MSG_DONE          0x04
 
 typedef struct {
-    int fd[2]; /* fd[0] = nanortc side, fd[1] = libdc side */
+    int fd[2]; /* fd[0] = nanortc side, fd[1] = libdatachannel side */
 } interop_sig_pipe_t;
 
 /* Create the socketpair. Returns 0 on success. */

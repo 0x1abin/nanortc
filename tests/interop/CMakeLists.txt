@@ -38,7 +38,7 @@ add_executable(test_interop_dc
     test_interop_dc.c
     interop_common.c
     interop_nanortc_peer.c
-    interop_libdc_peer.c
+    interop_libdatachannel_peer.c
     ${CMAKE_SOURCE_DIR}/examples/common/run_loop_linux.c
 )
 

@@ -8,8 +8,8 @@
  * SPDX-License-Identifier: MIT
  */
 
-#ifndef INTEROP_LIBDC_PEER_H_
-#define INTEROP_LIBDC_PEER_H_
+#ifndef INTEROP_LIBDATACHANNEL_PEER_H_
+#define INTEROP_LIBDATACHANNEL_PEER_H_
 
 #include "interop_common.h"
 
@@ -41,7 +41,7 @@ typedef struct {
 
     /* Gathering state */
     atomic_int gathering_done;
-} interop_libdc_peer_t;
+} interop_libdatachannel_peer_t;
 
 /*
  * Initialize libdatachannel, create PeerConnection, create a DataChannel
@@ -54,33 +54,33 @@ typedef struct {
  *
  * Returns 0 on success.
  */
-int interop_libdc_start(interop_libdc_peer_t *peer, int sig_fd,
+int interop_libdatachannel_start(interop_libdatachannel_peer_t *peer, int sig_fd,
                         const char *label, uint16_t remote_port);
 
 /*
  * Send a text message on the DataChannel.
  */
-int interop_libdc_send_string(interop_libdc_peer_t *peer, const char *str);
+int interop_libdatachannel_send_string(interop_libdatachannel_peer_t *peer, const char *str);
 
 /*
  * Send a binary message on the DataChannel.
  */
-int interop_libdc_send_binary(interop_libdc_peer_t *peer, const void *data,
+int interop_libdatachannel_send_binary(interop_libdatachannel_peer_t *peer, const void *data,
                               size_t len);
 
 /*
  * Wait until a flag becomes nonzero, or timeout.
  * Returns 0 on success, -1 on timeout.
  */
-int interop_libdc_wait_flag(atomic_int *flag, int timeout_ms);
+int interop_libdatachannel_wait_flag(atomic_int *flag, int timeout_ms);
 
 /*
  * Tear down libdatachannel peer.
  */
-int interop_libdc_stop(interop_libdc_peer_t *peer);
+int interop_libdatachannel_stop(interop_libdatachannel_peer_t *peer);
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* INTEROP_LIBDC_PEER_H_ */
+#endif /* INTEROP_LIBDATACHANNEL_PEER_H_ */

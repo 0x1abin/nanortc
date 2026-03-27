@@ -99,7 +99,7 @@ Add a new interop test case when:
 |------|---------|
 | `interop_common.{h,c}` | Signaling pipe (socketpair) + timing utilities |
 | `interop_nanortc_peer.{h,c}` | nanortc thread wrapper (reuses `run_loop_linux.c`) |
-| `interop_libdc_peer.{h,c}` | libdatachannel C API wrapper (callback-based) |
+| `interop_libdatachannel_peer.{h,c}` | libdatachannel C API wrapper (callback-based) |
 | `test_interop_dc.c` | DataChannel interop test cases |
 
 ## PR Workflow

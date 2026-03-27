@@ -36,6 +36,7 @@ Always pass `(buffer, buffer_length)` as a pair. Output functions take an additi
 - Types: `nano_*_t` (public), `*_t` (internal)
 - Enums: `NANO_*` (public), `*_STATE_*` / `*_TYPE_*` (internal)
 - Macros: `NANO_*` (public), `STUN_*` / `SCTP_*` etc. (internal, module-prefixed)
+- **No ad-hoc abbreviations.** Prefer full names over self-invented abbreviations that other developers may not recognize. For example, use `libdatachannel` not `libdc`, use `datachannel` not `dc` (except in established protocol terms like DCEP). Well-known abbreviations from RFCs and standards (STUN, SCTP, DTLS, SDP, SRTP, ICE, RTP, RTCP, BWE, DCEP) are acceptable. When in doubt, spell it out.
 
 ## Error Handling
 

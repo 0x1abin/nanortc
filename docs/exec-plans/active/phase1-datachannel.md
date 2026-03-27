@@ -29,8 +29,8 @@ NanoRTC uses AI coding agents for implementation. Time estimates use **agent ses
 ### Interop tests (libdatachannel over localhost UDP) — **mandatory gate**
 - [ ] `test_interop_handshake` — Full ICE + DTLS + SCTP handshake with libdatachannel
 - [ ] `test_interop_dc_open` — DataChannel opens on both sides
-- [ ] `test_interop_dc_string_libdc_to_nano` — Text message from libdatachannel → nanortc
-- [ ] `test_interop_dc_string_nano_to_libdc` — Text message from nanortc → libdatachannel
+- [ ] `test_interop_dc_string_libdatachannel_to_nanortc` — Text message from libdatachannel → nanortc
+- [ ] `test_interop_dc_string_nanortc_to_libdatachannel` — Text message from nanortc → libdatachannel
 - [ ] `test_interop_dc_binary` — Binary data from libdatachannel → nanortc
 
 ### Integration tests (human gate)
@@ -103,7 +103,7 @@ SCTP is the most complex module (~2500 lines). May need multiple sessions.
 | Interop test framework setup | `tests/interop/CMakeLists.txt` | FetchContent for libdatachannel v0.22.5 |
 | Signaling pipe (socketpair) | `interop_common.{h,c}` | SDP/ICE exchange over AF_UNIX |
 | nanortc peer wrapper (thread + run_loop) | `interop_nanortc_peer.{h,c}` | Answerer role with real UDP socket |
-| libdatachannel peer wrapper (C API) | `interop_libdc_peer.{h,c}` | Offerer role with internal threads |
+| libdatachannel peer wrapper (C API) | `interop_libdatachannel_peer.{h,c}` | Offerer role with internal threads |
 | DataChannel interop tests | `test_interop_dc.c` | Handshake, DC open, text/binary messages |
 
 **Gate:** All 5 interop tests pass (`ctest -R interop`)
@@ -190,9 +190,9 @@ SCTP is the most complex module (~2500 lines). May need multiple sessions.
 **Tests (5 interop test cases):**
 - `test_interop_handshake` — Full ICE → DTLS → SCTP handshake
 - `test_interop_dc_open` — DataChannel opens on both sides
-- `test_interop_dc_string_libdc_to_nano` — Text message libdc → nanortc
-- `test_interop_dc_string_nano_to_libdc` — Text message nanortc → libdc
-- `test_interop_dc_binary` — Binary payload (256 bytes) libdc → nanortc
+- `test_interop_dc_string_libdatachannel_to_nanortc` — Text message libdatachannel → nanortc
+- `test_interop_dc_string_nanortc_to_libdatachannel` — Text message nanortc → libdatachannel
+- `test_interop_dc_binary` — Binary payload (256 bytes) libdatachannel → nanortc
 
 **Status:** Framework compiles and links. Tests currently fail because `nano_accept_offer` does not yet fully parse libdatachannel's SDP format. Tests will pass incrementally as Steps 3-4 complete.
 
