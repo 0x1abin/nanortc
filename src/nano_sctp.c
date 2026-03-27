@@ -31,7 +31,7 @@
  * Codec — Parser
  * ================================================================ */
 
-int sctp_parse_header(const uint8_t *data, size_t len, sctp_header_t *hdr)
+int nsctp_parse_header(const uint8_t *data, size_t len, nsctp_header_t *hdr)
 {
     if (!data || !hdr || len < SCTP_HEADER_SIZE) {
         return NANO_ERR_PARSE;
@@ -44,14 +44,17 @@ int sctp_parse_header(const uint8_t *data, size_t len, sctp_header_t *hdr)
     return NANO_OK;
 }
 
-int sctp_verify_checksum(const uint8_t *data, size_t len)
+int nsctp_verify_checksum(const uint8_t *data, size_t len)
 {
     if (!data || len < SCTP_HEADER_SIZE) {
         return NANO_ERR_PARSE;
     }
 
-    /* Save original checksum, zero the field, compute CRC-32c over copy */
-    uint32_t stored = nano_read_u32be(data + 8);
+    /* Save original checksum as raw bytes (CRC-32c is stored opaquely,
+     * NOT in network byte order — the reflected algorithm produces bytes
+     * that match the wire format directly). */
+    uint32_t stored;
+    memcpy(&stored, data + 8, 4);
 
     /* We need to compute CRC with checksum field zeroed.
      * Copy the packet to a scratch buffer so we don't mutate input. */
@@ -60,7 +63,7 @@ int sctp_verify_checksum(const uint8_t *data, size_t len)
         return NANO_ERR_BUFFER_TOO_SMALL;
     }
     memcpy(scratch, data, len);
-    nano_write_u32be(scratch + 8, 0);
+    memset(scratch + 8, 0, 4);
 
     uint32_t computed = nano_crc32c(scratch, len);
     if (computed != stored) {
@@ -69,7 +72,7 @@ int sctp_verify_checksum(const uint8_t *data, size_t len)
     return NANO_OK;
 }
 
-int sctp_parse_init(const uint8_t *chunk, size_t chunk_len, sctp_init_t *out)
+int nsctp_parse_init(const uint8_t *chunk, size_t chunk_len, nsctp_init_t *out)
 {
     /* chunk points to chunk header: type(1)+flags(1)+length(2)+body */
     if (!chunk || !out || chunk_len < SCTP_CHUNK_HDR_SIZE + SCTP_INIT_BODY_SIZE) {
@@ -109,7 +112,7 @@ int sctp_parse_init(const uint8_t *chunk, size_t chunk_len, sctp_init_t *out)
     return NANO_OK;
 }
 
-int sctp_parse_data(const uint8_t *chunk, size_t chunk_len, sctp_data_t *out)
+int nsctp_parse_data(const uint8_t *chunk, size_t chunk_len, nsctp_data_t *out)
 {
     /* Minimum: chunk_hdr(4) + tsn(4)+sid(2)+ssn(2)+ppid(4) = 16, 0 payload OK */
     if (!chunk || !out || chunk_len < SCTP_CHUNK_HDR_SIZE + SCTP_DATA_HDR_SIZE) {
@@ -137,7 +140,7 @@ int sctp_parse_data(const uint8_t *chunk, size_t chunk_len, sctp_data_t *out)
     return NANO_OK;
 }
 
-int sctp_parse_sack(const uint8_t *chunk, size_t chunk_len, sctp_sack_t *out)
+int nsctp_parse_sack(const uint8_t *chunk, size_t chunk_len, nsctp_sack_t *out)
 {
     if (!chunk || !out || chunk_len < SCTP_CHUNK_HDR_SIZE + SCTP_SACK_MIN_SIZE) {
         return NANO_ERR_PARSE;
@@ -156,7 +159,7 @@ int sctp_parse_sack(const uint8_t *chunk, size_t chunk_len, sctp_sack_t *out)
  * Codec — Encoder
  * ================================================================ */
 
-size_t sctp_encode_header(uint8_t *buf, uint16_t src_port, uint16_t dst_port, uint32_t vtag)
+size_t nsctp_encode_header(uint8_t *buf, uint16_t src_port, uint16_t dst_port, uint32_t vtag)
 {
     nano_write_u16be(buf + 0, src_port);
     nano_write_u16be(buf + 2, dst_port);
@@ -165,17 +168,18 @@ size_t sctp_encode_header(uint8_t *buf, uint16_t src_port, uint16_t dst_port, ui
     return SCTP_HEADER_SIZE;
 }
 
-void sctp_finalize_checksum(uint8_t *packet, size_t len)
+void nsctp_finalize_checksum(uint8_t *packet, size_t len)
 {
-    /* Zero checksum field, compute CRC-32c, store back */
-    nano_write_u32be(packet + 8, 0);
+    /* Zero checksum field, compute CRC-32c, store back as raw bytes.
+     * The reflected CRC-32c algorithm produces bytes matching wire order. */
+    memset(packet + 8, 0, 4);
     uint32_t crc = nano_crc32c(packet, len);
-    nano_write_u32be(packet + 8, crc);
+    memcpy(packet + 8, &crc, 4);
 }
 
-size_t sctp_encode_init(uint8_t *buf, uint8_t type, uint32_t initiate_tag, uint32_t a_rwnd,
-                        uint16_t num_ostreams, uint16_t num_istreams, uint32_t initial_tsn,
-                        const uint8_t *cookie, uint16_t cookie_len)
+size_t nsctp_encode_init(uint8_t *buf, uint8_t type, uint32_t initiate_tag, uint32_t a_rwnd,
+                         uint16_t num_ostreams, uint16_t num_istreams, uint32_t initial_tsn,
+                         const uint8_t *cookie, uint16_t cookie_len)
 {
     size_t pos = 0;
 
@@ -220,7 +224,7 @@ size_t sctp_encode_init(uint8_t *buf, uint8_t type, uint32_t initiate_tag, uint3
     return pos;
 }
 
-size_t sctp_encode_cookie_echo(uint8_t *buf, const uint8_t *cookie, uint16_t cookie_len)
+size_t nsctp_encode_cookie_echo(uint8_t *buf, const uint8_t *cookie, uint16_t cookie_len)
 {
     buf[0] = SCTP_CHUNK_COOKIE_ECHO;
     buf[1] = 0;
@@ -236,7 +240,7 @@ size_t sctp_encode_cookie_echo(uint8_t *buf, const uint8_t *cookie, uint16_t coo
     return total;
 }
 
-size_t sctp_encode_cookie_ack(uint8_t *buf)
+size_t nsctp_encode_cookie_ack(uint8_t *buf)
 {
     buf[0] = SCTP_CHUNK_COOKIE_ACK;
     buf[1] = 0;
@@ -244,8 +248,8 @@ size_t sctp_encode_cookie_ack(uint8_t *buf)
     return SCTP_CHUNK_HDR_SIZE;
 }
 
-size_t sctp_encode_data(uint8_t *buf, uint32_t tsn, uint16_t stream_id, uint16_t ssn, uint32_t ppid,
-                        uint8_t flags, const uint8_t *payload, uint16_t payload_len)
+size_t nsctp_encode_data(uint8_t *buf, uint32_t tsn, uint16_t stream_id, uint16_t ssn,
+                         uint32_t ppid, uint8_t flags, const uint8_t *payload, uint16_t payload_len)
 {
     uint16_t clen = SCTP_CHUNK_HDR_SIZE + SCTP_DATA_HDR_SIZE + payload_len;
 
@@ -270,7 +274,7 @@ size_t sctp_encode_data(uint8_t *buf, uint32_t tsn, uint16_t stream_id, uint16_t
     return total;
 }
 
-size_t sctp_encode_sack(uint8_t *buf, uint32_t cumulative_tsn, uint32_t a_rwnd)
+size_t nsctp_encode_sack(uint8_t *buf, uint32_t cumulative_tsn, uint32_t a_rwnd)
 {
     uint16_t clen = SCTP_CHUNK_HDR_SIZE + SCTP_SACK_MIN_SIZE;
 
@@ -287,7 +291,7 @@ size_t sctp_encode_sack(uint8_t *buf, uint32_t cumulative_tsn, uint32_t a_rwnd)
     return clen;
 }
 
-size_t sctp_encode_heartbeat(uint8_t *buf, const uint8_t *info, uint16_t info_len)
+size_t nsctp_encode_heartbeat(uint8_t *buf, const uint8_t *info, uint16_t info_len)
 {
     /* Heartbeat Info parameter: type=1, length=4+info_len */
     uint16_t param_len = 4 + info_len;
@@ -312,15 +316,15 @@ size_t sctp_encode_heartbeat(uint8_t *buf, const uint8_t *info, uint16_t info_le
     return total;
 }
 
-size_t sctp_encode_heartbeat_ack(uint8_t *buf, const uint8_t *info, uint16_t info_len)
+size_t nsctp_encode_heartbeat_ack(uint8_t *buf, const uint8_t *info, uint16_t info_len)
 {
     /* Same format as HEARTBEAT, just different chunk type */
-    size_t n = sctp_encode_heartbeat(buf, info, info_len);
+    size_t n = nsctp_encode_heartbeat(buf, info, info_len);
     buf[0] = SCTP_CHUNK_HEARTBEAT_ACK;
     return n;
 }
 
-size_t sctp_encode_forward_tsn(uint8_t *buf, uint32_t new_cumulative_tsn)
+size_t nsctp_encode_forward_tsn(uint8_t *buf, uint32_t new_cumulative_tsn)
 {
     uint16_t clen = SCTP_CHUNK_HDR_SIZE + 4;
     buf[0] = SCTP_CHUNK_FORWARD_TSN;
@@ -330,7 +334,7 @@ size_t sctp_encode_forward_tsn(uint8_t *buf, uint32_t new_cumulative_tsn)
     return clen;
 }
 
-size_t sctp_encode_shutdown(uint8_t *buf, uint32_t cumulative_tsn)
+size_t nsctp_encode_shutdown(uint8_t *buf, uint32_t cumulative_tsn)
 {
     uint16_t clen = SCTP_CHUNK_HDR_SIZE + 4;
     buf[0] = SCTP_CHUNK_SHUTDOWN;
@@ -345,21 +349,21 @@ size_t sctp_encode_shutdown(uint8_t *buf, uint32_t cumulative_tsn)
  * ================================================================ */
 
 /** Check if output queue is full. */
-static bool sctp_out_full(const nano_sctp_t *sctp)
+static bool nsctp_out_full(const nano_sctp_t *sctp)
 {
     return (uint8_t)(sctp->out_tail - sctp->out_head) >= NANO_SCTP_OUT_QUEUE_SIZE;
 }
 
 /** Get write pointer to next output slot. */
-static uint8_t *sctp_out_write_buf(nano_sctp_t *sctp)
+static uint8_t *nsctp_out_write_buf(nano_sctp_t *sctp)
 {
     return sctp->out_bufs[sctp->out_tail & (NANO_SCTP_OUT_QUEUE_SIZE - 1)];
 }
 
 /** Queue an outbound SCTP packet (header already written at current out slot). */
-static void sctp_queue_output(nano_sctp_t *sctp, size_t len)
+static void nsctp_queue_output(nano_sctp_t *sctp, size_t len)
 {
-    if (sctp_out_full(sctp)) {
+    if (nsctp_out_full(sctp)) {
         return; /* drop if queue full */
     }
     size_t padded = SCTP_PAD4(len);
@@ -367,16 +371,17 @@ static void sctp_queue_output(nano_sctp_t *sctp, size_t len)
         padded = NANO_SCTP_MTU;
     }
     uint8_t idx = sctp->out_tail & (NANO_SCTP_OUT_QUEUE_SIZE - 1);
-    sctp_finalize_checksum(sctp->out_bufs[idx], padded);
+    nsctp_finalize_checksum(sctp->out_bufs[idx], padded);
     sctp->out_lens[idx] = (uint16_t)padded;
     sctp->out_tail++;
     sctp->has_output = (sctp->out_head != sctp->out_tail);
 }
 
 /** Begin building an outbound packet in the next output slot. Returns header size (12). */
-static size_t sctp_begin_packet(nano_sctp_t *sctp, uint32_t vtag)
+static size_t nsctp_begin_packet(nano_sctp_t *sctp, uint32_t vtag)
 {
-    return sctp_encode_header(sctp_out_write_buf(sctp), sctp->local_port, sctp->remote_port, vtag);
+    return nsctp_encode_header(nsctp_out_write_buf(sctp), sctp->local_port, sctp->remote_port,
+                               vtag);
 }
 
 /** Send queue helpers */
@@ -394,7 +399,7 @@ static bool sq_full(const nano_sctp_t *sctp)
  * State machine
  * ================================================================ */
 
-int sctp_init(nano_sctp_t *sctp)
+int nsctp_init(nano_sctp_t *sctp)
 {
     if (!sctp) {
         return NANO_ERR_INVALID_PARAM;
@@ -407,9 +412,9 @@ int sctp_init(nano_sctp_t *sctp)
     return NANO_OK;
 }
 
-/* ---- sctp_start: client sends INIT ---- */
+/* ---- nsctp_start: client sends INIT ---- */
 
-int sctp_start(nano_sctp_t *sctp)
+int nsctp_start(nano_sctp_t *sctp)
 {
     if (!sctp || !sctp->crypto) {
         return NANO_ERR_INVALID_PARAM;
@@ -430,10 +435,10 @@ int sctp_start(nano_sctp_t *sctp)
     sctp->crypto->random_bytes(sctp->cookie_secret, sizeof(sctp->cookie_secret));
 
     /* Build INIT packet (vtag=0 for INIT per RFC 4960 §8.5.1) */
-    size_t pos = sctp_begin_packet(sctp, 0);
-    pos += sctp_encode_init(sctp_out_write_buf(sctp) + pos, SCTP_CHUNK_INIT, sctp->local_vtag,
-                            NANO_SCTP_RECV_BUF_SIZE, 0xFFFF, 0xFFFF, sctp->next_tsn, NULL, 0);
-    sctp_queue_output(sctp, pos);
+    size_t pos = nsctp_begin_packet(sctp, 0);
+    pos += nsctp_encode_init(nsctp_out_write_buf(sctp) + pos, SCTP_CHUNK_INIT, sctp->local_vtag,
+                             NANO_SCTP_RECV_BUF_SIZE, 0xFFFF, 0xFFFF, sctp->next_tsn, NULL, 0);
+    nsctp_queue_output(sctp, pos);
 
     sctp->state = NANO_SCTP_STATE_COOKIE_WAIT;
     NANO_LOGI("SCTP", "INIT sent, -> COOKIE_WAIT");
@@ -442,12 +447,12 @@ int sctp_start(nano_sctp_t *sctp)
 
 /* ---- Chunk handlers ---- */
 
-static int sctp_handle_init(nano_sctp_t *sctp, const uint8_t *chunk, size_t clen,
-                            const sctp_header_t *hdr)
+static int nsctp_handle_init(nano_sctp_t *sctp, const uint8_t *chunk, size_t clen,
+                             const nsctp_header_t *hdr)
 {
     (void)hdr;
-    sctp_init_t init;
-    if (sctp_parse_init(chunk, clen, &init) != NANO_OK) {
+    nsctp_init_t init;
+    if (nsctp_parse_init(chunk, clen, &init) != NANO_OK) {
         return NANO_ERR_PARSE;
     }
 
@@ -482,24 +487,24 @@ static int sctp_handle_init(nano_sctp_t *sctp, const uint8_t *chunk, size_t clen
     cookie[2] ^= ((uint8_t *)&tag_be)[2];
     cookie[3] ^= ((uint8_t *)&tag_be)[3];
 
-    size_t pos = sctp_begin_packet(sctp, sctp->remote_vtag);
-    pos += sctp_encode_init(sctp_out_write_buf(sctp) + pos, SCTP_CHUNK_INIT_ACK, sctp->local_vtag,
-                            NANO_SCTP_RECV_BUF_SIZE, 0xFFFF, 0xFFFF, sctp->next_tsn, cookie,
-                            sizeof(cookie));
-    sctp_queue_output(sctp, pos);
+    size_t pos = nsctp_begin_packet(sctp, sctp->remote_vtag);
+    pos += nsctp_encode_init(nsctp_out_write_buf(sctp) + pos, SCTP_CHUNK_INIT_ACK, sctp->local_vtag,
+                             NANO_SCTP_RECV_BUF_SIZE, 0xFFFF, 0xFFFF, sctp->next_tsn, cookie,
+                             sizeof(cookie));
+    nsctp_queue_output(sctp, pos);
 
     NANO_LOGI("SCTP", "INIT-ACK sent (server)");
     return NANO_OK;
 }
 
-static int sctp_handle_init_ack(nano_sctp_t *sctp, const uint8_t *chunk, size_t clen)
+static int nsctp_handle_init_ack(nano_sctp_t *sctp, const uint8_t *chunk, size_t clen)
 {
     if (sctp->state != NANO_SCTP_STATE_COOKIE_WAIT) {
         return NANO_ERR_STATE;
     }
 
-    sctp_init_t init;
-    if (sctp_parse_init(chunk, clen, &init) != NANO_OK) {
+    nsctp_init_t init;
+    if (nsctp_parse_init(chunk, clen, &init) != NANO_OK) {
         return NANO_ERR_PARSE;
     }
 
@@ -518,16 +523,17 @@ static int sctp_handle_init_ack(nano_sctp_t *sctp, const uint8_t *chunk, size_t 
     sctp->cookie_len = init.cookie_len;
 
     /* Send COOKIE-ECHO */
-    size_t pos = sctp_begin_packet(sctp, sctp->remote_vtag);
-    pos += sctp_encode_cookie_echo(sctp_out_write_buf(sctp) + pos, sctp->cookie, sctp->cookie_len);
-    sctp_queue_output(sctp, pos);
+    size_t pos = nsctp_begin_packet(sctp, sctp->remote_vtag);
+    pos +=
+        nsctp_encode_cookie_echo(nsctp_out_write_buf(sctp) + pos, sctp->cookie, sctp->cookie_len);
+    nsctp_queue_output(sctp, pos);
 
     sctp->state = NANO_SCTP_STATE_COOKIE_ECHOED;
     NANO_LOGI("SCTP", "COOKIE-ECHO sent, -> COOKIE_ECHOED");
     return NANO_OK;
 }
 
-static int sctp_handle_cookie_echo(nano_sctp_t *sctp, const uint8_t *chunk, size_t clen)
+static int nsctp_handle_cookie_echo(nano_sctp_t *sctp, const uint8_t *chunk, size_t clen)
 {
     /* Validate cookie (simple: recompute expected cookie and compare) */
     uint16_t chunk_body_len = clen - SCTP_CHUNK_HDR_SIZE;
@@ -548,16 +554,16 @@ static int sctp_handle_cookie_echo(nano_sctp_t *sctp, const uint8_t *chunk, size
     }
 
     /* Send COOKIE-ACK */
-    size_t pos = sctp_begin_packet(sctp, sctp->remote_vtag);
-    pos += sctp_encode_cookie_ack(sctp_out_write_buf(sctp) + pos);
-    sctp_queue_output(sctp, pos);
+    size_t pos = nsctp_begin_packet(sctp, sctp->remote_vtag);
+    pos += nsctp_encode_cookie_ack(nsctp_out_write_buf(sctp) + pos);
+    nsctp_queue_output(sctp, pos);
 
     sctp->state = NANO_SCTP_STATE_ESTABLISHED;
     NANO_LOGI("SCTP", "COOKIE-ACK sent, -> ESTABLISHED (server)");
     return NANO_OK;
 }
 
-static int sctp_handle_cookie_ack(nano_sctp_t *sctp)
+static int nsctp_handle_cookie_ack(nano_sctp_t *sctp)
 {
     if (sctp->state != NANO_SCTP_STATE_COOKIE_ECHOED) {
         return NANO_ERR_STATE;
@@ -567,14 +573,14 @@ static int sctp_handle_cookie_ack(nano_sctp_t *sctp)
     return NANO_OK;
 }
 
-static int sctp_handle_data_chunk(nano_sctp_t *sctp, const uint8_t *chunk, size_t clen)
+static int nsctp_handle_data_chunk(nano_sctp_t *sctp, const uint8_t *chunk, size_t clen)
 {
     if (sctp->state != NANO_SCTP_STATE_ESTABLISHED) {
         return NANO_ERR_STATE;
     }
 
-    sctp_data_t data;
-    if (sctp_parse_data(chunk, clen, &data) != NANO_OK) {
+    nsctp_data_t data;
+    if (nsctp_parse_data(chunk, clen, &data) != NANO_OK) {
         return NANO_ERR_PARSE;
     }
 
@@ -596,17 +602,17 @@ static int sctp_handle_data_chunk(nano_sctp_t *sctp, const uint8_t *chunk, size_
     return NANO_OK;
 }
 
-static int sctp_handle_sack_chunk(nano_sctp_t *sctp, const uint8_t *chunk, size_t clen)
+static int nsctp_handle_sack_chunk(nano_sctp_t *sctp, const uint8_t *chunk, size_t clen)
 {
-    sctp_sack_t sack;
-    if (sctp_parse_sack(chunk, clen, &sack) != NANO_OK) {
+    nsctp_sack_t sack;
+    if (nsctp_parse_sack(chunk, clen, &sack) != NANO_OK) {
         return NANO_ERR_PARSE;
     }
 
     /* Mark acked entries in send queue */
     uint8_t idx = sctp->sq_head;
     while (idx != sctp->sq_tail) {
-        sctp_send_entry_t *e = &sctp->send_queue[idx & (NANO_SCTP_MAX_SEND_QUEUE - 1)];
+        nsctp_send_entry_t *e = &sctp->send_queue[idx & (NANO_SCTP_MAX_SEND_QUEUE - 1)];
         /* TSN comparison: tsn <= cumulative_tsn_ack (handling wrap) */
         int32_t diff = (int32_t)(e->tsn - sack.cumulative_tsn);
         if (diff <= 0 && !e->acked) {
@@ -617,7 +623,7 @@ static int sctp_handle_sack_chunk(nano_sctp_t *sctp, const uint8_t *chunk, size_
 
     /* Advance sq_head past acked entries to free space */
     while (sctp->sq_head != sctp->sq_tail) {
-        sctp_send_entry_t *e = &sctp->send_queue[sctp->sq_head & (NANO_SCTP_MAX_SEND_QUEUE - 1)];
+        nsctp_send_entry_t *e = &sctp->send_queue[sctp->sq_head & (NANO_SCTP_MAX_SEND_QUEUE - 1)];
         if (!e->acked)
             break;
         sctp->sq_head++;
@@ -631,7 +637,7 @@ static int sctp_handle_sack_chunk(nano_sctp_t *sctp, const uint8_t *chunk, size_
     return NANO_OK;
 }
 
-static int sctp_handle_heartbeat(nano_sctp_t *sctp, const uint8_t *chunk, size_t clen)
+static int nsctp_handle_heartbeat(nano_sctp_t *sctp, const uint8_t *chunk, size_t clen)
 {
     /* Echo back as HEARTBEAT-ACK with same Heartbeat Info TLV */
     uint16_t info_offset = SCTP_CHUNK_HDR_SIZE + 4; /* skip TLV type+length */
@@ -648,15 +654,15 @@ static int sctp_handle_heartbeat(nano_sctp_t *sctp, const uint8_t *chunk, size_t
         return NANO_ERR_PARSE;
     }
 
-    size_t pos = sctp_begin_packet(sctp, sctp->remote_vtag);
-    pos += sctp_encode_heartbeat_ack(sctp_out_write_buf(sctp) + pos, info, info_len);
-    sctp_queue_output(sctp, pos);
+    size_t pos = nsctp_begin_packet(sctp, sctp->remote_vtag);
+    pos += nsctp_encode_heartbeat_ack(nsctp_out_write_buf(sctp) + pos, info, info_len);
+    nsctp_queue_output(sctp, pos);
 
     NANO_LOGT("SCTP", "HEARTBEAT-ACK sent");
     return NANO_OK;
 }
 
-static int sctp_handle_heartbeat_ack(nano_sctp_t *sctp, const uint8_t *chunk, size_t clen)
+static int nsctp_handle_heartbeat_ack(nano_sctp_t *sctp, const uint8_t *chunk, size_t clen)
 {
     (void)chunk;
     (void)clen;
@@ -665,7 +671,7 @@ static int sctp_handle_heartbeat_ack(nano_sctp_t *sctp, const uint8_t *chunk, si
     return NANO_OK;
 }
 
-static int sctp_handle_forward_tsn(nano_sctp_t *sctp, const uint8_t *chunk, size_t clen)
+static int nsctp_handle_forward_tsn(nano_sctp_t *sctp, const uint8_t *chunk, size_t clen)
 {
     if (clen < SCTP_CHUNK_HDR_SIZE + 4) {
         return NANO_ERR_PARSE;
@@ -686,22 +692,22 @@ static int sctp_handle_forward_tsn(nano_sctp_t *sctp, const uint8_t *chunk, size
 
 /* ---- Main dispatch ---- */
 
-int sctp_handle_data(nano_sctp_t *sctp, const uint8_t *data, size_t len)
+int nsctp_handle_data(nano_sctp_t *sctp, const uint8_t *data, size_t len)
 {
     if (!sctp || !data || len < SCTP_HEADER_SIZE) {
         return NANO_ERR_INVALID_PARAM;
     }
 
     /* Verify CRC-32c checksum */
-    int rc = sctp_verify_checksum(data, len);
+    int rc = nsctp_verify_checksum(data, len);
     if (rc != NANO_OK) {
         NANO_LOGW("SCTP", "checksum verification failed");
         return rc;
     }
 
     /* Parse common header */
-    sctp_header_t hdr;
-    sctp_parse_header(data, len, &hdr);
+    nsctp_header_t hdr;
+    nsctp_parse_header(data, len, &hdr);
 
     /* Clear delivered state from previous call */
     sctp->has_delivered = false;
@@ -719,44 +725,44 @@ int sctp_handle_data(nano_sctp_t *sctp, const uint8_t *data, size_t len)
         switch (ctype) {
         case SCTP_CHUNK_INIT:
             NANO_LOGD("SCTP", "INIT received");
-            sctp_handle_init(sctp, data + pos, clen, &hdr);
+            nsctp_handle_init(sctp, data + pos, clen, &hdr);
             break;
 
         case SCTP_CHUNK_INIT_ACK:
             NANO_LOGD("SCTP", "INIT-ACK received");
-            sctp_handle_init_ack(sctp, data + pos, clen);
+            nsctp_handle_init_ack(sctp, data + pos, clen);
             break;
 
         case SCTP_CHUNK_COOKIE_ECHO:
             NANO_LOGD("SCTP", "COOKIE-ECHO received");
-            sctp_handle_cookie_echo(sctp, data + pos, clen);
+            nsctp_handle_cookie_echo(sctp, data + pos, clen);
             break;
 
         case SCTP_CHUNK_COOKIE_ACK:
             NANO_LOGD("SCTP", "COOKIE-ACK received");
-            sctp_handle_cookie_ack(sctp);
+            nsctp_handle_cookie_ack(sctp);
             break;
 
         case SCTP_CHUNK_DATA:
-            sctp_handle_data_chunk(sctp, data + pos, clen);
+            nsctp_handle_data_chunk(sctp, data + pos, clen);
             break;
 
         case SCTP_CHUNK_SACK:
-            sctp_handle_sack_chunk(sctp, data + pos, clen);
+            nsctp_handle_sack_chunk(sctp, data + pos, clen);
             break;
 
         case SCTP_CHUNK_HEARTBEAT:
             NANO_LOGT("SCTP", "HEARTBEAT received");
-            sctp_handle_heartbeat(sctp, data + pos, clen);
+            nsctp_handle_heartbeat(sctp, data + pos, clen);
             break;
 
         case SCTP_CHUNK_HEARTBEAT_ACK:
             NANO_LOGT("SCTP", "HEARTBEAT-ACK received");
-            sctp_handle_heartbeat_ack(sctp, data + pos, clen);
+            nsctp_handle_heartbeat_ack(sctp, data + pos, clen);
             break;
 
         case SCTP_CHUNK_FORWARD_TSN:
-            sctp_handle_forward_tsn(sctp, data + pos, clen);
+            nsctp_handle_forward_tsn(sctp, data + pos, clen);
             break;
 
         case SCTP_CHUNK_ABORT:
@@ -776,11 +782,11 @@ int sctp_handle_data(nano_sctp_t *sctp, const uint8_t *data, size_t len)
     }
 
     /* If DATA was received and we need to send SACK, queue it */
-    if (sctp->sack_needed && !sctp_out_full(sctp)) {
-        size_t spos = sctp_begin_packet(sctp, sctp->remote_vtag);
-        spos += sctp_encode_sack(sctp_out_write_buf(sctp) + spos, sctp->cumulative_tsn,
-                                 NANO_SCTP_RECV_BUF_SIZE);
-        sctp_queue_output(sctp, spos);
+    if (sctp->sack_needed && !nsctp_out_full(sctp)) {
+        size_t spos = nsctp_begin_packet(sctp, sctp->remote_vtag);
+        spos += nsctp_encode_sack(nsctp_out_write_buf(sctp) + spos, sctp->cumulative_tsn,
+                                  NANO_SCTP_RECV_BUF_SIZE);
+        nsctp_queue_output(sctp, spos);
         sctp->sack_needed = false;
     }
 
@@ -789,7 +795,7 @@ int sctp_handle_data(nano_sctp_t *sctp, const uint8_t *data, size_t len)
 
 /* ---- Poll output ---- */
 
-int sctp_poll_output(nano_sctp_t *sctp, uint8_t *buf, size_t buf_len, size_t *out_len)
+int nsctp_poll_output(nano_sctp_t *sctp, uint8_t *buf, size_t buf_len, size_t *out_len)
 {
     if (!sctp || !buf || !out_len) {
         return NANO_ERR_INVALID_PARAM;
@@ -813,15 +819,15 @@ int sctp_poll_output(nano_sctp_t *sctp, uint8_t *buf, size_t buf_len, size_t *ou
     if (sctp->state == NANO_SCTP_STATE_ESTABLISHED) {
         uint8_t idx = sctp->sq_head;
         while (idx != sctp->sq_tail) {
-            sctp_send_entry_t *e = &sctp->send_queue[idx & (NANO_SCTP_MAX_SEND_QUEUE - 1)];
+            nsctp_send_entry_t *e = &sctp->send_queue[idx & (NANO_SCTP_MAX_SEND_QUEUE - 1)];
             if (!e->in_flight && !e->acked) {
                 /* Build DATA packet directly into output buffer */
-                size_t pos = sctp_begin_packet(sctp, sctp->remote_vtag);
-                pos += sctp_encode_data(sctp_out_write_buf(sctp) + pos, e->tsn, e->stream_id,
-                                        e->ssn, e->ppid, e->flags, sctp->send_buf + e->data_offset,
-                                        e->data_len);
+                size_t pos = nsctp_begin_packet(sctp, sctp->remote_vtag);
+                pos += nsctp_encode_data(nsctp_out_write_buf(sctp) + pos, e->tsn, e->stream_id,
+                                         e->ssn, e->ppid, e->flags, sctp->send_buf + e->data_offset,
+                                         e->data_len);
 
-                sctp_queue_output(sctp, pos);
+                nsctp_queue_output(sctp, pos);
                 e->in_flight = true;
 
                 /* Immediately dequeue the packet we just queued */
@@ -841,9 +847,10 @@ int sctp_poll_output(nano_sctp_t *sctp, uint8_t *buf, size_t buf_len, size_t *ou
     return NANO_ERR_NO_DATA;
 }
 
-/* ---- sctp_send: enqueue application data ---- */
+/* ---- nsctp_send: enqueue application data ---- */
 
-int sctp_send(nano_sctp_t *sctp, uint16_t stream_id, uint32_t ppid, const uint8_t *data, size_t len)
+int nsctp_send(nano_sctp_t *sctp, uint16_t stream_id, uint32_t ppid, const uint8_t *data,
+               size_t len)
 {
     if (!sctp) {
         return NANO_ERR_INVALID_PARAM;
@@ -871,7 +878,7 @@ int sctp_send(nano_sctp_t *sctp, uint16_t stream_id, uint32_t ppid, const uint8_
     }
 
     /* Create send queue entry */
-    sctp_send_entry_t *e = &sctp->send_queue[sctp->sq_tail & (NANO_SCTP_MAX_SEND_QUEUE - 1)];
+    nsctp_send_entry_t *e = &sctp->send_queue[sctp->sq_tail & (NANO_SCTP_MAX_SEND_QUEUE - 1)];
     memset(e, 0, sizeof(*e));
     e->tsn = sctp->next_tsn++;
     e->stream_id = stream_id;
@@ -891,7 +898,7 @@ int sctp_send(nano_sctp_t *sctp, uint16_t stream_id, uint32_t ppid, const uint8_
 
 /* ---- Timeout handling ---- */
 
-int sctp_handle_timeout(nano_sctp_t *sctp, uint32_t now_ms)
+int nsctp_handle_timeout(nano_sctp_t *sctp, uint32_t now_ms)
 {
     if (!sctp) {
         return NANO_ERR_INVALID_PARAM;
@@ -904,7 +911,7 @@ int sctp_handle_timeout(nano_sctp_t *sctp, uint32_t now_ms)
     /* Retransmission: check send queue for timed-out entries */
     uint8_t idx = sctp->sq_head;
     while (idx != sctp->sq_tail) {
-        sctp_send_entry_t *e = &sctp->send_queue[idx & (NANO_SCTP_MAX_SEND_QUEUE - 1)];
+        nsctp_send_entry_t *e = &sctp->send_queue[idx & (NANO_SCTP_MAX_SEND_QUEUE - 1)];
         if (e->in_flight && !e->acked) {
             uint32_t elapsed = now_ms - e->sent_at_ms;
             if (elapsed >= sctp->rto_ms) {
@@ -934,11 +941,11 @@ int sctp_handle_timeout(nano_sctp_t *sctp, uint32_t now_ms)
         uint32_t hb_elapsed = now_ms - sctp->last_heartbeat_ms;
         if (hb_elapsed >= NANO_SCTP_HEARTBEAT_INTERVAL_MS) {
             sctp->crypto->random_bytes(sctp->heartbeat_nonce, sizeof(sctp->heartbeat_nonce));
-            if (!sctp_out_full(sctp)) {
-                size_t pos = sctp_begin_packet(sctp, sctp->remote_vtag);
-                pos += sctp_encode_heartbeat(sctp_out_write_buf(sctp) + pos, sctp->heartbeat_nonce,
-                                             sizeof(sctp->heartbeat_nonce));
-                sctp_queue_output(sctp, pos);
+            if (!nsctp_out_full(sctp)) {
+                size_t pos = nsctp_begin_packet(sctp, sctp->remote_vtag);
+                pos += nsctp_encode_heartbeat(nsctp_out_write_buf(sctp) + pos,
+                                              sctp->heartbeat_nonce, sizeof(sctp->heartbeat_nonce));
+                nsctp_queue_output(sctp, pos);
                 sctp->heartbeat_pending = true;
                 sctp->last_heartbeat_ms = now_ms;
                 NANO_LOGT("SCTP", "HEARTBEAT sent");

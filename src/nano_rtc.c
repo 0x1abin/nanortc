@@ -32,7 +32,7 @@ int nano_rtc_init(nano_rtc_t *rtc, const nano_rtc_config_t *cfg)
 
     ice_init(&rtc->ice, cfg->role == NANO_ROLE_CONTROLLING);
     /* DTLS init is deferred until ICE connects (needs crypto + role) */
-    sctp_init(&rtc->sctp);
+    nsctp_init(&rtc->sctp);
     dc_init(&rtc->datachannel);
     sdp_init(&rtc->sdp);
 
@@ -284,11 +284,11 @@ int nano_poll_output(nano_rtc_t *rtc, nano_output_t *out)
 
 static void rtc_pump_sctp_through_dtls(nano_rtc_t *rtc, const nano_addr_t *dest)
 {
-    size_t sctp_out = 0;
-    uint8_t sctp_buf[NANO_SCTP_MTU];
-    while (sctp_poll_output(&rtc->sctp, sctp_buf, sizeof(sctp_buf), &sctp_out) == NANO_OK &&
-           sctp_out > 0) {
-        dtls_encrypt(&rtc->dtls, sctp_buf, sctp_out);
+    size_t nsctp_out = 0;
+    uint8_t nsctp_buf[NANO_SCTP_MTU];
+    while (nsctp_poll_output(&rtc->sctp, nsctp_buf, sizeof(nsctp_buf), &nsctp_out) == NANO_OK &&
+           nsctp_out > 0) {
+        dtls_encrypt(&rtc->dtls, nsctp_buf, nsctp_out);
         size_t enc_len = 0;
         while (dtls_poll_output(&rtc->dtls, rtc->dtls_scratch, sizeof(rtc->dtls_scratch),
                                 &enc_len) == NANO_OK &&
@@ -302,7 +302,7 @@ static void rtc_pump_sctp_through_dtls(nano_rtc_t *rtc, const nano_addr_t *dest)
             rtc_enqueue_output(rtc, &tout);
             enc_len = 0;
         }
-        sctp_out = 0;
+        nsctp_out = 0;
     }
 }
 
@@ -436,7 +436,7 @@ int nano_handle_receive(nano_rtc_t *rtc, uint32_t now_ms, const uint8_t *data, s
             /* Initiate SCTP: DTLS client sends INIT (RFC 8831) */
             if (!rtc->dtls.is_server) {
                 rtc->sctp.crypto = rtc->config.crypto;
-                sctp_start(&rtc->sctp);
+                nsctp_start(&rtc->sctp);
                 rtc->state = NANO_STATE_SCTP_CONNECTING;
 
                 /* Drain SCTP output (INIT) through DTLS encrypt */
@@ -451,7 +451,7 @@ int nano_handle_receive(nano_rtc_t *rtc, uint32_t now_ms, const uint8_t *data, s
             while (dtls_poll_app_data(&rtc->dtls, &app_data, &app_len) == NANO_OK && app_len > 0) {
                 /* Feed decrypted data to SCTP */
                 rtc->sctp.crypto = rtc->config.crypto;
-                sctp_handle_data(&rtc->sctp, app_data, app_len);
+                nsctp_handle_data(&rtc->sctp, app_data, app_len);
 
                 /* Check for SCTP state transition */
                 if (rtc->sctp.state == NANO_SCTP_STATE_ESTABLISHED &&
@@ -516,7 +516,7 @@ int nano_handle_receive(nano_rtc_t *rtc, uint32_t now_ms, const uint8_t *data, s
                 while (dc_poll_output(&rtc->datachannel, dc_buf, sizeof(dc_buf), &dc_len,
                                       &dc_stream) == NANO_OK &&
                        dc_len > 0) {
-                    sctp_send(&rtc->sctp, dc_stream, DCEP_PPID_CONTROL, dc_buf, dc_len);
+                    nsctp_send(&rtc->sctp, dc_stream, DCEP_PPID_CONTROL, dc_buf, dc_len);
                     rtc_pump_sctp_through_dtls(rtc, src);
                     dc_len = 0;
                 }
@@ -587,7 +587,7 @@ int nano_handle_timeout(nano_rtc_t *rtc, uint32_t now_ms)
 
     /* SCTP: retransmission + heartbeat timers */
     if (rtc->sctp.state == NANO_SCTP_STATE_ESTABLISHED) {
-        sctp_handle_timeout(&rtc->sctp, now_ms);
+        nsctp_handle_timeout(&rtc->sctp, now_ms);
 
         /* Pump any SCTP output (retransmits, heartbeats, pending DATA) through DTLS */
         rtc_pump_sctp_through_dtls(rtc, &rtc->remote_addr);
@@ -610,7 +610,7 @@ int nano_send_datachannel(nano_rtc_t *rtc, uint16_t stream_id, const void *data,
     }
 
     uint32_t ppid = (len > 0) ? DCEP_PPID_BINARY : DCEP_PPID_BINARY_EMPTY;
-    return sctp_send(&rtc->sctp, stream_id, ppid, (const uint8_t *)data, len);
+    return nsctp_send(&rtc->sctp, stream_id, ppid, (const uint8_t *)data, len);
 }
 
 int nano_send_datachannel_string(nano_rtc_t *rtc, uint16_t stream_id, const char *str)
@@ -627,7 +627,7 @@ int nano_send_datachannel_string(nano_rtc_t *rtc, uint16_t stream_id, const char
         len++;
 
     uint32_t ppid = (len > 0) ? DCEP_PPID_STRING : DCEP_PPID_STRING_EMPTY;
-    return sctp_send(&rtc->sctp, stream_id, ppid, (const uint8_t *)str, len);
+    return nsctp_send(&rtc->sctp, stream_id, ppid, (const uint8_t *)str, len);
 }
 
 #if NANORTC_PROFILE >= NANO_PROFILE_AUDIO

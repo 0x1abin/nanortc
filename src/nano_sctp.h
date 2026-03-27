@@ -58,7 +58,7 @@ typedef struct {
     uint16_t dst_port;
     uint32_t vtag;
     uint32_t checksum;
-} sctp_header_t;
+} nsctp_header_t;
 
 /** Parsed INIT / INIT-ACK body. */
 typedef struct {
@@ -69,7 +69,7 @@ typedef struct {
     uint32_t initial_tsn;
     const uint8_t *cookie; /* pointer into packet buffer (INIT-ACK only) */
     uint16_t cookie_len;
-} sctp_init_t;
+} nsctp_init_t;
 
 /** Parsed DATA chunk body. */
 typedef struct {
@@ -80,7 +80,7 @@ typedef struct {
     uint8_t flags; /* B/E/U bits */
     const uint8_t *payload;
     uint16_t payload_len;
-} sctp_data_t;
+} nsctp_data_t;
 
 /** Parsed SACK chunk body. */
 typedef struct {
@@ -88,12 +88,12 @@ typedef struct {
     uint32_t a_rwnd;
     uint16_t num_gap_blocks;
     uint16_t num_dup_tsns;
-} sctp_sack_t;
+} nsctp_sack_t;
 
 /** Parsed FORWARD-TSN chunk. */
 typedef struct {
     uint32_t new_cumulative_tsn;
-} sctp_forward_tsn_t;
+} nsctp_forward_tsn_t;
 
 /* ----------------------------------------------------------------
  * Send queue entry
@@ -111,7 +111,7 @@ typedef struct {
     uint8_t flags; /* B/E/U bits */
     bool acked;
     bool in_flight;
-} sctp_send_entry_t;
+} nsctp_send_entry_t;
 
 /* ----------------------------------------------------------------
  * Association state
@@ -151,7 +151,7 @@ typedef struct nano_sctp {
     bool sack_needed;
 
     /* Send queue */
-    sctp_send_entry_t send_queue[NANO_SCTP_MAX_SEND_QUEUE];
+    nsctp_send_entry_t send_queue[NANO_SCTP_MAX_SEND_QUEUE];
     uint8_t sq_head;
     uint8_t sq_tail;
     uint8_t send_buf[NANO_SCTP_SEND_BUF_SIZE];
@@ -199,49 +199,50 @@ typedef struct nano_sctp {
  * ---------------------------------------------------------------- */
 
 /** Initialize SCTP state. */
-int sctp_init(nano_sctp_t *sctp);
+int nsctp_init(nano_sctp_t *sctp);
 
 /** Feed incoming SCTP packet (after DTLS decrypt). */
-int sctp_handle_data(nano_sctp_t *sctp, const uint8_t *data, size_t len);
+int nsctp_handle_data(nano_sctp_t *sctp, const uint8_t *data, size_t len);
 
 /** Poll for outgoing SCTP packet (to be DTLS-encrypted). */
-int sctp_poll_output(nano_sctp_t *sctp, uint8_t *buf, size_t buf_len, size_t *out_len);
+int nsctp_poll_output(nano_sctp_t *sctp, uint8_t *buf, size_t buf_len, size_t *out_len);
 
 /** Enqueue application data for transmission. */
-int sctp_send(nano_sctp_t *sctp, uint16_t stream_id, uint32_t ppid, const uint8_t *data,
-              size_t len);
+int nsctp_send(nano_sctp_t *sctp, uint16_t stream_id, uint32_t ppid, const uint8_t *data,
+               size_t len);
 
 /** Initiate SCTP association (client role — sends INIT). */
-int sctp_start(nano_sctp_t *sctp);
+int nsctp_start(nano_sctp_t *sctp);
 
 /** Handle timeout (retransmission, heartbeat). */
-int sctp_handle_timeout(nano_sctp_t *sctp, uint32_t now_ms);
+int nsctp_handle_timeout(nano_sctp_t *sctp, uint32_t now_ms);
 
 /* ----------------------------------------------------------------
  * Codec functions (parse / encode individual chunks)
  * ---------------------------------------------------------------- */
 
-int sctp_parse_header(const uint8_t *data, size_t len, sctp_header_t *hdr);
-int sctp_verify_checksum(const uint8_t *data, size_t len);
-int sctp_parse_init(const uint8_t *chunk, size_t chunk_len, sctp_init_t *out);
-int sctp_parse_data(const uint8_t *chunk, size_t chunk_len, sctp_data_t *out);
-int sctp_parse_sack(const uint8_t *chunk, size_t chunk_len, sctp_sack_t *out);
+int nsctp_parse_header(const uint8_t *data, size_t len, nsctp_header_t *hdr);
+int nsctp_verify_checksum(const uint8_t *data, size_t len);
+int nsctp_parse_init(const uint8_t *chunk, size_t chunk_len, nsctp_init_t *out);
+int nsctp_parse_data(const uint8_t *chunk, size_t chunk_len, nsctp_data_t *out);
+int nsctp_parse_sack(const uint8_t *chunk, size_t chunk_len, nsctp_sack_t *out);
 
-size_t sctp_encode_header(uint8_t *buf, uint16_t src_port, uint16_t dst_port, uint32_t vtag);
-void sctp_finalize_checksum(uint8_t *packet, size_t len);
+size_t nsctp_encode_header(uint8_t *buf, uint16_t src_port, uint16_t dst_port, uint32_t vtag);
+void nsctp_finalize_checksum(uint8_t *packet, size_t len);
 
-size_t sctp_encode_init(uint8_t *buf, uint8_t type, uint32_t initiate_tag, uint32_t a_rwnd,
-                        uint16_t num_ostreams, uint16_t num_istreams, uint32_t initial_tsn,
-                        const uint8_t *cookie, uint16_t cookie_len);
+size_t nsctp_encode_init(uint8_t *buf, uint8_t type, uint32_t initiate_tag, uint32_t a_rwnd,
+                         uint16_t num_ostreams, uint16_t num_istreams, uint32_t initial_tsn,
+                         const uint8_t *cookie, uint16_t cookie_len);
 
-size_t sctp_encode_cookie_echo(uint8_t *buf, const uint8_t *cookie, uint16_t cookie_len);
-size_t sctp_encode_cookie_ack(uint8_t *buf);
-size_t sctp_encode_data(uint8_t *buf, uint32_t tsn, uint16_t stream_id, uint16_t ssn, uint32_t ppid,
-                        uint8_t flags, const uint8_t *payload, uint16_t payload_len);
-size_t sctp_encode_sack(uint8_t *buf, uint32_t cumulative_tsn, uint32_t a_rwnd);
-size_t sctp_encode_heartbeat(uint8_t *buf, const uint8_t *info, uint16_t info_len);
-size_t sctp_encode_heartbeat_ack(uint8_t *buf, const uint8_t *info, uint16_t info_len);
-size_t sctp_encode_forward_tsn(uint8_t *buf, uint32_t new_cumulative_tsn);
-size_t sctp_encode_shutdown(uint8_t *buf, uint32_t cumulative_tsn);
+size_t nsctp_encode_cookie_echo(uint8_t *buf, const uint8_t *cookie, uint16_t cookie_len);
+size_t nsctp_encode_cookie_ack(uint8_t *buf);
+size_t nsctp_encode_data(uint8_t *buf, uint32_t tsn, uint16_t stream_id, uint16_t ssn,
+                         uint32_t ppid, uint8_t flags, const uint8_t *payload,
+                         uint16_t payload_len);
+size_t nsctp_encode_sack(uint8_t *buf, uint32_t cumulative_tsn, uint32_t a_rwnd);
+size_t nsctp_encode_heartbeat(uint8_t *buf, const uint8_t *info, uint16_t info_len);
+size_t nsctp_encode_heartbeat_ack(uint8_t *buf, const uint8_t *info, uint16_t info_len);
+size_t nsctp_encode_forward_tsn(uint8_t *buf, uint32_t new_cumulative_tsn);
+size_t nsctp_encode_shutdown(uint8_t *buf, uint32_t cumulative_tsn);
 
 #endif /* NANO_SCTP_H_ */

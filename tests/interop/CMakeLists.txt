@@ -54,14 +54,6 @@ target_include_directories(test_interop_dc PRIVATE
 # Enable C++ linker since libdatachannel is a C++ library
 set_target_properties(test_interop_dc PROPERTIES LINKER_LANGUAGE CXX)
 
-# nanortc internal sctp_init() collides with usrsctp's sctp_init().
-# Both are independent implementations; allow the linker to pick the
-# first definition (nanortc is listed first, so its symbol wins for
-# nanortc code, and usrsctp's C++ TU already has its own copy).
-target_link_options(test_interop_dc PRIVATE
-    "LINKER:--allow-multiple-definition"
-)
-
 target_link_libraries(test_interop_dc PRIVATE
     nanortc
     LibDataChannel::LibDataChannelStatic
