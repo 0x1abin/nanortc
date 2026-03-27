@@ -19,12 +19,12 @@ NanoRTC uses AI coding agents for implementation. Time estimates use **agent ses
 - [x] STUN Binding Request/Response with MESSAGE-INTEGRITY and FINGERPRINT
 - [x] ICE connectivity: controlled role (answerer) and controlling role (offerer)
 - [x] DTLS 1.2 handshake via mbedtls and OpenSSL crypto providers
-- [ ] SCTP four-way handshake (INIT → INIT-ACK → COOKIE-ECHO → COOKIE-ACK)
-- [ ] SCTP DATA/SACK reliable delivery
-- [ ] DCEP DATA_CHANNEL_OPEN/ACK exchange
-- [ ] DataChannel string and binary messages flow bidirectionally
-- [ ] SDP offer/answer with DataChannel m-line
-- [ ] All unit tests pass with synthetic data (no network)
+- [x] SCTP four-way handshake (INIT → INIT-ACK → COOKIE-ECHO → COOKIE-ACK)
+- [x] SCTP DATA/SACK reliable delivery
+- [x] DCEP DATA_CHANNEL_OPEN/ACK exchange
+- [x] DataChannel string and binary messages flow bidirectionally
+- [x] SDP offer/answer with DataChannel m-line
+- [x] All unit tests pass with synthetic data (no network)
 
 ### Interop tests (libdatachannel over localhost UDP) — **mandatory gate**
 - [ ] `test_interop_handshake` — Full ICE + DTLS + SCTP handshake with libdatachannel
@@ -78,7 +78,7 @@ SCTP is the most complex module (~2500 lines). May need multiple sessions.
 | FORWARD-TSN (unreliable DC) | `nano_sctp.c` | RFC 3758 | Unordered message delivery |
 | HEARTBEAT keepalive | `nano_sctp.c` | RFC 4960 §8.3 | Timer-driven heartbeat exchange |
 
-**Gate:** SCTP association in e2e loopback test
+**Gate:** SCTP association in e2e loopback test ✓
 
 ### Step 4: DataChannel + SDP + Integration (1 agent session)
 
@@ -93,7 +93,7 @@ SCTP is the most complex module (~2500 lines). May need multiple sessions.
 | E2E test (two instances) | `test_e2e.c` | — | Synthetic DataChannel exchange |
 | Linux echo integration | `examples/linux_datachannel/` | — | Real UDP + stdin signaling |
 
-**Gate:** E2E DataChannel loopback in CI
+**Gate:** E2E DataChannel loopback in CI ✓
 **Human gate:** Browser DataChannel echo test, ESP32 hardware test
 
 ### Step 5: Interop testing against libdatachannel (1 agent session)
@@ -121,6 +121,8 @@ SCTP is the most complex module (~2500 lines). May need multiple sessions.
 | 2026-03-26 | MI/FP ordering enforced in parser | After MI: ignore all attrs except FP. After FP: reject any further attrs (RFC 8489 §14.5/§14.7) |
 | 2026-03-27 | libdatachannel as interop reference peer | Known-good C/C++ WebRTC implementation with C API; validates full protocol stack over real UDP. apt not available; fetched via CMake FetchContent. |
 | 2026-03-27 | Interop tests as mandatory Phase 1 gate | Unit tests alone cannot catch SDP format mismatches, DTLS parameter negotiation bugs, or SCTP interop issues. Interop tests are required for Phase 1 sign-off. |
+| 2026-03-27 | Renamed `sctp_` to `nsctp_` prefix | Avoid usrsctp symbol collision in interop builds where both libraries are linked |
+| 2026-03-27 | Named array size macros mandatory | All struct arrays use `NANO_*` or `MODULE_*_SIZE` macros — enforced by CI |
 
 ## Progress
 
@@ -175,6 +177,51 @@ SCTP is the most complex module (~2500 lines). May need multiple sessions.
 
 **Files created/modified:** nano_dtls.c/h, nano_crypto.h, nano_crypto_mbedtls.c, nano_crypto_openssl.c, nano_rtc.c, nano_rtc_internal.h, test_dtls.c (new), test_e2e.c
 
+### Step 3: SCTP-Lite (Completed 2026-03-27, 1 session)
+
+**Implemented:**
+- Full SCTP chunk codec (RFC 4960 §3): INIT, INIT-ACK, COOKIE-ECHO, COOKIE-ACK, DATA, SACK, HEARTBEAT, HEARTBEAT-ACK, FORWARD-TSN, SHUTDOWN, ABORT
+- Four-way handshake FSM (INIT → INIT-ACK → COOKIE-ECHO → COOKIE-ACK)
+- DATA/SACK reliable delivery with ordered stream support
+- Retransmission timer (T3-rtx) with exponential backoff
+- FORWARD-TSN for unreliable DataChannels (RFC 3758)
+- HEARTBEAT keepalive with timer-driven exchange
+- Ring output queue for outbound chunk buffering
+- CRC-32c (Castagnoli) for SCTP checksums, separate from CRC-32 (STUN)
+
+**Tests (27 across codec, CRC, handshake, data exchange, SACK, FORWARD-TSN, output queue):**
+- Chunk encode/decode roundtrip for all chunk types
+- CRC-32c test vectors (Castagnoli polynomial)
+- Full four-way handshake between two `nsctp_assoc_t` instances
+- DATA send → SACK receive → TSN advance
+- Retransmit on T3-rtx timeout
+- FORWARD-TSN skip and receiver TSN update
+- Output queue ring buffer fill/drain
+
+**Key files:** `nano_sctp.c/h` (renamed to `nsctp_` prefix), `nano_crc32c.c/h`
+**Missing (non-critical for Phase 1):** Gap tracking, RECONFIG, SHUTDOWN-ACK
+
+### Step 4: DataChannel + SDP + Integration (Completed 2026-03-27, 1 session)
+
+**Implemented:**
+- DCEP codec (RFC 8832): DATA_CHANNEL_OPEN/ACK parse and encode
+- DataChannel FSM: CLOSED → OPENING → OPEN → CLOSING
+- Bidirectional string/binary message routing via SCTP PPID dispatch
+- SDP parser: handles Chrome, Firefox, Safari offer formats
+- SDP generator: creates valid WebRTC answer with DataChannel m-line
+- `nano_accept_offer` integration in main FSM (SDP parse → ICE/DTLS/SCTP config)
+- E2E loopback test: two `nano_rtc_t` instances exchange DataChannel messages
+
+**Tests (11 SDP tests + DCEP/e2e):**
+- Chrome/Firefox/Safari SDP offer parsing
+- SDP generator output validation
+- SDP roundtrip (generate → parse own output)
+- `nano_accept_offer` full pipeline test
+- E2E DataChannel string/binary loopback (CI-passing)
+
+**Key files:** `nano_datachannel.c/h`, `nano_sdp.c/h`, `nano_rtc.c`, `test_sdp.c`, `test_e2e.c`
+**Note:** E2E DataChannel loopback passes in CI
+
 ### Step 5: Interop test framework (Completed 2026-03-27, 1 session)
 
 **Implemented:**
@@ -194,7 +241,7 @@ SCTP is the most complex module (~2500 lines). May need multiple sessions.
 - `test_interop_dc_string_nanortc_to_libdatachannel` — Text message nanortc → libdatachannel
 - `test_interop_dc_binary` — Binary payload (256 bytes) libdatachannel → nanortc
 
-**Status:** Framework compiles and links. Tests currently fail because `nano_accept_offer` does not yet fully parse libdatachannel's SDP format. Tests will pass incrementally as Steps 3-4 complete.
+**Status:** Framework compiles and links. Steps 3-4 code complete. Interop tests blocked on SDP parser compatibility — `nano_accept_offer` does not fully parse libdatachannel's SDP offer format (differs from browser SDP tested in unit tests).
 
 **Files created:** tests/interop/ (8 new files), CMakeLists.txt modified
 
