@@ -16,7 +16,7 @@
  * Codec
  * ================================================================ */
 
-int dcep_parse_open(const uint8_t *data, size_t len, dcep_open_t *out)
+static int dcep_parse_open(const uint8_t *data, size_t len, dcep_open_t *out)
 {
     /*
      * DATA_CHANNEL_OPEN format (RFC 8832 §5.1):
@@ -36,10 +36,10 @@ int dcep_parse_open(const uint8_t *data, size_t len, dcep_open_t *out)
     }
 
     out->channel_type = data[1];
-    out->priority = nano_ntohs(*(const uint16_t *)(data + 2));
-    out->reliability_param = nano_ntohl(*(const uint32_t *)(data + 4));
-    out->label_len = nano_ntohs(*(const uint16_t *)(data + 8));
-    out->protocol_len = nano_ntohs(*(const uint16_t *)(data + 10));
+    out->priority = nano_read_u16be(data + 2);
+    out->reliability_param = nano_read_u32be(data + 4);
+    out->label_len = nano_read_u16be(data + 8);
+    out->protocol_len = nano_read_u16be(data + 10);
 
     if ((size_t)(12 + out->label_len + out->protocol_len) > len) {
         return NANO_ERR_PARSE;
@@ -51,16 +51,16 @@ int dcep_parse_open(const uint8_t *data, size_t len, dcep_open_t *out)
     return NANO_OK;
 }
 
-size_t dcep_encode_open(uint8_t *buf, uint8_t channel_type, uint16_t priority,
-                        uint32_t reliability_param, const char *label, uint16_t label_len,
-                        const char *protocol, uint16_t protocol_len)
+static size_t dcep_encode_open(uint8_t *buf, uint8_t channel_type, uint16_t priority,
+                               uint32_t reliability_param, const char *label, uint16_t label_len,
+                               const char *protocol, uint16_t protocol_len)
 {
     buf[0] = DCEP_DATA_CHANNEL_OPEN;
     buf[1] = channel_type;
-    *(uint16_t *)(buf + 2) = nano_htons(priority);
-    *(uint32_t *)(buf + 4) = nano_htonl(reliability_param);
-    *(uint16_t *)(buf + 8) = nano_htons(label_len);
-    *(uint16_t *)(buf + 10) = nano_htons(protocol_len);
+    nano_write_u16be(buf + 2, priority);
+    nano_write_u32be(buf + 4, reliability_param);
+    nano_write_u16be(buf + 8, label_len);
+    nano_write_u16be(buf + 10, protocol_len);
 
     size_t pos = 12;
     if (label && label_len > 0) {
@@ -75,7 +75,7 @@ size_t dcep_encode_open(uint8_t *buf, uint8_t channel_type, uint16_t priority,
     return pos;
 }
 
-size_t dcep_encode_ack(uint8_t *buf)
+static size_t dcep_encode_ack(uint8_t *buf)
 {
     buf[0] = DCEP_DATA_CHANNEL_ACK;
     return 1;

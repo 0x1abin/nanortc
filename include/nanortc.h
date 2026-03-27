@@ -71,6 +71,41 @@ static inline uint32_t nano_ntohl(uint32_t x)
 }
 
 /* ----------------------------------------------------------------
+ * Safe unaligned big-endian read/write (memcpy-based)
+ *
+ * Direct pointer casts (*(uint16_t*)(ptr)) cause HardFault on
+ * ARM Cortex-M when ptr is not naturally aligned. These helpers
+ * use memcpy which compilers optimize to single load/store on
+ * platforms that support unaligned access (x86, Cortex-A).
+ * ---------------------------------------------------------------- */
+
+#include <string.h>
+
+static inline uint16_t nano_read_u16be(const uint8_t *p)
+{
+    return (uint16_t)((uint16_t)p[0] << 8 | p[1]);
+}
+
+static inline uint32_t nano_read_u32be(const uint8_t *p)
+{
+    return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3];
+}
+
+static inline void nano_write_u16be(uint8_t *p, uint16_t v)
+{
+    p[0] = (uint8_t)(v >> 8);
+    p[1] = (uint8_t)(v);
+}
+
+static inline void nano_write_u32be(uint8_t *p, uint32_t v)
+{
+    p[0] = (uint8_t)(v >> 24);
+    p[1] = (uint8_t)(v >> 16);
+    p[2] = (uint8_t)(v >> 8);
+    p[3] = (uint8_t)(v);
+}
+
+/* ----------------------------------------------------------------
  * Error Codes
  * ---------------------------------------------------------------- */
 

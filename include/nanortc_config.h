@@ -179,6 +179,11 @@
 #define NANO_SCTP_HEARTBEAT_INTERVAL_MS 30000
 #endif
 
+/* SCTP output queue depth (number of buffered outgoing packets, power of 2) */
+#ifndef NANO_SCTP_OUT_QUEUE_SIZE
+#define NANO_SCTP_OUT_QUEUE_SIZE 4
+#endif
+
 /* ----------------------------------------------------------------
  * Output queue depth (must be power of 2 for ring buffer masking)
  * ---------------------------------------------------------------- */

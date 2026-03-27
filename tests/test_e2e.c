@@ -128,7 +128,11 @@ TEST(test_e2e_stubs_not_implemented)
     ASSERT_EQ(nano_create_offer(&rtc, buf, sizeof(buf)), NANO_ERR_NOT_IMPLEMENTED);
     ASSERT_EQ(nano_accept_answer(&rtc, "v=0\r\n"), NANO_ERR_NOT_IMPLEMENTED);
     ASSERT_EQ(nano_add_local_candidate(&rtc, "192.168.1.1", 9999), NANO_ERR_NOT_IMPLEMENTED);
-    ASSERT_EQ(nano_add_remote_candidate(&rtc, "candidate:..."), NANO_ERR_NOT_IMPLEMENTED);
+    /* nano_add_remote_candidate now parses SDP candidate; invalid format returns parse error */
+    ASSERT_EQ(nano_add_remote_candidate(&rtc, "candidate:..."), NANO_ERR_PARSE);
+    /* Valid candidate succeeds */
+    ASSERT_OK(nano_add_remote_candidate(&rtc, "candidate:0 1 UDP 2122260223 192.168.1.100 50000 typ host"));
+    ASSERT_OK(nano_add_remote_candidate(&rtc, "192.168.1.200 60000"));
 
     /* nano_handle_receive and nano_handle_timeout are now implemented */
 

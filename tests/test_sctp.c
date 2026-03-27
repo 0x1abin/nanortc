@@ -455,10 +455,11 @@ TEST(test_sctp_logging_on_parse)
  * Two-instance loopback tests (FSM)
  * ================================================================ */
 
-/** Helper: pump output from src to dst. Returns bytes transferred. */
+/** Helper: pump output from src to dst. Returns bytes transferred.
+ *  Uses static buffer so delivered_data pointers remain valid after return. */
 static size_t pump(nano_sctp_t *src, nano_sctp_t *dst)
 {
-    uint8_t buf[NANO_SCTP_MTU];
+    static uint8_t buf[NANO_SCTP_MTU];
     size_t out_len = 0;
     size_t total = 0;
 
@@ -617,6 +618,93 @@ TEST(test_forward_tsn_advances)
 }
 
 /* ================================================================
+ * SACK acknowledgement and send queue drain
+ * ================================================================ */
+
+TEST(test_sack_drains_send_queue)
+{
+    nano_sctp_t a, b;
+    sctp_init(&a);
+    sctp_init(&b);
+
+    const nano_crypto_provider_t *crypto = nano_test_crypto();
+    a.crypto = crypto;
+    b.crypto = crypto;
+
+    /* Handshake */
+    ASSERT_OK(sctp_start(&a));
+    pump(&a, &b);
+    pump(&b, &a);
+    pump(&a, &b);
+    pump(&b, &a);
+    ASSERT_EQ(a.state, NANO_SCTP_STATE_ESTABLISHED);
+
+    /* Send multiple messages */
+    uint8_t msg1[] = "first";
+    uint8_t msg2[] = "second";
+    ASSERT_OK(sctp_send(&a, 0, 51, msg1, sizeof(msg1) - 1));
+    ASSERT_OK(sctp_send(&a, 0, 51, msg2, sizeof(msg2) - 1));
+
+    /* Pump both DATA from A to B */
+    pump(&a, &b);
+    pump(&a, &b);
+
+    /* B received the data */
+    ASSERT_TRUE(b.has_delivered);
+
+    /* Pump SACK from B to A */
+    pump(&b, &a);
+
+    /* A's send queue entries should be acked */
+    bool all_acked = true;
+    uint8_t idx = a.sq_head;
+    while (idx != a.sq_tail) {
+        sctp_send_entry_t *e = &a.send_queue[idx & (NANO_SCTP_MAX_SEND_QUEUE - 1)];
+        if (!e->acked) {
+            all_acked = false;
+        }
+        idx++;
+    }
+    ASSERT_TRUE(all_acked);
+}
+
+/* ================================================================
+ * Multiple output queue slots (ring buffer)
+ * ================================================================ */
+
+TEST(test_sctp_output_queue_multiple)
+{
+    nano_sctp_t a, b;
+    sctp_init(&a);
+    sctp_init(&b);
+
+    const nano_crypto_provider_t *crypto = nano_test_crypto();
+    a.crypto = crypto;
+    b.crypto = crypto;
+
+    /* Client sends INIT — should queue one output */
+    ASSERT_OK(sctp_start(&a));
+
+    /* Poll the INIT */
+    uint8_t buf[NANO_SCTP_MTU];
+    size_t out_len = 0;
+    ASSERT_OK(sctp_poll_output(&a, buf, sizeof(buf), &out_len));
+    ASSERT_TRUE(out_len > 0);
+
+    /* Feed INIT to server — should queue INIT-ACK */
+    sctp_handle_data(&b, buf, out_len);
+
+    /* Poll INIT-ACK from server */
+    out_len = 0;
+    ASSERT_OK(sctp_poll_output(&b, buf, sizeof(buf), &out_len));
+    ASSERT_TRUE(out_len > 0);
+
+    /* No more output */
+    out_len = 0;
+    ASSERT_EQ(sctp_poll_output(&b, buf, sizeof(buf), &out_len), NANO_ERR_NO_DATA);
+}
+
+/* ================================================================
  * Test runner
  * ================================================================ */
 
@@ -661,4 +749,6 @@ RUN(test_two_instance_data_exchange);
 RUN(test_two_instance_bidirectional);
 RUN(test_send_before_established);
 RUN(test_forward_tsn_advances);
+RUN(test_sack_drains_send_queue);
+RUN(test_sctp_output_queue_multiple);
 TEST_MAIN_END

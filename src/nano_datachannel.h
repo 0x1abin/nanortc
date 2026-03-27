@@ -131,12 +131,6 @@ int dc_open(nano_dc_t *dc, uint16_t stream_id, const char *label);
 int dc_poll_output(nano_dc_t *dc, uint8_t *buf, size_t buf_len, size_t *out_len,
                    uint16_t *stream_id);
 
-/* ---- Codec ---- */
-
-int dcep_parse_open(const uint8_t *data, size_t len, dcep_open_t *out);
-size_t dcep_encode_open(uint8_t *buf, uint8_t channel_type, uint16_t priority,
-                        uint32_t reliability_param, const char *label, uint16_t label_len,
-                        const char *protocol, uint16_t protocol_len);
-size_t dcep_encode_ack(uint8_t *buf);
+/* DCEP codec functions are static in nano_datachannel.c */
 
 #endif /* NANO_DATACHANNEL_H_ */
