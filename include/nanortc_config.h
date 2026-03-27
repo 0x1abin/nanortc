@@ -70,6 +70,42 @@
 #define NANO_JITTER_SLOTS CONFIG_NANO_JITTER_SLOTS
 #endif
 
+#if defined(CONFIG_NANO_ICE_UFRAG_SIZE) && !defined(NANO_ICE_UFRAG_SIZE)
+#define NANO_ICE_UFRAG_SIZE CONFIG_NANO_ICE_UFRAG_SIZE
+#endif
+
+#if defined(CONFIG_NANO_ICE_PWD_SIZE) && !defined(NANO_ICE_PWD_SIZE)
+#define NANO_ICE_PWD_SIZE CONFIG_NANO_ICE_PWD_SIZE
+#endif
+
+#if defined(CONFIG_NANO_ICE_REMOTE_UFRAG_SIZE) && !defined(NANO_ICE_REMOTE_UFRAG_SIZE)
+#define NANO_ICE_REMOTE_UFRAG_SIZE CONFIG_NANO_ICE_REMOTE_UFRAG_SIZE
+#endif
+
+#if defined(CONFIG_NANO_ICE_REMOTE_PWD_SIZE) && !defined(NANO_ICE_REMOTE_PWD_SIZE)
+#define NANO_ICE_REMOTE_PWD_SIZE CONFIG_NANO_ICE_REMOTE_PWD_SIZE
+#endif
+
+#if defined(CONFIG_NANO_SDP_FINGERPRINT_SIZE) && !defined(NANO_SDP_FINGERPRINT_SIZE)
+#define NANO_SDP_FINGERPRINT_SIZE CONFIG_NANO_SDP_FINGERPRINT_SIZE
+#endif
+
+#if defined(CONFIG_NANO_SDP_MIN_BUF_SIZE) && !defined(NANO_SDP_MIN_BUF_SIZE)
+#define NANO_SDP_MIN_BUF_SIZE CONFIG_NANO_SDP_MIN_BUF_SIZE
+#endif
+
+#if defined(CONFIG_NANO_DC_LABEL_SIZE) && !defined(NANO_DC_LABEL_SIZE)
+#define NANO_DC_LABEL_SIZE CONFIG_NANO_DC_LABEL_SIZE
+#endif
+
+#if defined(CONFIG_NANO_DC_OUT_BUF_SIZE) && !defined(NANO_DC_OUT_BUF_SIZE)
+#define NANO_DC_OUT_BUF_SIZE CONFIG_NANO_DC_OUT_BUF_SIZE
+#endif
+
+#if defined(CONFIG_NANO_STUN_BUF_SIZE) && !defined(NANO_STUN_BUF_SIZE)
+#define NANO_STUN_BUF_SIZE CONFIG_NANO_STUN_BUF_SIZE
+#endif
+
 /* ----------------------------------------------------------------
  * Build profile
  * ---------------------------------------------------------------- */
@@ -84,6 +120,14 @@
 
 #ifndef NANO_MAX_DATACHANNELS
 #define NANO_MAX_DATACHANNELS 8
+#endif
+
+#ifndef NANO_DC_LABEL_SIZE
+#define NANO_DC_LABEL_SIZE 32
+#endif
+
+#ifndef NANO_DC_OUT_BUF_SIZE
+#define NANO_DC_OUT_BUF_SIZE 128
 #endif
 
 /* ----------------------------------------------------------------
@@ -103,6 +147,24 @@
 #define NANO_ICE_CHECK_INTERVAL_MS 50
 #endif
 
+/* ICE credential buffer sizes */
+
+#ifndef NANO_ICE_UFRAG_SIZE
+#define NANO_ICE_UFRAG_SIZE 8
+#endif
+
+#ifndef NANO_ICE_PWD_SIZE
+#define NANO_ICE_PWD_SIZE 32
+#endif
+
+#ifndef NANO_ICE_REMOTE_UFRAG_SIZE
+#define NANO_ICE_REMOTE_UFRAG_SIZE 32
+#endif
+
+#ifndef NANO_ICE_REMOTE_PWD_SIZE
+#define NANO_ICE_REMOTE_PWD_SIZE 128
+#endif
+
 /* ----------------------------------------------------------------
  * DTLS buffer size
  * ---------------------------------------------------------------- */
@@ -119,16 +181,87 @@
 #define NANO_SDP_BUF_SIZE 2048
 #endif
 
+/* SDP field sizes */
+
+#ifndef NANO_SDP_FINGERPRINT_SIZE
+#define NANO_SDP_FINGERPRINT_SIZE 128
+#endif
+
+#ifndef NANO_SDP_MIN_BUF_SIZE
+#define NANO_SDP_MIN_BUF_SIZE 256
+#endif
+
 /* ----------------------------------------------------------------
- * SCTP buffer sizes
+ * STUN scratch buffer size
+ * ---------------------------------------------------------------- */
+
+#ifndef NANO_STUN_BUF_SIZE
+#define NANO_STUN_BUF_SIZE 256
+#endif
+
+/* ----------------------------------------------------------------
+ * SCTP configuration (RFC 4960)
  * ---------------------------------------------------------------- */
 
 #ifndef NANO_SCTP_SEND_BUF_SIZE
-#define NANO_SCTP_SEND_BUF_SIZE (64 * 1024)
+#define NANO_SCTP_SEND_BUF_SIZE 4096
 #endif
 
 #ifndef NANO_SCTP_RECV_BUF_SIZE
-#define NANO_SCTP_RECV_BUF_SIZE (64 * 1024)
+#define NANO_SCTP_RECV_BUF_SIZE 4096
+#endif
+
+/* Maximum SCTP packet size over DTLS */
+#ifndef NANO_SCTP_MTU
+#define NANO_SCTP_MTU 1200
+#endif
+
+/* Pending outbound DATA chunk queue depth */
+#ifndef NANO_SCTP_MAX_SEND_QUEUE
+#define NANO_SCTP_MAX_SEND_QUEUE 16
+#endif
+
+/* Maximum gap ack blocks in SACK */
+#ifndef NANO_SCTP_MAX_GAP_BLOCKS
+#define NANO_SCTP_MAX_GAP_BLOCKS 4
+#endif
+
+/* State cookie maximum size (bytes) */
+#ifndef NANO_SCTP_COOKIE_SIZE
+#define NANO_SCTP_COOKIE_SIZE 32
+#endif
+
+/* Retransmission timer defaults (RFC 4960 §6.3.1) */
+#ifndef NANO_SCTP_RTO_INITIAL_MS
+#define NANO_SCTP_RTO_INITIAL_MS 1000
+#endif
+
+#ifndef NANO_SCTP_RTO_MIN_MS
+#define NANO_SCTP_RTO_MIN_MS 200
+#endif
+
+#ifndef NANO_SCTP_RTO_MAX_MS
+#define NANO_SCTP_RTO_MAX_MS 10000
+#endif
+
+/* Maximum DATA chunk retransmissions before error */
+#ifndef NANO_SCTP_MAX_RETRANSMITS
+#define NANO_SCTP_MAX_RETRANSMITS 10
+#endif
+
+/* Maximum INIT retransmissions (RFC 4960 §5.1) */
+#ifndef NANO_SCTP_MAX_INIT_RETRANSMITS
+#define NANO_SCTP_MAX_INIT_RETRANSMITS 8
+#endif
+
+/* HEARTBEAT interval in milliseconds (RFC 4960 §8.3) */
+#ifndef NANO_SCTP_HEARTBEAT_INTERVAL_MS
+#define NANO_SCTP_HEARTBEAT_INTERVAL_MS 30000
+#endif
+
+/* SCTP output queue depth (number of buffered outgoing packets, power of 2) */
+#ifndef NANO_SCTP_OUT_QUEUE_SIZE
+#define NANO_SCTP_OUT_QUEUE_SIZE 4
 #endif
 
 /* ----------------------------------------------------------------
@@ -148,6 +281,33 @@
 #endif
 
 /* ----------------------------------------------------------------
+ * Logging configuration
+ * ---------------------------------------------------------------- */
+
+/**
+ * @brief Maximum compile-time log level.
+ *
+ * Messages above this level are eliminated by the preprocessor.
+ * Set via compiler flag: -DNANO_LOG_LEVEL=0 (errors only).
+ * Values: 0=ERROR, 1=WARN, 2=INFO, 3=DEBUG, 4=TRACE.
+ */
+#ifndef NANO_LOG_LEVEL
+#define NANO_LOG_LEVEL 4 /* TRACE — all messages compiled in */
+#endif
+
+/**
+ * @brief Define to compile out all logging code entirely.
+ */
+/* #define NANO_LOG_DISABLED */
+
+/**
+ * @brief Define to omit source file/line/function from log messages.
+ *
+ * Reduces code size on very constrained targets.
+ */
+/* #define NANO_LOG_NO_LOC */
+
+/* ----------------------------------------------------------------
  * Compile-time validation
  * ---------------------------------------------------------------- */
 
@@ -161,6 +321,22 @@
 
 #if NANO_DTLS_BUF_SIZE < 256
 #error "NANO_DTLS_BUF_SIZE must be at least 256"
+#endif
+
+#if NANO_ICE_UFRAG_SIZE < 4
+#error "NANO_ICE_UFRAG_SIZE must be at least 4"
+#endif
+
+#if NANO_ICE_PWD_SIZE < 22
+#error "NANO_ICE_PWD_SIZE must be at least 22"
+#endif
+
+#if NANO_STUN_BUF_SIZE < 128
+#error "NANO_STUN_BUF_SIZE must be at least 128"
+#endif
+
+#if NANO_SDP_MIN_BUF_SIZE < 128
+#error "NANO_SDP_MIN_BUF_SIZE must be at least 128"
 #endif
 
 #endif /* NANORTC_CONFIG_H_ */

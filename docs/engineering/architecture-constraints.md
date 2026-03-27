@@ -56,3 +56,23 @@ nm -g libnanortc.a | grep ' T ' | awk '{print $3}' | grep -v '^nano_' | grep -v 
 nm libnanortc.a | grep ' [BD] ' | grep -v '__' | grep -v 'crc32c_table'
 # Only const tables (like CRC lookup) are acceptable
 ```
+
+## 7. No Unbounded String Functions
+
+No `strlen`, `sprintf`, `snprintf`, `strcpy`, `strncpy`, `strcat`, `strncat`, `sscanf`, `atoi`, `atol`, or `gets` in `src/` or `crypto/`. API boundary uses annotated with `NANO_SAFE` are exempt. See [safe-c-guidelines.md](safe-c-guidelines.md).
+
+```bash
+# Must return empty (excluding NANO_SAFE-annotated API boundary lines)
+grep -rnE '\b(strlen|sprintf|snprintf|strcpy|strncpy|strcat|strncat|sscanf|atoi|atol|gets)\b' src/ crypto/ \
+  | grep -v 'NANO_SAFE'
+```
+
+## 8. No Hardcoded Array Sizes
+
+Struct array members in headers must use named macros, not bare integer literals:
+
+```bash
+# Must return empty (excluding comments)
+grep -rnE '\b(uint8_t|char|int8_t|uint16_t|uint32_t)\s+\w+\[\s*[0-9]+\s*\];' src/*.h include/nanortc.h \
+  | grep -v '//'
+```

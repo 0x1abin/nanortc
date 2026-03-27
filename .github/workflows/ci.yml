@@ -63,7 +63,7 @@ jobs:
           cmake -B build -DNANORTC_PROFILE=MEDIA -DCMAKE_BUILD_TYPE=Debug
           cmake --build build -j$(nproc)
           # All symbols must start with nano_ (public API) or a known module prefix (internal)
-          ALLOWED='nano_|stun_|ice_|dtls_|sctp_|dc_|sdp_|rtp_|rtcp_|srtp_|jitter_|bwe_'
+          ALLOWED='nano_|stun_|ice_|dtls_|nsctp_|sctp_|dc_|sdp_|rtp_|rtcp_|srtp_|jitter_|bwe_'
           violations=$(nm -g build/libnanortc.a 2>/dev/null | grep ' T ' | awk '{print $3}' | grep -v '^_' | grep -vE "^($ALLOWED)" || true)
           if [ -n "$violations" ]; then
             echo "Symbols with unknown prefix (expected nano_ or module prefix):"

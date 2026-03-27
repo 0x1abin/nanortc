@@ -54,9 +54,9 @@
 #include <mbedtls/bignum.h>
 #endif
 
+#include "nanortc_util.h"
 #include <stdlib.h>
 #include <string.h>
-#include <stdio.h>
 
 /* ---- Version-adaptive macros (2.x/3.x only) ---- */
 
@@ -115,7 +115,7 @@ static void mbed_hmac_sha1(const uint8_t *key, size_t key_len, const uint8_t *da
 #ifdef NANO_MBEDTLS_4
     /* PSA one-shot HMAC: import key → compute → destroy */
     if (mbed_psa_init() != 0) {
-        memset(out, 0, 20);
+        nano_memzero(out, 20);
         return;
     }
     psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
@@ -127,7 +127,7 @@ static void mbed_hmac_sha1(const uint8_t *key, size_t key_len, const uint8_t *da
     psa_key_id_t key_id = 0;
     psa_status_t status = psa_import_key(&attr, key, key_len, &key_id);
     if (status != PSA_SUCCESS) {
-        memset(out, 0, 20);
+        nano_memzero(out, 20);
         return;
     }
     size_t mac_len = 0;
@@ -220,7 +220,7 @@ struct nano_crypto_dtls_ctx {
     int keys_captured;
 
     /* Fingerprint cache */
-    char fingerprint[97]; /* "XX:XX:..." SHA-256, 95 chars + NUL */
+    char fingerprint[NANO_DTLS_FINGERPRINT_STR_SIZE]; /* "XX:XX:..." SHA-256, 95 chars + NUL */
 };
 
 /* ---- Certificate verification callback: accept self-signed ---- */
@@ -317,7 +317,7 @@ static int mbed_bio_recv(void *ctx, unsigned char *buf, size_t len)
 
 static int mbed_compute_fingerprint(const mbedtls_x509_crt *crt, char *buf, size_t buf_len)
 {
-    if (buf_len < 96) {
+    if (buf_len < NANO_DTLS_FINGERPRINT_MIN_BUF) {
         return -1;
     }
     unsigned char digest[32];
@@ -340,8 +340,11 @@ static int mbed_compute_fingerprint(const mbedtls_x509_crt *crt, char *buf, size
 #endif
 
     /* Format as "XX:XX:XX:..." (95 chars for SHA-256) */
+    static const char hex_upper[] = "0123456789ABCDEF";
     for (int i = 0; i < 32; i++) {
-        snprintf(buf + i * 3, 4, "%02X:", digest[i]);
+        buf[i * 3] = hex_upper[(digest[i] >> 4) & 0xF];
+        buf[i * 3 + 1] = hex_upper[digest[i] & 0xF];
+        buf[i * 3 + 2] = ':';
     }
     buf[95] = '\0'; /* Replace trailing ':' with NUL */
     return 0;
@@ -473,7 +476,8 @@ static int mbed_generate_cert(nano_crypto_dtls_ctx_t *ctx)
 
     /* Parse the PEM back into x509_crt */
     mbedtls_x509_crt_init(&ctx->cert);
-    ret = mbedtls_x509_crt_parse(&ctx->cert, cert_buf, strlen((char *)cert_buf) + 1);
+    ret = mbedtls_x509_crt_parse(&ctx->cert, cert_buf,
+                                 nano_strnlen((const char *)cert_buf, sizeof(cert_buf)) + 1);
     if (ret != 0) {
         return ret;
     }
@@ -511,7 +515,7 @@ static nano_crypto_dtls_ctx_t *mbed_dtls_ctx_new(int is_server)
     mbedtls_ctr_drbg_init(&ctx->ctr_drbg);
     const char *pers = "nanortc-dtls";
     ret = mbedtls_ctr_drbg_seed(&ctx->ctr_drbg, mbedtls_entropy_func, &ctx->entropy,
-                                (const unsigned char *)pers, strlen(pers));
+                                (const unsigned char *)pers, sizeof("nanortc-dtls") - 1);
     if (ret != 0) {
         goto fail;
     }
@@ -670,8 +674,9 @@ static int mbed_dtls_decrypt(nano_crypto_dtls_ctx_t *ctx, const uint8_t *in, siz
 }
 
 static int mbed_dtls_export_keying_material(nano_crypto_dtls_ctx_t *ctx, const char *label,
-                                            uint8_t *out, size_t out_len)
+                                            size_t label_len, uint8_t *out, size_t out_len)
 {
+    (void)label_len; /* mbedtls_ssl_tls_prf handles label as C string internally */
     if (!ctx || !ctx->keys_captured) {
         return -1;
     }
@@ -686,10 +691,10 @@ static int mbed_dtls_export_keying_material(nano_crypto_dtls_ctx_t *ctx, const c
 
 static int mbed_dtls_get_fingerprint(nano_crypto_dtls_ctx_t *ctx, char *buf, size_t buf_len)
 {
-    if (!ctx || buf_len < 96) {
+    if (!ctx || buf_len < NANO_DTLS_FINGERPRINT_MIN_BUF) {
         return -1;
     }
-    memcpy(buf, ctx->fingerprint, 96);
+    memcpy(buf, ctx->fingerprint, NANO_DTLS_FINGERPRINT_MIN_BUF);
     return 0;
 }
 

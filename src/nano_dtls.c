@@ -161,8 +161,8 @@ int dtls_handle_data(nano_dtls_t *dtls, const uint8_t *data, size_t len)
             /* Export keying material (RFC 5764) */
             if (dtls->crypto->dtls_export_keying_material) {
                 int km_rc = dtls->crypto->dtls_export_keying_material(
-                    ctx, "EXTRACTOR-dtls_srtp", dtls->keying_material,
-                    sizeof(dtls->keying_material));
+                    ctx, "EXTRACTOR-dtls_srtp", sizeof("EXTRACTOR-dtls_srtp") - 1,
+                    dtls->keying_material, sizeof(dtls->keying_material));
                 if (km_rc == 0) {
                     dtls->keying_material_ready = 1;
                 }

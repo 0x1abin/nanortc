@@ -10,11 +10,15 @@
 #include <stdint.h>
 #include <stddef.h>
 
+/* SRTP key/salt sizes (RFC 3711, AES-128-CM) */
+#define NANO_SRTP_KEY_SIZE  16 /* RFC 3711 AES-128 key */
+#define NANO_SRTP_SALT_SIZE 14 /* RFC 3711 session salt */
+
 typedef struct nano_srtp {
-    uint8_t send_key[16];
-    uint8_t send_salt[14];
-    uint8_t recv_key[16];
-    uint8_t recv_salt[14];
+    uint8_t send_key[NANO_SRTP_KEY_SIZE];
+    uint8_t send_salt[NANO_SRTP_SALT_SIZE];
+    uint8_t recv_key[NANO_SRTP_KEY_SIZE];
+    uint8_t recv_salt[NANO_SRTP_SALT_SIZE];
     uint32_t roc; /* rollover counter */
 } nano_srtp_t;
 

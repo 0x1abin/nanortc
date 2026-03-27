@@ -12,6 +12,8 @@
 #define NANO_ICE_H_
 
 #include "nanortc_config.h"
+#include "nanortc.h"
+#include "nano_stun.h"
 
 #include <stdint.h>
 #include <stddef.h>
@@ -39,24 +41,28 @@ typedef enum {
 typedef struct nano_ice {
     nano_ice_state_t state;
     int is_controlling; /* 0 = controlled (answerer), 1 = controlling (offerer) */
-    char local_ufrag[8];
-    char local_pwd[32];
-    char remote_ufrag[32];
-    char remote_pwd[128];
-    uint8_t selected_addr[16];
+    char local_ufrag[NANO_ICE_UFRAG_SIZE];
+    size_t local_ufrag_len;
+    char local_pwd[NANO_ICE_PWD_SIZE];
+    size_t local_pwd_len;
+    char remote_ufrag[NANO_ICE_REMOTE_UFRAG_SIZE];
+    size_t remote_ufrag_len;
+    char remote_pwd[NANO_ICE_REMOTE_PWD_SIZE];
+    size_t remote_pwd_len;
+    uint8_t selected_addr[NANO_ADDR_SIZE];
     uint16_t selected_port;
     uint8_t selected_family;
     uint32_t check_interval_ms; /* for controlling role: STUN check pacing */
     uint32_t next_check_ms;
 
     /* Controlling role state */
-    uint64_t tie_breaker;  /* 8-byte random for ICE-CONTROLLING/CONTROLLED */
-    uint8_t last_txid[12]; /* transaction ID of last outgoing request */
-    uint8_t check_count;   /* number of checks sent */
-    bool nominated;        /* selected pair nominated */
+    uint64_t tie_breaker;              /* 8-byte random for ICE-CONTROLLING/CONTROLLED */
+    uint8_t last_txid[STUN_TXID_SIZE]; /* transaction ID of last outgoing request */
+    uint8_t check_count;               /* number of checks sent */
+    bool nominated;                    /* selected pair nominated */
 
     /* Remote candidate address (for controlling role outgoing checks) */
-    uint8_t remote_addr[16];
+    uint8_t remote_addr[NANO_ADDR_SIZE];
     uint16_t remote_port;
     uint8_t remote_family; /* 4 = IPv4, 6 = IPv6 */
 } nano_ice_t;

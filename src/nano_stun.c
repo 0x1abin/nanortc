@@ -97,7 +97,7 @@ int stun_parse(const uint8_t *data, size_t len, stun_msg_t *msg)
         return NANO_ERR_PARSE;
     }
 
-    memcpy(msg->transaction_id, data + 8, 12);
+    memcpy(msg->transaction_id, data + 8, STUN_TXID_SIZE);
 
     /*
      * Walk attributes (RFC 8489 §15).
@@ -172,7 +172,7 @@ int stun_parse(const uint8_t *data, size_t len, stun_msg_t *msg)
                 /* Address XOR (magic_cookie || transaction_id) = 16 bytes */
                 uint8_t mask[16];
                 write_u32(mask, STUN_MAGIC_COOKIE);
-                memcpy(mask + 4, msg->transaction_id, 12);
+                memcpy(mask + 4, msg->transaction_id, STUN_TXID_SIZE);
                 for (int i = 0; i < 16; i++) {
                     msg->mapped_addr[i] = val[4 + i] ^ mask[i];
                 }
@@ -341,12 +341,13 @@ static uint8_t *write_attr_hdr(uint8_t *buf, uint16_t type, uint16_t length)
 }
 
 /* Write STUN header (20 bytes) */
-static void write_stun_header(uint8_t *buf, uint16_t type, uint16_t length, const uint8_t txid[12])
+static void write_stun_header(uint8_t *buf, uint16_t type, uint16_t length,
+                              const uint8_t txid[STUN_TXID_SIZE])
 {
     write_u16(buf, type);
     write_u16(buf + 2, length);
     write_u32(buf + 4, STUN_MAGIC_COOKIE);
-    memcpy(buf + 8, txid, 12);
+    memcpy(buf + 8, txid, STUN_TXID_SIZE);
 }
 
 /*
@@ -427,7 +428,7 @@ int stun_encode_binding_response(const stun_msg_t *req, const uint8_t *src_addr,
         /* Address XOR (cookie || txid) */
         uint8_t mask[16];
         write_u32(mask, STUN_MAGIC_COOKIE);
-        memcpy(mask + 4, req->transaction_id, 12);
+        memcpy(mask + 4, req->transaction_id, STUN_TXID_SIZE);
         for (int i = 0; i < 16; i++) {
             val[4 + i] = src_addr[i] ^ mask[i];
         }
@@ -452,7 +453,7 @@ int stun_encode_binding_response(const stun_msg_t *req, const uint8_t *src_addr,
 
 int stun_encode_binding_request(const char *username, size_t username_len, uint32_t priority,
                                 bool use_candidate, bool is_controlling, uint64_t tie_breaker,
-                                const uint8_t transaction_id[12], const uint8_t *key,
+                                const uint8_t transaction_id[STUN_TXID_SIZE], const uint8_t *key,
                                 size_t key_len, stun_hmac_sha1_fn hmac_sha1, uint8_t *buf,
                                 size_t buf_len, size_t *out_len)
 {

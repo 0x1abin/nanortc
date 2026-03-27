@@ -36,6 +36,7 @@ Always pass `(buffer, buffer_length)` as a pair. Output functions take an additi
 - Types: `nano_*_t` (public), `*_t` (internal)
 - Enums: `NANO_*` (public), `*_STATE_*` / `*_TYPE_*` (internal)
 - Macros: `NANO_*` (public), `STUN_*` / `SCTP_*` etc. (internal, module-prefixed)
+- **No ad-hoc abbreviations.** Prefer full names over self-invented abbreviations that other developers may not recognize. For example, use `libdatachannel` not `libdc`, use `datachannel` not `dc` (except in established protocol terms like DCEP). Well-known abbreviations from RFCs and standards (STUN, SCTP, DTLS, SDP, SRTP, ICE, RTP, RTCP, BWE, DCEP) are acceptable. When in doubt, spell it out.
 
 ## Error Handling
 
@@ -55,6 +56,35 @@ if (result != NANO_OK) {
 - `/* */` for documentation and multi-line comments
 - `//` for short inline comments
 - RFC references: `/* RFC 8489 Section 6.1 */`
+
+## Array Size Naming
+
+Every struct array member must use a named macro for its size — never a bare integer literal.
+
+| Category | Defined in | Example |
+|----------|-----------|---------|
+| Configurable buffer | `nanortc_config.h` (`#ifndef` guard) | `NANO_ICE_UFRAG_SIZE`, `NANO_STUN_BUF_SIZE` |
+| Protocol-fixed constant | Module header (`#define`) | `STUN_TXID_SIZE`, `NANO_SRTP_KEY_SIZE` |
+
+```c
+/* Good */
+char local_ufrag[NANO_ICE_UFRAG_SIZE];
+uint8_t transaction_id[STUN_TXID_SIZE];
+
+/* Bad */
+char local_ufrag[8];
+uint8_t transaction_id[12];
+```
+
+Boundary checks in `.c` files must reference the same macro:
+
+```c
+/* Good */
+if (addr_len >= NANO_IPV6_STR_SIZE) { return NANO_ERR_PARSE; }
+
+/* Bad */
+if (addr_len > 45) { return NANO_ERR_PARSE; }
+```
 
 ## Code Style
 

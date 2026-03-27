@@ -73,7 +73,7 @@ static bool ice_verify_username(const nano_ice_t *ice, const stun_msg_t *msg)
     }
 
     size_t local_len = (size_t)(colon - msg->username);
-    size_t local_ufrag_len = strlen(ice->local_ufrag);
+    size_t local_ufrag_len = ice->local_ufrag_len;
 
     if (local_len != local_ufrag_len) {
         return false;
@@ -133,7 +133,7 @@ int ice_handle_stun(nano_ice_t *ice, const uint8_t *data, size_t len, const nano
 
         if (msg.has_integrity) {
             rc = stun_verify_integrity(data, len, &msg, (const uint8_t *)ice->local_pwd,
-                                       strlen(ice->local_pwd), crypto->hmac_sha1);
+                                       ice->local_pwd_len, crypto->hmac_sha1);
             if (rc != NANO_OK) {
                 return rc;
             }
@@ -146,7 +146,7 @@ int ice_handle_stun(nano_ice_t *ice, const uint8_t *data, size_t len, const nano
         }
 
         rc = stun_encode_binding_response(&msg, src->addr, stun_family, src->port,
-                                          (const uint8_t *)ice->local_pwd, strlen(ice->local_pwd),
+                                          (const uint8_t *)ice->local_pwd, ice->local_pwd_len,
                                           crypto->hmac_sha1, resp_buf, resp_buf_len, resp_len);
         if (rc != NANO_OK) {
             return rc;
@@ -157,7 +157,7 @@ int ice_handle_stun(nano_ice_t *ice, const uint8_t *data, size_t len, const nano
          * controlled, nominate this pair and transition to CONNECTED.
          */
         if (msg.use_candidate && !ice->is_controlling) {
-            memcpy(ice->selected_addr, src->addr, 16);
+            memcpy(ice->selected_addr, src->addr, NANO_ADDR_SIZE);
             ice->selected_port = src->port;
             ice->selected_family = src->family;
             ice->nominated = true;
@@ -178,7 +178,7 @@ int ice_handle_stun(nano_ice_t *ice, const uint8_t *data, size_t len, const nano
         }
 
         /* Verify transaction ID matches our last request */
-        if (memcmp(msg.transaction_id, ice->last_txid, 12) != 0) {
+        if (memcmp(msg.transaction_id, ice->last_txid, STUN_TXID_SIZE) != 0) {
             return NANO_ERR_PROTOCOL;
         }
 
@@ -191,14 +191,14 @@ int ice_handle_stun(nano_ice_t *ice, const uint8_t *data, size_t len, const nano
 
         if (msg.has_integrity) {
             rc = stun_verify_integrity(data, len, &msg, (const uint8_t *)ice->remote_pwd,
-                                       strlen(ice->remote_pwd), crypto->hmac_sha1);
+                                       ice->remote_pwd_len, crypto->hmac_sha1);
             if (rc != NANO_OK) {
                 return rc;
             }
         }
 
         /* ICE connectivity established — record the remote address */
-        memcpy(ice->selected_addr, ice->remote_addr, 16);
+        memcpy(ice->selected_addr, ice->remote_addr, NANO_ADDR_SIZE);
         ice->selected_port = ice->remote_port;
         ice->selected_family = ice->remote_family;
         ice->nominated = true;
@@ -248,14 +248,14 @@ int ice_generate_check(nano_ice_t *ice, uint32_t now_ms, const nano_crypto_provi
     }
 
     /* Generate random transaction ID */
-    if (crypto->random_bytes(ice->last_txid, 12) != 0) {
+    if (crypto->random_bytes(ice->last_txid, STUN_TXID_SIZE) != 0) {
         return NANO_ERR_CRYPTO;
     }
 
     /* Build USERNAME = "remote_ufrag:local_ufrag" (RFC 8445 §7.1.1) */
     char username[64];
-    size_t rlen = strlen(ice->remote_ufrag);
-    size_t llen = strlen(ice->local_ufrag);
+    size_t rlen = ice->remote_ufrag_len;
+    size_t llen = ice->local_ufrag_len;
     if (rlen + 1 + llen >= sizeof(username)) {
         return NANO_ERR_BUFFER_TOO_SMALL;
     }
@@ -268,7 +268,7 @@ int ice_generate_check(nano_ice_t *ice, uint32_t now_ms, const nano_crypto_provi
     int rc = stun_encode_binding_request(
         username, ulen, ICE_HOST_PRIORITY, true, /* use_candidate (controlling) */
         true,                                    /* is_controlling */
-        ice->tie_breaker, ice->last_txid, (const uint8_t *)ice->remote_pwd, strlen(ice->remote_pwd),
+        ice->tie_breaker, ice->last_txid, (const uint8_t *)ice->remote_pwd, ice->remote_pwd_len,
         crypto->hmac_sha1, buf, buf_len, out_len);
     if (rc != NANO_OK) {
         return rc;

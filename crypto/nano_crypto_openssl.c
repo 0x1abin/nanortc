@@ -18,7 +18,6 @@
 #include <openssl/ec.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdio.h>
 
 /* ---- HMAC-SHA1 (for STUN MESSAGE-INTEGRITY, RFC 8489 §14.5) ---- */
 
@@ -57,7 +56,7 @@ struct nano_crypto_dtls_ctx {
     nano_dtls_recv_fn bio_recv;
 
     /* Fingerprint cache */
-    char fingerprint[97]; /* "XX:XX:..." SHA-256, 95 chars + NUL */
+    char fingerprint[NANO_DTLS_FINGERPRINT_STR_SIZE]; /* "XX:XX:..." SHA-256, 95 chars + NUL */
 };
 
 /* ---- Certificate verification callback: accept self-signed ---- */
@@ -73,7 +72,7 @@ static int ossl_verify_cb(int preverify_ok, X509_STORE_CTX *ctx)
 
 static int ossl_compute_fingerprint(X509 *cert, char *buf, size_t buf_len)
 {
-    if (buf_len < 96) {
+    if (buf_len < NANO_DTLS_FINGERPRINT_MIN_BUF) {
         return -1;
     }
     unsigned char digest[32];
@@ -81,8 +80,11 @@ static int ossl_compute_fingerprint(X509 *cert, char *buf, size_t buf_len)
     if (X509_digest(cert, EVP_sha256(), digest, &digest_len) != 1 || digest_len != 32) {
         return -1;
     }
+    static const char hex_upper[] = "0123456789ABCDEF";
     for (unsigned int i = 0; i < 32; i++) {
-        snprintf(buf + i * 3, 4, "%02X:", digest[i]);
+        buf[i * 3] = hex_upper[(digest[i] >> 4) & 0xF];
+        buf[i * 3 + 1] = hex_upper[digest[i] & 0xF];
+        buf[i * 3 + 2] = ':';
     }
     buf[95] = '\0'; /* Replace trailing ':' with NUL */
     return 0;
@@ -366,13 +368,13 @@ static int ossl_dtls_decrypt(nano_crypto_dtls_ctx_t *ctx, const uint8_t *in, siz
 }
 
 static int ossl_dtls_export_keying_material(nano_crypto_dtls_ctx_t *ctx, const char *label,
-                                            uint8_t *out, size_t out_len)
+                                            size_t label_len, uint8_t *out, size_t out_len)
 {
     if (!ctx || !ctx->handshake_done) {
         return -1;
     }
     /* RFC 5764: export keying material with DTLS-SRTP label */
-    if (SSL_export_keying_material(ctx->ssl, out, out_len, label, strlen(label), NULL, 0, 0) != 1) {
+    if (SSL_export_keying_material(ctx->ssl, out, out_len, label, label_len, NULL, 0, 0) != 1) {
         return -1;
     }
     return 0;
@@ -380,10 +382,10 @@ static int ossl_dtls_export_keying_material(nano_crypto_dtls_ctx_t *ctx, const c
 
 static int ossl_dtls_get_fingerprint(nano_crypto_dtls_ctx_t *ctx, char *buf, size_t buf_len)
 {
-    if (!ctx || buf_len < 96) {
+    if (!ctx || buf_len < NANO_DTLS_FINGERPRINT_MIN_BUF) {
         return -1;
     }
-    memcpy(buf, ctx->fingerprint, 96);
+    memcpy(buf, ctx->fingerprint, NANO_DTLS_FINGERPRINT_MIN_BUF);
     return 0;
 }
 

@@ -22,6 +22,10 @@ extern "C" {
 #endif
 #endif
 
+/* DTLS certificate fingerprint format: "XX:XX:...:XX" SHA-256 */
+#define NANO_DTLS_FINGERPRINT_STR_SIZE 97 /* 95 hex:colon chars + NUL + 1 spare */
+#define NANO_DTLS_FINGERPRINT_MIN_BUF  96 /* 95 chars + NUL */
+
 /* Opaque DTLS context — sized by the provider implementation */
 typedef struct nano_crypto_dtls_ctx nano_crypto_dtls_ctx_t;
 
@@ -54,8 +58,8 @@ struct nano_crypto_provider {
                         size_t *out_len);
     int (*dtls_decrypt)(nano_crypto_dtls_ctx_t *ctx, const uint8_t *in, size_t in_len, uint8_t *out,
                         size_t *out_len);
-    int (*dtls_export_keying_material)(nano_crypto_dtls_ctx_t *ctx, const char *label, uint8_t *out,
-                                       size_t out_len);
+    int (*dtls_export_keying_material)(nano_crypto_dtls_ctx_t *ctx, const char *label,
+                                       size_t label_len, uint8_t *out, size_t out_len);
     int (*dtls_get_fingerprint)(nano_crypto_dtls_ctx_t *ctx, char *buf, size_t buf_len);
     void (*dtls_free)(nano_crypto_dtls_ctx_t *ctx);
 

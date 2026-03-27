@@ -123,18 +123,23 @@ TEST(test_e2e_stubs_not_implemented)
     ASSERT_OK(nano_rtc_init(&rtc, &cfg));
 
     char buf[256];
-    ASSERT_EQ(nano_accept_offer(&rtc, "v=0\r\n", buf, sizeof(buf)), NANO_ERR_NOT_IMPLEMENTED);
+    /* nano_accept_offer now works (parses SDP), but invalid SDP returns parse error */
+    ASSERT_FAIL(nano_accept_offer(&rtc, "v=0\r\n", buf, sizeof(buf)));
     ASSERT_EQ(nano_create_offer(&rtc, buf, sizeof(buf)), NANO_ERR_NOT_IMPLEMENTED);
     ASSERT_EQ(nano_accept_answer(&rtc, "v=0\r\n"), NANO_ERR_NOT_IMPLEMENTED);
-    ASSERT_EQ(nano_add_local_candidate(&rtc, "192.168.1.1", 9999), NANO_ERR_NOT_IMPLEMENTED);
-    ASSERT_EQ(nano_add_remote_candidate(&rtc, "candidate:..."), NANO_ERR_NOT_IMPLEMENTED);
+    ASSERT_OK(nano_add_local_candidate(&rtc, "192.168.1.1", 9999));
+    /* nano_add_remote_candidate now parses SDP candidate; invalid format returns parse error */
+    ASSERT_EQ(nano_add_remote_candidate(&rtc, "candidate:..."), NANO_ERR_PARSE);
+    /* Valid candidate succeeds */
+    ASSERT_OK(nano_add_remote_candidate(&rtc, "candidate:0 1 UDP 2122260223 192.168.1.100 50000 typ host"));
+    ASSERT_OK(nano_add_remote_candidate(&rtc, "192.168.1.200 60000"));
 
-    /* nano_handle_receive and nano_handle_timeout are now implemented
-     * (no longer stubs) — tested separately in demux and ICE tests */
+    /* nano_handle_receive and nano_handle_timeout are now implemented */
 
+    /* nano_send_datachannel now returns NANO_ERR_STATE (not connected) */
     uint8_t data[] = {0x00, 0x01, 0x00, 0x00};
-    ASSERT_EQ(nano_send_datachannel(&rtc, 0, data, sizeof(data)), NANO_ERR_NOT_IMPLEMENTED);
-    ASSERT_EQ(nano_send_datachannel_string(&rtc, 0, "hello"), NANO_ERR_NOT_IMPLEMENTED);
+    ASSERT_EQ(nano_send_datachannel(&rtc, 0, data, sizeof(data)), NANO_ERR_STATE);
+    ASSERT_EQ(nano_send_datachannel_string(&rtc, 0, "hello"), NANO_ERR_STATE);
 
 #if NANORTC_PROFILE >= NANO_PROFILE_AUDIO
     ASSERT_EQ(nano_send_audio(&rtc, 0, data, sizeof(data)), NANO_ERR_NOT_IMPLEMENTED);
@@ -270,15 +275,23 @@ TEST(test_e2e_ice_loopback)
 
     /* Set matching ICE credentials */
     memcpy(offerer.ice.local_ufrag, "OFF", 4);
+    offerer.ice.local_ufrag_len = 3;
     memcpy(offerer.ice.local_pwd, "offerer-password-1234", 22);
+    offerer.ice.local_pwd_len = 21;
     memcpy(offerer.ice.remote_ufrag, "ANS", 4);
+    offerer.ice.remote_ufrag_len = 3;
     memcpy(offerer.ice.remote_pwd, "answerer-password-5678", 23);
+    offerer.ice.remote_pwd_len = 22;
     offerer.ice.tie_breaker = 0x1234567890ABCDEFull;
 
     memcpy(answerer.ice.local_ufrag, "ANS", 4);
+    answerer.ice.local_ufrag_len = 3;
     memcpy(answerer.ice.local_pwd, "answerer-password-5678", 23);
+    answerer.ice.local_pwd_len = 22;
     memcpy(answerer.ice.remote_ufrag, "OFF", 4);
+    answerer.ice.remote_ufrag_len = 3;
     memcpy(answerer.ice.remote_pwd, "offerer-password-1234", 22);
+    answerer.ice.remote_pwd_len = 21;
 
     /* Set remote candidate address on offerer (where to send checks) */
     offerer.ice.remote_family = 4;
@@ -383,15 +396,23 @@ TEST(test_e2e_ice_loopback)
 static void e2e_setup_ice_creds(nano_rtc_t *offerer, nano_rtc_t *answerer)
 {
     memcpy(offerer->ice.local_ufrag, "OFF", 4);
+    offerer->ice.local_ufrag_len = 3;
     memcpy(offerer->ice.local_pwd, "offerer-password-1234", 22);
+    offerer->ice.local_pwd_len = 21;
     memcpy(offerer->ice.remote_ufrag, "ANS", 4);
+    offerer->ice.remote_ufrag_len = 3;
     memcpy(offerer->ice.remote_pwd, "answerer-password-5678", 23);
+    offerer->ice.remote_pwd_len = 22;
     offerer->ice.tie_breaker = 0x1234567890ABCDEFull;
 
     memcpy(answerer->ice.local_ufrag, "ANS", 4);
+    answerer->ice.local_ufrag_len = 3;
     memcpy(answerer->ice.local_pwd, "answerer-password-5678", 23);
+    answerer->ice.local_pwd_len = 22;
     memcpy(answerer->ice.remote_ufrag, "OFF", 4);
+    answerer->ice.remote_ufrag_len = 3;
     memcpy(answerer->ice.remote_pwd, "offerer-password-1234", 22);
+    answerer->ice.remote_pwd_len = 21;
 
     offerer->ice.remote_family = 4;
     offerer->ice.remote_addr[0] = 192;
@@ -424,16 +445,18 @@ TEST(test_e2e_ice_dtls_loopback)
     for (int round = 0; round < 30; round++) {
         e2e_pump(&offerer, &answerer, now_ms, 5);
 
-        if (offerer.state == NANO_STATE_DTLS_CONNECTED &&
-            answerer.state == NANO_STATE_DTLS_CONNECTED) {
+        /* Offerer transitions DTLS_CONNECTED → SCTP_CONNECTING automatically */
+        if (offerer.state >= NANO_STATE_DTLS_CONNECTED &&
+            answerer.state >= NANO_STATE_DTLS_CONNECTED) {
             connected = 1;
             break;
         }
     }
 
     ASSERT_TRUE(connected);
-    ASSERT_EQ(offerer.state, NANO_STATE_DTLS_CONNECTED);
-    ASSERT_EQ(answerer.state, NANO_STATE_DTLS_CONNECTED);
+    /* Offerer may be at SCTP_CONNECTING (sent INIT after DTLS) */
+    ASSERT_TRUE(offerer.state >= NANO_STATE_DTLS_CONNECTED);
+    ASSERT_TRUE(answerer.state >= NANO_STATE_DTLS_CONNECTED);
 
     /* Verify fingerprints are available */
     ASSERT_TRUE(dtls_get_fingerprint(&offerer.dtls) != NULL);

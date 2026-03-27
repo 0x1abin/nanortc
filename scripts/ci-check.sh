@@ -43,6 +43,13 @@ run_check "No platform headers in src/" \
 run_check "No dynamic allocation in src/" \
     bash -c '! grep -rn "\bmalloc\b" src/ && ! grep -rn "\bcalloc\b" src/ && ! grep -rn "\brealloc\b" src/'
 
+BANNED='strlen|sprintf|snprintf|strcpy|strncpy|strcat|strncat|sscanf|atoi|atol|gets'
+run_check "No unbounded string functions in src/+crypto/" \
+    bash -c '! grep -rnE "\b('"$BANNED"')\b" src/ crypto/ | grep -v "NANO_SAFE"'
+
+run_check "No hardcoded array sizes in struct headers" \
+    bash -c '! grep -rnE "\b(uint8_t|char|int8_t|uint16_t|uint32_t)\s+\w+\[\s*[0-9]+\s*\];" src/*.h include/nanortc.h | grep -v "//"'
+
 # ============================================================
 # 2. Code formatting
 # ============================================================
@@ -94,7 +101,7 @@ echo "=== Symbol Checks ==="
 MEDIA_LIB="$ROOT/build-ci-MEDIA/libnanortc.a"
 if [ -f "$MEDIA_LIB" ]; then
     # All symbols must use nano_ (public) or known module prefixes (internal)
-    ALLOWED='nano_|stun_|ice_|dtls_|sctp_|dc_|sdp_|rtp_|rtcp_|srtp_|jitter_|bwe_'
+    ALLOWED='nano_|stun_|ice_|dtls_|nsctp_|sctp_|dc_|sdp_|rtp_|rtcp_|srtp_|jitter_|bwe_'
     run_check "Symbols use allowed prefixes" \
         bash -c 'test -z "$(nm -g '"$MEDIA_LIB"' 2>/dev/null | grep " T " | awk "{print \$3}" | grep -v "^_" | grep -vE "^('"$ALLOWED"')")"'
 

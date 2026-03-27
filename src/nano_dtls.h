@@ -11,15 +11,14 @@
 #define NANO_DTLS_H_
 
 #include "nanortc_config.h"
+#include "nano_crypto.h"
 
 #include <stdint.h>
 #include <stddef.h>
 
-/* Forward declaration */
-#ifndef NANO_CRYPTO_PROVIDER_T_DECLARED
-#define NANO_CRYPTO_PROVIDER_T_DECLARED
-typedef struct nano_crypto_provider nano_crypto_provider_t;
-#endif
+/* SRTP keying material size (RFC 5764 §4.2):
+ * client_key(16) + server_key(16) + client_salt(14) + server_salt(14) */
+#define NANO_DTLS_KEYING_SIZE 60
 
 typedef enum {
     NANO_DTLS_STATE_INIT,
@@ -52,7 +51,7 @@ typedef struct nano_dtls {
 
     /* Post-handshake: SRTP keying material (RFC 5764 §4.2)
      * 60 bytes: client_key(16) + server_key(16) + client_salt(14) + server_salt(14) */
-    uint8_t keying_material[60];
+    uint8_t keying_material[NANO_DTLS_KEYING_SIZE];
     int keying_material_ready;
 
     /* Decrypted application data (SCTP packets after DTLS decrypt) */
@@ -60,7 +59,7 @@ typedef struct nano_dtls {
     size_t app_len;
 
     /* Local certificate fingerprint (SHA-256, "XX:XX:..." format, 95 chars + NUL) */
-    char local_fingerprint[97];
+    char local_fingerprint[NANO_DTLS_FINGERPRINT_STR_SIZE];
 } nano_dtls_t;
 
 /*

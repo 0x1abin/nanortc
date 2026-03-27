@@ -12,8 +12,11 @@
 #include <stdint.h>
 #include <stddef.h>
 
+/* Maximum RTP packet data per jitter slot */
+#define NANO_JITTER_SLOT_DATA_SIZE 1500
+
 typedef struct nano_jitter_slot {
-    uint8_t data[1500];
+    uint8_t data[NANO_JITTER_SLOT_DATA_SIZE];
     size_t len;
     uint16_t seq;
     uint32_t timestamp;

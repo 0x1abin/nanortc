@@ -4,6 +4,7 @@ cmake_minimum_required(VERSION 3.16)
 if(DEFINED ENV{IDF_PATH})
     set(NANORTC_CORE_SRCS
         src/nano_rtc.c
+        src/nano_log.c
         src/nano_sdp.c
         src/nano_ice.c
         src/nano_stun.c
@@ -55,6 +56,7 @@ set(NANORTC_CONFIG_FILE "" CACHE STRING "Path to user nanortc config header over
 # ---- Core sources (all profiles) ----
 set(NANORTC_SOURCES
     src/nano_rtc.c
+    src/nano_log.c
     src/nano_sdp.c
     src/nano_ice.c
     src/nano_stun.c
@@ -141,4 +143,10 @@ endif()
 option(NANORTC_BUILD_EXAMPLES "Build examples" OFF)
 if(NANORTC_BUILD_EXAMPLES)
     add_subdirectory(examples)
+endif()
+
+# ---- Interop tests (requires network + C++ compiler, not default) ----
+option(NANORTC_BUILD_INTEROP_TESTS "Build interop tests against libdatachannel" OFF)
+if(NANORTC_BUILD_INTEROP_TESTS)
+    add_subdirectory(tests/interop)
 endif()

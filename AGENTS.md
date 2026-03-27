@@ -42,6 +42,12 @@ cmake -B build -DNANORTC_PROFILE=MEDIA -DNANORTC_CRYPTO=openssl -DNANORTC_BUILD_
 # Custom configuration (override defaults without modifying repo)
 cmake -B build -DNANORTC_CONFIG_FILE=\"my_nanortc_config.h\"
 
+# Interop tests against libdatachannel (requires OpenSSL + C++ compiler)
+cmake -B build -DNANORTC_PROFILE=DATA -DNANORTC_CRYPTO=openssl \
+      -DNANORTC_BUILD_INTEROP_TESTS=ON
+cmake --build build -j$(nproc)
+ctest --test-dir build -R interop --output-on-failure
+
 # With AddressSanitizer
 cmake -B build -DADDRESS_SANITIZER=ON
 
@@ -78,6 +84,10 @@ These rules are mechanically enforced. Violations will break the build or CI.
 **RFC authority:** When RFC and reference code disagree, RFC wins. Cite RFC sections in comments.
 
 **RFC testing:** Any RFC-based module MUST have tests generated independently from the RFC document — hardcoded byte-level test vectors from RFC appendices (e.g., RFC 5769 for STUN) plus real captures from reference implementations. Roundtrip tests (encode → parse own output) are supplementary only. See [development-workflow.md](docs/engineering/development-workflow.md) for full requirements.
+
+**Safe C functions:** No `strlen`, `sprintf`, `snprintf`, `strcpy`, `strncpy`, `strcat`, `strncat`, `sscanf`, `atoi`, `atol`, `gets` in `src/` or `crypto/`. Use explicit `(buffer, length)` pairs and `memcpy`. API boundary functions (`nano_*`) may use `strlen` once per parameter with `/* NANO_SAFE: API boundary */` annotation. See `docs/engineering/safe-c-guidelines.md`.
+
+**Named array sizes:** Every struct array member must use a named macro for its size, never a bare integer literal. Configurable buffer sizes use `NANO_*` macros in `nanortc_config.h` with `#ifndef` guards. Protocol-fixed sizes (RFC-mandated) use `MODULE_*_SIZE` macros in the relevant module header. Boundary checks in `.c` files must reference the same macro.
 
 ## Reference Implementations
 
