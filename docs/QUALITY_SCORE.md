@@ -51,16 +51,16 @@ Per-module quality grades for NanoRTC. Updated as implementation progresses.
 | Crypto provider interface | **B** | Interface complete; HMAC-SHA1 + CSPRNG + DTLS + AES-128-CM + HMAC-SHA1-80 (both backends) |
 | Build system (CMake) | **B** | 3 profiles, 2 crypto backends, ESP-IDF detection, `-fvisibility=hidden` |
 | Test infrastructure | **B** | Shared macros (`nano_test.h`), 130+ tests across 11 suites, RFC 5769/3711 vectors, e2e ICE+DTLS loopback |
-| Interop test framework | **B-** | libdatachannel v0.22.5 as reference peer, 5 interop tests (handshake, DC open, text/binary). Framework ready; tests pending full protocol stack completion. |
+| Interop test framework | **B** | libdatachannel v0.22.5 as reference peer, 5 interop tests all pass (handshake, DC open, text/binary). SDP compat fixed (commit `4b5f7bb`). |
 | CI pipeline | **B** | GitHub Actions: 3-profile × 2-crypto matrix, constraints, ASan. Local: `scripts/ci-check.sh` |
-| Examples | **C** | Linux datachannel + media_send templates, media sample submodule. Not yet tested with real connections. |
+| Examples | **C** | Linux datachannel + media_send templates + browser interop (HTTP signaling + `signaling_server.py`). ESP32 example planned (HTTP signaling, reusing `http_signaling.c`). Not yet tested with real connections. |
 | Documentation | **B** | AGENTS.md, ARCHITECTURE.md, exec plans, quality scores, core beliefs, RFC index |
 
 ## Quality Targets
 
 | Phase | Target |
 |-------|--------|
-| Phase 1 complete | All core modules at **B** or above + all interop tests pass |
+| Phase 1 complete | All core modules at **B** or above + all interop tests pass ✓ + browser & ESP32 integration verified |
 | Phase 2 complete | All audio modules at **B** or above |
 | Phase 3 complete | All modules at **B** or above |
 | Phase 4 | All modules at **A** (fuzz-tested, browser-verified, interop-verified) |
@@ -73,11 +73,12 @@ Per-module quality grades for NanoRTC. Updated as implementation progresses.
 3. ~~DTLS handshake needs real implementation (D → B)~~ **DONE** — Sans I/O BIO adapter + both crypto backends
 4. ~~SCTP, DataChannel, SDP all still D~~ **DONE** — All at B- with full codec, FSM, tests
 5. ~~No interop testing framework~~ **DONE** — libdatachannel interop framework with 5 test cases
-6. Interop tests must all pass — blocked on SDP parser compatibility with libdatachannel's offer format
-7. Browser end-to-end validation — Phase 1 remaining milestone
+6. ~~Interop tests must all pass~~ **DONE** — 5/5 pass after SDP compat fix (commit `4b5f7bb`)
+7. Browser end-to-end validation — Phase 1 remaining milestone (human gate)
+8. ESP32 hardware validation — Phase 1 remaining milestone (HTTP signaling, reusing `http_signaling.c`)
 
 **Acceptable gaps (address in later phases):**
 1. No fuzz testing yet (Phase 4)
-2. No ESP32 hardware validation yet (Phase 1 Week 4)
+2. No ESP32 hardware validation yet (Phase 1 — HTTP signaling via `http_signaling.c`)
 3. No code coverage measurement (Phase 4)
 4. SCTP gap tracking / RECONFIG not yet implemented (needed for robust browser interop)
