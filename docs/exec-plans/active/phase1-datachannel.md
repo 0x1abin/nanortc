@@ -1,6 +1,6 @@
 # Phase 1: DataChannel End-to-End
 
-**Status:** Active
+**Status:** Code Complete — interop tests pass (5/5), browser + ESP32 integration pending
 **Estimated effort:** 4-6 agent sessions (~2-4 days elapsed)
 **Goal:** NanoRTC ↔ browser DataChannel communication working on ESP32
 
@@ -27,15 +27,15 @@ NanoRTC uses AI coding agents for implementation. Time estimates use **agent ses
 - [x] All unit tests pass with synthetic data (no network)
 
 ### Interop tests (libdatachannel over localhost UDP) — **mandatory gate**
-- [ ] `test_interop_handshake` — Full ICE + DTLS + SCTP handshake with libdatachannel
-- [ ] `test_interop_dc_open` — DataChannel opens on both sides
-- [ ] `test_interop_dc_string_libdatachannel_to_nanortc` — Text message from libdatachannel → nanortc
-- [ ] `test_interop_dc_string_nanortc_to_libdatachannel` — Text message from nanortc → libdatachannel
-- [ ] `test_interop_dc_binary` — Binary data from libdatachannel → nanortc
+- [x] `test_interop_handshake` — Full ICE + DTLS + SCTP handshake with libdatachannel
+- [x] `test_interop_dc_open` — DataChannel opens on both sides
+- [x] `test_interop_dc_string_libdatachannel_to_nanortc` — Text message from libdatachannel → nanortc
+- [x] `test_interop_dc_string_nanortc_to_libdatachannel` — Text message from nanortc → libdatachannel
+- [x] `test_interop_dc_binary` — Binary data from libdatachannel → nanortc
 
 ### Integration tests (human gate)
 - [ ] Integration test: NanoRTC ↔ browser on Linux (`examples/linux_datachannel`)
-- [ ] ESP32 example: MQTT signaling + DataChannel echo
+- [ ] ESP32 example: HTTP signaling + DataChannel echo (`examples/esp32_datachannel/`)
 
 ## Implementation Steps
 
@@ -123,6 +123,7 @@ SCTP is the most complex module (~2500 lines). May need multiple sessions.
 | 2026-03-27 | Interop tests as mandatory Phase 1 gate | Unit tests alone cannot catch SDP format mismatches, DTLS parameter negotiation bugs, or SCTP interop issues. Interop tests are required for Phase 1 sign-off. |
 | 2026-03-27 | Renamed `sctp_` to `nsctp_` prefix | Avoid usrsctp symbol collision in interop builds where both libraries are linked |
 | 2026-03-27 | Named array size macros mandatory | All struct arrays use `NANO_*` or `MODULE_*_SIZE` macros — enforced by CI |
+| 2026-03-27 | ESP32 signaling: HTTP instead of MQTT | Zero new code (`http_signaling.c` already exists with ESP32 compat), zero external deps (no MQTT broker), unified test flow with `signaling_server.py` |
 
 ## Progress
 
@@ -241,7 +242,7 @@ SCTP is the most complex module (~2500 lines). May need multiple sessions.
 - `test_interop_dc_string_nanortc_to_libdatachannel` — Text message nanortc → libdatachannel
 - `test_interop_dc_binary` — Binary payload (256 bytes) libdatachannel → nanortc
 
-**Status:** Framework compiles and links. Steps 3-4 code complete. Interop tests blocked on SDP parser compatibility — `nano_accept_offer` does not fully parse libdatachannel's SDP offer format (differs from browser SDP tested in unit tests).
+**Status:** All 5 interop tests pass (`ctest -R interop`, ~6s). SDP compatibility fixed in commit `4b5f7bb`. Remaining: browser integration (human gate) and ESP32 hardware test.
 
 **Files created:** tests/interop/ (8 new files), CMakeLists.txt modified
 
