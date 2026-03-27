@@ -156,9 +156,113 @@ int nano_add_local_candidate(nano_rtc_t *rtc, const char *ip, uint16_t port)
 
 int nano_add_remote_candidate(nano_rtc_t *rtc, const char *candidate_str)
 {
-    (void)rtc;
-    (void)candidate_str;
-    return NANO_ERR_NOT_IMPLEMENTED;
+    if (!rtc || !candidate_str) {
+        return NANO_ERR_INVALID_PARAM;
+    }
+
+    /*
+     * Parse SDP candidate attribute (RFC 8839 §5.1):
+     *   "candidate:<foundation> <component> UDP <priority> <addr> <port> typ <type>"
+     * We need fields 5 (addr) and 6 (port), 1-indexed from "candidate:".
+     * Also accept plain "<addr> <port>" for simple use cases.
+     */
+    const char *p = candidate_str;
+
+    /* Skip "candidate:" prefix if present */
+    const char *prefix = "candidate:";
+    size_t pfx_len = 10;
+    bool has_prefix = true;
+    for (size_t i = 0; i < pfx_len; i++) {
+        if (p[i] == '\0' || p[i] != prefix[i]) {
+            has_prefix = false;
+            break;
+        }
+    }
+
+    const char *addr_str = NULL;
+    size_t addr_len = 0;
+    uint16_t port = 0;
+
+    if (has_prefix) {
+        /* SDP format: skip to field 5 (addr) and field 6 (port) */
+        p += pfx_len;
+        int field = 1;
+        while (*p && field < 5) {
+            if (*p == ' ') {
+                field++;
+                while (*p == ' ')
+                    p++;
+            } else {
+                p++;
+            }
+        }
+        /* p now points to addr field */
+        addr_str = p;
+        while (*p && *p != ' ')
+            p++;
+        addr_len = (size_t)(p - addr_str);
+
+        /* Skip to port field */
+        while (*p == ' ')
+            p++;
+        /* Parse port */
+        while (*p >= '0' && *p <= '9') {
+            port = port * 10 + (uint16_t)(*p - '0');
+            p++;
+        }
+    } else {
+        /* Simple format: "<addr> <port>" */
+        addr_str = candidate_str;
+        while (*p && *p != ' ')
+            p++;
+        addr_len = (size_t)(p - addr_str);
+        while (*p == ' ')
+            p++;
+        while (*p >= '0' && *p <= '9') {
+            port = port * 10 + (uint16_t)(*p - '0');
+            p++;
+        }
+    }
+
+    if (addr_len == 0 || addr_len > 45 || port == 0) {
+        return NANO_ERR_PARSE;
+    }
+
+    /* Parse IPv4 address (simple: a.b.c.d) */
+    char addr_buf[46];
+    memcpy(addr_buf, addr_str, addr_len);
+    addr_buf[addr_len] = '\0';
+
+    uint8_t ip[4] = {0};
+    int octet = 0;
+    uint16_t val = 0;
+    for (size_t i = 0; i <= addr_len; i++) {
+        if (i == addr_len || addr_buf[i] == '.') {
+            if (octet >= 4 || val > 255) {
+                return NANO_ERR_PARSE;
+            }
+            ip[octet++] = (uint8_t)val;
+            val = 0;
+        } else if (addr_buf[i] >= '0' && addr_buf[i] <= '9') {
+            val = val * 10 + (uint16_t)(addr_buf[i] - '0');
+        } else {
+            /* Not a simple IPv4 — could be IPv6, not yet supported */
+            return NANO_ERR_NOT_IMPLEMENTED;
+        }
+    }
+
+    if (octet != 4) {
+        return NANO_ERR_PARSE;
+    }
+
+    /* Store in ICE state */
+    rtc->ice.remote_family = 4;
+    memset(rtc->ice.remote_addr, 0, 16);
+    memcpy(rtc->ice.remote_addr, ip, 4);
+    rtc->ice.remote_port = port;
+
+    NANO_LOGI("RTC", "remote candidate added");
+    return NANO_OK;
 }
 
 int nano_poll_output(nano_rtc_t *rtc, nano_output_t *out)
@@ -172,6 +276,34 @@ int nano_poll_output(nano_rtc_t *rtc, nano_output_t *out)
     *out = rtc->out_queue[rtc->out_head & (NANO_OUT_QUEUE_SIZE - 1)];
     rtc->out_head++;
     return NANO_OK;
+}
+
+/* ----------------------------------------------------------------
+ * Internal: drain SCTP output through DTLS encrypt → transmit queue
+ * ---------------------------------------------------------------- */
+
+static void rtc_pump_sctp_through_dtls(nano_rtc_t *rtc, const nano_addr_t *dest)
+{
+    size_t sctp_out = 0;
+    uint8_t sctp_buf[NANO_SCTP_MTU];
+    while (sctp_poll_output(&rtc->sctp, sctp_buf, sizeof(sctp_buf), &sctp_out) == NANO_OK &&
+           sctp_out > 0) {
+        dtls_encrypt(&rtc->dtls, sctp_buf, sctp_out);
+        size_t enc_len = 0;
+        while (dtls_poll_output(&rtc->dtls, rtc->dtls_scratch, sizeof(rtc->dtls_scratch),
+                                &enc_len) == NANO_OK &&
+               enc_len > 0) {
+            nano_output_t tout;
+            memset(&tout, 0, sizeof(tout));
+            tout.type = NANO_OUTPUT_TRANSMIT;
+            tout.transmit.data = rtc->dtls_scratch;
+            tout.transmit.len = enc_len;
+            tout.transmit.dest = *dest;
+            rtc_enqueue_output(rtc, &tout);
+            enc_len = 0;
+        }
+        sctp_out = 0;
+    }
 }
 
 /* ----------------------------------------------------------------
@@ -282,6 +414,7 @@ int nano_handle_receive(nano_rtc_t *rtc, uint32_t now_ms, const uint8_t *data, s
         if (rtc->dtls.state == NANO_DTLS_STATE_ESTABLISHED &&
             rtc->state < NANO_STATE_DTLS_CONNECTED) {
             rtc->state = NANO_STATE_DTLS_CONNECTED;
+            rtc->remote_addr = *src; /* save for timeout-driven output */
 
             nano_output_t devt;
             memset(&devt, 0, sizeof(devt));
@@ -307,27 +440,7 @@ int nano_handle_receive(nano_rtc_t *rtc, uint32_t now_ms, const uint8_t *data, s
                 rtc->state = NANO_STATE_SCTP_CONNECTING;
 
                 /* Drain SCTP output (INIT) through DTLS encrypt */
-                size_t sctp_len = 0;
-                uint8_t sctp_buf[NANO_SCTP_MTU];
-                while (sctp_poll_output(&rtc->sctp, sctp_buf, sizeof(sctp_buf), &sctp_len) ==
-                           NANO_OK &&
-                       sctp_len > 0) {
-                    dtls_encrypt(&rtc->dtls, sctp_buf, sctp_len);
-                    size_t enc_len = 0;
-                    while (dtls_poll_output(&rtc->dtls, rtc->dtls_scratch,
-                                            sizeof(rtc->dtls_scratch), &enc_len) == NANO_OK &&
-                           enc_len > 0) {
-                        nano_output_t tout;
-                        memset(&tout, 0, sizeof(tout));
-                        tout.type = NANO_OUTPUT_TRANSMIT;
-                        tout.transmit.data = rtc->dtls_scratch;
-                        tout.transmit.len = enc_len;
-                        tout.transmit.dest = *src;
-                        rtc_enqueue_output(rtc, &tout);
-                        enc_len = 0;
-                    }
-                    sctp_len = 0;
-                }
+                rtc_pump_sctp_through_dtls(rtc, src);
             }
         }
 
@@ -393,30 +506,10 @@ int nano_handle_receive(nano_rtc_t *rtc, uint32_t now_ms, const uint8_t *data, s
                     }
                 }
 
-                /* Drain SCTP output (SACK, handshake, DC ACK) through DTLS */
-                size_t sctp_out = 0;
-                uint8_t sctp_buf[NANO_SCTP_MTU];
-                while (sctp_poll_output(&rtc->sctp, sctp_buf, sizeof(sctp_buf), &sctp_out) ==
-                           NANO_OK &&
-                       sctp_out > 0) {
-                    dtls_encrypt(&rtc->dtls, sctp_buf, sctp_out);
-                    size_t enc_len = 0;
-                    while (dtls_poll_output(&rtc->dtls, rtc->dtls_scratch,
-                                            sizeof(rtc->dtls_scratch), &enc_len) == NANO_OK &&
-                           enc_len > 0) {
-                        nano_output_t tout;
-                        memset(&tout, 0, sizeof(tout));
-                        tout.type = NANO_OUTPUT_TRANSMIT;
-                        tout.transmit.data = rtc->dtls_scratch;
-                        tout.transmit.len = enc_len;
-                        tout.transmit.dest = *src;
-                        rtc_enqueue_output(rtc, &tout);
-                        enc_len = 0;
-                    }
-                    sctp_out = 0;
-                }
+                /* Drain SCTP output (SACK, handshake) through DTLS */
+                rtc_pump_sctp_through_dtls(rtc, src);
 
-                /* Also drain DC output (DCEP ACK) */
+                /* Also drain DC output (DCEP ACK) → SCTP → DTLS */
                 uint8_t dc_buf[128];
                 size_t dc_len = 0;
                 uint16_t dc_stream = 0;
@@ -424,26 +517,7 @@ int nano_handle_receive(nano_rtc_t *rtc, uint32_t now_ms, const uint8_t *data, s
                                       &dc_stream) == NANO_OK &&
                        dc_len > 0) {
                     sctp_send(&rtc->sctp, dc_stream, DCEP_PPID_CONTROL, dc_buf, dc_len);
-                    /* Pump the new SCTP DATA out */
-                    while (sctp_poll_output(&rtc->sctp, sctp_buf, sizeof(sctp_buf), &sctp_out) ==
-                               NANO_OK &&
-                           sctp_out > 0) {
-                        dtls_encrypt(&rtc->dtls, sctp_buf, sctp_out);
-                        size_t enc_len = 0;
-                        while (dtls_poll_output(&rtc->dtls, rtc->dtls_scratch,
-                                                sizeof(rtc->dtls_scratch), &enc_len) == NANO_OK &&
-                               enc_len > 0) {
-                            nano_output_t tout;
-                            memset(&tout, 0, sizeof(tout));
-                            tout.type = NANO_OUTPUT_TRANSMIT;
-                            tout.transmit.data = rtc->dtls_scratch;
-                            tout.transmit.len = enc_len;
-                            tout.transmit.dest = *src;
-                            rtc_enqueue_output(rtc, &tout);
-                            enc_len = 0;
-                        }
-                        sctp_out = 0;
-                    }
+                    rtc_pump_sctp_through_dtls(rtc, src);
                     dc_len = 0;
                 }
 
@@ -509,6 +583,14 @@ int nano_handle_timeout(nano_rtc_t *rtc, uint32_t now_ms)
         if (rtc->ice.state == NANO_ICE_STATE_FAILED) {
             rtc->state = NANO_STATE_CLOSED;
         }
+    }
+
+    /* SCTP: retransmission + heartbeat timers */
+    if (rtc->sctp.state == NANO_SCTP_STATE_ESTABLISHED) {
+        sctp_handle_timeout(&rtc->sctp, now_ms);
+
+        /* Pump any SCTP output (retransmits, heartbeats, pending DATA) through DTLS */
+        rtc_pump_sctp_through_dtls(rtc, &rtc->remote_addr);
     }
 
     return NANO_OK;

@@ -158,6 +158,105 @@ TEST(test_sdp_roundtrip)
 }
 
 /* ================================================================
+ * Multi-browser SDP compatibility tests
+ * ================================================================ */
+
+/* Firefox uses different ordering and formatting than Chrome */
+static const char *FIREFOX_OFFER =
+    "v=0\r\n"
+    "o=mozilla...THIS_IS_SDPARTA 1234 0 IN IP4 0.0.0.0\r\n"
+    "s=-\r\n"
+    "t=0 0\r\n"
+    "a=group:BUNDLE 0\r\n"
+    "a=ice-options:trickle\r\n"
+    "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n"
+    "c=IN IP4 0.0.0.0\r\n"
+    "a=sendrecv\r\n"
+    "a=ice-ufrag:ffufrag1\r\n"
+    "a=ice-pwd:firefoxpassword12345678\r\n"
+    "a=fingerprint:sha-256 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:"
+    "11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00\r\n"
+    "a=setup:actpass\r\n"
+    "a=sctp-port:5000\r\n"
+    "a=max-message-size:1073741823\r\n"
+    "a=mid:0\r\n";
+
+TEST(test_sdp_parse_firefox_offer)
+{
+    nano_sdp_t sdp;
+    sdp_init(&sdp);
+
+    size_t len = 0;
+    while (FIREFOX_OFFER[len])
+        len++;
+
+    ASSERT_OK(sdp_parse(&sdp, FIREFOX_OFFER, len));
+    ASSERT_TRUE(sdp.parsed);
+
+    ASSERT_MEM_EQ(sdp.remote_ufrag, "ffufrag1", 8);
+    ASSERT_MEM_EQ(sdp.remote_pwd, "firefoxpassword12345678", 23);
+    ASSERT_EQ(sdp.remote_sctp_port, 5000);
+    ASSERT_EQ(sdp.remote_setup, NANO_SDP_SETUP_ACTPASS);
+    ASSERT_TRUE(sdp.remote_fingerprint[0] != '\0');
+}
+
+/* Safari offer: uses setup:passive when it is the answerer,
+ * and has slightly different attribute ordering */
+static const char *SAFARI_OFFER =
+    "v=0\r\n"
+    "o=- 2890844526 2890842807 IN IP4 0.0.0.0\r\n"
+    "s=-\r\n"
+    "t=0 0\r\n"
+    "a=group:BUNDLE 0\r\n"
+    "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n"
+    "c=IN IP4 0.0.0.0\r\n"
+    "a=mid:0\r\n"
+    "a=sctp-port:5000\r\n"
+    "a=max-message-size:65536\r\n"
+    "a=ice-ufrag:sfufrag\r\n"
+    "a=ice-pwd:safaripassword1234567\r\n"
+    "a=fingerprint:sha-256 AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:"
+    "AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89\r\n"
+    "a=setup:actpass\r\n";
+
+TEST(test_sdp_parse_safari_offer)
+{
+    nano_sdp_t sdp;
+    sdp_init(&sdp);
+
+    size_t len = 0;
+    while (SAFARI_OFFER[len])
+        len++;
+
+    ASSERT_OK(sdp_parse(&sdp, SAFARI_OFFER, len));
+    ASSERT_TRUE(sdp.parsed);
+
+    ASSERT_MEM_EQ(sdp.remote_ufrag, "sfufrag", 7);
+    ASSERT_MEM_EQ(sdp.remote_pwd, "safaripassword1234567", 21);
+    ASSERT_EQ(sdp.remote_sctp_port, 5000);
+    ASSERT_EQ(sdp.remote_setup, NANO_SDP_SETUP_ACTPASS);
+}
+
+/* Minimal offer with only required fields */
+TEST(test_sdp_parse_minimal)
+{
+    nano_sdp_t sdp;
+    sdp_init(&sdp);
+
+    const char *offer = "v=0\r\n"
+                        "a=ice-ufrag:min\r\n"
+                        "a=ice-pwd:minimalpassword\r\n"
+                        "a=setup:passive\r\n";
+    size_t len = 0;
+    while (offer[len])
+        len++;
+
+    ASSERT_OK(sdp_parse(&sdp, offer, len));
+    ASSERT_MEM_EQ(sdp.remote_ufrag, "min", 3);
+    ASSERT_EQ(sdp.remote_setup, NANO_SDP_SETUP_PASSIVE);
+}
+
+/* ================================================================
  * Accept offer integration test
  * ================================================================ */
 
@@ -199,6 +298,9 @@ RUN(test_sdp_parse_chrome_offer);
 RUN(test_sdp_parse_missing_ufrag);
 RUN(test_sdp_parse_null);
 RUN(test_sdp_parse_setup_active);
+RUN(test_sdp_parse_firefox_offer);
+RUN(test_sdp_parse_safari_offer);
+RUN(test_sdp_parse_minimal);
 RUN(test_sdp_generate_answer);
 RUN(test_sdp_generate_overflow);
 RUN(test_sdp_roundtrip);

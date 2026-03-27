@@ -176,10 +176,12 @@ typedef struct nano_sctp {
     uint16_t peer_num_istreams;
     uint16_t peer_num_ostreams;
 
-    /* Output buffer (assembled SCTP packet for poll_output) */
-    uint8_t out_buf[NANO_SCTP_MTU];
-    uint16_t out_len;
-    bool has_output;
+    /* Output ring buffer (assembled SCTP packets for poll_output) */
+    uint8_t out_bufs[NANO_SCTP_OUT_QUEUE_SIZE][NANO_SCTP_MTU];
+    uint16_t out_lens[NANO_SCTP_OUT_QUEUE_SIZE];
+    uint8_t out_head;
+    uint8_t out_tail;
+    bool has_output; /* compat: true when out_head != out_tail */
 
     /* Delivered message (available to caller after handle_data) */
     const uint8_t *delivered_data;
