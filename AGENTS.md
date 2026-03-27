@@ -102,6 +102,5 @@ These rules are mechanically enforced. Violations will break the build or CI.
 - `.local-reference/str0m/` — Rust Sans I/O WebRTC (architecture reference for poll/handle pattern)
 - `.local-reference/libdatachannel/` — C/C++ WebRTC network library featuring Data Channels, Media Transport, and WebSockets
 - `.local-reference/amazon-kinesis-video-streams-webrtc-sdk-c/` — beta-reference-esp-port
-- `.local-reference/libpeer/` — C WebRTC for ESP32 (protocol implementation reference)
 
-Consult str0m for Sans I/O patterns. Consult libpeer for C protocol implementation details.
+Consult str0m for Sans I/O patterns.

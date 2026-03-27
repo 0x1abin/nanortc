@@ -249,8 +249,8 @@ SCTP is the most complex module (~2500 lines). May need multiple sessions.
 
 | Risk | Mitigation |
 |------|-----------|
-| SCTP complexity exceeds 1 session | Split into parser session + FSM session; reference libpeer and str0m |
-| mbedtls DTLS BIO integration issues | Reference libpeer's `dtls_srtp.c` for proven BIO pattern |
+| SCTP complexity exceeds 1 session | Split into parser session + FSM session; reference str0m |
+| mbedtls DTLS BIO integration issues | Reference mbedtls examples for BIO pattern |
 | OpenSSL DTLS BIO adapter differs from mbedtls | Abstract BIO in `nano_dtls.c`, test both backends in CI |
 | Browser SDP format variations | Test with Chrome, Firefox, Safari; parse conservatively |
 | libdatachannel SDP differs from browser SDP | Interop tests catch this; fix SDP parser to handle both |

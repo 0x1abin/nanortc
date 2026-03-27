@@ -2,7 +2,6 @@
  * nanortc — SDP parser/generator (RFC 8866, RFC 8829)
  *
  * Sans I/O: no stdio.h. Uses memcpy + manual itoa for string building.
- * Reference: libpeer src/sdp.c (attribute format).
  *
  * SPDX-License-Identifier: MIT
  */

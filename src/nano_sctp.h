@@ -2,7 +2,7 @@
  * nanortc — SCTP-Lite internal interface (RFC 4960, RFC 3758)
  *
  * Minimal SCTP for WebRTC DataChannel over DTLS.
- * Reference: libpeer sctp.h (struct layout), str0m sctp/mod.rs (Sans I/O).
+ * Reference: str0m sctp/mod.rs (Sans I/O).
  *
  * SPDX-License-Identifier: MIT
  */

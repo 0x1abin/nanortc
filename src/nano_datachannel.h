@@ -1,8 +1,7 @@
 /*
  * nanortc — DataChannel / DCEP internal interface (RFC 8831, RFC 8832)
  *
- * Reference: libpeer peer_connection.c (DCEP handling),
- *            str0m src/sctp/dcep.rs (message format).
+ * Reference: str0m src/sctp/dcep.rs (message format).
  *
  * SPDX-License-Identifier: MIT
  */

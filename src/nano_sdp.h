@@ -1,7 +1,7 @@
 /*
  * nanortc — SDP parser/generator internal interface (RFC 8866)
  *
- * Reference: libpeer src/sdp.c (format), RFC 8829 (WebRTC SDP).
+ * Reference: RFC 8829 (WebRTC SDP).
  *
  * SPDX-License-Identifier: MIT
  */

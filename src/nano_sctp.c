@@ -2,7 +2,7 @@
  * nanortc — SCTP-Lite implementation (RFC 4960)
  *
  * Minimal SCTP for WebRTC DataChannel over DTLS.
- * Reference: libpeer src/sctp.c, str0m src/sctp/mod.rs.
+ * Reference: str0m src/sctp/mod.rs.
  *
  * SPDX-License-Identifier: MIT
  */
@@ -479,7 +479,7 @@ static int nsctp_handle_init(nano_sctp_t *sctp, const uint8_t *chunk, size_t cle
 
     /* Build INIT-ACK with a simple cookie.
      * Cookie = cookie_secret XOR'd with initiate_tag (simple, DTLS provides auth).
-     * Like libpeer, we keep this minimal. */
+     * We keep this minimal. */
     uint8_t cookie[8];
     memcpy(cookie, sctp->cookie_secret, 8);
     /* Mix in peer's initiate tag for binding */
@@ -714,7 +714,7 @@ int nsctp_handle_data(nano_sctp_t *sctp, const uint8_t *data, size_t len)
     /* Clear delivered state from previous call */
     sctp->has_delivered = false;
 
-    /* Iterate chunks (libpeer pattern) */
+    /* Iterate chunks */
     size_t pos = SCTP_HEADER_SIZE;
     while (pos + SCTP_CHUNK_HDR_SIZE <= len) {
         uint8_t ctype = data[pos];

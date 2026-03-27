@@ -10,7 +10,7 @@ NanoRTC is a pure state machine. This is not an optimization or a nice-to-have â
 
 ## 2. RFC is the authority, code is the implementation
 
-When implementing a protocol module, the relevant RFC is the specification. Reference implementations (str0m, libpeer, libdatachannel) are useful for understanding, but if they disagree with the RFC, the RFC wins.
+When implementing a protocol module, the relevant RFC is the specification. Reference implementations (str0m, libdatachannel) are useful for understanding, but if they disagree with the RFC, the RFC wins.
 
 **Implication:** Always cite the RFC section number in code comments when implementing wire formats or state machines. This makes the code verifiable.
 

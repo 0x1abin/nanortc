@@ -2,7 +2,7 @@
  * nanortc — SCTP codec tests
  *
  * Tests for SCTP chunk parser/encoder with real packet data.
- * Reference: RFC 4960, libpeer CORPUS_CONNECT captures.
+ * Reference: RFC 4960.
  *
  * SPDX-License-Identifier: MIT
  */

@@ -972,8 +972,7 @@ HTTP 信令适配层。
 | [str0m](https://github.com/algesten/str0m) | Rust | **Sans I/O** | 架构灵感：poll/handle 模式、无内部线程、时间作为外部输入 |
 | [libdatachannel](https://github.com/paullouisageneau/libdatachannel) | C++ | 内部 I/O | 完整 WebRTC 参考；对 MCU 太重但协议实现参考价值高 |
 | [libjuice](https://github.com/paullouisageneau/libjuice) | C | 内部 I/O | ICE/STUN/TURN 参考；可选的完整 ICE 集成方案 |
-| [libpeer](https://github.com/sepfy/libpeer) | C | 内部 I/O | 协议参考：ESP32 上的 SCTP、DTLS、DataChannel C 实现 |
-| [esp_peer](https://components.espressif.com/components/espressif/esp_peer) | C | 内部 I/O | 基于 libpeer 衍生；展示了 ESP32 优化模式（闭源） |
+| [esp_peer](https://components.espressif.com/components/espressif/esp_peer) | C | 内部 I/O | Espressif 官方 WebRTC 组件；展示了 ESP32 优化模式（闭源） |
 | [usrsctp](https://github.com/sctplab/usrsctp) | C | 内部 I/O | SCTP 参考实现；过于复杂但有助于理解 RFC 4960 |
 
 ---
