@@ -13,7 +13,7 @@ NanoRTC is a WebRTC protocol stack designed from the ground up for resource-cons
 ```
                      ┌─────────────────────────┐
   UDP bytes ────────►│                         │──────► bytes to send
-  monotonic time ───►│  nanortc_t             │──────► application events
+  monotonic time ───►│  nanortc_t              │──────► application events
   user commands ────►│  (pure state machine)   │──────► next timeout (ms)
                      │                         │
                      │  No sockets. No threads.│
@@ -66,35 +66,76 @@ idf.py build
 
 ## Usage
 
+### Answerer (Controlled)
+
 ```c
 #include "nanortc.h"
 
 nanortc_t rtc;
-nanortc_config_t cfg = {
-    .crypto = nanortc_crypto_mbedtls(),
-    .role   = NANORTC_ROLE_CONTROLLED,
-};
+nanortc_config_t cfg = {0};
+cfg.crypto = nanortc_crypto_mbedtls();  // or nanortc_crypto_openssl()
+cfg.role   = NANORTC_ROLE_CONTROLLED;
 nanortc_init(&rtc, &cfg);
 
-// Exchange SDP via your signaling channel
-char answer[2048];
-nanortc_accept_offer(&rtc, remote_offer, answer, sizeof(answer), NULL);
+nanortc_add_local_candidate(&rtc, "192.168.1.100", 9999);
 
-// Event loop (your application drives this)
+char answer[4096];
+nanortc_accept_offer(&rtc, remote_offer, answer, sizeof(answer), NULL);
+// send answer back via signaling
+```
+
+### Offerer (Controlling)
+
+```c
+nanortc_config_t cfg = {0};
+cfg.crypto = nanortc_crypto_mbedtls();
+cfg.role   = NANORTC_ROLE_CONTROLLING;
+nanortc_init(&rtc, &cfg);
+
+nanortc_add_local_candidate(&rtc, "192.168.1.200", 9999);
+
+char offer[4096];
+nanortc_create_offer(&rtc, offer, sizeof(offer), NULL);
+// send offer, receive answer via signaling
+nanortc_accept_answer(&rtc, remote_answer);
+```
+
+### Event Loop
+
+Your application drives the event loop — NanoRTC never touches sockets or clocks:
+
+```c
 for (;;) {
     nanortc_output_t out;
     while (nanortc_poll_output(&rtc, &out) == NANORTC_OK) {
-        if (out.type == NANORTC_OUTPUT_TRANSMIT)
+        switch (out.type) {
+        case NANORTC_OUTPUT_TRANSMIT:
             sendto(fd, out.transmit.data, out.transmit.len, ...);
-        else if (out.type == NANORTC_OUTPUT_EVENT)
-            handle_event(&out.event);
+            break;
+        case NANORTC_OUTPUT_EVENT:
+            if (out.event.type == NANORTC_EVENT_SCTP_CONNECTED) {
+                nanortc_datachannel_config_t dc = {.label = "chat", .ordered = true};
+                uint16_t stream_id;
+                nanortc_create_datachannel(&rtc, &dc, &stream_id);
+            } else if (out.event.type == NANORTC_EVENT_DATACHANNEL_STRING) {
+                nanortc_send_datachannel_string(&rtc, out.event.stream_id,
+                                                (const char *)out.event.data);
+            } else if (out.event.type == NANORTC_EVENT_DISCONNECTED) {
+                goto done;
+            }
+            break;
+        case NANORTC_OUTPUT_TIMEOUT:
+            break;  // set select()/poll() timeout to out.timeout_ms
+        }
     }
 
     // Wait for network data or timeout, then:
     nanortc_handle_receive(&rtc, now_ms, buf, len, &src);
-    // or on timeout:
     nanortc_handle_timeout(&rtc, now_ms);
 }
+done:
+nanortc_close(&rtc);
+nanortc_destroy(&rtc);
 ```
 
 ## Platform Support
@@ -155,7 +196,7 @@ The repository structure itself is designed for agent legibility: [AGENTS.md](AG
 
 ## Contributing
 
-NanoRTC is in active development — Phase 1 code complete (DataChannel: 130+ unit tests, 5/5 interop pass with libdatachannel), Phase 2 audio in progress.
+NanoRTC is in active development — Phase 1 code complete (DataChannel: 140+ unit tests, 5/5 interop pass with libdatachannel), Phase 2 audio in progress.
 
 Contributions welcome. Please read [AGENTS.md](AGENTS.md) for build instructions and mandatory rules before submitting changes.
 
