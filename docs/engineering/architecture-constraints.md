@@ -34,7 +34,7 @@ All six feature combinations must compile and pass tests:
 # AUDIO_ONLY: DC=OFF AUDIO=ON  VIDEO=OFF
 # MEDIA_ONLY: DC=OFF AUDIO=ON  VIDEO=ON
 # CORE_ONLY:  DC=OFF AUDIO=OFF VIDEO=OFF
-cmake -B build -DNANO_FEATURE_DATACHANNEL=ON -DNANO_FEATURE_AUDIO=OFF -DNANO_FEATURE_VIDEO=OFF
+cmake -B build -DNANORTC_FEATURE_DATACHANNEL=ON -DNANORTC_FEATURE_AUDIO=OFF -DNANORTC_FEATURE_VIDEO=OFF
 cmake --build build && ctest --test-dir build --output-on-failure
 ```
 

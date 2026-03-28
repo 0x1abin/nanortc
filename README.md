@@ -50,14 +50,14 @@ cmake --build build -j$(nproc)
 ctest --test-dir build --output-on-failure
 
 # Enable audio + video
-cmake -B build -DNANO_FEATURE_AUDIO=ON -DNANO_FEATURE_VIDEO=ON
+cmake -B build -DNANORTC_FEATURE_AUDIO=ON -DNANORTC_FEATURE_VIDEO=ON
 
 # With OpenSSL (for Linux host development)
 cmake -B build -DNANORTC_CRYPTO=openssl
 
 # Build examples (full media)
-cmake -B build -DNANO_FEATURE_DATACHANNEL=ON -DNANO_FEATURE_AUDIO=ON \
-      -DNANO_FEATURE_VIDEO=ON -DNANORTC_CRYPTO=openssl -DNANORTC_BUILD_EXAMPLES=ON
+cmake -B build -DNANORTC_FEATURE_DATACHANNEL=ON -DNANORTC_FEATURE_AUDIO=ON \
+      -DNANORTC_FEATURE_VIDEO=ON -DNANORTC_CRYPTO=openssl -DNANORTC_BUILD_EXAMPLES=ON
 cmake --build build
 
 # ESP-IDF

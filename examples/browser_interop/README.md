@@ -138,7 +138,7 @@ cmake -B build -DNANORTC_CRYPTO=openssl -DNANORTC_BUILD_EXAMPLES=ON
 cmake --build build -j$(nproc)
 
 # Build with audio support
-cmake -B build -DNANORTC_CRYPTO=openssl -DNANORTC_BUILD_EXAMPLES=ON -DNANO_FEATURE_AUDIO=ON
+cmake -B build -DNANORTC_CRYPTO=openssl -DNANORTC_BUILD_EXAMPLES=ON -DNANORTC_FEATURE_AUDIO=ON
 cmake --build build -j$(nproc)
 ```
 

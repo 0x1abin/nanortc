@@ -30,22 +30,22 @@ cmake --build build -j$(nproc)
 ctest --test-dir build --output-on-failure
 
 # Feature flags (orthogonal, any combination)
-cmake -B build -DNANO_FEATURE_DATACHANNEL=ON   # SCTP + DCEP (default ON)
-cmake -B build -DNANO_FEATURE_AUDIO=ON          # RTP/SRTP + jitter buffer
-cmake -B build -DNANO_FEATURE_VIDEO=ON           # RTP/SRTP + BWE
-cmake -B build -DNANO_FEATURE_DC_RELIABLE=OFF    # Disable retransmit (sub-feature of DC)
-cmake -B build -DNANO_FEATURE_DC_ORDERED=OFF     # Disable ordered delivery (sub-feature of DC)
+cmake -B build -DNANORTC_FEATURE_DATACHANNEL=ON   # SCTP + DCEP (default ON)
+cmake -B build -DNANORTC_FEATURE_AUDIO=ON          # RTP/SRTP + jitter buffer
+cmake -B build -DNANORTC_FEATURE_VIDEO=ON           # RTP/SRTP + BWE
+cmake -B build -DNANORTC_FEATURE_DC_RELIABLE=OFF    # Disable retransmit (sub-feature of DC)
+cmake -B build -DNANORTC_FEATURE_DC_ORDERED=OFF     # Disable ordered delivery (sub-feature of DC)
 
 # Common combinations
-cmake -B build -DNANO_FEATURE_DATACHANNEL=ON -DNANO_FEATURE_AUDIO=ON -DNANO_FEATURE_VIDEO=ON  # Full media
-cmake -B build -DNANO_FEATURE_DATACHANNEL=OFF -DNANO_FEATURE_AUDIO=ON                          # Audio only (no SCTP)
+cmake -B build -DNANORTC_FEATURE_DATACHANNEL=ON -DNANORTC_FEATURE_AUDIO=ON -DNANORTC_FEATURE_VIDEO=ON  # Full media
+cmake -B build -DNANORTC_FEATURE_DATACHANNEL=OFF -DNANORTC_FEATURE_AUDIO=ON                          # Audio only (no SCTP)
 
 # Crypto backend: mbedtls (default, for embedded) or openssl (for Linux host)
 cmake -B build -DNANORTC_CRYPTO=openssl
 cmake -B build -DNANORTC_CRYPTO=mbedtls
 
 # Build examples (Linux host, not default)
-cmake -B build -DNANO_FEATURE_DATACHANNEL=ON -DNANO_FEATURE_AUDIO=ON -DNANO_FEATURE_VIDEO=ON \
+cmake -B build -DNANORTC_FEATURE_DATACHANNEL=ON -DNANORTC_FEATURE_AUDIO=ON -DNANORTC_FEATURE_VIDEO=ON \
       -DNANORTC_CRYPTO=openssl -DNANORTC_BUILD_EXAMPLES=ON
 
 # Custom configuration (override defaults without modifying repo)

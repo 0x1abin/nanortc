@@ -83,12 +83,12 @@ fi
 
 # 6 feature combinations
 declare -A COMBOS
-COMBOS[DATA]="         -DNANO_FEATURE_DATACHANNEL=ON  -DNANO_FEATURE_AUDIO=OFF -DNANO_FEATURE_VIDEO=OFF"
-COMBOS[AUDIO]="        -DNANO_FEATURE_DATACHANNEL=ON  -DNANO_FEATURE_AUDIO=ON  -DNANO_FEATURE_VIDEO=OFF"
-COMBOS[MEDIA]="        -DNANO_FEATURE_DATACHANNEL=ON  -DNANO_FEATURE_AUDIO=ON  -DNANO_FEATURE_VIDEO=ON"
-COMBOS[AUDIO_ONLY]="   -DNANO_FEATURE_DATACHANNEL=OFF -DNANO_FEATURE_AUDIO=ON  -DNANO_FEATURE_VIDEO=OFF"
-COMBOS[MEDIA_ONLY]="   -DNANO_FEATURE_DATACHANNEL=OFF -DNANO_FEATURE_AUDIO=ON  -DNANO_FEATURE_VIDEO=ON"
-COMBOS[CORE_ONLY]="    -DNANO_FEATURE_DATACHANNEL=OFF -DNANO_FEATURE_AUDIO=OFF -DNANO_FEATURE_VIDEO=OFF"
+COMBOS[DATA]="         -DNANORTC_FEATURE_DATACHANNEL=ON  -DNANORTC_FEATURE_AUDIO=OFF -DNANORTC_FEATURE_VIDEO=OFF"
+COMBOS[AUDIO]="        -DNANORTC_FEATURE_DATACHANNEL=ON  -DNANORTC_FEATURE_AUDIO=ON  -DNANORTC_FEATURE_VIDEO=OFF"
+COMBOS[MEDIA]="        -DNANORTC_FEATURE_DATACHANNEL=ON  -DNANORTC_FEATURE_AUDIO=ON  -DNANORTC_FEATURE_VIDEO=ON"
+COMBOS[AUDIO_ONLY]="   -DNANORTC_FEATURE_DATACHANNEL=OFF -DNANORTC_FEATURE_AUDIO=ON  -DNANORTC_FEATURE_VIDEO=OFF"
+COMBOS[MEDIA_ONLY]="   -DNANORTC_FEATURE_DATACHANNEL=OFF -DNANORTC_FEATURE_AUDIO=ON  -DNANORTC_FEATURE_VIDEO=ON"
+COMBOS[CORE_ONLY]="    -DNANORTC_FEATURE_DATACHANNEL=OFF -DNANORTC_FEATURE_AUDIO=OFF -DNANORTC_FEATURE_VIDEO=OFF"
 
 for combo in DATA AUDIO MEDIA AUDIO_ONLY MEDIA_ONLY CORE_ONLY; do
     build_dir="$ROOT/build-ci-${combo}"
@@ -110,7 +110,7 @@ echo "=== Symbol Checks ==="
 MEDIA_LIB="$ROOT/build-ci-MEDIA/libnanortc.a"
 if [ -f "$MEDIA_LIB" ]; then
     # All symbols must use nano_ (public) or known module prefixes (internal)
-    ALLOWED='nano_|stun_|ice_|dtls_|nsctp_|sctp_|dc_|sdp_|rtp_|rtcp_|srtp_|jitter_|bwe_'
+    ALLOWED='nano_|nanortc_|stun_|ice_|dtls_|nsctp_|sctp_|dc_|sdp_|rtp_|rtcp_|srtp_|jitter_|bwe_'
     run_check "Symbols use allowed prefixes" \
         bash -c 'test -z "$(nm -g '"$MEDIA_LIB"' 2>/dev/null | grep " T " | awk "{print \$3}" | grep -v "^_" | grep -vE "^('"$ALLOWED"')")"'
 
@@ -139,7 +139,7 @@ asan_dir="$ROOT/build-ci-asan"
 rm -rf "$asan_dir"
 
 run_check "Build MEDIA + ASan" \
-    bash -c "cmake -B '$asan_dir' -DNANO_FEATURE_DATACHANNEL=ON -DNANO_FEATURE_AUDIO=ON -DNANO_FEATURE_VIDEO=ON $CRYPTO_FLAG -DCMAKE_BUILD_TYPE=Debug -DADDRESS_SANITIZER=ON > /dev/null 2>&1 && cmake --build '$asan_dir' -j\$(nproc) > /dev/null 2>&1"
+    bash -c "cmake -B '$asan_dir' -DNANORTC_FEATURE_DATACHANNEL=ON -DNANORTC_FEATURE_AUDIO=ON -DNANORTC_FEATURE_VIDEO=ON $CRYPTO_FLAG -DCMAKE_BUILD_TYPE=Debug -DADDRESS_SANITIZER=ON > /dev/null 2>&1 && cmake --build '$asan_dir' -j\$(nproc) > /dev/null 2>&1"
 
 run_check "Test  MEDIA + ASan" \
     ctest --test-dir "$asan_dir" --output-on-failure
