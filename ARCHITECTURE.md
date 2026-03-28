@@ -64,8 +64,8 @@ Within the library, code is organized in strict layers:
 | Layer | Files | Rule |
 |-------|-------|------|
 | **Configuration** | `include/nanortc_config.h` | Compile-time tunables with `#ifndef` defaults. User overrides via `NANORTC_CONFIG_FILE` or ESP-IDF Kconfig. |
-| **Public API** | `include/nanortc.h` | Only file users `#include`. Defines all public types and functions. |
-| **State Machine** | `src/nano_rtc.c`, `src/nano_rtc_internal.h` | Orchestrates all modules. Only file that touches all subsystems. |
+| **Public API** | `include/nanortc.h` | Only file users `#include`. Defines all public types, `struct nanortc` layout (for stack allocation), and functions. |
+| **State Machine** | `src/nano_rtc.c` | Orchestrates all modules. |
 | **Protocol Modules** | `src/nano_*.c` + `src/nano_*.h` | Each module owns one protocol. Communicates via return values and caller buffers — no callbacks between modules. |
 | **Crypto Interface** | `crypto/nanortc_crypto.h` | Abstract boundary. Protocol modules call this, never mbedtls directly. |
 | **Crypto Provider** | `crypto/nanortc_crypto_mbedtls.c` or `nanortc_crypto_openssl.c` | Concrete implementation. Selected at build time via `-DNANORTC_CRYPTO=`. |
@@ -134,7 +134,6 @@ nanortc_poll_output(rtc, &out)
 | Configuration defaults | `include/nanortc_config.h` |
 | Public API | `include/nanortc.h` |
 | Main state machine | `src/nano_rtc.c` |
-| Internal state struct | `src/nano_rtc_internal.h` |
 | Crypto provider interface | `crypto/nanortc_crypto.h` |
 | Design document (authoritative) | `docs/design-docs/nanortc-design-draft.md` |
 | Quality tracking | `docs/QUALITY_SCORE.md` |

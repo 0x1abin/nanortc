@@ -13,7 +13,6 @@
  */
 
 #include "nanortc.h"
-#include "nano_rtc_internal.h"
 #include "nanortc_crypto.h"
 #include "run_loop.h"
 #include "http_signaling.h"

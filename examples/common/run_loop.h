@@ -16,9 +16,6 @@
 extern "C" {
 #endif
 
-/* Forward-declare internal struct; defined in nano_rtc_internal.h */
-typedef struct nanortc nanortc_t;
-
 typedef void (*nano_event_cb)(nanortc_t *rtc, const nanortc_event_t *evt, void *userdata);
 
 typedef struct nano_run_loop {

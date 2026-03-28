@@ -7,7 +7,6 @@
  */
 
 #include "run_loop.h"
-#include "nano_rtc_internal.h"
 
 #include <stdio.h>
 #include <string.h>

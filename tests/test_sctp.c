@@ -16,7 +16,6 @@ TEST_MAIN_BEGIN("nanortc SCTP tests (skipped — DC disabled)")
 TEST_MAIN_END
 #else
 
-#include "nano_rtc_internal.h"
 #include "nano_sctp.h"
 #include "nano_crc32c.h"
 #include "nano_test_config.h"

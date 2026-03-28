@@ -5,7 +5,6 @@
  */
 
 #include "nanortc.h"
-#include "nano_rtc_internal.h"
 #include "nanortc_crypto.h"
 #include "nano_ice.h"
 #include "nano_stun.h"
@@ -19,6 +18,18 @@
 #endif
 
 #include <string.h>
+
+/* Enqueue an output. Returns NANORTC_OK or NANORTC_ERR_BUFFER_TOO_SMALL. */
+static inline int rtc_enqueue_output(nanortc_t *rtc, const nanortc_output_t *out)
+{
+    uint8_t used = rtc->out_tail - rtc->out_head;
+    if (used >= NANORTC_OUT_QUEUE_SIZE) {
+        return NANORTC_ERR_BUFFER_TOO_SMALL;
+    }
+    rtc->out_queue[rtc->out_tail & (NANORTC_OUT_QUEUE_SIZE - 1)] = *out;
+    rtc->out_tail++;
+    return NANORTC_OK;
+}
 
 int nanortc_init(nanortc_t *rtc, const nanortc_config_t *cfg)
 {

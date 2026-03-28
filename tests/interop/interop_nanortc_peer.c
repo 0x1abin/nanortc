@@ -6,7 +6,6 @@
 
 #include "interop_nanortc_peer.h"
 #include "interop_common.h"
-#include "nano_rtc_internal.h"
 #include "nanortc_crypto.h"
 
 #include <stdio.h>

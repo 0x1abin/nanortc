@@ -99,8 +99,7 @@ endif()
 
 # ---- Library target ----
 add_library(nanortc ${NANORTC_SOURCES})
-target_include_directories(nanortc PUBLIC include)
-target_include_directories(nanortc PRIVATE src crypto)
+target_include_directories(nanortc PUBLIC include src crypto)
 
 # Pass feature flags as compile definitions
 target_compile_definitions(nanortc PUBLIC

@@ -5,7 +5,6 @@
  */
 
 #include "nanortc.h"
-#include "nano_rtc_internal.h"
 #include "nano_sdp.h"
 #include "nano_test.h"
 #include "nano_test_config.h"

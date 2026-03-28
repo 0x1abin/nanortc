@@ -12,7 +12,6 @@
 #define INTEROP_NANORTC_PEER_H_
 
 #include "interop_common.h"
-#include "nano_rtc_internal.h"
 #include "run_loop.h"
 
 #include <pthread.h>
