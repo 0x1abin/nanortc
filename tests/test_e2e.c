@@ -121,16 +121,19 @@ TEST(test_e2e_stubs_not_implemented)
     nanortc_config_t cfg = e2e_default_config();
     ASSERT_OK(nanortc_init(&rtc, &cfg));
 
-    char buf[256];
+    char buf[2048];
     /* nanortc_accept_offer now works (parses SDP), but invalid SDP returns parse error */
     ASSERT_FAIL(nanortc_accept_offer(&rtc, "v=0\r\n", buf, sizeof(buf), NULL));
-    ASSERT_EQ(nanortc_create_offer(&rtc, buf, sizeof(buf), NULL), NANORTC_ERR_NOT_IMPLEMENTED);
-    ASSERT_EQ(nanortc_accept_answer(&rtc, "v=0\r\n"), NANORTC_ERR_NOT_IMPLEMENTED);
+    /* nanortc_create_offer now works on NEW state */
+    ASSERT_OK(nanortc_create_offer(&rtc, buf, sizeof(buf), NULL));
+    /* After create_offer, state is still NEW (waiting for answer), accept_answer parses SDP */
+    ASSERT_FAIL(nanortc_accept_answer(&rtc, "v=0\r\n"));
     ASSERT_OK(nanortc_add_local_candidate(&rtc, "192.168.1.1", 9999));
     /* nanortc_add_remote_candidate now parses SDP candidate; invalid format returns parse error */
     ASSERT_EQ(nanortc_add_remote_candidate(&rtc, "candidate:..."), NANORTC_ERR_PARSE);
     /* Valid candidate succeeds */
-    ASSERT_OK(nanortc_add_remote_candidate(&rtc, "candidate:0 1 UDP 2122260223 192.168.1.100 50000 typ host"));
+    ASSERT_OK(nanortc_add_remote_candidate(
+        &rtc, "candidate:0 1 UDP 2122260223 192.168.1.100 50000 typ host"));
     ASSERT_OK(nanortc_add_remote_candidate(&rtc, "192.168.1.200 60000"));
 
     /* nanortc_handle_receive and nanortc_handle_timeout are now implemented */
@@ -170,14 +173,16 @@ TEST(test_e2e_loopback_skeleton)
     nanortc_config_t cfg = e2e_default_config();
 
     ASSERT_OK(nanortc_init(&server, &cfg));
+
+    cfg.role = NANORTC_ROLE_CONTROLLING;
     ASSERT_OK(nanortc_init(&client, &cfg));
 
-    /* Client creates offer (stub: returns NOT_IMPLEMENTED) */
+    /* Client creates offer (now implemented) */
     char offer[2048];
     int rc = nanortc_create_offer(&client, offer, sizeof(offer), NULL);
-    ASSERT_EQ(rc, NANORTC_ERR_NOT_IMPLEMENTED);
+    ASSERT_OK(rc);
 
-    /* No output should be queued */
+    /* No transmit output should be queued yet (no remote candidate) */
     nanortc_output_t out;
     ASSERT_EQ(nanortc_poll_output(&server, &out), NANORTC_ERR_NO_DATA);
     ASSERT_EQ(nanortc_poll_output(&client, &out), NANORTC_ERR_NO_DATA);
@@ -239,7 +244,8 @@ TEST(test_e2e_demux_byte_ranges)
 
     /* DTLS range: 0x14-0x40 — rejected before ICE connects */
     uint8_t dtls_pkt[20] = {0x14, 0xFE, 0xFD};
-    ASSERT_EQ(nanortc_handle_receive(&rtc, 0, dtls_pkt, sizeof(dtls_pkt), &addr), NANORTC_ERR_STATE);
+    ASSERT_EQ(nanortc_handle_receive(&rtc, 0, dtls_pkt, sizeof(dtls_pkt), &addr),
+              NANORTC_ERR_STATE);
 
     /* SRTP range: 0x80-0xBF */
     uint8_t srtp_pkt[20] = {0x80, 0x60};
@@ -296,12 +302,13 @@ TEST(test_e2e_ice_loopback)
     answerer.ice.remote_pwd_len = 21;
 
     /* Set remote candidate address on offerer (where to send checks) */
-    offerer.ice.remote_family = 4;
-    offerer.ice.remote_addr[0] = 192;
-    offerer.ice.remote_addr[1] = 168;
-    offerer.ice.remote_addr[2] = 1;
-    offerer.ice.remote_addr[3] = 2;
-    offerer.ice.remote_port = 5000;
+    offerer.ice.remote_candidates[0].family = 4;
+    offerer.ice.remote_candidates[0].addr[0] = 192;
+    offerer.ice.remote_candidates[0].addr[1] = 168;
+    offerer.ice.remote_candidates[0].addr[2] = 1;
+    offerer.ice.remote_candidates[0].addr[3] = 2;
+    offerer.ice.remote_candidates[0].port = 5000;
+    offerer.ice.remote_candidate_count = 1;
 
     /* Step 1: offerer generates STUN Binding Request via timeout */
     uint32_t now_ms = 100;
@@ -416,12 +423,13 @@ static void e2e_setup_ice_creds(nanortc_t *offerer, nanortc_t *answerer)
     memcpy(answerer->ice.remote_pwd, "offerer-password-1234", 22);
     answerer->ice.remote_pwd_len = 21;
 
-    offerer->ice.remote_family = 4;
-    offerer->ice.remote_addr[0] = 192;
-    offerer->ice.remote_addr[1] = 168;
-    offerer->ice.remote_addr[2] = 1;
-    offerer->ice.remote_addr[3] = 2;
-    offerer->ice.remote_port = 5000;
+    offerer->ice.remote_candidates[0].family = 4;
+    offerer->ice.remote_candidates[0].addr[0] = 192;
+    offerer->ice.remote_candidates[0].addr[1] = 168;
+    offerer->ice.remote_candidates[0].addr[2] = 1;
+    offerer->ice.remote_candidates[0].addr[3] = 2;
+    offerer->ice.remote_candidates[0].port = 5000;
+    offerer->ice.remote_candidate_count = 1;
 }
 
 TEST(test_e2e_ice_dtls_loopback)

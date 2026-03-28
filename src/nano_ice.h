@@ -61,10 +61,14 @@ typedef struct nano_ice {
     uint8_t check_count;               /* number of checks sent */
     bool nominated;                    /* selected pair nominated */
 
-    /* Remote candidate address (for controlling role outgoing checks) */
-    uint8_t remote_addr[NANORTC_ADDR_SIZE];
-    uint16_t remote_port;
-    uint8_t remote_family; /* 4 = IPv4, 6 = IPv6 */
+    /* Remote candidates array (trickle ICE support) */
+    struct {
+        uint8_t addr[NANORTC_ADDR_SIZE];
+        uint16_t port;
+        uint8_t family; /* 4 = IPv4, 6 = IPv6 */
+    } remote_candidates[NANORTC_MAX_ICE_CANDIDATES];
+    uint8_t remote_candidate_count;
+    uint8_t current_candidate; /* index of candidate currently being checked */
 } nano_ice_t;
 
 int ice_init(nano_ice_t *ice, int is_controlling);

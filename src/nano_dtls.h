@@ -104,6 +104,12 @@ int dtls_poll_app_data(nano_dtls_t *dtls, const uint8_t **data, size_t *len);
 /* Get local certificate fingerprint (available after dtls_init). */
 const char *dtls_get_fingerprint(nano_dtls_t *dtls);
 
+/*
+ * Initiate graceful close (sends close_notify if supported).
+ * Sets state to CLOSED. Poll dtls_poll_output() for the close record.
+ */
+void dtls_close(nano_dtls_t *dtls);
+
 /* Release crypto context and reset state. */
 void dtls_destroy(nano_dtls_t *dtls);
 

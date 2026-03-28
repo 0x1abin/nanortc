@@ -198,9 +198,12 @@ int ice_handle_stun(nano_ice_t *ice, const uint8_t *data, size_t len, const nano
         }
 
         /* ICE connectivity established — record the remote address */
-        memcpy(ice->selected_addr, ice->remote_addr, NANORTC_ADDR_SIZE);
-        ice->selected_port = ice->remote_port;
-        ice->selected_family = ice->remote_family;
+        if (ice->current_candidate < ice->remote_candidate_count) {
+            memcpy(ice->selected_addr, ice->remote_candidates[ice->current_candidate].addr,
+                   NANORTC_ADDR_SIZE);
+            ice->selected_port = ice->remote_candidates[ice->current_candidate].port;
+            ice->selected_family = ice->remote_candidates[ice->current_candidate].family;
+        }
         ice->nominated = true;
         ice->state = NANORTC_ICE_STATE_CONNECTED;
 
@@ -279,6 +282,11 @@ int ice_generate_check(nano_ice_t *ice, uint32_t now_ms, const nanortc_crypto_pr
 
     if (ice->state == NANORTC_ICE_STATE_NEW) {
         ice->state = NANORTC_ICE_STATE_CHECKING;
+    }
+
+    /* Round-robin through remote candidates */
+    if (ice->remote_candidate_count > 1) {
+        ice->current_candidate = (ice->current_candidate + 1) % ice->remote_candidate_count;
     }
 
     return NANORTC_OK;
