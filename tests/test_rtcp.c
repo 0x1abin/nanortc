@@ -30,15 +30,15 @@ TEST(test_rtcp_sr_basic)
     ASSERT_EQ((buf[0] >> 6) & 0x03, 2);   /* V=2 */
     ASSERT_EQ(buf[0] & 0x1F, 0);          /* RC=0 */
     ASSERT_EQ(buf[1], RTCP_SR);           /* PT=200 */
-    ASSERT_EQ(nano_read_u16be(buf + 2), 6);    /* length=6 (words) */
-    ASSERT_EQ(nano_read_u32be(buf + 4), 0x12345678); /* SSRC */
+    ASSERT_EQ(nanortc_read_u16be(buf + 2), 6);    /* length=6 (words) */
+    ASSERT_EQ(nanortc_read_u32be(buf + 4), 0x12345678); /* SSRC */
 
     /* Verify sender info */
-    ASSERT_EQ(nano_read_u32be(buf + 8), 0xAABBCCDD);  /* NTP sec */
-    ASSERT_EQ(nano_read_u32be(buf + 12), 0x11223344); /* NTP frac */
-    ASSERT_EQ(nano_read_u32be(buf + 16), 0x55667788); /* RTP ts */
-    ASSERT_EQ(nano_read_u32be(buf + 20), 100);        /* packet count */
-    ASSERT_EQ(nano_read_u32be(buf + 24), 16000);      /* octet count */
+    ASSERT_EQ(nanortc_read_u32be(buf + 8), 0xAABBCCDD);  /* NTP sec */
+    ASSERT_EQ(nanortc_read_u32be(buf + 12), 0x11223344); /* NTP frac */
+    ASSERT_EQ(nanortc_read_u32be(buf + 16), 0x55667788); /* RTP ts */
+    ASSERT_EQ(nanortc_read_u32be(buf + 20), 100);        /* packet count */
+    ASSERT_EQ(nanortc_read_u32be(buf + 24), 16000);      /* octet count */
 }
 
 TEST(test_rtcp_sr_buffer_too_small)
@@ -85,19 +85,19 @@ TEST(test_rtcp_rr_basic)
     ASSERT_EQ((buf[0] >> 6) & 0x03, 2);   /* V=2 */
     ASSERT_EQ(buf[0] & 0x1F, 1);          /* RC=1 */
     ASSERT_EQ(buf[1], RTCP_RR);           /* PT=201 */
-    ASSERT_EQ(nano_read_u16be(buf + 2), 7);    /* length=7 */
-    ASSERT_EQ(nano_read_u32be(buf + 4), 0xAABBCCDD); /* Reporter SSRC */
+    ASSERT_EQ(nanortc_read_u16be(buf + 2), 7);    /* length=7 */
+    ASSERT_EQ(nanortc_read_u32be(buf + 4), 0xAABBCCDD); /* Reporter SSRC */
 
     /* Report block */
-    ASSERT_EQ(nano_read_u32be(buf + 8), 0x12345678); /* Reported SSRC */
+    ASSERT_EQ(nanortc_read_u32be(buf + 8), 0x12345678); /* Reported SSRC */
     ASSERT_TRUE(buf[12] > 0); /* Fraction lost > 0 */
     /* Cumulative lost = 5 */
     uint32_t clost = ((uint32_t)buf[13] << 16) | ((uint32_t)buf[14] << 8) | buf[15];
     ASSERT_EQ(clost, 5);
     /* Extended highest seq */
-    ASSERT_EQ(nano_read_u32be(buf + 16), 100);
+    ASSERT_EQ(nanortc_read_u32be(buf + 16), 100);
     /* Jitter */
-    ASSERT_EQ(nano_read_u32be(buf + 20), 320);
+    ASSERT_EQ(nanortc_read_u32be(buf + 20), 320);
 }
 
 TEST(test_rtcp_rr_no_loss)
@@ -141,15 +141,15 @@ TEST(test_rtcp_nack_basic)
     ASSERT_EQ((buf[0] >> 6) & 0x03, 2);    /* V=2 */
     ASSERT_EQ(buf[0] & 0x1F, 1);           /* FMT=1 (Generic NACK) */
     ASSERT_EQ(buf[1], RTCP_RTPFB);         /* PT=205 */
-    ASSERT_EQ(nano_read_u16be(buf + 2), 3);     /* length=3 */
-    ASSERT_EQ(nano_read_u32be(buf + 4), 0xAAAAAAAA); /* Sender SSRC */
+    ASSERT_EQ(nanortc_read_u16be(buf + 2), 3);     /* length=3 */
+    ASSERT_EQ(nanortc_read_u32be(buf + 4), 0xAAAAAAAA); /* Sender SSRC */
 
     /* Media SSRC */
-    ASSERT_EQ(nano_read_u32be(buf + 8), 0xBBBBBBBB);
+    ASSERT_EQ(nanortc_read_u32be(buf + 8), 0xBBBBBBBB);
 
     /* FCI: PID=42, BLP=0 */
-    ASSERT_EQ(nano_read_u16be(buf + 12), 42);
-    ASSERT_EQ(nano_read_u16be(buf + 14), 0);
+    ASSERT_EQ(nanortc_read_u16be(buf + 12), 42);
+    ASSERT_EQ(nanortc_read_u16be(buf + 14), 0);
 }
 
 TEST(test_rtcp_nack_buffer_too_small)

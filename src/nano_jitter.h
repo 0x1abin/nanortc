@@ -7,8 +7,8 @@
  * SPDX-License-Identifier: MIT
  */
 
-#ifndef NANO_JITTER_H_
-#define NANO_JITTER_H_
+#ifndef NANORTC_JITTER_H_
+#define NANORTC_JITTER_H_
 
 #include "nanortc_config.h"
 
@@ -16,7 +16,7 @@
 #include <stddef.h>
 
 typedef struct nano_jitter_slot {
-    uint8_t data[NANO_JITTER_SLOT_DATA_SIZE];
+    uint8_t data[NANORTC_JITTER_SLOT_DATA_SIZE];
     size_t len;
     uint16_t seq;
     uint32_t timestamp;
@@ -25,7 +25,7 @@ typedef struct nano_jitter_slot {
 } nano_jitter_slot_t;
 
 typedef struct nano_jitter {
-    nano_jitter_slot_t slots[NANO_JITTER_SLOTS];
+    nano_jitter_slot_t slots[NANORTC_JITTER_SLOTS];
     uint16_t head_seq; /* Next sequence number to pop */
     uint32_t depth_ms; /* Playout delay */
     uint8_t started;   /* True after first push */
@@ -37,4 +37,4 @@ int jitter_push(nano_jitter_t *jb, uint16_t seq, uint32_t timestamp, const uint8
 int jitter_pop(nano_jitter_t *jb, uint32_t now_ms, uint8_t *buf, size_t buf_len, size_t *out_len,
                uint32_t *timestamp);
 
-#endif /* NANO_JITTER_H_ */
+#endif /* NANORTC_JITTER_H_ */

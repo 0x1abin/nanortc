@@ -59,20 +59,20 @@ int nano_media_source_init(nano_media_source_t *src,
 
     memset(src, 0, sizeof(*src));
     src->type = type;
-    strncpy(src->sample_dir, sample_dir, NANO_MEDIA_MAX_PATH - 1);
+    strncpy(src->sample_dir, sample_dir, NANORTC_MEDIA_MAX_PATH - 1);
 
     switch (type) {
-    case NANO_MEDIA_H264:
+    case NANORTC_MEDIA_H264:
         src->frame_count = H264_FRAME_COUNT;
         src->frame_interval_ms = VIDEO_INTERVAL;
         src->frame_index = 1; /* 1-based */
         break;
-    case NANO_MEDIA_H265:
+    case NANORTC_MEDIA_H265:
         src->frame_count = H265_FRAME_COUNT;
         src->frame_interval_ms = VIDEO_INTERVAL;
         src->frame_index = 1;
         break;
-    case NANO_MEDIA_OPUS:
+    case NANORTC_MEDIA_OPUS:
         src->frame_count = OPUS_FRAME_COUNT;
         src->frame_interval_ms = AUDIO_INTERVAL;
         src->frame_index = 0; /* 0-based */
@@ -80,18 +80,18 @@ int nano_media_source_init(nano_media_source_t *src,
     }
 
     /* Verify first frame is accessible */
-    char path[NANO_MEDIA_MAX_PATH + 32];
+    char path[NANORTC_MEDIA_MAX_PATH + 32];
     uint8_t probe[16];
     size_t probe_len;
 
     switch (type) {
-    case NANO_MEDIA_H264:
+    case NANORTC_MEDIA_H264:
         snprintf(path, sizeof(path), "%s/frame-0001.h264", sample_dir);
         break;
-    case NANO_MEDIA_H265:
+    case NANORTC_MEDIA_H265:
         snprintf(path, sizeof(path), "%s/frame-0001.h265", sample_dir);
         break;
-    case NANO_MEDIA_OPUS:
+    case NANORTC_MEDIA_OPUS:
         snprintf(path, sizeof(path), "%s/sample-000.opus", sample_dir);
         break;
     }
@@ -113,18 +113,18 @@ int nano_media_source_next_frame(nano_media_source_t *src,
         return -1;
     }
 
-    char path[NANO_MEDIA_MAX_PATH + 32];
+    char path[NANORTC_MEDIA_MAX_PATH + 32];
 
     switch (src->type) {
-    case NANO_MEDIA_H264:
+    case NANORTC_MEDIA_H264:
         snprintf(path, sizeof(path), "%s/frame-%04d.h264",
                  src->sample_dir, src->frame_index);
         break;
-    case NANO_MEDIA_H265:
+    case NANORTC_MEDIA_H265:
         snprintf(path, sizeof(path), "%s/frame-%04d.h265",
                  src->sample_dir, src->frame_index);
         break;
-    case NANO_MEDIA_OPUS:
+    case NANORTC_MEDIA_OPUS:
         snprintf(path, sizeof(path), "%s/sample-%03d.opus",
                  src->sample_dir, src->frame_index);
         break;
@@ -147,13 +147,13 @@ int nano_media_source_next_frame(nano_media_source_t *src,
 
     /* Wrap around */
     switch (src->type) {
-    case NANO_MEDIA_H264:
-    case NANO_MEDIA_H265:
+    case NANORTC_MEDIA_H264:
+    case NANORTC_MEDIA_H265:
         if (src->frame_index > src->frame_count) {
             src->frame_index = 1;
         }
         break;
-    case NANO_MEDIA_OPUS:
+    case NANORTC_MEDIA_OPUS:
         if (src->frame_index >= src->frame_count) {
             src->frame_index = 0;
         }
@@ -170,11 +170,11 @@ void nano_media_source_reset(nano_media_source_t *src)
     }
     src->timestamp_ms = 0;
     switch (src->type) {
-    case NANO_MEDIA_H264:
-    case NANO_MEDIA_H265:
+    case NANORTC_MEDIA_H264:
+    case NANORTC_MEDIA_H265:
         src->frame_index = 1;
         break;
-    case NANO_MEDIA_OPUS:
+    case NANORTC_MEDIA_OPUS:
         src->frame_index = 0;
         break;
     }

@@ -13,7 +13,7 @@ NanoRTC is a WebRTC protocol stack designed from the ground up for resource-cons
 ```
                      ┌─────────────────────────┐
   UDP bytes ────────►│                         │──────► bytes to send
-  monotonic time ───►│  nano_rtc_t             │──────► application events
+  monotonic time ───►│  nanortc_t             │──────► application events
   user commands ────►│  (pure state machine)   │──────► next timeout (ms)
                      │                         │
                      │  No sockets. No threads.│
@@ -27,9 +27,9 @@ NanoRTC is a WebRTC protocol stack designed from the ground up for resource-cons
 
 | Flag | What it adds | Flash | RAM (1 conn) |
 |------|-------------|-------|-------------|
-| `NANO_FEATURE_DATACHANNEL` | SCTP + DCEP DataChannels | ~80 KB | ~60 KB |
-| `+ NANO_FEATURE_AUDIO` | RTP/SRTP, jitter buffer | ~130 KB | ~100 KB |
-| `+ NANO_FEATURE_VIDEO` | H.264/VP8, bandwidth estimation | ~180 KB | ~160 KB |
+| `NANORTC_FEATURE_DATACHANNEL` | SCTP + DCEP DataChannels | ~80 KB | ~60 KB |
+| `+ NANORTC_FEATURE_AUDIO` | RTP/SRTP, jitter buffer | ~130 KB | ~100 KB |
+| `+ NANORTC_FEATURE_VIDEO` | H.264/VP8, bandwidth estimation | ~180 KB | ~160 KB |
 
 Any combination works — audio without DataChannel, video without audio, etc.
 
@@ -69,31 +69,31 @@ idf.py build
 ```c
 #include "nanortc.h"
 
-nano_rtc_t rtc;
-nano_rtc_config_t cfg = {
-    .crypto = nano_crypto_mbedtls(),
-    .role   = NANO_ROLE_CONTROLLED,
+nanortc_t rtc;
+nanortc_config_t cfg = {
+    .crypto = nanortc_crypto_mbedtls(),
+    .role   = NANORTC_ROLE_CONTROLLED,
 };
-nano_rtc_init(&rtc, &cfg);
+nanortc_init(&rtc, &cfg);
 
 // Exchange SDP via your signaling channel
 char answer[2048];
-nano_accept_offer(&rtc, remote_offer, answer, sizeof(answer), NULL);
+nanortc_accept_offer(&rtc, remote_offer, answer, sizeof(answer), NULL);
 
 // Event loop (your application drives this)
 for (;;) {
-    nano_output_t out;
-    while (nano_poll_output(&rtc, &out) == NANO_OK) {
-        if (out.type == NANO_OUTPUT_TRANSMIT)
+    nanortc_output_t out;
+    while (nanortc_poll_output(&rtc, &out) == NANORTC_OK) {
+        if (out.type == NANORTC_OUTPUT_TRANSMIT)
             sendto(fd, out.transmit.data, out.transmit.len, ...);
-        else if (out.type == NANO_OUTPUT_EVENT)
+        else if (out.type == NANORTC_OUTPUT_EVENT)
             handle_event(&out.event);
     }
 
     // Wait for network data or timeout, then:
-    nano_handle_receive(&rtc, now_ms, buf, len, &src);
+    nanortc_handle_receive(&rtc, now_ms, buf, len, &src);
     // or on timeout:
-    nano_handle_timeout(&rtc, now_ms);
+    nanortc_handle_timeout(&rtc, now_ms);
 }
 ```
 

@@ -14,7 +14,7 @@
 
 #include "nanortc.h"
 #include "nano_rtc_internal.h"
-#include "nano_crypto.h"
+#include "nanortc_crypto.h"
 #include "run_loop.h"
 #include "signaling.h"
 
@@ -31,42 +31,42 @@ static void on_signal(int sig)
     nano_run_loop_stop(&loop);
 }
 
-static void on_event(nano_rtc_t *rtc, const nano_event_t *evt, void *userdata)
+static void on_event(nanortc_t *rtc, const nanortc_event_t *evt, void *userdata)
 {
     (void)userdata;
 
     switch (evt->type) {
-    case NANO_EVENT_ICE_CONNECTED:
+    case NANORTC_EVENT_ICE_CONNECTED:
         fprintf(stderr, "[event] ICE connected\n");
         break;
 
-    case NANO_EVENT_DTLS_CONNECTED:
+    case NANORTC_EVENT_DTLS_CONNECTED:
         fprintf(stderr, "[event] DTLS connected\n");
         break;
 
-    case NANO_EVENT_SCTP_CONNECTED:
+    case NANORTC_EVENT_SCTP_CONNECTED:
         fprintf(stderr, "[event] SCTP connected\n");
         break;
 
-    case NANO_EVENT_DATACHANNEL_OPEN:
+    case NANORTC_EVENT_DATACHANNEL_OPEN:
         fprintf(stderr, "[event] DataChannel open (stream=%d)\n", evt->stream_id);
         break;
 
-    case NANO_EVENT_DATACHANNEL_DATA:
+    case NANORTC_EVENT_DATACHANNEL_DATA:
         fprintf(stderr, "[event] DC data (%zu bytes), echoing back\n", evt->len);
-        nano_send_datachannel(rtc, evt->stream_id, evt->data, evt->len);
+        nanortc_send_datachannel(rtc, evt->stream_id, evt->data, evt->len);
         break;
 
-    case NANO_EVENT_DATACHANNEL_STRING:
+    case NANORTC_EVENT_DATACHANNEL_STRING:
         fprintf(stderr, "[event] DC string: %.*s\n", (int)evt->len, (char *)evt->data);
-        nano_send_datachannel_string(rtc, evt->stream_id, (const char *)evt->data);
+        nanortc_send_datachannel_string(rtc, evt->stream_id, (const char *)evt->data);
         break;
 
-    case NANO_EVENT_DATACHANNEL_CLOSE:
+    case NANORTC_EVENT_DATACHANNEL_CLOSE:
         fprintf(stderr, "[event] DataChannel closed\n");
         break;
 
-    case NANO_EVENT_DISCONNECTED:
+    case NANORTC_EVENT_DISCONNECTED:
         fprintf(stderr, "[event] Disconnected\n");
         nano_run_loop_stop(&loop);
         break;
@@ -100,20 +100,20 @@ int main(int argc, char *argv[])
     signal(SIGTERM, on_signal);
 
     /* 1. Init nanortc */
-    nano_rtc_t rtc;
-    nano_rtc_config_t cfg;
+    nanortc_t rtc;
+    nanortc_config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
 
 #if defined(NANORTC_CRYPTO_OPENSSL)
-    cfg.crypto = nano_crypto_openssl();
+    cfg.crypto = nanortc_crypto_openssl();
 #else
-    cfg.crypto = nano_crypto_mbedtls();
+    cfg.crypto = nanortc_crypto_mbedtls();
 #endif
-    cfg.role = NANO_ROLE_CONTROLLED;
+    cfg.role = NANORTC_ROLE_CONTROLLED;
 
-    int rc = nano_rtc_init(&rtc, &cfg);
-    if (rc != NANO_OK) {
-        fprintf(stderr, "nano_rtc_init failed: %d\n", rc);
+    int rc = nanortc_init(&rtc, &cfg);
+    if (rc != NANORTC_OK) {
+        fprintf(stderr, "nanortc_init failed: %d\n", rc);
         return 1;
     }
 
@@ -125,11 +125,11 @@ int main(int argc, char *argv[])
     }
     nano_run_loop_set_event_cb(&loop, on_event, NULL);
 
-    fprintf(stderr, "nanortc DataChannel echo (port=%d, DC=%d)\n", port, NANO_FEATURE_DATACHANNEL);
+    fprintf(stderr, "nanortc DataChannel echo (port=%d, DC=%d)\n", port, NANORTC_FEATURE_DATACHANNEL);
 
     /* 3. Signaling: exchange SDP via stdin/stdout */
     nano_signaling_t sig;
-    nano_signaling_init(&sig, NANO_SIG_STDIN);
+    nano_signaling_init(&sig, NANORTC_SIG_STDIN);
 
     char offer[4096];
     rc = nano_signaling_recv_offer(&sig, offer, sizeof(offer));
@@ -139,9 +139,9 @@ int main(int argc, char *argv[])
     }
 
     char answer[4096];
-    rc = nano_accept_offer(&rtc, offer, answer, sizeof(answer), NULL);
-    if (rc != NANO_OK) {
-        fprintf(stderr, "nano_accept_offer failed: %d (%s)\n", rc, nano_err_to_name(rc));
+    rc = nanortc_accept_offer(&rtc, offer, answer, sizeof(answer), NULL);
+    if (rc != NANORTC_OK) {
+        fprintf(stderr, "nanortc_accept_offer failed: %d (%s)\n", rc, nanortc_err_to_name(rc));
         return 1;
     }
     nano_signaling_send_answer(&sig, answer);
@@ -154,7 +154,7 @@ int main(int argc, char *argv[])
 
     /* 5. Cleanup */
     nano_run_loop_destroy(&loop);
-    nano_rtc_destroy(&rtc);
+    nanortc_destroy(&rtc);
 
     fprintf(stderr, "Done.\n");
     return 0;

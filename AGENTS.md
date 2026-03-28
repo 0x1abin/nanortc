@@ -73,29 +73,29 @@ clang-format -i src/*.c src/*.h include/*.h crypto/*.h crypto/*.c
 
 These rules are mechanically enforced. Violations will break the build or CI.
 
-**Configuration:** All compile-time tunables (buffer sizes, limits, timeouts) must be defined in `include/nanortc_config.h` with `#ifndef` guards. Use `NANO_*` prefix. Internal headers include `nanortc_config.h` directly. Users override via `NANORTC_CONFIG_FILE` or ESP-IDF Kconfig.
+**Configuration:** All compile-time tunables (buffer sizes, limits, timeouts) must be defined in `include/nanortc_config.h` with `#ifndef` guards. Use `NANORTC_*` prefix. Internal headers include `nanortc_config.h` directly. Users override via `NANORTC_CONFIG_FILE` or ESP-IDF Kconfig.
 
-**Sans I/O discipline:** `src/` files may only include `<string.h>`, `<stdint.h>`, `<stdbool.h>`, `<stddef.h>`, and internal `nano_*.h` / `nano_crypto.h` / `nanortc_config.h`. No OS/platform headers.
+**Sans I/O discipline:** `src/` files may only include `<string.h>`, `<stdint.h>`, `<stdbool.h>`, `<stddef.h>`, and internal `nano_*.h` / `nanortc_crypto.h` / `nanortc_config.h`. No OS/platform headers.
 
 **No dynamic allocation:** No `malloc`/`free` in `src/`. Use caller-provided buffers.
 
-**Naming:** Public API: `nano_` prefix. Internal: module prefix (`stun_`, `sctp_`, etc.). Types: `nano_*_t`. Enums: `NANO_*`.
+**Naming:** Public API: `nano_` prefix. Internal: module prefix (`stun_`, `sctp_`, etc.). Types: `nano_*_t`. Enums: `NANORTC_*`.
 
-**Error handling:** Return `int` (0 = `NANO_OK`, negative = `NANO_ERR_*`). No `assert()` in library code.
+**Error handling:** Return `int` (0 = `NANORTC_OK`, negative = `NANORTC_ERR_*`). No `assert()` in library code.
 
-**Byte order:** Use `nano_htons`/`nano_ntohs`/`nano_htonl`/`nano_ntohl` from `nanortc.h`. Never platform `htons`.
+**Byte order:** Use `nanortc_htons`/`nanortc_ntohs`/`nanortc_htonl`/`nanortc_ntohl` from `nanortc.h`. Never platform `htons`.
 
-**Feature guards:** Code guarded by orthogonal feature flags: `#if NANO_FEATURE_DATACHANNEL`, `#if NANO_FEATURE_AUDIO`, `#if NANO_FEATURE_VIDEO`, `#if NANO_HAVE_MEDIA_TRANSPORT`. All 6 feature combinations must compile and pass tests (DATA, AUDIO, MEDIA, AUDIO_ONLY, MEDIA_ONLY, CORE_ONLY).
+**Feature guards:** Code guarded by orthogonal feature flags: `#if NANORTC_FEATURE_DATACHANNEL`, `#if NANORTC_FEATURE_AUDIO`, `#if NANORTC_FEATURE_VIDEO`, `#if NANORTC_HAVE_MEDIA_TRANSPORT`. All 6 feature combinations must compile and pass tests (DATA, AUDIO, MEDIA, AUDIO_ONLY, MEDIA_ONLY, CORE_ONLY).
 
-**No global state:** All state in `nano_rtc_t`. Multiple instances must coexist.
+**No global state:** All state in `nanortc_t`. Multiple instances must coexist.
 
 **RFC authority:** When RFC and reference code disagree, RFC wins. Cite RFC sections in comments.
 
 **RFC testing:** Any RFC-based module MUST have tests generated independently from the RFC document — hardcoded byte-level test vectors from RFC appendices (e.g., RFC 5769 for STUN) plus real captures from reference implementations. Roundtrip tests (encode → parse own output) are supplementary only. See [development-workflow.md](docs/engineering/development-workflow.md) for full requirements.
 
-**Safe C functions:** No `strlen`, `sprintf`, `snprintf`, `strcpy`, `strncpy`, `strcat`, `strncat`, `sscanf`, `atoi`, `atol`, `gets` in `src/` or `crypto/`. Use explicit `(buffer, length)` pairs and `memcpy`. API boundary functions (`nano_*`) may use `strlen` once per parameter with `/* NANO_SAFE: API boundary */` annotation. See `docs/engineering/safe-c-guidelines.md`.
+**Safe C functions:** No `strlen`, `sprintf`, `snprintf`, `strcpy`, `strncpy`, `strcat`, `strncat`, `sscanf`, `atoi`, `atol`, `gets` in `src/` or `crypto/`. Use explicit `(buffer, length)` pairs and `memcpy`. API boundary functions (`nano_*`) may use `strlen` once per parameter with `/* NANORTC_SAFE: API boundary */` annotation. See `docs/engineering/safe-c-guidelines.md`.
 
-**Named array sizes:** Every struct array member must use a named macro for its size, never a bare integer literal. Configurable buffer sizes use `NANO_*` macros in `nanortc_config.h` with `#ifndef` guards. Protocol-fixed sizes (RFC-mandated) use `MODULE_*_SIZE` macros in the relevant module header. Boundary checks in `.c` files must reference the same macro.
+**Named array sizes:** Every struct array member must use a named macro for its size, never a bare integer literal. Configurable buffer sizes use `NANORTC_*` macros in `nanortc_config.h` with `#ifndef` guards. Protocol-fixed sizes (RFC-mandated) use `MODULE_*_SIZE` macros in the relevant module header. Boundary checks in `.c` files must reference the same macro.
 
 ## Reference Implementations
 

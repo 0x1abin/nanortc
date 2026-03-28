@@ -4,8 +4,8 @@
  * SPDX-License-Identifier: MIT
  */
 
-#ifndef NANO_RTP_H_
-#define NANO_RTP_H_
+#ifndef NANORTC_RTP_H_
+#define NANORTC_RTP_H_
 
 #include <stdint.h>
 #include <stddef.h>
@@ -32,4 +32,4 @@ int rtp_pack(nano_rtp_t *rtp, uint32_t timestamp, const uint8_t *payload, size_t
 int rtp_unpack(const uint8_t *data, size_t len, uint8_t *pt, uint16_t *seq, uint32_t *ts,
                uint32_t *ssrc, const uint8_t **payload, size_t *payload_len);
 
-#endif /* NANO_RTP_H_ */
+#endif /* NANORTC_RTP_H_ */

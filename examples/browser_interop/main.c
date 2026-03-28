@@ -14,7 +14,7 @@
 
 #include "nanortc.h"
 #include "nano_rtc_internal.h"
-#include "nano_crypto.h"
+#include "nanortc_crypto.h"
 #include "run_loop.h"
 #include "http_signaling.h"
 
@@ -37,42 +37,42 @@ static void on_signal(int sig)
     nano_run_loop_stop(&loop);
 }
 
-static void on_event(nano_rtc_t *rtc, const nano_event_t *evt, void *userdata)
+static void on_event(nanortc_t *rtc, const nanortc_event_t *evt, void *userdata)
 {
     (void)userdata;
 
     switch (evt->type) {
-    case NANO_EVENT_ICE_CONNECTED:
+    case NANORTC_EVENT_ICE_CONNECTED:
         fprintf(stderr, "[event] ICE connected\n");
         break;
 
-    case NANO_EVENT_DTLS_CONNECTED:
+    case NANORTC_EVENT_DTLS_CONNECTED:
         fprintf(stderr, "[event] DTLS connected\n");
         break;
 
-    case NANO_EVENT_SCTP_CONNECTED:
+    case NANORTC_EVENT_SCTP_CONNECTED:
         fprintf(stderr, "[event] SCTP connected\n");
         break;
 
-    case NANO_EVENT_DATACHANNEL_OPEN:
+    case NANORTC_EVENT_DATACHANNEL_OPEN:
         fprintf(stderr, "[event] DataChannel open (stream=%d)\n", evt->stream_id);
         break;
 
-    case NANO_EVENT_DATACHANNEL_DATA:
+    case NANORTC_EVENT_DATACHANNEL_DATA:
         fprintf(stderr, "[event] DC data (%zu bytes), echoing back\n", evt->len);
-        nano_send_datachannel(rtc, evt->stream_id, evt->data, evt->len);
+        nanortc_send_datachannel(rtc, evt->stream_id, evt->data, evt->len);
         break;
 
-    case NANO_EVENT_DATACHANNEL_STRING:
+    case NANORTC_EVENT_DATACHANNEL_STRING:
         fprintf(stderr, "[event] DC string: %.*s\n", (int)evt->len, (char *)evt->data);
-        nano_send_datachannel_string(rtc, evt->stream_id, (const char *)evt->data);
+        nanortc_send_datachannel_string(rtc, evt->stream_id, (const char *)evt->data);
         break;
 
-    case NANO_EVENT_DATACHANNEL_CLOSE:
+    case NANORTC_EVENT_DATACHANNEL_CLOSE:
         fprintf(stderr, "[event] DataChannel closed\n");
         break;
 
-    case NANO_EVENT_DISCONNECTED:
+    case NANORTC_EVENT_DISCONNECTED:
         fprintf(stderr, "[event] Disconnected\n");
         nano_run_loop_stop(&loop);
         break;
@@ -96,7 +96,7 @@ static void usage(const char *prog)
  * Signaling: answer mode (CONTROLLED)
  *   Wait for offer → generate answer → send answer
  * ---------------------------------------------------------------- */
-static int do_answer_signaling(http_sig_t *sig, nano_rtc_t *rtc)
+static int do_answer_signaling(http_sig_t *sig, nanortc_t *rtc)
 {
     char type[32];
     char payload[HTTP_SIG_BUF_SIZE];
@@ -119,9 +119,9 @@ static int do_answer_signaling(http_sig_t *sig, nano_rtc_t *rtc)
 
     char answer[HTTP_SIG_BUF_SIZE];
     size_t answer_len = 0;
-    int rc = nano_accept_offer(rtc, payload, answer, sizeof(answer), &answer_len);
-    if (rc != NANO_OK) {
-        fprintf(stderr, "nano_accept_offer failed: %d\n", rc);
+    int rc = nanortc_accept_offer(rtc, payload, answer, sizeof(answer), &answer_len);
+    if (rc != NANORTC_OK) {
+        fprintf(stderr, "nanortc_accept_offer failed: %d\n", rc);
         return rc;
     }
     fprintf(stderr, "[sig] Generated SDP answer (%zu bytes)\n", answer_len);
@@ -139,12 +139,12 @@ static int do_answer_signaling(http_sig_t *sig, nano_rtc_t *rtc)
  * Signaling: offer mode (CONTROLLING)
  *   Generate offer → send offer → wait for answer
  * ---------------------------------------------------------------- */
-static int do_offer_signaling(http_sig_t *sig, nano_rtc_t *rtc)
+static int do_offer_signaling(http_sig_t *sig, nanortc_t *rtc)
 {
     char offer[HTTP_SIG_BUF_SIZE];
-    int rc = nano_create_offer(rtc, offer, sizeof(offer), NULL);
+    int rc = nanortc_create_offer(rtc, offer, sizeof(offer), NULL);
     if (rc < 0) {
-        fprintf(stderr, "nano_create_offer failed: %d\n", rc);
+        fprintf(stderr, "nanortc_create_offer failed: %d\n", rc);
         return rc;
     }
 
@@ -171,14 +171,14 @@ static int do_offer_signaling(http_sig_t *sig, nano_rtc_t *rtc)
         /* Buffer any early ICE candidates */
         if (strcmp(type, "candidate") == 0 && payload[0] != '\0') {
             fprintf(stderr, "[sig] Early ICE candidate: %.60s...\n", payload);
-            nano_add_remote_candidate(rtc, payload);
+            nanortc_add_remote_candidate(rtc, payload);
         }
     }
 
     fprintf(stderr, "[sig] Got SDP answer (%zu bytes)\n", strlen(payload));
-    rc = nano_accept_answer(rtc, payload);
+    rc = nanortc_accept_answer(rtc, payload);
     if (rc < 0) {
-        fprintf(stderr, "nano_accept_answer failed: %d\n", rc);
+        fprintf(stderr, "nanortc_accept_answer failed: %d\n", rc);
         return rc;
     }
     return 0;
@@ -189,7 +189,7 @@ static int do_offer_signaling(http_sig_t *sig, nano_rtc_t *rtc)
  * ---------------------------------------------------------------- */
 static uint32_t last_poll_ms;
 
-static void poll_trickle_ice(http_sig_t *sig, nano_rtc_t *rtc)
+static void poll_trickle_ice(http_sig_t *sig, nanortc_t *rtc)
 {
     uint32_t now = nano_get_millis();
     if (now - last_poll_ms < 500) return; /* throttle to every 500ms */
@@ -203,7 +203,7 @@ static void poll_trickle_ice(http_sig_t *sig, nano_rtc_t *rtc)
     if (rc == 0) {
         if (strcmp(type, "candidate") == 0 && payload[0] != '\0') {
             fprintf(stderr, "[sig] Trickle ICE: %.60s...\n", payload);
-            nano_add_remote_candidate(rtc, payload);
+            nanortc_add_remote_candidate(rtc, payload);
         } else if (strcmp(type, "candidate") == 0) {
             fprintf(stderr, "[sig] End-of-candidates\n");
         }
@@ -263,20 +263,20 @@ int main(int argc, char *argv[])
     }
 
     /* 2. Init nanortc */
-    nano_rtc_t rtc;
-    nano_rtc_config_t cfg;
+    nanortc_t rtc;
+    nanortc_config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
 
 #if defined(NANORTC_CRYPTO_OPENSSL)
-    cfg.crypto = nano_crypto_openssl();
+    cfg.crypto = nanortc_crypto_openssl();
 #else
-    cfg.crypto = nano_crypto_mbedtls();
+    cfg.crypto = nanortc_crypto_mbedtls();
 #endif
-    cfg.role = offer_mode ? NANO_ROLE_CONTROLLING : NANO_ROLE_CONTROLLED;
+    cfg.role = offer_mode ? NANORTC_ROLE_CONTROLLING : NANORTC_ROLE_CONTROLLED;
 
-    rc = nano_rtc_init(&rtc, &cfg);
-    if (rc != NANO_OK) {
-        fprintf(stderr, "nano_rtc_init failed: %d\n", rc);
+    rc = nanortc_init(&rtc, &cfg);
+    if (rc != NANORTC_OK) {
+        fprintf(stderr, "nanortc_init failed: %d\n", rc);
         http_sig_leave(&sig);
         return 1;
     }
@@ -306,11 +306,11 @@ int main(int argc, char *argv[])
     if (rc < 0) {
         fprintf(stderr, "Failed to bind UDP port %d\n", port);
         http_sig_leave(&sig);
-        nano_rtc_destroy(&rtc);
+        nanortc_destroy(&rtc);
         return 1;
     }
     /* Override 0.0.0.0 candidate with actual IP for SDP */
-    nano_add_local_candidate(&rtc, bind_ip, port);
+    nanortc_add_local_candidate(&rtc, bind_ip, port);
     nano_run_loop_set_event_cb(&loop, on_event, NULL);
 
     fprintf(stderr, "nanortc browser_interop (mode=%s, udp=%s:%d, sig=%s:%u)\n",
@@ -337,7 +337,7 @@ int main(int argc, char *argv[])
 cleanup:
     http_sig_leave(&sig);
     nano_run_loop_destroy(&loop);
-    nano_rtc_destroy(&rtc);
+    nanortc_destroy(&rtc);
 
     fprintf(stderr, "Done.\n");
     return 0;

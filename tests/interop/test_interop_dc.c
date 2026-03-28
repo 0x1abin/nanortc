@@ -190,9 +190,9 @@ TEST(test_interop_dc_string_nanortc_to_libdatachannel)
     const char *msg = "hello libdatachannel";
     int initial_count = atomic_load(&libdatachannel.msg_count);
 
-    /* nano_send_datachannel_string is thread-safe for our purposes here
+    /* nanortc_send_datachannel_string is thread-safe for our purposes here
      * because the run_loop is the only other accessor of rtc */
-    rc = nano_send_datachannel_string(&nano.rtc, 0, msg);
+    rc = nanortc_send_datachannel_string(&nano.rtc, 0, msg);
     ASSERT_OK(rc);
 
     /* Wait for libdatachannel to receive it */
@@ -282,7 +282,7 @@ TEST(test_interop_dc_binary_nanortc_to_libdatachannel)
     }
 
     int initial_count = atomic_load(&libdatachannel.msg_count);
-    rc = nano_send_datachannel(&nano.rtc, 0, payload, sizeof(payload));
+    rc = nanortc_send_datachannel(&nano.rtc, 0, payload, sizeof(payload));
     ASSERT_OK(rc);
 
     /* Wait for libdatachannel to receive */
@@ -386,7 +386,7 @@ TEST(test_interop_dc_single_byte)
     /* nanortc -> libdatachannel: single byte 0xAB */
     uint8_t byte_nano = 0xAB;
     int initial_ldc = atomic_load(&libdatachannel.msg_count);
-    rc = nano_send_datachannel(&nano.rtc, 0, &byte_nano, 1);
+    rc = nanortc_send_datachannel(&nano.rtc, 0, &byte_nano, 1);
     ASSERT_OK(rc);
 
     start = interop_get_millis();
@@ -481,7 +481,7 @@ TEST(test_interop_dc_bidirectional)
     const char *from_nano = "from-nano";
     const char *from_ldc = "from-libdc";
 
-    rc = nano_send_datachannel_string(&nano.rtc, 0, from_nano);
+    rc = nanortc_send_datachannel_string(&nano.rtc, 0, from_nano);
     ASSERT_OK(rc);
     rc = interop_libdatachannel_send_string(&libdatachannel, from_ldc);
     ASSERT_TRUE(rc >= 0);
@@ -551,7 +551,7 @@ TEST(test_interop_dc_echo_roundtrip)
     /* Step 2: nanortc echoes back a reply */
     const char *reply = "echo-reply";
     int initial_ldc = atomic_load(&libdatachannel.msg_count);
-    rc = nano_send_datachannel_string(&nano.rtc, 0, reply);
+    rc = nanortc_send_datachannel_string(&nano.rtc, 0, reply);
     ASSERT_OK(rc);
 
     start = interop_get_millis();

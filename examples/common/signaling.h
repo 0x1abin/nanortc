@@ -10,8 +10,8 @@
  * SPDX-License-Identifier: MIT
  */
 
-#ifndef NANO_SIGNALING_H_
-#define NANO_SIGNALING_H_
+#ifndef NANORTC_SIGNALING_H_
+#define NANORTC_SIGNALING_H_
 
 #include <stddef.h>
 
@@ -22,7 +22,7 @@ extern "C" {
 typedef struct nano_signaling nano_signaling_t;
 
 typedef enum {
-    NANO_SIG_STDIN, /* Read offer from stdin, print answer to stdout */
+    NANORTC_SIG_STDIN, /* Read offer from stdin, print answer to stdout */
 } nano_signaling_type_t;
 
 struct nano_signaling {
@@ -45,4 +45,4 @@ void nano_signaling_destroy(nano_signaling_t *sig);
 }
 #endif
 
-#endif /* NANO_SIGNALING_H_ */
+#endif /* NANORTC_SIGNALING_H_ */

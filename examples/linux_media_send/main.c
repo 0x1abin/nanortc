@@ -16,7 +16,7 @@
 
 #include "nanortc.h"
 #include "nano_rtc_internal.h"
-#include "nano_crypto.h"
+#include "nanortc_crypto.h"
 #include "run_loop.h"
 #include "signaling.h"
 #include "media_source.h"
@@ -35,34 +35,34 @@ static void on_signal(int sig)
     nano_run_loop_stop(&loop);
 }
 
-static void on_event(nano_rtc_t *rtc, const nano_event_t *evt, void *userdata)
+static void on_event(nanortc_t *rtc, const nanortc_event_t *evt, void *userdata)
 {
     (void)rtc;
     (void)userdata;
 
     switch (evt->type) {
-    case NANO_EVENT_SCTP_CONNECTED:
+    case NANORTC_EVENT_SCTP_CONNECTED:
         fprintf(stderr, "[event] Connected — starting media\n");
         connected = 1;
         break;
 
-    case NANO_EVENT_DATACHANNEL_STRING:
+    case NANORTC_EVENT_DATACHANNEL_STRING:
         fprintf(stderr, "[event] DC: %.*s\n", (int)evt->len, (char *)evt->data);
         break;
 
-#if NANO_FEATURE_AUDIO
-    case NANO_EVENT_AUDIO_DATA:
+#if NANORTC_FEATURE_AUDIO
+    case NANORTC_EVENT_AUDIO_DATA:
         /* Received audio from remote — could play it */
         break;
 #endif
 
-#if NANO_FEATURE_VIDEO
-    case NANO_EVENT_KEYFRAME_REQUEST:
+#if NANORTC_FEATURE_VIDEO
+    case NANORTC_EVENT_KEYFRAME_REQUEST:
         fprintf(stderr, "[event] Keyframe requested\n");
         break;
 #endif
 
-    case NANO_EVENT_DISCONNECTED:
+    case NANORTC_EVENT_DISCONNECTED:
         fprintf(stderr, "[event] Disconnected\n");
         connected = 0;
         nano_run_loop_stop(&loop);
@@ -110,9 +110,9 @@ int main(int argc, char *argv[])
     nano_media_source_t video_src, audio_src;
     int has_video = 0, has_audio = 0;
 
-#if NANO_FEATURE_VIDEO
+#if NANORTC_FEATURE_VIDEO
     if (video_dir) {
-        if (nano_media_source_init(&video_src, NANO_MEDIA_H264, video_dir) == 0) {
+        if (nano_media_source_init(&video_src, NANORTC_MEDIA_H264, video_dir) == 0) {
             has_video = 1;
             fprintf(stderr, "Video source: %s (H.264, 25fps)\n", video_dir);
         } else {
@@ -121,9 +121,9 @@ int main(int argc, char *argv[])
     }
 #endif
 
-#if NANO_FEATURE_AUDIO
+#if NANORTC_FEATURE_AUDIO
     if (audio_dir) {
-        if (nano_media_source_init(&audio_src, NANO_MEDIA_OPUS, audio_dir) == 0) {
+        if (nano_media_source_init(&audio_src, NANORTC_MEDIA_OPUS, audio_dir) == 0) {
             has_audio = 1;
             fprintf(stderr, "Audio source: %s (Opus, 20ms)\n", audio_dir);
         } else {
@@ -138,37 +138,37 @@ int main(int argc, char *argv[])
     }
 
     /* 2. Init nanortc */
-    nano_rtc_t rtc;
-    nano_rtc_config_t cfg;
+    nanortc_t rtc;
+    nanortc_config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
 
 #if defined(NANORTC_CRYPTO_OPENSSL)
-    cfg.crypto = nano_crypto_openssl();
+    cfg.crypto = nanortc_crypto_openssl();
 #else
-    cfg.crypto = nano_crypto_mbedtls();
+    cfg.crypto = nanortc_crypto_mbedtls();
 #endif
-    cfg.role = NANO_ROLE_CONTROLLED;
+    cfg.role = NANORTC_ROLE_CONTROLLED;
 
-#if NANO_FEATURE_AUDIO
+#if NANORTC_FEATURE_AUDIO
     if (has_audio) {
-        cfg.audio_codec = NANO_CODEC_OPUS;
+        cfg.audio_codec = NANORTC_CODEC_OPUS;
         cfg.audio_sample_rate = 48000;
         cfg.audio_channels = 2;
-        cfg.audio_direction = NANO_DIR_SENDONLY;
+        cfg.audio_direction = NANORTC_DIR_SENDONLY;
         cfg.jitter_depth_ms = 100;
     }
 #endif
 
-#if NANO_FEATURE_VIDEO
+#if NANORTC_FEATURE_VIDEO
     if (has_video) {
-        cfg.video_codec = NANO_CODEC_H264;
-        cfg.video_direction = NANO_DIR_SENDONLY;
+        cfg.video_codec = NANORTC_CODEC_H264;
+        cfg.video_direction = NANORTC_DIR_SENDONLY;
     }
 #endif
 
-    int rc = nano_rtc_init(&rtc, &cfg);
-    if (rc != NANO_OK) {
-        fprintf(stderr, "nano_rtc_init failed: %d\n", rc);
+    int rc = nanortc_init(&rtc, &cfg);
+    if (rc != NANORTC_OK) {
+        fprintf(stderr, "nanortc_init failed: %d\n", rc);
         return 1;
     }
 
@@ -181,11 +181,11 @@ int main(int argc, char *argv[])
     nano_run_loop_set_event_cb(&loop, on_event, NULL);
 
     fprintf(stderr, "nanortc media sender (port=%d, DC=%d AUDIO=%d VIDEO=%d)\n", port,
-            NANO_FEATURE_DATACHANNEL, NANO_FEATURE_AUDIO, NANO_FEATURE_VIDEO);
+            NANORTC_FEATURE_DATACHANNEL, NANORTC_FEATURE_AUDIO, NANORTC_FEATURE_VIDEO);
 
     /* 4. Signaling */
     nano_signaling_t sig;
-    nano_signaling_init(&sig, NANO_SIG_STDIN);
+    nano_signaling_init(&sig, NANORTC_SIG_STDIN);
 
     char offer[4096];
     rc = nano_signaling_recv_offer(&sig, offer, sizeof(offer));
@@ -195,9 +195,9 @@ int main(int argc, char *argv[])
     }
 
     char answer[4096];
-    rc = nano_accept_offer(&rtc, offer, answer, sizeof(answer), NULL);
-    if (rc != NANO_OK) {
-        fprintf(stderr, "nano_accept_offer failed: %d (%s)\n", rc, nano_err_to_name(rc));
+    rc = nanortc_accept_offer(&rtc, offer, answer, sizeof(answer), NULL);
+    if (rc != NANORTC_OK) {
+        fprintf(stderr, "nanortc_accept_offer failed: %d (%s)\n", rc, nanortc_err_to_name(rc));
         return 1;
     }
     nano_signaling_send_answer(&sig, answer);
@@ -206,7 +206,7 @@ int main(int argc, char *argv[])
     /* 5. Main loop: event loop + media pacing */
     fprintf(stderr, "Entering event loop... (Ctrl+C to quit)\n");
 
-    uint8_t frame_buf[NANO_MEDIA_MAX_FRAME_SIZE];
+    uint8_t frame_buf[NANORTC_MEDIA_MAX_FRAME_SIZE];
     uint32_t next_video_ms = 0;
     uint32_t next_audio_ms = 0;
 
@@ -220,7 +220,7 @@ int main(int argc, char *argv[])
 
         uint32_t now = nano_get_millis();
 
-#if NANO_FEATURE_VIDEO
+#if NANORTC_FEATURE_VIDEO
         /* Send video frame at 25fps */
         if (has_video && now >= next_video_ms) {
             size_t frame_len;
@@ -228,20 +228,20 @@ int main(int argc, char *argv[])
             if (nano_media_source_next_frame(&video_src, frame_buf, sizeof(frame_buf),
                                              &frame_len, &ts) == 0) {
                 int is_kf = (video_src.frame_index == 2); /* frame after reset = keyframe */
-                nano_send_video(&rtc, ts, frame_buf, frame_len, is_kf);
+                nanortc_send_video(&rtc, ts, frame_buf, frame_len, is_kf);
             }
             next_video_ms = now + nano_media_source_interval_ms(&video_src);
         }
 #endif
 
-#if NANO_FEATURE_AUDIO
+#if NANORTC_FEATURE_AUDIO
         /* Send audio frame at 50fps (20ms) */
         if (has_audio && now >= next_audio_ms) {
             size_t frame_len;
             uint32_t ts;
             if (nano_media_source_next_frame(&audio_src, frame_buf, sizeof(frame_buf),
                                              &frame_len, &ts) == 0) {
-                nano_send_audio(&rtc, ts, frame_buf, frame_len);
+                nanortc_send_audio(&rtc, ts, frame_buf, frame_len);
             }
             next_audio_ms = now + nano_media_source_interval_ms(&audio_src);
         }
@@ -250,7 +250,7 @@ int main(int argc, char *argv[])
 
     /* 6. Cleanup */
     nano_run_loop_destroy(&loop);
-    nano_rtc_destroy(&rtc);
+    nanortc_destroy(&rtc);
     if (has_video) nano_media_source_destroy(&video_src);
     if (has_audio) nano_media_source_destroy(&audio_src);
 

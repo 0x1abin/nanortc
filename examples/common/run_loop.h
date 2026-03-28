@@ -1,14 +1,14 @@
 /*
  * nanortc examples — Platform event loop interface
  *
- * Bridges the Sans I/O nano_rtc_t state machine to real UDP sockets.
+ * Bridges the Sans I/O nanortc_t state machine to real UDP sockets.
  * Each platform provides its own implementation (Linux, ESP-IDF, etc.).
  *
  * SPDX-License-Identifier: MIT
  */
 
-#ifndef NANO_RUN_LOOP_H_
-#define NANO_RUN_LOOP_H_
+#ifndef NANORTC_RUN_LOOP_H_
+#define NANORTC_RUN_LOOP_H_
 
 #include "nanortc.h"
 
@@ -17,12 +17,12 @@ extern "C" {
 #endif
 
 /* Forward-declare internal struct; defined in nano_rtc_internal.h */
-typedef struct nano_rtc nano_rtc_t;
+typedef struct nanortc nanortc_t;
 
-typedef void (*nano_event_cb)(nano_rtc_t *rtc, const nano_event_t *evt, void *userdata);
+typedef void (*nano_event_cb)(nanortc_t *rtc, const nanortc_event_t *evt, void *userdata);
 
 typedef struct nano_run_loop {
-    nano_rtc_t *rtc;
+    nanortc_t *rtc;
     int fd;               /* UDP socket */
     uint16_t port;
     int running;
@@ -30,8 +30,8 @@ typedef struct nano_run_loop {
     void *event_userdata;
 } nano_run_loop_t;
 
-/* Initialize: bind UDP socket, associate with nano_rtc_t */
-int nano_run_loop_init(nano_run_loop_t *loop, nano_rtc_t *rtc,
+/* Initialize: bind UDP socket, associate with nanortc_t */
+int nano_run_loop_init(nano_run_loop_t *loop, nanortc_t *rtc,
                        const char *bind_ip, uint16_t port);
 
 /* Set application event callback */
@@ -57,4 +57,4 @@ uint32_t nano_get_millis(void);
 }
 #endif
 
-#endif /* NANO_RUN_LOOP_H_ */
+#endif /* NANORTC_RUN_LOOP_H_ */

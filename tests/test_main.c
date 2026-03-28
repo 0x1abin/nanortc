@@ -6,7 +6,7 @@
 
 #include "nanortc.h"
 #include "nano_rtc_internal.h"
-#include "nano_crypto.h"
+#include "nanortc_crypto.h"
 #include "nano_test.h"
 #include "nano_test_config.h"
 #include <string.h>
@@ -15,55 +15,55 @@
 
 TEST(test_init_destroy)
 {
-    nano_rtc_t rtc;
-    nano_rtc_config_t cfg;
+    nanortc_t rtc;
+    nanortc_config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.crypto = nano_test_crypto();
-    cfg.role = NANO_ROLE_CONTROLLED;
-#if NANO_FEATURE_AUDIO
+    cfg.role = NANORTC_ROLE_CONTROLLED;
+#if NANORTC_FEATURE_AUDIO
     cfg.jitter_depth_ms = 100;
 #endif
 
-    ASSERT_OK(nano_rtc_init(&rtc, &cfg));
-    nano_rtc_destroy(&rtc);
+    ASSERT_OK(nanortc_init(&rtc, &cfg));
+    nanortc_destroy(&rtc);
 }
 
 TEST(test_init_null_params)
 {
-    nano_rtc_config_t cfg;
+    nanortc_config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
 
-    ASSERT_EQ(nano_rtc_init(NULL, &cfg), NANO_ERR_INVALID_PARAM);
-    ASSERT_EQ(nano_rtc_init((nano_rtc_t *)1, NULL), NANO_ERR_INVALID_PARAM);
+    ASSERT_EQ(nanortc_init(NULL, &cfg), NANORTC_ERR_INVALID_PARAM);
+    ASSERT_EQ(nanortc_init((nanortc_t *)1, NULL), NANORTC_ERR_INVALID_PARAM);
 }
 
 TEST(test_poll_empty)
 {
-    nano_rtc_t rtc;
-    nano_rtc_config_t cfg;
+    nanortc_t rtc;
+    nanortc_config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.crypto = nano_test_crypto();
-#if NANO_FEATURE_AUDIO
+#if NANORTC_FEATURE_AUDIO
     cfg.jitter_depth_ms = 100;
 #endif
 
-    ASSERT_OK(nano_rtc_init(&rtc, &cfg));
+    ASSERT_OK(nanortc_init(&rtc, &cfg));
 
-    nano_output_t out;
-    ASSERT_EQ(nano_poll_output(&rtc, &out), NANO_ERR_NO_DATA);
+    nanortc_output_t out;
+    ASSERT_EQ(nanortc_poll_output(&rtc, &out), NANORTC_ERR_NO_DATA);
 
-    nano_rtc_destroy(&rtc);
+    nanortc_destroy(&rtc);
 }
 
 TEST(test_byte_order)
 {
-    ASSERT_EQ(nano_htons(0x0102), 0x0201);
-    ASSERT_EQ(nano_ntohs(0x0201), 0x0102);
-    ASSERT_EQ(nano_htonl(0x01020304), 0x04030201);
-    ASSERT_EQ(nano_ntohl(0x04030201), 0x01020304);
+    ASSERT_EQ(nanortc_htons(0x0102), 0x0201);
+    ASSERT_EQ(nanortc_ntohs(0x0201), 0x0102);
+    ASSERT_EQ(nanortc_htonl(0x01020304), 0x04030201);
+    ASSERT_EQ(nanortc_ntohl(0x04030201), 0x01020304);
 }
 
-#if NANO_FEATURE_DATACHANNEL
+#if NANORTC_FEATURE_DATACHANNEL
 TEST(test_crc32c)
 {
     /* Known CRC-32c test vector: "123456789" -> 0xE3069283 */
@@ -90,7 +90,7 @@ TEST_MAIN_BEGIN("nanortc basic tests")
     RUN(test_init_null_params);
     RUN(test_poll_empty);
     RUN(test_byte_order);
-#if NANO_FEATURE_DATACHANNEL
+#if NANORTC_FEATURE_DATACHANNEL
     RUN(test_crc32c);
 #endif
     RUN(test_crc32);

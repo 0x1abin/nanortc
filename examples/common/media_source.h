@@ -12,8 +12,8 @@
  * SPDX-License-Identifier: MIT
  */
 
-#ifndef NANO_MEDIA_SOURCE_H_
-#define NANO_MEDIA_SOURCE_H_
+#ifndef NANORTC_MEDIA_SOURCE_H_
+#define NANORTC_MEDIA_SOURCE_H_
 
 #include <stdint.h>
 #include <stddef.h>
@@ -23,17 +23,17 @@ extern "C" {
 #endif
 
 typedef enum {
-    NANO_MEDIA_H264,
-    NANO_MEDIA_H265,
-    NANO_MEDIA_OPUS,
+    NANORTC_MEDIA_H264,
+    NANORTC_MEDIA_H265,
+    NANORTC_MEDIA_OPUS,
 } nano_media_type_t;
 
-#define NANO_MEDIA_MAX_FRAME_SIZE 16384 /* 16 KB max frame */
-#define NANO_MEDIA_MAX_PATH       512
+#define NANORTC_MEDIA_MAX_FRAME_SIZE 16384 /* 16 KB max frame */
+#define NANORTC_MEDIA_MAX_PATH       512
 
 typedef struct nano_media_source {
     nano_media_type_t type;
-    char sample_dir[NANO_MEDIA_MAX_PATH];
+    char sample_dir[NANORTC_MEDIA_MAX_PATH];
     int frame_index;   /* current frame (1-based for video, 0-based for opus) */
     int frame_count;   /* total frames available */
     uint32_t frame_interval_ms; /* ms between frames */
@@ -68,4 +68,4 @@ static inline uint32_t nano_media_source_interval_ms(const nano_media_source_t *
 }
 #endif
 
-#endif /* NANO_MEDIA_SOURCE_H_ */
+#endif /* NANORTC_MEDIA_SOURCE_H_ */

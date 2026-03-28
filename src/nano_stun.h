@@ -4,8 +4,8 @@
  * SPDX-License-Identifier: MIT
  */
 
-#ifndef NANO_STUN_H_
-#define NANO_STUN_H_
+#ifndef NANORTC_STUN_H_
+#define NANORTC_STUN_H_
 
 #include "nanortc.h"
 
@@ -69,9 +69,9 @@ typedef struct stun_msg {
     uint32_t fingerprint_value; /* parsed fingerprint (host order) */
 
     /* XOR-MAPPED-ADDRESS (RFC 8489 §14.2) */
-    uint8_t mapped_addr[NANO_ADDR_SIZE]; /* decoded address (4 bytes IPv4, 16 bytes IPv6) */
-    uint16_t mapped_port;                /* decoded port (host order) */
-    uint8_t mapped_family;               /* STUN_FAMILY_IPV4/IPV6, 0 = not present */
+    uint8_t mapped_addr[NANORTC_ADDR_SIZE]; /* decoded address (4 bytes IPv4, 16 bytes IPv6) */
+    uint16_t mapped_port;                   /* decoded port (host order) */
+    uint8_t mapped_family;                  /* STUN_FAMILY_IPV4/IPV6, 0 = not present */
 
     /* ICE role attributes (RFC 8445 §7.1) */
     uint64_t ice_controlling; /* tie-breaker value */
@@ -87,11 +87,11 @@ typedef struct stun_msg {
 int stun_parse(const uint8_t *data, size_t len, stun_msg_t *msg);
 
 /* Verify FINGERPRINT attribute (CRC-32 XOR 0x5354554E).
- * Returns NANO_OK or NANO_ERR_PROTOCOL. */
+ * Returns NANORTC_OK or NANORTC_ERR_PROTOCOL. */
 int stun_verify_fingerprint(const uint8_t *data, size_t len);
 
 /* Verify MESSAGE-INTEGRITY using HMAC-SHA1 (RFC 8489 §14.5).
- * Returns NANO_OK or NANO_ERR_PROTOCOL. */
+ * Returns NANORTC_OK or NANORTC_ERR_PROTOCOL. */
 int stun_verify_integrity(const uint8_t *data, size_t len, const stun_msg_t *msg,
                           const uint8_t *key, size_t key_len, stun_hmac_sha1_fn hmac_sha1);
 
@@ -108,4 +108,4 @@ int stun_encode_binding_request(const char *username, size_t username_len, uint3
                                 size_t key_len, stun_hmac_sha1_fn hmac_sha1, uint8_t *buf,
                                 size_t buf_len, size_t *out_len);
 
-#endif /* NANO_STUN_H_ */
+#endif /* NANORTC_STUN_H_ */

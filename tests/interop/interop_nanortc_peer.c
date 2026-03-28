@@ -7,7 +7,7 @@
 #include "interop_nanortc_peer.h"
 #include "interop_common.h"
 #include "nano_rtc_internal.h"
-#include "nano_crypto.h"
+#include "nanortc_crypto.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -20,35 +20,35 @@
  * Event callback (runs in nanortc thread)
  * ---------------------------------------------------------------- */
 
-static void nanortc_on_event(nano_rtc_t *rtc, const nano_event_t *evt,
+static void nanortc_on_event(nanortc_t *rtc, const nanortc_event_t *evt,
                              void *userdata)
 {
     interop_nanortc_peer_t *peer = (interop_nanortc_peer_t *)userdata;
     (void)rtc;
 
     switch (evt->type) {
-    case NANO_EVENT_ICE_CONNECTED:
+    case NANORTC_EVENT_ICE_CONNECTED:
         fprintf(stderr, "[nanortc] ICE connected\n");
         atomic_store(&peer->ice_connected, 1);
         break;
 
-    case NANO_EVENT_DTLS_CONNECTED:
+    case NANORTC_EVENT_DTLS_CONNECTED:
         fprintf(stderr, "[nanortc] DTLS connected\n");
         atomic_store(&peer->dtls_connected, 1);
         break;
 
-    case NANO_EVENT_SCTP_CONNECTED:
+    case NANORTC_EVENT_SCTP_CONNECTED:
         fprintf(stderr, "[nanortc] SCTP connected\n");
         atomic_store(&peer->sctp_connected, 1);
         break;
 
-    case NANO_EVENT_DATACHANNEL_OPEN:
+    case NANORTC_EVENT_DATACHANNEL_OPEN:
         fprintf(stderr, "[nanortc] DataChannel open (stream=%d)\n",
                 evt->stream_id);
         atomic_store(&peer->dc_open, 1);
         break;
 
-    case NANO_EVENT_DATACHANNEL_DATA:
+    case NANORTC_EVENT_DATACHANNEL_DATA:
         fprintf(stderr, "[nanortc] DC binary data (%zu bytes)\n", evt->len);
         pthread_mutex_lock(&peer->msg_mutex);
         if (evt->len <= sizeof(peer->last_msg)) {
@@ -60,7 +60,7 @@ static void nanortc_on_event(nano_rtc_t *rtc, const nano_event_t *evt,
         atomic_fetch_add(&peer->msg_count, 1);
         break;
 
-    case NANO_EVENT_DATACHANNEL_STRING:
+    case NANORTC_EVENT_DATACHANNEL_STRING:
         fprintf(stderr, "[nanortc] DC string: %.*s\n", (int)evt->len,
                 (const char *)evt->data);
         pthread_mutex_lock(&peer->msg_mutex);
@@ -74,11 +74,11 @@ static void nanortc_on_event(nano_rtc_t *rtc, const nano_event_t *evt,
         atomic_fetch_add(&peer->msg_count, 1);
         break;
 
-    case NANO_EVENT_DATACHANNEL_CLOSE:
+    case NANORTC_EVENT_DATACHANNEL_CLOSE:
         fprintf(stderr, "[nanortc] DataChannel closed\n");
         break;
 
-    case NANO_EVENT_DISCONNECTED:
+    case NANORTC_EVENT_DISCONNECTED:
         fprintf(stderr, "[nanortc] Disconnected\n");
         nano_run_loop_stop(&peer->loop);
         break;
@@ -110,9 +110,9 @@ static int nanortc_do_signaling(interop_nanortc_peer_t *peer)
     /* Generate answer */
     char answer[8192];
     size_t answer_len = 0;
-    int rc = nano_accept_offer(&peer->rtc, buf, answer, sizeof(answer), &answer_len);
-    if (rc != NANO_OK) {
-        fprintf(stderr, "[nanortc] nano_accept_offer failed: %d\n", rc);
+    int rc = nanortc_accept_offer(&peer->rtc, buf, answer, sizeof(answer), &answer_len);
+    if (rc != NANORTC_OK) {
+        fprintf(stderr, "[nanortc] nanortc_accept_offer failed: %d\n", rc);
         return -1;
     }
     rc = interop_sig_send(peer->sig_fd, SIG_MSG_SDP_ANSWER, answer,
@@ -140,7 +140,7 @@ static int nanortc_do_signaling(interop_nanortc_peer_t *peer)
 
         if (msg_type == SIG_MSG_ICE_CANDIDATE) {
             fprintf(stderr, "[nanortc] Got remote ICE candidate: %s\n", buf);
-            nano_add_remote_candidate(&peer->rtc, buf);
+            nanortc_add_remote_candidate(&peer->rtc, buf);
         }
     }
 
@@ -189,23 +189,23 @@ int interop_nanortc_start(interop_nanortc_peer_t *peer, int sig_fd,
     pthread_mutex_init(&peer->msg_mutex, NULL);
 
     /* Init nanortc */
-    nano_rtc_config_t cfg;
+    nanortc_config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
 #if defined(NANORTC_CRYPTO_OPENSSL)
-    cfg.crypto = nano_crypto_openssl();
+    cfg.crypto = nanortc_crypto_openssl();
 #else
-    cfg.crypto = nano_crypto_mbedtls();
+    cfg.crypto = nanortc_crypto_mbedtls();
 #endif
-    cfg.role = NANO_ROLE_CONTROLLED; /* answerer */
+    cfg.role = NANORTC_ROLE_CONTROLLED; /* answerer */
 
-    int rc = nano_rtc_init(&peer->rtc, &cfg);
-    if (rc != NANO_OK) {
-        fprintf(stderr, "[nanortc] nano_rtc_init failed: %d\n", rc);
+    int rc = nanortc_init(&peer->rtc, &cfg);
+    if (rc != NANORTC_OK) {
+        fprintf(stderr, "[nanortc] nanortc_init failed: %d\n", rc);
         return -1;
     }
 
     /* Add local candidate so SDP answer includes a=candidate: line */
-    nano_add_local_candidate(&peer->rtc, "127.0.0.1", port);
+    nanortc_add_local_candidate(&peer->rtc, "127.0.0.1", port);
 
     /* Init run loop (binds UDP socket) */
     rc = nano_run_loop_init(&peer->loop, &peer->rtc, "127.0.0.1", port);
@@ -239,7 +239,7 @@ int interop_nanortc_stop(interop_nanortc_peer_t *peer)
     pthread_join(peer->thread, NULL);
 
     nano_run_loop_destroy(&peer->loop);
-    nano_rtc_destroy(&peer->rtc);
+    nanortc_destroy(&peer->rtc);
     pthread_mutex_destroy(&peer->msg_mutex);
 
     return 0;

@@ -137,7 +137,7 @@ Apply these mapping rules:
 | New file in `src/` | `docs/engineering/development-workflow.md` | Module order may need updating |
 | `CMakeLists.txt` | `AGENTS.md` | Build instructions may have changed |
 | New `tests/test_*.c` | `docs/QUALITY_SCORE.md` | Test coverage column may need updating |
-| `crypto/nano_crypto*.c` | `docs/references/rfc-index.md` | Crypto RFC refs may need adding |
+| `crypto/nanortc_crypto*.c` | `docs/references/rfc-index.md` | Crypto RFC refs may need adding |
 | Any `src/` or `crypto/` file | `docs/exec-plans/active/*.md` | Active plan progress may need updating |
 
 If staleness detected, list the potential gaps and let the user decide:

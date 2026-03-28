@@ -11,7 +11,7 @@ foreach(test_source ${TEST_SOURCES})
 
     # Skip media-transport tests when neither AUDIO nor VIDEO is enabled
     list(FIND MEDIA_TESTS ${test_name} _is_media_test)
-    if(_is_media_test GREATER -1 AND NOT NANO_FEATURE_AUDIO AND NOT NANO_FEATURE_VIDEO)
+    if(_is_media_test GREATER -1 AND NOT NANORTC_FEATURE_AUDIO AND NOT NANORTC_FEATURE_VIDEO)
         continue()
     endif()
 

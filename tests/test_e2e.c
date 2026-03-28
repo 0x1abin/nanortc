@@ -1,7 +1,7 @@
 /*
  * nanortc — End-to-end tests
  *
- * Two nano_rtc_t instances wired together in memory.
+ * Two nanortc_t instances wired together in memory.
  * No network, no sockets — pure Sans I/O loopback.
  *
  * As modules are implemented, this test grows to cover
@@ -13,7 +13,7 @@
 
 #include "nanortc.h"
 #include "nano_rtc_internal.h"
-#include "nano_crypto.h"
+#include "nanortc_crypto.h"
 #include "nano_test.h"
 #include "nano_test_config.h"
 #include <string.h>
@@ -23,22 +23,22 @@
  * ---------------------------------------------------------------- */
 
 /* Helper: create a default config */
-static nano_rtc_config_t e2e_default_config(void)
+static nanortc_config_t e2e_default_config(void)
 {
-    nano_rtc_config_t cfg;
+    nanortc_config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.crypto = nano_test_crypto();
-    cfg.role = NANO_ROLE_CONTROLLED;
-#if NANO_FEATURE_AUDIO
+    cfg.role = NANORTC_ROLE_CONTROLLED;
+#if NANORTC_FEATURE_AUDIO
     cfg.jitter_depth_ms = 100;
-    cfg.audio_codec = NANO_CODEC_OPUS;
+    cfg.audio_codec = NANORTC_CODEC_OPUS;
     cfg.audio_sample_rate = 48000;
     cfg.audio_channels = 1;
-    cfg.audio_direction = NANO_DIR_SENDRECV;
+    cfg.audio_direction = NANORTC_DIR_SENDRECV;
 #endif
-#if NANO_FEATURE_VIDEO
-    cfg.video_codec = NANO_CODEC_H264;
-    cfg.video_direction = NANO_DIR_SENDRECV;
+#if NANORTC_FEATURE_VIDEO
+    cfg.video_codec = NANORTC_CODEC_H264;
+    cfg.video_direction = NANORTC_DIR_SENDRECV;
 #endif
     return cfg;
 }
@@ -47,14 +47,14 @@ static nano_rtc_config_t e2e_default_config(void)
  * Relay all TRANSMIT outputs from `from` into `to` as received data.
  * Returns number of packets relayed, or negative on error.
  */
-static int e2e_relay(nano_rtc_t *from, nano_rtc_t *to, uint32_t now_ms)
+static int e2e_relay(nanortc_t *from, nanortc_t *to, uint32_t now_ms)
 {
     int relayed = 0;
-    nano_output_t out;
+    nanortc_output_t out;
 
-    while (nano_poll_output(from, &out) == NANO_OK) {
-        if (out.type == NANO_OUTPUT_TRANSMIT) {
-            nano_addr_t src;
+    while (nanortc_poll_output(from, &out) == NANORTC_OK) {
+        if (out.type == NANORTC_OUTPUT_TRANSMIT) {
+            nanortc_addr_t src;
             memset(&src, 0, sizeof(src));
             src.family = 4;
             src.addr[0] = 192;
@@ -63,7 +63,7 @@ static int e2e_relay(nano_rtc_t *from, nano_rtc_t *to, uint32_t now_ms)
             src.addr[3] = 1;
             src.port = 9999;
 
-            int rc = nano_handle_receive(to, now_ms, out.transmit.data, out.transmit.len, &src);
+            int rc = nanortc_handle_receive(to, now_ms, out.transmit.data, out.transmit.len, &src);
             (void)rc;
             relayed++;
         }
@@ -76,7 +76,7 @@ static int e2e_relay(nano_rtc_t *from, nano_rtc_t *to, uint32_t now_ms)
  * until neither produces new output or max_rounds reached.
  * Returns total packets relayed.
  */
-static int e2e_pump(nano_rtc_t *a, nano_rtc_t *b, uint32_t now_ms, int max_rounds)
+static int e2e_pump(nanortc_t *a, nanortc_t *b, uint32_t now_ms, int max_rounds)
 {
     int total = 0;
     for (int i = 0; i < max_rounds; i++) {
@@ -97,63 +97,63 @@ static int e2e_pump(nano_rtc_t *a, nano_rtc_t *b, uint32_t now_ms, int max_round
 TEST(test_e2e_init_pair)
 {
     /* Two instances must coexist independently (no global state) */
-    nano_rtc_t server, client;
-    nano_rtc_config_t cfg = e2e_default_config();
+    nanortc_t server, client;
+    nanortc_config_t cfg = e2e_default_config();
 
-    ASSERT_OK(nano_rtc_init(&server, &cfg));
-    ASSERT_OK(nano_rtc_init(&client, &cfg));
+    ASSERT_OK(nanortc_init(&server, &cfg));
+    ASSERT_OK(nanortc_init(&client, &cfg));
 
     /* Both should be in NEW state */
-    ASSERT_EQ(server.state, NANO_STATE_NEW);
-    ASSERT_EQ(client.state, NANO_STATE_NEW);
+    ASSERT_EQ(server.state, NANORTC_STATE_NEW);
+    ASSERT_EQ(client.state, NANORTC_STATE_NEW);
 
     /* Destroying one should not affect the other */
-    nano_rtc_destroy(&server);
-    ASSERT_EQ(server.state, NANO_STATE_CLOSED);
-    ASSERT_EQ(client.state, NANO_STATE_NEW);
+    nanortc_destroy(&server);
+    ASSERT_EQ(server.state, NANORTC_STATE_CLOSED);
+    ASSERT_EQ(client.state, NANORTC_STATE_NEW);
 
-    nano_rtc_destroy(&client);
+    nanortc_destroy(&client);
 }
 
 TEST(test_e2e_stubs_not_implemented)
 {
-    /* APIs that are still stubs should return NANO_ERR_NOT_IMPLEMENTED */
-    nano_rtc_t rtc;
-    nano_rtc_config_t cfg = e2e_default_config();
-    ASSERT_OK(nano_rtc_init(&rtc, &cfg));
+    /* APIs that are still stubs should return NANORTC_ERR_NOT_IMPLEMENTED */
+    nanortc_t rtc;
+    nanortc_config_t cfg = e2e_default_config();
+    ASSERT_OK(nanortc_init(&rtc, &cfg));
 
     char buf[256];
-    /* nano_accept_offer now works (parses SDP), but invalid SDP returns parse error */
-    ASSERT_FAIL(nano_accept_offer(&rtc, "v=0\r\n", buf, sizeof(buf), NULL));
-    ASSERT_EQ(nano_create_offer(&rtc, buf, sizeof(buf), NULL), NANO_ERR_NOT_IMPLEMENTED);
-    ASSERT_EQ(nano_accept_answer(&rtc, "v=0\r\n"), NANO_ERR_NOT_IMPLEMENTED);
-    ASSERT_OK(nano_add_local_candidate(&rtc, "192.168.1.1", 9999));
-    /* nano_add_remote_candidate now parses SDP candidate; invalid format returns parse error */
-    ASSERT_EQ(nano_add_remote_candidate(&rtc, "candidate:..."), NANO_ERR_PARSE);
+    /* nanortc_accept_offer now works (parses SDP), but invalid SDP returns parse error */
+    ASSERT_FAIL(nanortc_accept_offer(&rtc, "v=0\r\n", buf, sizeof(buf), NULL));
+    ASSERT_EQ(nanortc_create_offer(&rtc, buf, sizeof(buf), NULL), NANORTC_ERR_NOT_IMPLEMENTED);
+    ASSERT_EQ(nanortc_accept_answer(&rtc, "v=0\r\n"), NANORTC_ERR_NOT_IMPLEMENTED);
+    ASSERT_OK(nanortc_add_local_candidate(&rtc, "192.168.1.1", 9999));
+    /* nanortc_add_remote_candidate now parses SDP candidate; invalid format returns parse error */
+    ASSERT_EQ(nanortc_add_remote_candidate(&rtc, "candidate:..."), NANORTC_ERR_PARSE);
     /* Valid candidate succeeds */
-    ASSERT_OK(nano_add_remote_candidate(&rtc, "candidate:0 1 UDP 2122260223 192.168.1.100 50000 typ host"));
-    ASSERT_OK(nano_add_remote_candidate(&rtc, "192.168.1.200 60000"));
+    ASSERT_OK(nanortc_add_remote_candidate(&rtc, "candidate:0 1 UDP 2122260223 192.168.1.100 50000 typ host"));
+    ASSERT_OK(nanortc_add_remote_candidate(&rtc, "192.168.1.200 60000"));
 
-    /* nano_handle_receive and nano_handle_timeout are now implemented */
+    /* nanortc_handle_receive and nanortc_handle_timeout are now implemented */
 
     uint8_t data[] = {0x00, 0x01, 0x00, 0x00};
 
-#if NANO_FEATURE_DATACHANNEL
-    /* nano_send_datachannel now returns NANO_ERR_STATE (not connected) */
-    ASSERT_EQ(nano_send_datachannel(&rtc, 0, data, sizeof(data)), NANO_ERR_STATE);
-    ASSERT_EQ(nano_send_datachannel_string(&rtc, 0, "hello"), NANO_ERR_STATE);
+#if NANORTC_FEATURE_DATACHANNEL
+    /* nanortc_send_datachannel now returns NANORTC_ERR_STATE (not connected) */
+    ASSERT_EQ(nanortc_send_datachannel(&rtc, 0, data, sizeof(data)), NANORTC_ERR_STATE);
+    ASSERT_EQ(nanortc_send_datachannel_string(&rtc, 0, "hello"), NANORTC_ERR_STATE);
 #endif
 
-#if NANO_FEATURE_AUDIO
-    ASSERT_EQ(nano_send_audio(&rtc, 0, data, sizeof(data)), NANO_ERR_NOT_IMPLEMENTED);
+#if NANORTC_FEATURE_AUDIO
+    ASSERT_EQ(nanortc_send_audio(&rtc, 0, data, sizeof(data)), NANORTC_ERR_NOT_IMPLEMENTED);
 #endif
 
-#if NANO_FEATURE_VIDEO
-    ASSERT_EQ(nano_send_video(&rtc, 0, data, sizeof(data), 1), NANO_ERR_NOT_IMPLEMENTED);
-    ASSERT_EQ(nano_request_keyframe(&rtc), NANO_ERR_NOT_IMPLEMENTED);
+#if NANORTC_FEATURE_VIDEO
+    ASSERT_EQ(nanortc_send_video(&rtc, 0, data, sizeof(data), 1), NANORTC_ERR_NOT_IMPLEMENTED);
+    ASSERT_EQ(nanortc_request_keyframe(&rtc), NANORTC_ERR_NOT_IMPLEMENTED);
 #endif
 
-    nano_rtc_destroy(&rtc);
+    nanortc_destroy(&rtc);
 }
 
 TEST(test_e2e_loopback_skeleton)
@@ -167,29 +167,29 @@ TEST(test_e2e_loopback_skeleton)
      * SDP is still a stub, so no data flows from SDP path.
      * ICE loopback tested separately below.
      */
-    nano_rtc_t server, client;
-    nano_rtc_config_t cfg = e2e_default_config();
+    nanortc_t server, client;
+    nanortc_config_t cfg = e2e_default_config();
 
-    ASSERT_OK(nano_rtc_init(&server, &cfg));
-    ASSERT_OK(nano_rtc_init(&client, &cfg));
+    ASSERT_OK(nanortc_init(&server, &cfg));
+    ASSERT_OK(nanortc_init(&client, &cfg));
 
     /* Client creates offer (stub: returns NOT_IMPLEMENTED) */
     char offer[2048];
-    int rc = nano_create_offer(&client, offer, sizeof(offer), NULL);
-    ASSERT_EQ(rc, NANO_ERR_NOT_IMPLEMENTED);
+    int rc = nanortc_create_offer(&client, offer, sizeof(offer), NULL);
+    ASSERT_EQ(rc, NANORTC_ERR_NOT_IMPLEMENTED);
 
     /* No output should be queued */
-    nano_output_t out;
-    ASSERT_EQ(nano_poll_output(&server, &out), NANO_ERR_NO_DATA);
-    ASSERT_EQ(nano_poll_output(&client, &out), NANO_ERR_NO_DATA);
+    nanortc_output_t out;
+    ASSERT_EQ(nanortc_poll_output(&server, &out), NANORTC_ERR_NO_DATA);
+    ASSERT_EQ(nanortc_poll_output(&client, &out), NANORTC_ERR_NO_DATA);
 
     /* Pump should relay 0 packets (nothing to relay) */
     uint32_t now_ms = 0;
     int relayed = e2e_pump(&server, &client, now_ms, 10);
     ASSERT_EQ(relayed, 0);
 
-    nano_rtc_destroy(&server);
-    nano_rtc_destroy(&client);
+    nanortc_destroy(&server);
+    nanortc_destroy(&client);
 }
 
 TEST(test_e2e_multiple_instances)
@@ -198,22 +198,22 @@ TEST(test_e2e_multiple_instances)
      * Verify 4 instances can coexist (MCU might host multiple connections).
      * No global state means no interference.
      */
-    nano_rtc_t instances[4];
-    nano_rtc_config_t cfg = e2e_default_config();
+    nanortc_t instances[4];
+    nanortc_config_t cfg = e2e_default_config();
 
     for (int i = 0; i < 4; i++) {
-        ASSERT_OK(nano_rtc_init(&instances[i], &cfg));
-        ASSERT_EQ(instances[i].state, NANO_STATE_NEW);
+        ASSERT_OK(nanortc_init(&instances[i], &cfg));
+        ASSERT_EQ(instances[i].state, NANORTC_STATE_NEW);
     }
 
     /* Destroy in reverse order */
     for (int i = 3; i >= 0; i--) {
-        nano_rtc_destroy(&instances[i]);
-        ASSERT_EQ(instances[i].state, NANO_STATE_CLOSED);
+        nanortc_destroy(&instances[i]);
+        ASSERT_EQ(instances[i].state, NANORTC_STATE_CLOSED);
 
         /* Earlier instances should still be NEW */
         for (int j = 0; j < i; j++) {
-            ASSERT_EQ(instances[j].state, NANO_STATE_NEW);
+            ASSERT_EQ(instances[j].state, NANORTC_STATE_NEW);
         }
     }
 }
@@ -225,36 +225,36 @@ TEST(test_e2e_demux_byte_ranges)
      * STUN path now returns parse errors for malformed packets.
      * DTLS/SRTP still return NOT_IMPLEMENTED.
      */
-    nano_rtc_t rtc;
-    nano_rtc_config_t cfg = e2e_default_config();
-    ASSERT_OK(nano_rtc_init(&rtc, &cfg));
+    nanortc_t rtc;
+    nanortc_config_t cfg = e2e_default_config();
+    ASSERT_OK(nanortc_init(&rtc, &cfg));
 
-    nano_addr_t addr;
+    nanortc_addr_t addr;
     memset(&addr, 0, sizeof(addr));
     addr.family = 4;
 
     /* STUN range: 0x00-0x03 (malformed — no valid STUN, returns parse error) */
     uint8_t stun_pkt[20] = {0x00, 0x01, 0x00, 0x00};
-    int rc = nano_handle_receive(&rtc, 0, stun_pkt, sizeof(stun_pkt), &addr);
+    int rc = nanortc_handle_receive(&rtc, 0, stun_pkt, sizeof(stun_pkt), &addr);
     ASSERT_TRUE(rc < 0); /* parse error expected for malformed STUN */
 
     /* DTLS range: 0x14-0x40 — rejected before ICE connects */
     uint8_t dtls_pkt[20] = {0x14, 0xFE, 0xFD};
-    ASSERT_EQ(nano_handle_receive(&rtc, 0, dtls_pkt, sizeof(dtls_pkt), &addr), NANO_ERR_STATE);
+    ASSERT_EQ(nanortc_handle_receive(&rtc, 0, dtls_pkt, sizeof(dtls_pkt), &addr), NANORTC_ERR_STATE);
 
     /* SRTP range: 0x80-0xBF */
     uint8_t srtp_pkt[20] = {0x80, 0x60};
-    ASSERT_EQ(nano_handle_receive(&rtc, 0, srtp_pkt, sizeof(srtp_pkt), &addr),
-              NANO_ERR_NOT_IMPLEMENTED);
+    ASSERT_EQ(nanortc_handle_receive(&rtc, 0, srtp_pkt, sizeof(srtp_pkt), &addr),
+              NANORTC_ERR_NOT_IMPLEMENTED);
 
     /* Edge cases: null data returns INVALID_PARAM */
-    ASSERT_EQ(nano_handle_receive(&rtc, 0, NULL, 0, &addr), NANO_ERR_INVALID_PARAM);
+    ASSERT_EQ(nanortc_handle_receive(&rtc, 0, NULL, 0, &addr), NANORTC_ERR_INVALID_PARAM);
 
     /* Unknown byte range */
     uint8_t one = 0xFF;
-    ASSERT_EQ(nano_handle_receive(&rtc, 0, &one, 1, &addr), NANO_ERR_PROTOCOL);
+    ASSERT_EQ(nanortc_handle_receive(&rtc, 0, &one, 1, &addr), NANORTC_ERR_PROTOCOL);
 
-    nano_rtc_destroy(&rtc);
+    nanortc_destroy(&rtc);
 }
 
 TEST(test_e2e_ice_loopback)
@@ -264,17 +264,17 @@ TEST(test_e2e_ice_loopback)
      * controlled responds, controlling receives response.
      * Both reach ICE_CONNECTED.
      */
-    nano_rtc_t offerer, answerer;
+    nanortc_t offerer, answerer;
 
     /* Offerer = controlling role */
-    nano_rtc_config_t off_cfg = e2e_default_config();
-    off_cfg.role = NANO_ROLE_CONTROLLING;
-    ASSERT_OK(nano_rtc_init(&offerer, &off_cfg));
+    nanortc_config_t off_cfg = e2e_default_config();
+    off_cfg.role = NANORTC_ROLE_CONTROLLING;
+    ASSERT_OK(nanortc_init(&offerer, &off_cfg));
 
     /* Answerer = controlled role */
-    nano_rtc_config_t ans_cfg = e2e_default_config();
-    ans_cfg.role = NANO_ROLE_CONTROLLED;
-    ASSERT_OK(nano_rtc_init(&answerer, &ans_cfg));
+    nanortc_config_t ans_cfg = e2e_default_config();
+    ans_cfg.role = NANORTC_ROLE_CONTROLLED;
+    ASSERT_OK(nanortc_init(&answerer, &ans_cfg));
 
     /* Set matching ICE credentials */
     memcpy(offerer.ice.local_ufrag, "OFF", 4);
@@ -306,13 +306,13 @@ TEST(test_e2e_ice_loopback)
 
     /* Step 1: offerer generates STUN Binding Request via timeout */
     uint32_t now_ms = 100;
-    ASSERT_OK(nano_handle_timeout(&offerer, now_ms));
-    ASSERT_EQ(offerer.ice.state, NANO_ICE_STATE_CHECKING);
+    ASSERT_OK(nanortc_handle_timeout(&offerer, now_ms));
+    ASSERT_EQ(offerer.ice.state, NANORTC_ICE_STATE_CHECKING);
 
     /* Step 2: relay offerer's STUN request to answerer */
-    nano_output_t out;
-    ASSERT_OK(nano_poll_output(&offerer, &out));
-    ASSERT_EQ(out.type, NANO_OUTPUT_TRANSMIT);
+    nanortc_output_t out;
+    ASSERT_OK(nanortc_poll_output(&offerer, &out));
+    ASSERT_EQ(out.type, NANORTC_OUTPUT_TRANSMIT);
     ASSERT_TRUE(out.transmit.len > 0);
 
     /* Save request data (pointer references rtc->stun_buf, must copy) */
@@ -321,12 +321,12 @@ TEST(test_e2e_ice_loopback)
     memcpy(saved_req, out.transmit.data, saved_req_len);
 
     /* Drain the TIMEOUT output from handle_timeout */
-    nano_output_t tout;
-    ASSERT_OK(nano_poll_output(&offerer, &tout));
-    ASSERT_EQ(tout.type, NANO_OUTPUT_TIMEOUT);
+    nanortc_output_t tout;
+    ASSERT_OK(nanortc_poll_output(&offerer, &tout));
+    ASSERT_EQ(tout.type, NANORTC_OUTPUT_TIMEOUT);
 
     /* Feed the STUN request into the answerer */
-    nano_addr_t offerer_addr;
+    nanortc_addr_t offerer_addr;
     memset(&offerer_addr, 0, sizeof(offerer_addr));
     offerer_addr.family = 4;
     offerer_addr.addr[0] = 192;
@@ -335,16 +335,16 @@ TEST(test_e2e_ice_loopback)
     offerer_addr.addr[3] = 1;
     offerer_addr.port = 9999;
 
-    ASSERT_OK(nano_handle_receive(&answerer, now_ms, saved_req, saved_req_len, &offerer_addr));
+    ASSERT_OK(nanortc_handle_receive(&answerer, now_ms, saved_req, saved_req_len, &offerer_addr));
 
     /* Answerer: ICE connected → DTLS handshaking (server waits for ClientHello) */
-    ASSERT_EQ(answerer.ice.state, NANO_ICE_STATE_CONNECTED);
-    ASSERT_EQ(answerer.state, NANO_STATE_DTLS_HANDSHAKING);
+    ASSERT_EQ(answerer.ice.state, NANORTC_ICE_STATE_CONNECTED);
+    ASSERT_EQ(answerer.state, NANORTC_STATE_DTLS_HANDSHAKING);
 
     /* Step 3: relay answerer's STUN response back to offerer */
-    nano_output_t ans_out;
-    ASSERT_OK(nano_poll_output(&answerer, &ans_out));
-    ASSERT_EQ(ans_out.type, NANO_OUTPUT_TRANSMIT);
+    nanortc_output_t ans_out;
+    ASSERT_OK(nanortc_poll_output(&answerer, &ans_out));
+    ASSERT_EQ(ans_out.type, NANORTC_OUTPUT_TRANSMIT);
 
     /* Save response data (pointer references rtc->stun_buf) */
     uint8_t saved_resp[256];
@@ -352,13 +352,13 @@ TEST(test_e2e_ice_loopback)
     memcpy(saved_resp, ans_out.transmit.data, saved_resp_len);
 
     /* Check for ICE_CONNECTED event on answerer */
-    nano_output_t evt;
-    ASSERT_OK(nano_poll_output(&answerer, &evt));
-    ASSERT_EQ(evt.type, NANO_OUTPUT_EVENT);
-    ASSERT_EQ(evt.event.type, NANO_EVENT_ICE_CONNECTED);
+    nanortc_output_t evt;
+    ASSERT_OK(nanortc_poll_output(&answerer, &evt));
+    ASSERT_EQ(evt.type, NANORTC_OUTPUT_EVENT);
+    ASSERT_EQ(evt.event.type, NANORTC_EVENT_ICE_CONNECTED);
 
     /* Feed response into offerer */
-    nano_addr_t answerer_addr;
+    nanortc_addr_t answerer_addr;
     memset(&answerer_addr, 0, sizeof(answerer_addr));
     answerer_addr.family = 4;
     answerer_addr.addr[0] = 192;
@@ -367,26 +367,26 @@ TEST(test_e2e_ice_loopback)
     answerer_addr.addr[3] = 2;
     answerer_addr.port = 5000;
 
-    ASSERT_OK(nano_handle_receive(&offerer, now_ms, saved_resp, saved_resp_len, &answerer_addr));
+    ASSERT_OK(nanortc_handle_receive(&offerer, now_ms, saved_resp, saved_resp_len, &answerer_addr));
 
     /* Offerer: ICE connected → DTLS handshaking (client sends ClientHello) */
-    ASSERT_EQ(offerer.ice.state, NANO_ICE_STATE_CONNECTED);
-    ASSERT_EQ(offerer.state, NANO_STATE_DTLS_HANDSHAKING);
+    ASSERT_EQ(offerer.ice.state, NANORTC_ICE_STATE_CONNECTED);
+    ASSERT_EQ(offerer.state, NANORTC_STATE_DTLS_HANDSHAKING);
 
     /* ICE_CONNECTED event should be queued for offerer */
-    nano_output_t off_evt;
-    ASSERT_OK(nano_poll_output(&offerer, &off_evt));
-    ASSERT_EQ(off_evt.type, NANO_OUTPUT_EVENT);
-    ASSERT_EQ(off_evt.event.type, NANO_EVENT_ICE_CONNECTED);
+    nanortc_output_t off_evt;
+    ASSERT_OK(nanortc_poll_output(&offerer, &off_evt));
+    ASSERT_EQ(off_evt.type, NANORTC_OUTPUT_EVENT);
+    ASSERT_EQ(off_evt.event.type, NANORTC_EVENT_ICE_CONNECTED);
 
     /* Offerer (client role) should have a ClientHello TRANSMIT output */
-    nano_output_t ch_out;
-    ASSERT_OK(nano_poll_output(&offerer, &ch_out));
-    ASSERT_EQ(ch_out.type, NANO_OUTPUT_TRANSMIT);
+    nanortc_output_t ch_out;
+    ASSERT_OK(nanortc_poll_output(&offerer, &ch_out));
+    ASSERT_EQ(ch_out.type, NANORTC_OUTPUT_TRANSMIT);
     ASSERT_TRUE(ch_out.transmit.len > 0);
 
-    nano_rtc_destroy(&offerer);
-    nano_rtc_destroy(&answerer);
+    nanortc_destroy(&offerer);
+    nanortc_destroy(&answerer);
 }
 
 /* ----------------------------------------------------------------
@@ -396,7 +396,7 @@ TEST(test_e2e_ice_loopback)
 /*
  * Helper: set up ICE credentials for matched offerer/answerer pair.
  */
-static void e2e_setup_ice_creds(nano_rtc_t *offerer, nano_rtc_t *answerer)
+static void e2e_setup_ice_creds(nanortc_t *offerer, nanortc_t *answerer)
 {
     memcpy(offerer->ice.local_ufrag, "OFF", 4);
     offerer->ice.local_ufrag_len = 3;
@@ -427,21 +427,21 @@ static void e2e_setup_ice_creds(nano_rtc_t *offerer, nano_rtc_t *answerer)
 
 TEST(test_e2e_ice_dtls_loopback)
 {
-    nano_rtc_t offerer, answerer;
+    nanortc_t offerer, answerer;
 
-    nano_rtc_config_t off_cfg = e2e_default_config();
-    off_cfg.role = NANO_ROLE_CONTROLLING;
-    ASSERT_OK(nano_rtc_init(&offerer, &off_cfg));
+    nanortc_config_t off_cfg = e2e_default_config();
+    off_cfg.role = NANORTC_ROLE_CONTROLLING;
+    ASSERT_OK(nanortc_init(&offerer, &off_cfg));
 
-    nano_rtc_config_t ans_cfg = e2e_default_config();
-    ans_cfg.role = NANO_ROLE_CONTROLLED;
-    ASSERT_OK(nano_rtc_init(&answerer, &ans_cfg));
+    nanortc_config_t ans_cfg = e2e_default_config();
+    ans_cfg.role = NANORTC_ROLE_CONTROLLED;
+    ASSERT_OK(nanortc_init(&answerer, &ans_cfg));
 
     e2e_setup_ice_creds(&offerer, &answerer);
 
     /* Step 1: ICE handshake */
     uint32_t now_ms = 100;
-    ASSERT_OK(nano_handle_timeout(&offerer, now_ms));
+    ASSERT_OK(nanortc_handle_timeout(&offerer, now_ms));
 
     /* Pump ICE + DTLS: relay packets until both DTLS_CONNECTED */
     int connected = 0;
@@ -449,8 +449,8 @@ TEST(test_e2e_ice_dtls_loopback)
         e2e_pump(&offerer, &answerer, now_ms, 5);
 
         /* Offerer transitions DTLS_CONNECTED → SCTP_CONNECTING automatically */
-        if (offerer.state >= NANO_STATE_DTLS_CONNECTED &&
-            answerer.state >= NANO_STATE_DTLS_CONNECTED) {
+        if (offerer.state >= NANORTC_STATE_DTLS_CONNECTED &&
+            answerer.state >= NANORTC_STATE_DTLS_CONNECTED) {
             connected = 1;
             break;
         }
@@ -458,8 +458,8 @@ TEST(test_e2e_ice_dtls_loopback)
 
     ASSERT_TRUE(connected);
     /* Offerer may be at SCTP_CONNECTING (sent INIT after DTLS) */
-    ASSERT_TRUE(offerer.state >= NANO_STATE_DTLS_CONNECTED);
-    ASSERT_TRUE(answerer.state >= NANO_STATE_DTLS_CONNECTED);
+    ASSERT_TRUE(offerer.state >= NANORTC_STATE_DTLS_CONNECTED);
+    ASSERT_TRUE(answerer.state >= NANORTC_STATE_DTLS_CONNECTED);
 
     /* Verify fingerprints are available */
     ASSERT_TRUE(dtls_get_fingerprint(&offerer.dtls) != NULL);
@@ -469,8 +469,8 @@ TEST(test_e2e_ice_dtls_loopback)
     ASSERT_TRUE(offerer.dtls.keying_material_ready);
     ASSERT_TRUE(answerer.dtls.keying_material_ready);
 
-    nano_rtc_destroy(&offerer);
-    nano_rtc_destroy(&answerer);
+    nanortc_destroy(&offerer);
+    nanortc_destroy(&answerer);
 }
 
 /* ---- Runner ---- */

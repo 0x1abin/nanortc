@@ -8,12 +8,12 @@
  * SPDX-License-Identifier: MIT
  */
 
-#ifndef NANO_CRC32_H_
-#define NANO_CRC32_H_
+#ifndef NANORTC_CRC32_H_
+#define NANORTC_CRC32_H_
 
 #include <stdint.h>
 #include <stddef.h>
 
 uint32_t nano_crc32(const uint8_t *data, size_t len);
 
-#endif /* NANO_CRC32_H_ */
+#endif /* NANORTC_CRC32_H_ */

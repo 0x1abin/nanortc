@@ -124,7 +124,7 @@ static void extract_value(const char *line, size_t line_len, const char *prefix,
     dst[vlen] = '\0';
 }
 
-#if NANO_HAVE_MEDIA_TRANSPORT
+#if NANORTC_HAVE_MEDIA_TRANSPORT
 
 /* m-line type tracking for multi m-line SDP */
 #define SDP_MLINE_NONE        0
@@ -195,26 +195,26 @@ static void parse_audio_mline(nano_sdp_t *sdp, const char *line, size_t line_len
     }
 }
 
-#endif /* NANO_HAVE_MEDIA_TRANSPORT */
+#endif /* NANORTC_HAVE_MEDIA_TRANSPORT */
 
 int sdp_init(nano_sdp_t *sdp)
 {
     if (!sdp) {
-        return NANO_ERR_INVALID_PARAM;
+        return NANORTC_ERR_INVALID_PARAM;
     }
     memset(sdp, 0, sizeof(*sdp));
     sdp->local_sctp_port = 5000;
-    sdp->local_setup = NANO_SDP_SETUP_PASSIVE; /* answerer default */
-    return NANO_OK;
+    sdp->local_setup = NANORTC_SDP_SETUP_PASSIVE; /* answerer default */
+    return NANORTC_OK;
 }
 
 int sdp_parse(nano_sdp_t *sdp, const char *sdp_str, size_t len)
 {
     if (!sdp || !sdp_str || len == 0) {
-        return NANO_ERR_INVALID_PARAM;
+        return NANORTC_ERR_INVALID_PARAM;
     }
 
-#if NANO_HAVE_MEDIA_TRANSPORT
+#if NANORTC_HAVE_MEDIA_TRANSPORT
     int current_mline = SDP_MLINE_NONE;
 #endif
 
@@ -231,7 +231,7 @@ int sdp_parse(nano_sdp_t *sdp, const char *sdp_str, size_t len)
          * Media-specific attributes (a=rtpmap) use current_mline context.
          */
 
-#if NANO_HAVE_MEDIA_TRANSPORT
+#if NANORTC_HAVE_MEDIA_TRANSPORT
         if (line_starts_with(line, line_len, "m=application ")) {
             current_mline = SDP_MLINE_APPLICATION;
         } else if (line_starts_with(line, line_len, "m=audio ")) {
@@ -244,7 +244,7 @@ int sdp_parse(nano_sdp_t *sdp, const char *sdp_str, size_t len)
                    line_starts_with(line, line_len, "a=rtpmap:")) {
             parse_rtpmap(sdp, line, line_len);
         } else
-#endif /* NANO_HAVE_MEDIA_TRANSPORT */
+#endif /* NANORTC_HAVE_MEDIA_TRANSPORT */
             if (line_starts_with(line, line_len, "a=ice-ufrag:")) {
                 extract_value(line, line_len, "a=ice-ufrag:", sdp->remote_ufrag,
                               sizeof(sdp->remote_ufrag));
@@ -261,17 +261,17 @@ int sdp_parse(nano_sdp_t *sdp, const char *sdp_str, size_t len)
                 char setup_str[16];
                 extract_value(line, line_len, "a=setup:", setup_str, sizeof(setup_str));
                 if (memcmp(setup_str, "active", 6) == 0) {
-                    sdp->remote_setup = NANO_SDP_SETUP_ACTIVE;
+                    sdp->remote_setup = NANORTC_SDP_SETUP_ACTIVE;
                 } else if (memcmp(setup_str, "passive", 7) == 0) {
-                    sdp->remote_setup = NANO_SDP_SETUP_PASSIVE;
+                    sdp->remote_setup = NANORTC_SDP_SETUP_PASSIVE;
                 } else {
-                    sdp->remote_setup = NANO_SDP_SETUP_ACTPASS;
+                    sdp->remote_setup = NANORTC_SDP_SETUP_ACTPASS;
                 }
             } else if (line_starts_with(line, line_len, "a=candidate:")) {
                 /* Parse ICE candidate (RFC 8839 §5.1):
                  * a=candidate:<foundation> <component> <transport> <priority> <addr> <port> ...
                  * Fields are 1-indexed after prefix. We need field 5 (addr) and field 6 (port). */
-                if (sdp->candidate_count < NANO_SDP_MAX_CANDIDATES) {
+                if (sdp->candidate_count < NANORTC_SDP_MAX_CANDIDATES) {
                     const char *p = line + 12; /* skip "a=candidate:" */
                     const char *line_end = line + line_len;
                     int field = 1;
@@ -300,13 +300,13 @@ int sdp_parse(nano_sdp_t *sdp, const char *sdp_str, size_t len)
                     /* Parse port */
                     uint16_t cand_port = (uint16_t)parse_u32(p, line_end, NULL);
 
-                    if (addr_len > 0 && addr_len < NANO_IPV6_STR_SIZE && cand_port > 0) {
+                    if (addr_len > 0 && addr_len < NANORTC_IPV6_STR_SIZE && cand_port > 0) {
                         nano_sdp_candidate_t *c = &sdp->remote_candidates[sdp->candidate_count];
                         memcpy(c->addr, addr_start, addr_len);
                         c->addr[addr_len] = '\0';
                         c->port = cand_port;
                         sdp->candidate_count++;
-                        NANO_LOGD("SDP", "parsed candidate from SDP");
+                        NANORTC_LOGD("SDP", "parsed candidate from SDP");
                     }
                 }
             }
@@ -316,13 +316,13 @@ int sdp_parse(nano_sdp_t *sdp, const char *sdp_str, size_t len)
 
     /* Validate required fields */
     if (sdp->remote_ufrag[0] == '\0' || sdp->remote_pwd[0] == '\0') {
-        NANO_LOGW("SDP", "missing ice-ufrag or ice-pwd");
-        return NANO_ERR_PARSE;
+        NANORTC_LOGW("SDP", "missing ice-ufrag or ice-pwd");
+        return NANORTC_ERR_PARSE;
     }
 
     sdp->parsed = true;
-    NANO_LOGI("SDP", "offer parsed");
-    return NANO_OK;
+    NANORTC_LOGI("SDP", "offer parsed");
+    return NANORTC_OK;
 }
 
 /* ================================================================
@@ -331,8 +331,8 @@ int sdp_parse(nano_sdp_t *sdp, const char *sdp_str, size_t len)
 
 int sdp_generate_answer(nano_sdp_t *sdp, char *buf, size_t buf_len, size_t *out_len)
 {
-    if (!sdp || !buf || !out_len || buf_len < NANO_SDP_MIN_BUF_SIZE) {
-        return NANO_ERR_INVALID_PARAM;
+    if (!sdp || !buf || !out_len || buf_len < NANORTC_SDP_MIN_BUF_SIZE) {
+        return NANORTC_ERR_INVALID_PARAM;
     }
 
     size_t pos = 0;
@@ -350,7 +350,7 @@ int sdp_generate_answer(nano_sdp_t *sdp, char *buf, size_t buf_len, size_t *out_
     /* BUNDLE group: include all active MIDs */
     {
         const char *bundle = "a=group:BUNDLE 0\r\n";
-#if NANO_HAVE_MEDIA_TRANSPORT
+#if NANORTC_HAVE_MEDIA_TRANSPORT
         if (sdp->has_audio) {
             bundle = "a=group:BUNDLE 0 1\r\n";
         }
@@ -399,16 +399,16 @@ int sdp_generate_answer(nano_sdp_t *sdp, char *buf, size_t buf_len, size_t *out_
     /* Setup role */
     {
         const char *setup_str = "a=setup:passive\r\n";
-        if (sdp->local_setup == NANO_SDP_SETUP_ACTIVE) {
+        if (sdp->local_setup == NANORTC_SDP_SETUP_ACTIVE) {
             setup_str = "a=setup:active\r\n";
-        } else if (sdp->local_setup == NANO_SDP_SETUP_ACTPASS) {
+        } else if (sdp->local_setup == NANORTC_SDP_SETUP_ACTPASS) {
             setup_str = "a=setup:actpass\r\n";
         }
         if (!sdp_append(buf, buf_len, &pos, setup_str))
             goto overflow;
     }
 
-#if NANO_FEATURE_DATACHANNEL
+#if NANORTC_FEATURE_DATACHANNEL
     /* SCTP port */
     if (!sdp_append(buf, buf_len, &pos, "a=sctp-port:"))
         goto overflow;
@@ -436,7 +436,7 @@ int sdp_generate_answer(nano_sdp_t *sdp, char *buf, size_t buf_len, size_t *out_
             goto overflow;
     }
 
-#if NANO_HAVE_MEDIA_TRANSPORT
+#if NANORTC_HAVE_MEDIA_TRANSPORT
     /* Audio m-line (MID=1) */
     if (sdp->has_audio) {
         if (!sdp_append(buf, buf_len, &pos, "m=audio 9 UDP/TLS/RTP/SAVPF "))
@@ -471,13 +471,13 @@ int sdp_generate_answer(nano_sdp_t *sdp, char *buf, size_t buf_len, size_t *out_
         if (!sdp_append(buf, buf_len, &pos, "\r\n"))
             goto overflow;
     }
-#endif /* NANO_HAVE_MEDIA_TRANSPORT */
+#endif /* NANORTC_HAVE_MEDIA_TRANSPORT */
 
     *out_len = pos;
-    NANO_LOGD("SDP", "answer generated");
-    return NANO_OK;
+    NANORTC_LOGD("SDP", "answer generated");
+    return NANORTC_OK;
 
 overflow:
-    NANO_LOGE("SDP", "buffer overflow generating answer");
-    return NANO_ERR_BUFFER_TOO_SMALL;
+    NANORTC_LOGE("SDP", "buffer overflow generating answer");
+    return NANORTC_ERR_BUFFER_TOO_SMALL;
 }
