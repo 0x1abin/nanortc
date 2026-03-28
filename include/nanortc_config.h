@@ -424,6 +424,30 @@
 /* #define NANORTC_LOG_NO_LOC */
 
 /* ----------------------------------------------------------------
+ * Protocol-fixed address sizes
+ *
+ * Defined here (not nanortc.h) so internal headers can use them
+ * without creating a circular include with nanortc.h.
+ * ---------------------------------------------------------------- */
+
+#define NANORTC_ADDR_SIZE     16 /**< IPv6 binary address length (RFC 4291). */
+#define NANORTC_IPV6_STR_SIZE 46 /**< Max IPv6 string length (INET6_ADDRSTRLEN). */
+
+/* ----------------------------------------------------------------
+ * SDP media direction
+ *
+ * Defined here so nano_sdp.h can embed it without including nanortc.h.
+ * ---------------------------------------------------------------- */
+
+/** @brief SDP media direction attribute. */
+typedef enum {
+    NANORTC_DIR_SENDRECV, /**< Send and receive. */
+    NANORTC_DIR_SENDONLY, /**< Send only. */
+    NANORTC_DIR_RECVONLY, /**< Receive only. */
+    NANORTC_DIR_INACTIVE, /**< Neither send nor receive. */
+} nanortc_direction_t;
+
+/* ----------------------------------------------------------------
  * Compile-time validation
  * ---------------------------------------------------------------- */
 

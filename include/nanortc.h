@@ -229,9 +229,7 @@ typedef struct nanortc_crypto_provider nanortc_crypto_provider_t;
 typedef struct nanortc_addr nanortc_addr_t;
 #endif
 
-/* Protocol-fixed address sizes */
-#define NANORTC_ADDR_SIZE     16 /**< IPv6 binary address length (RFC 4291). */
-#define NANORTC_IPV6_STR_SIZE 46 /**< Max IPv6 string length (INET6_ADDRSTRLEN). */
+/* NANORTC_ADDR_SIZE and NANORTC_IPV6_STR_SIZE are in nanortc_config.h */
 
 struct nanortc_addr {
     uint8_t family;                  /**< Address family: 4 = IPv4, 6 = IPv6. */
@@ -304,17 +302,7 @@ typedef struct nanortc_output {
     };
 } nanortc_output_t;
 
-/* ----------------------------------------------------------------
- * Direction (media)
- * ---------------------------------------------------------------- */
-
-/** @brief SDP media direction attribute. */
-typedef enum {
-    NANORTC_DIR_SENDRECV, /**< Send and receive. */
-    NANORTC_DIR_SENDONLY, /**< Send only. */
-    NANORTC_DIR_RECVONLY, /**< Receive only. */
-    NANORTC_DIR_INACTIVE, /**< Neither send nor receive. */
-} nanortc_direction_t;
+/* nanortc_direction_t is defined in nanortc_config.h */
 
 /* ----------------------------------------------------------------
  * Codec identifiers

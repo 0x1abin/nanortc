@@ -7,7 +7,7 @@
 #ifndef NANORTC_STUN_H_
 #define NANORTC_STUN_H_
 
-#include "nanortc.h"
+#include "nanortc_config.h"
 
 #include <stdint.h>
 #include <stddef.h>

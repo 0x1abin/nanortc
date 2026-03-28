@@ -10,7 +10,6 @@
 #define NANORTC_SDP_H_
 
 #include "nanortc_config.h"
-#include "nanortc.h"
 
 #include <stdbool.h>
 #include <stddef.h>

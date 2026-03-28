@@ -12,7 +12,6 @@
 #define NANORTC_ICE_H_
 
 #include "nanortc_config.h"
-#include "nanortc.h"
 #include "nano_stun.h"
 
 #include <stdint.h>
