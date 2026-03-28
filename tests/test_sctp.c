@@ -10,13 +10,12 @@
 #include "nanortc.h"
 #include "nano_test.h"
 
-#if !NANO_FEATURE_DATACHANNEL
+#if !NANORTC_FEATURE_DATACHANNEL
 /* SCTP tests require DataChannel feature */
 TEST_MAIN_BEGIN("nanortc SCTP tests (skipped — DC disabled)")
 TEST_MAIN_END
 #else
 
-#include "nano_rtc_internal.h"
 #include "nano_sctp.h"
 #include "nano_crc32c.h"
 #include "nano_test_config.h"
@@ -226,9 +225,9 @@ TEST(test_encode_heartbeat_roundtrip)
     ASSERT_TRUE(n >= 12); /* 4 chunk hdr + 4 param hdr + 4 nonce */
 
     /* Verify Heartbeat Info TLV: type=1, length=8 */
-    uint16_t ptype = nano_ntohs(*(uint16_t *)(buf + 4));
+    uint16_t ptype = nanortc_ntohs(*(uint16_t *)(buf + 4));
     ASSERT_EQ(ptype, 1);
-    uint16_t plen = nano_ntohs(*(uint16_t *)(buf + 6));
+    uint16_t plen = nanortc_ntohs(*(uint16_t *)(buf + 6));
     ASSERT_EQ(plen, 8);
     ASSERT_MEM_EQ(buf + 8, nonce, sizeof(nonce));
 }
@@ -249,7 +248,7 @@ TEST(test_encode_forward_tsn)
     ASSERT_EQ(n, 8u);
     ASSERT_EQ(buf[0], SCTP_CHUNK_FORWARD_TSN);
 
-    uint32_t tsn = nano_ntohl(*(uint32_t *)(buf + 4));
+    uint32_t tsn = nanortc_ntohl(*(uint32_t *)(buf + 4));
     ASSERT_EQ(tsn, 999u);
 }
 
@@ -260,7 +259,7 @@ TEST(test_encode_shutdown)
     ASSERT_EQ(n, 8u);
     ASSERT_EQ(buf[0], SCTP_CHUNK_SHUTDOWN);
 
-    uint32_t tsn = nano_ntohl(*(uint32_t *)(buf + 4));
+    uint32_t tsn = nanortc_ntohl(*(uint32_t *)(buf + 4));
     ASSERT_EQ(tsn, 42u);
 }
 
@@ -340,7 +339,7 @@ TEST(test_handle_data_abort)
 {
     nano_sctp_t sctp;
     nsctp_init(&sctp);
-    sctp.state = NANO_SCTP_STATE_ESTABLISHED;
+    sctp.state = NANORTC_SCTP_STATE_ESTABLISHED;
 
     /* Build ABORT packet */
     uint8_t pkt[32];
@@ -349,12 +348,12 @@ TEST(test_handle_data_abort)
     /* ABORT chunk: type=6, flags=0, length=4 */
     pkt[pos] = SCTP_CHUNK_ABORT;
     pkt[pos + 1] = 0;
-    *(uint16_t *)(pkt + pos + 2) = nano_htons(4);
+    *(uint16_t *)(pkt + pos + 2) = nanortc_htons(4);
     pos += 4;
 
     nsctp_finalize_checksum(pkt, pos);
     ASSERT_OK(nsctp_handle_data(&sctp, pkt, pos));
-    ASSERT_EQ(sctp.state, NANO_SCTP_STATE_CLOSED);
+    ASSERT_EQ(sctp.state, NANORTC_SCTP_STATE_CLOSED);
 }
 
 /* ================================================================
@@ -365,11 +364,11 @@ TEST(test_sctp_init_defaults)
 {
     nano_sctp_t sctp;
     ASSERT_OK(nsctp_init(&sctp));
-    ASSERT_EQ(sctp.state, NANO_SCTP_STATE_CLOSED);
+    ASSERT_EQ(sctp.state, NANORTC_SCTP_STATE_CLOSED);
     ASSERT_EQ(sctp.local_port, 5000);
     ASSERT_EQ(sctp.remote_port, 5000);
-#if NANO_FEATURE_DC_RELIABLE
-    ASSERT_EQ(sctp.rto_ms, (uint32_t)NANO_SCTP_RTO_INITIAL_MS);
+#if NANORTC_FEATURE_DC_RELIABLE
+    ASSERT_EQ(sctp.rto_ms, (uint32_t)NANORTC_SCTP_RTO_INITIAL_MS);
 #endif
 }
 
@@ -385,7 +384,7 @@ TEST(test_poll_output_empty)
 
     uint8_t buf[256];
     size_t out_len = 0;
-    ASSERT_EQ(nsctp_poll_output(&sctp, buf, sizeof(buf), &out_len), NANO_ERR_NO_DATA);
+    ASSERT_EQ(nsctp_poll_output(&sctp, buf, sizeof(buf), &out_len), NANORTC_ERR_NO_DATA);
 }
 
 /* ================================================================
@@ -420,9 +419,9 @@ TEST(test_cookie_echo_padding)
  * ================================================================ */
 
 static int log_call_count;
-static nano_log_level_t last_log_level;
+static nanortc_log_level_t last_log_level;
 
-static void test_log_callback(const nano_log_message_t *msg, void *ctx)
+static void test_log_callback(const nanortc_log_message_t *msg, void *ctx)
 {
     (void)ctx;
     log_call_count++;
@@ -432,15 +431,15 @@ static void test_log_callback(const nano_log_message_t *msg, void *ctx)
 TEST(test_sctp_logging_on_parse)
 {
     /* Set up logging */
-    nano_rtc_config_t cfg;
+    nanortc_config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.crypto = nano_test_crypto();
-    cfg.log.level = NANO_LOG_TRACE;
+    cfg.log.level = NANORTC_LOG_TRACE;
     cfg.log.callback = test_log_callback;
     cfg.log.user_data = NULL;
 
-    nano_rtc_t rtc;
-    ASSERT_OK(nano_rtc_init(&rtc, &cfg));
+    nanortc_t rtc;
+    ASSERT_OK(nanortc_init(&rtc, &cfg));
 
     log_call_count = 0;
 
@@ -457,7 +456,7 @@ TEST(test_sctp_logging_on_parse)
     /* Should have logged at least one message (INIT received) */
     ASSERT_TRUE(log_call_count > 0);
 
-    nano_rtc_destroy(&rtc);
+    nanortc_destroy(&rtc);
 }
 
 /* ================================================================
@@ -468,11 +467,11 @@ TEST(test_sctp_logging_on_parse)
  *  Uses static buffer so delivered_data pointers remain valid after return. */
 static size_t pump(nano_sctp_t *src, nano_sctp_t *dst)
 {
-    static uint8_t buf[NANO_SCTP_MTU];
+    static uint8_t buf[NANORTC_SCTP_MTU];
     size_t out_len = 0;
     size_t total = 0;
 
-    while (nsctp_poll_output(src, buf, sizeof(buf), &out_len) == NANO_OK && out_len > 0) {
+    while (nsctp_poll_output(src, buf, sizeof(buf), &out_len) == NANORTC_OK && out_len > 0) {
         nsctp_handle_data(dst, buf, out_len);
         total += out_len;
         out_len = 0;
@@ -487,28 +486,28 @@ TEST(test_two_instance_handshake_server_client)
     nsctp_init(&server);
     nsctp_init(&client);
 
-    const nano_crypto_provider_t *crypto = nano_test_crypto();
+    const nanortc_crypto_provider_t *crypto = nano_test_crypto();
     server.crypto = crypto;
     client.crypto = crypto;
 
     /* Client sends INIT */
     ASSERT_OK(nsctp_start(&client));
-    ASSERT_EQ(client.state, NANO_SCTP_STATE_COOKIE_WAIT);
+    ASSERT_EQ(client.state, NANORTC_SCTP_STATE_COOKIE_WAIT);
 
     /* INIT → Server → INIT-ACK */
     pump(&client, &server);
 
     /* INIT-ACK → Client → COOKIE-ECHO */
     pump(&server, &client);
-    ASSERT_EQ(client.state, NANO_SCTP_STATE_COOKIE_ECHOED);
+    ASSERT_EQ(client.state, NANORTC_SCTP_STATE_COOKIE_ECHOED);
 
     /* COOKIE-ECHO → Server → COOKIE-ACK + ESTABLISHED */
     pump(&client, &server);
-    ASSERT_EQ(server.state, NANO_SCTP_STATE_ESTABLISHED);
+    ASSERT_EQ(server.state, NANORTC_SCTP_STATE_ESTABLISHED);
 
     /* COOKIE-ACK → Client → ESTABLISHED */
     pump(&server, &client);
-    ASSERT_EQ(client.state, NANO_SCTP_STATE_ESTABLISHED);
+    ASSERT_EQ(client.state, NANORTC_SCTP_STATE_ESTABLISHED);
 }
 
 TEST(test_two_instance_data_exchange)
@@ -517,7 +516,7 @@ TEST(test_two_instance_data_exchange)
     nsctp_init(&a);
     nsctp_init(&b);
 
-    const nano_crypto_provider_t *crypto = nano_test_crypto();
+    const nanortc_crypto_provider_t *crypto = nano_test_crypto();
     a.crypto = crypto;
     b.crypto = crypto;
 
@@ -527,8 +526,8 @@ TEST(test_two_instance_data_exchange)
     pump(&b, &a); /* INIT-ACK */
     pump(&a, &b); /* COOKIE-ECHO */
     pump(&b, &a); /* COOKIE-ACK */
-    ASSERT_EQ(a.state, NANO_SCTP_STATE_ESTABLISHED);
-    ASSERT_EQ(b.state, NANO_SCTP_STATE_ESTABLISHED);
+    ASSERT_EQ(a.state, NANORTC_SCTP_STATE_ESTABLISHED);
+    ASSERT_EQ(b.state, NANORTC_SCTP_STATE_ESTABLISHED);
 
     /* A sends DATA to B */
     uint8_t msg[] = "Hello SCTP";
@@ -556,7 +555,7 @@ TEST(test_two_instance_bidirectional)
     nsctp_init(&a);
     nsctp_init(&b);
 
-    const nano_crypto_provider_t *crypto = nano_test_crypto();
+    const nanortc_crypto_provider_t *crypto = nano_test_crypto();
     a.crypto = crypto;
     b.crypto = crypto;
 
@@ -566,8 +565,8 @@ TEST(test_two_instance_bidirectional)
     pump(&b, &a);
     pump(&a, &b);
     pump(&b, &a);
-    ASSERT_EQ(a.state, NANO_SCTP_STATE_ESTABLISHED);
-    ASSERT_EQ(b.state, NANO_SCTP_STATE_ESTABLISHED);
+    ASSERT_EQ(a.state, NANORTC_SCTP_STATE_ESTABLISHED);
+    ASSERT_EQ(b.state, NANORTC_SCTP_STATE_ESTABLISHED);
 
     /* A → B */
     uint8_t msg1[] = "from A";
@@ -594,7 +593,7 @@ TEST(test_send_before_established)
     nsctp_init(&sctp);
 
     uint8_t data[] = "test";
-    ASSERT_EQ(nsctp_send(&sctp, 0, 51, data, 4), NANO_ERR_STATE);
+    ASSERT_EQ(nsctp_send(&sctp, 0, 51, data, 4), NANORTC_ERR_STATE);
 }
 
 TEST(test_forward_tsn_advances)
@@ -603,7 +602,7 @@ TEST(test_forward_tsn_advances)
     nsctp_init(&a);
     nsctp_init(&b);
 
-    const nano_crypto_provider_t *crypto = nano_test_crypto();
+    const nanortc_crypto_provider_t *crypto = nano_test_crypto();
     a.crypto = crypto;
     b.crypto = crypto;
 
@@ -636,7 +635,7 @@ TEST(test_sack_drains_send_queue)
     nsctp_init(&a);
     nsctp_init(&b);
 
-    const nano_crypto_provider_t *crypto = nano_test_crypto();
+    const nanortc_crypto_provider_t *crypto = nano_test_crypto();
     a.crypto = crypto;
     b.crypto = crypto;
 
@@ -646,7 +645,7 @@ TEST(test_sack_drains_send_queue)
     pump(&b, &a);
     pump(&a, &b);
     pump(&b, &a);
-    ASSERT_EQ(a.state, NANO_SCTP_STATE_ESTABLISHED);
+    ASSERT_EQ(a.state, NANORTC_SCTP_STATE_ESTABLISHED);
 
     /* Send multiple messages */
     uint8_t msg1[] = "first";
@@ -668,7 +667,7 @@ TEST(test_sack_drains_send_queue)
     bool all_acked = true;
     uint8_t idx = a.sq_head;
     while (idx != a.sq_tail) {
-        nsctp_send_entry_t *e = &a.send_queue[idx & (NANO_SCTP_MAX_SEND_QUEUE - 1)];
+        nsctp_send_entry_t *e = &a.send_queue[idx & (NANORTC_SCTP_MAX_SEND_QUEUE - 1)];
         if (!e->acked) {
             all_acked = false;
         }
@@ -687,7 +686,7 @@ TEST(test_sctp_output_queue_multiple)
     nsctp_init(&a);
     nsctp_init(&b);
 
-    const nano_crypto_provider_t *crypto = nano_test_crypto();
+    const nanortc_crypto_provider_t *crypto = nano_test_crypto();
     a.crypto = crypto;
     b.crypto = crypto;
 
@@ -695,7 +694,7 @@ TEST(test_sctp_output_queue_multiple)
     ASSERT_OK(nsctp_start(&a));
 
     /* Poll the INIT */
-    uint8_t buf[NANO_SCTP_MTU];
+    uint8_t buf[NANORTC_SCTP_MTU];
     size_t out_len = 0;
     ASSERT_OK(nsctp_poll_output(&a, buf, sizeof(buf), &out_len));
     ASSERT_TRUE(out_len > 0);
@@ -710,7 +709,7 @@ TEST(test_sctp_output_queue_multiple)
 
     /* No more output */
     out_len = 0;
-    ASSERT_EQ(nsctp_poll_output(&b, buf, sizeof(buf), &out_len), NANO_ERR_NO_DATA);
+    ASSERT_EQ(nsctp_poll_output(&b, buf, sizeof(buf), &out_len), NANORTC_ERR_NO_DATA);
 }
 
 /* ================================================================
@@ -761,4 +760,4 @@ RUN(test_forward_tsn_advances);
 RUN(test_sack_drains_send_queue);
 RUN(test_sctp_output_queue_multiple);
 TEST_MAIN_END
-#endif /* NANO_FEATURE_DATACHANNEL */
+#endif /* NANORTC_FEATURE_DATACHANNEL */

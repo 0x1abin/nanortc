@@ -7,7 +7,7 @@
  * SPDX-License-Identifier: MIT
  */
 
-#include "nano_crypto.h"
+#include "nanortc_crypto.h"
 #include <openssl/hmac.h>
 #include <openssl/rand.h>
 #include <openssl/ssl.h>
@@ -40,7 +40,7 @@ static int ossl_random_bytes(uint8_t *buf, size_t len)
 
 /* ---- DTLS context (heap-allocated by provider) ---- */
 
-struct nano_crypto_dtls_ctx {
+struct nanortc_crypto_dtls_ctx {
     SSL_CTX *ssl_ctx;
     SSL *ssl;
     BIO *bio_in;  /* memory BIO: we write incoming, OpenSSL reads */
@@ -52,11 +52,11 @@ struct nano_crypto_dtls_ctx {
 
     /* BIO adapter callbacks (from nano_dtls.c) */
     void *bio_userdata;
-    nano_dtls_send_fn bio_send;
-    nano_dtls_recv_fn bio_recv;
+    nanortc_dtls_send_fn bio_send;
+    nanortc_dtls_recv_fn bio_recv;
 
     /* Fingerprint cache */
-    char fingerprint[NANO_DTLS_FINGERPRINT_STR_SIZE]; /* "XX:XX:..." SHA-256, 95 chars + NUL */
+    char fingerprint[NANORTC_DTLS_FINGERPRINT_STR_SIZE]; /* "XX:XX:..." SHA-256, 95 chars + NUL */
 };
 
 /* ---- Certificate verification callback: accept self-signed ---- */
@@ -72,7 +72,7 @@ static int ossl_verify_cb(int preverify_ok, X509_STORE_CTX *ctx)
 
 static int ossl_compute_fingerprint(X509 *cert, char *buf, size_t buf_len)
 {
-    if (buf_len < NANO_DTLS_FINGERPRINT_MIN_BUF) {
+    if (buf_len < NANORTC_DTLS_FINGERPRINT_MIN_BUF) {
         return -1;
     }
     unsigned char digest[32];
@@ -92,7 +92,7 @@ static int ossl_compute_fingerprint(X509 *cert, char *buf, size_t buf_len)
 
 /* ---- Self-signed ECDSA P-256 certificate generation ---- */
 
-static int ossl_generate_cert(nano_crypto_dtls_ctx_t *ctx)
+static int ossl_generate_cert(nanortc_crypto_dtls_ctx_t *ctx)
 {
     /* Generate ECDSA P-256 key */
     ctx->pkey = EVP_EC_gen("P-256");
@@ -145,7 +145,7 @@ static int ossl_generate_cert(nano_crypto_dtls_ctx_t *ctx)
 
 /* ---- Drain outgoing data from bio_out and send via BIO callback ---- */
 
-static int ossl_drain_bio_out(nano_crypto_dtls_ctx_t *ctx)
+static int ossl_drain_bio_out(nanortc_crypto_dtls_ctx_t *ctx)
 {
     if (!ctx->bio_send) {
         return 0;
@@ -168,7 +168,7 @@ static int ossl_drain_bio_out(nano_crypto_dtls_ctx_t *ctx)
 
 /* ---- Feed incoming data from BIO callback into bio_in ---- */
 
-static int ossl_feed_bio_in(nano_crypto_dtls_ctx_t *ctx)
+static int ossl_feed_bio_in(nanortc_crypto_dtls_ctx_t *ctx)
 {
     if (!ctx->bio_recv) {
         return 0;
@@ -183,9 +183,9 @@ static int ossl_feed_bio_in(nano_crypto_dtls_ctx_t *ctx)
 
 /* ---- DTLS provider functions ---- */
 
-static nano_crypto_dtls_ctx_t *ossl_dtls_ctx_new(int is_server)
+static nanortc_crypto_dtls_ctx_t *ossl_dtls_ctx_new(int is_server)
 {
-    nano_crypto_dtls_ctx_t *ctx = calloc(1, sizeof(*ctx));
+    nanortc_crypto_dtls_ctx_t *ctx = calloc(1, sizeof(*ctx));
     if (!ctx) {
         return NULL;
     }
@@ -282,8 +282,8 @@ fail:
     return NULL;
 }
 
-static int ossl_dtls_set_bio(nano_crypto_dtls_ctx_t *ctx, void *userdata, nano_dtls_send_fn send_cb,
-                             nano_dtls_recv_fn recv_cb)
+static int ossl_dtls_set_bio(nanortc_crypto_dtls_ctx_t *ctx, void *userdata,
+                             nanortc_dtls_send_fn send_cb, nanortc_dtls_recv_fn recv_cb)
 {
     if (!ctx) {
         return -1;
@@ -294,7 +294,7 @@ static int ossl_dtls_set_bio(nano_crypto_dtls_ctx_t *ctx, void *userdata, nano_d
     return 0;
 }
 
-static int ossl_dtls_handshake(nano_crypto_dtls_ctx_t *ctx)
+static int ossl_dtls_handshake(nanortc_crypto_dtls_ctx_t *ctx)
 {
     if (!ctx) {
         return -1;
@@ -322,7 +322,7 @@ static int ossl_dtls_handshake(nano_crypto_dtls_ctx_t *ctx)
     return -1; /* Error */
 }
 
-static int ossl_dtls_encrypt(nano_crypto_dtls_ctx_t *ctx, const uint8_t *in, size_t in_len,
+static int ossl_dtls_encrypt(nanortc_crypto_dtls_ctx_t *ctx, const uint8_t *in, size_t in_len,
                              uint8_t *out, size_t *out_len)
 {
     (void)out;
@@ -341,7 +341,7 @@ static int ossl_dtls_encrypt(nano_crypto_dtls_ctx_t *ctx, const uint8_t *in, siz
     return 0;
 }
 
-static int ossl_dtls_decrypt(nano_crypto_dtls_ctx_t *ctx, const uint8_t *in, size_t in_len,
+static int ossl_dtls_decrypt(nanortc_crypto_dtls_ctx_t *ctx, const uint8_t *in, size_t in_len,
                              uint8_t *out, size_t *out_len)
 {
     (void)in;
@@ -367,7 +367,7 @@ static int ossl_dtls_decrypt(nano_crypto_dtls_ctx_t *ctx, const uint8_t *in, siz
     return 0;
 }
 
-static int ossl_dtls_export_keying_material(nano_crypto_dtls_ctx_t *ctx, const char *label,
+static int ossl_dtls_export_keying_material(nanortc_crypto_dtls_ctx_t *ctx, const char *label,
                                             size_t label_len, uint8_t *out, size_t out_len)
 {
     if (!ctx || !ctx->handshake_done) {
@@ -380,16 +380,16 @@ static int ossl_dtls_export_keying_material(nano_crypto_dtls_ctx_t *ctx, const c
     return 0;
 }
 
-static int ossl_dtls_get_fingerprint(nano_crypto_dtls_ctx_t *ctx, char *buf, size_t buf_len)
+static int ossl_dtls_get_fingerprint(nanortc_crypto_dtls_ctx_t *ctx, char *buf, size_t buf_len)
 {
-    if (!ctx || buf_len < NANO_DTLS_FINGERPRINT_MIN_BUF) {
+    if (!ctx || buf_len < NANORTC_DTLS_FINGERPRINT_MIN_BUF) {
         return -1;
     }
-    memcpy(buf, ctx->fingerprint, NANO_DTLS_FINGERPRINT_MIN_BUF);
+    memcpy(buf, ctx->fingerprint, NANORTC_DTLS_FINGERPRINT_MIN_BUF);
     return 0;
 }
 
-static void ossl_dtls_free(nano_crypto_dtls_ctx_t *ctx)
+static void ossl_dtls_free(nanortc_crypto_dtls_ctx_t *ctx)
 {
     if (!ctx) {
         return;
@@ -417,7 +417,7 @@ static void ossl_dtls_free(nano_crypto_dtls_ctx_t *ctx)
     free(ctx);
 }
 
-#if NANO_HAVE_MEDIA_TRANSPORT
+#if NANORTC_HAVE_MEDIA_TRANSPORT
 /* AES-128 Counter Mode (RFC 3711 section 4.1.1) */
 static int ossl_aes_128_cm(const uint8_t key[16], const uint8_t iv[16], const uint8_t *in,
                            size_t len, uint8_t *out)
@@ -454,7 +454,7 @@ static void ossl_hmac_sha1_80(const uint8_t *key, size_t key_len, const uint8_t 
 
 /* ---- Provider instance ---- */
 
-static const nano_crypto_provider_t openssl_provider = {
+static const nanortc_crypto_provider_t openssl_provider = {
     .name = "openssl",
     .dtls_ctx_new = ossl_dtls_ctx_new,
     .dtls_set_bio = ossl_dtls_set_bio,
@@ -466,13 +466,13 @@ static const nano_crypto_provider_t openssl_provider = {
     .dtls_free = ossl_dtls_free,
     .hmac_sha1 = ossl_hmac_sha1,
     .random_bytes = ossl_random_bytes,
-#if NANO_HAVE_MEDIA_TRANSPORT
+#if NANORTC_HAVE_MEDIA_TRANSPORT
     .aes_128_cm = ossl_aes_128_cm,
     .hmac_sha1_80 = ossl_hmac_sha1_80,
 #endif
 };
 
-const nano_crypto_provider_t *nano_crypto_openssl(void)
+const nanortc_crypto_provider_t *nanortc_crypto_openssl(void)
 {
     return &openssl_provider;
 }

@@ -22,9 +22,9 @@ All external data (UDP packets, SDP strings) is validated at the entry point. On
 
 ## 4. Compile-time, not runtime
 
-Feature selection happens at compile time via orthogonal feature flags (`NANO_FEATURE_DATACHANNEL`, `NANO_FEATURE_AUDIO`, `NANO_FEATURE_VIDEO`), not at runtime. There is no dead code in a built binary — if video is not enabled, no video code is compiled.
+Feature selection happens at compile time via orthogonal feature flags (`NANORTC_FEATURE_DATACHANNEL`, `NANORTC_FEATURE_AUDIO`, `NANORTC_FEATURE_VIDEO`), not at runtime. There is no dead code in a built binary — if video is not enabled, no video code is compiled.
 
-**Implication:** Use `#if NANO_FEATURE_*` guards, not runtime `if` checks. This keeps the binary small and deterministic for embedded targets.
+**Implication:** Use `#if NANORTC_FEATURE_*` guards, not runtime `if` checks. This keeps the binary small and deterministic for embedded targets.
 
 ## 5. Caller owns resources
 
@@ -34,9 +34,9 @@ NanoRTC never allocates memory, creates threads, or opens sockets. The caller pr
 
 ## 6. One dependency, fully abstracted
 
-The only external dependency is mbedtls, and even that is behind the `nano_crypto_provider_t` interface. The library can be ported to any crypto backend by implementing a single struct of function pointers.
+The only external dependency is mbedtls, and even that is behind the `nanortc_crypto_provider_t` interface. The library can be ported to any crypto backend by implementing a single struct of function pointers.
 
-**Implication:** Never call mbedtls functions directly from `src/`. Always go through `crypto/nano_crypto.h`.
+**Implication:** Never call mbedtls functions directly from `src/`. Always go through `crypto/nanortc_crypto.h`.
 
 ## 7. Mechanical enforcement over documentation
 

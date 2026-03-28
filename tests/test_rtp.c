@@ -159,7 +159,7 @@ TEST(test_rtp_pack_buffer_too_small)
     size_t out_len;
 
     ASSERT_EQ(rtp_pack(&rtp, 0, (const uint8_t *)"x", 1,
-                       buf, sizeof(buf), &out_len), NANO_ERR_BUFFER_TOO_SMALL);
+                       buf, sizeof(buf), &out_len), NANORTC_ERR_BUFFER_TOO_SMALL);
 }
 
 /* ---- Runner ---- */

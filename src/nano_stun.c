@@ -67,17 +67,17 @@ static size_t attr_padded(uint16_t len)
 int stun_parse(const uint8_t *data, size_t len, stun_msg_t *msg)
 {
     if (!data || !msg) {
-        return NANO_ERR_INVALID_PARAM;
+        return NANORTC_ERR_INVALID_PARAM;
     }
     if (len < STUN_HEADER_SIZE) {
-        return NANO_ERR_PARSE;
+        return NANORTC_ERR_PARSE;
     }
 
     memset(msg, 0, sizeof(*msg));
 
     /* RFC 8489 §6: top 2 bits must be 0 */
     if (data[0] & 0xC0) {
-        return NANO_ERR_PARSE;
+        return NANORTC_ERR_PARSE;
     }
 
     msg->type = read_u16(data);
@@ -86,15 +86,15 @@ int stun_parse(const uint8_t *data, size_t len, stun_msg_t *msg)
     /* Magic cookie (RFC 8489 §6) */
     uint32_t cookie = read_u32(data + 4);
     if (cookie != STUN_MAGIC_COOKIE) {
-        return NANO_ERR_PARSE;
+        return NANORTC_ERR_PARSE;
     }
 
     /* Length must match packet, must be 4-byte aligned */
     if ((size_t)(msg->length + STUN_HEADER_SIZE) != len) {
-        return NANO_ERR_PARSE;
+        return NANORTC_ERR_PARSE;
     }
     if (msg->length & 3) {
-        return NANO_ERR_PARSE;
+        return NANORTC_ERR_PARSE;
     }
 
     memcpy(msg->transaction_id, data + 8, STUN_TXID_SIZE);
@@ -117,12 +117,12 @@ int stun_parse(const uint8_t *data, size_t len, stun_msg_t *msg)
         const uint8_t *val = data + pos + 4;
 
         if (pos + 4 + padded > len) {
-            return NANO_ERR_PARSE;
+            return NANORTC_ERR_PARSE;
         }
 
         /* RFC 8489 §14.7: nothing may follow FINGERPRINT */
         if (after_fingerprint) {
-            return NANO_ERR_PARSE;
+            return NANORTC_ERR_PARSE;
         }
 
         /*
@@ -143,7 +143,7 @@ int stun_parse(const uint8_t *data, size_t len, stun_msg_t *msg)
 
         case STUN_ATTR_PRIORITY:
             if (attr_len != 4) {
-                return NANO_ERR_PARSE;
+                return NANORTC_ERR_PARSE;
             }
             msg->priority = read_u32(val);
             break;
@@ -155,7 +155,7 @@ int stun_parse(const uint8_t *data, size_t len, stun_msg_t *msg)
         case STUN_ATTR_XOR_MAPPED_ADDRESS:
             /* RFC 8489 §14.2 */
             if (attr_len < 8) {
-                return NANO_ERR_PARSE;
+                return NANORTC_ERR_PARSE;
             }
             msg->mapped_family = val[1];
             if (msg->mapped_family == STUN_FAMILY_IPV4) {
@@ -166,7 +166,7 @@ int stun_parse(const uint8_t *data, size_t len, stun_msg_t *msg)
                 write_u32(msg->mapped_addr, xaddr);
             } else if (msg->mapped_family == STUN_FAMILY_IPV6) {
                 if (attr_len < 20) {
-                    return NANO_ERR_PARSE;
+                    return NANORTC_ERR_PARSE;
                 }
                 msg->mapped_port = read_u16(val + 2) ^ (uint16_t)(STUN_MAGIC_COOKIE >> 16);
                 /* Address XOR (magic_cookie || transaction_id) = 16 bytes */
@@ -177,13 +177,13 @@ int stun_parse(const uint8_t *data, size_t len, stun_msg_t *msg)
                     msg->mapped_addr[i] = val[4 + i] ^ mask[i];
                 }
             } else {
-                return NANO_ERR_PARSE;
+                return NANORTC_ERR_PARSE;
             }
             break;
 
         case STUN_ATTR_MESSAGE_INTEGRITY:
             if (attr_len != 20) {
-                return NANO_ERR_PARSE;
+                return NANORTC_ERR_PARSE;
             }
             msg->has_integrity = true;
             msg->integrity_offset = (uint16_t)pos;
@@ -192,7 +192,7 @@ int stun_parse(const uint8_t *data, size_t len, stun_msg_t *msg)
 
         case STUN_ATTR_FINGERPRINT:
             if (attr_len != 4) {
-                return NANO_ERR_PARSE;
+                return NANORTC_ERR_PARSE;
             }
             msg->has_fingerprint = true;
             msg->fingerprint_value = read_u32(val);
@@ -202,14 +202,14 @@ int stun_parse(const uint8_t *data, size_t len, stun_msg_t *msg)
         case STUN_ATTR_ERROR_CODE:
             /* RFC 8489 §14.8: class(3 bits) * 100 + number(8 bits) */
             if (attr_len < 4) {
-                return NANO_ERR_PARSE;
+                return NANORTC_ERR_PARSE;
             }
             msg->error_code = (uint16_t)((val[2] & 0x07) * 100 + val[3]);
             break;
 
         case STUN_ATTR_ICE_CONTROLLING:
             if (attr_len != 8) {
-                return NANO_ERR_PARSE;
+                return NANORTC_ERR_PARSE;
             }
             msg->has_ice_controlling = true;
             msg->ice_controlling = read_u64(val);
@@ -217,7 +217,7 @@ int stun_parse(const uint8_t *data, size_t len, stun_msg_t *msg)
 
         case STUN_ATTR_ICE_CONTROLLED:
             if (attr_len != 8) {
-                return NANO_ERR_PARSE;
+                return NANORTC_ERR_PARSE;
             }
             msg->has_ice_controlled = true;
             msg->ice_controlled = read_u64(val);
@@ -231,7 +231,7 @@ int stun_parse(const uint8_t *data, size_t len, stun_msg_t *msg)
         pos += 4 + padded;
     }
 
-    return NANO_OK;
+    return NANORTC_OK;
 }
 
 /* ----------------------------------------------------------------
@@ -241,7 +241,7 @@ int stun_parse(const uint8_t *data, size_t len, stun_msg_t *msg)
 int stun_verify_fingerprint(const uint8_t *data, size_t len)
 {
     if (!data || len < STUN_HEADER_SIZE + 8) {
-        return NANO_ERR_INVALID_PARAM;
+        return NANORTC_ERR_INVALID_PARAM;
     }
 
     /* FINGERPRINT must be last attribute: 4-byte TLV header + 4-byte value */
@@ -250,7 +250,7 @@ int stun_verify_fingerprint(const uint8_t *data, size_t len)
     uint16_t fp_len = read_u16(data + fp_offset + 2);
 
     if (fp_type != STUN_ATTR_FINGERPRINT || fp_len != 4) {
-        return NANO_ERR_PROTOCOL;
+        return NANORTC_ERR_PROTOCOL;
     }
 
     uint32_t fp_value = read_u32(data + fp_offset + 4);
@@ -263,7 +263,7 @@ int stun_verify_fingerprint(const uint8_t *data, size_t len)
      * Stack copy is safe: STUN messages are always < 548 bytes (RFC 8489 §7.1).
      */
     if (fp_offset > 548) {
-        return NANO_ERR_PROTOCOL;
+        return NANORTC_ERR_PROTOCOL;
     }
 
     uint8_t msg_copy[548];
@@ -274,10 +274,10 @@ int stun_verify_fingerprint(const uint8_t *data, size_t len)
     uint32_t expected = nano_crc32(msg_copy, fp_offset) ^ STUN_FINGERPRINT_XOR;
 
     if (expected != fp_value) {
-        return NANO_ERR_PROTOCOL;
+        return NANORTC_ERR_PROTOCOL;
     }
 
-    return NANO_OK;
+    return NANORTC_OK;
 }
 
 /* ----------------------------------------------------------------
@@ -288,13 +288,13 @@ int stun_verify_integrity(const uint8_t *data, size_t len, const stun_msg_t *msg
                           const uint8_t *key, size_t key_len, stun_hmac_sha1_fn hmac_sha1)
 {
     if (!data || !msg || !key || !hmac_sha1) {
-        return NANO_ERR_INVALID_PARAM;
+        return NANORTC_ERR_INVALID_PARAM;
     }
     if (!msg->has_integrity) {
-        return NANO_ERR_PROTOCOL;
+        return NANORTC_ERR_PROTOCOL;
     }
     if ((size_t)msg->integrity_offset + 24 > len) {
-        return NANO_ERR_PARSE;
+        return NANORTC_ERR_PARSE;
     }
 
     /*
@@ -309,7 +309,7 @@ int stun_verify_integrity(const uint8_t *data, size_t len, const stun_msg_t *msg
 
     /* Build HMAC input: modified header + data[4..integrity_offset) */
     if (msg->integrity_offset > 548) {
-        return NANO_ERR_PROTOCOL;
+        return NANORTC_ERR_PROTOCOL;
     }
 
     uint8_t hmac_input[548];
@@ -322,10 +322,10 @@ int stun_verify_integrity(const uint8_t *data, size_t len, const stun_msg_t *msg
 
     /* Compare with stored HMAC value at data[integrity_offset + 4 .. + 24] */
     if (memcmp(computed, data + msg->integrity_offset + 4, 20) != 0) {
-        return NANO_ERR_PROTOCOL;
+        return NANORTC_ERR_PROTOCOL;
     }
 
-    return NANO_OK;
+    return NANORTC_OK;
 }
 
 /* ----------------------------------------------------------------
@@ -362,7 +362,7 @@ static int append_integrity_fingerprint(uint8_t *buf, size_t buf_len, size_t pos
     /* MESSAGE-INTEGRITY: 4 (TLV) + 20 (HMAC) = 24 bytes */
     /* FINGERPRINT: 4 (TLV) + 4 (CRC) = 8 bytes */
     if (pos + 24 + 8 > buf_len) {
-        return NANO_ERR_BUFFER_TOO_SMALL;
+        return NANORTC_ERR_BUFFER_TOO_SMALL;
     }
 
     /* --- MESSAGE-INTEGRITY (RFC 8489 §14.5) --- */
@@ -397,12 +397,12 @@ int stun_encode_binding_response(const stun_msg_t *req, const uint8_t *src_addr,
                                  size_t *out_len)
 {
     if (!req || !src_addr || !key || !hmac_sha1 || !buf || !out_len) {
-        return NANO_ERR_INVALID_PARAM;
+        return NANORTC_ERR_INVALID_PARAM;
     }
 
     /* Minimum: header(20) + XOR-MAPPED(12/24) + MI(24) + FP(8) = 64/76 */
     if (buf_len < 76) {
-        return NANO_ERR_BUFFER_TOO_SMALL;
+        return NANORTC_ERR_BUFFER_TOO_SMALL;
     }
 
     /* Header (length will be patched later) */
@@ -434,7 +434,7 @@ int stun_encode_binding_response(const stun_msg_t *req, const uint8_t *src_addr,
         }
         pos += 4 + 20;
     } else {
-        return NANO_ERR_INVALID_PARAM;
+        return NANORTC_ERR_INVALID_PARAM;
     }
 
     /* MESSAGE-INTEGRITY + FINGERPRINT */
@@ -444,7 +444,7 @@ int stun_encode_binding_response(const stun_msg_t *req, const uint8_t *src_addr,
     }
 
     *out_len = (size_t)total;
-    return NANO_OK;
+    return NANORTC_OK;
 }
 
 /* ----------------------------------------------------------------
@@ -458,7 +458,7 @@ int stun_encode_binding_request(const char *username, size_t username_len, uint3
                                 size_t buf_len, size_t *out_len)
 {
     if (!username || !transaction_id || !key || !hmac_sha1 || !buf || !out_len) {
-        return NANO_ERR_INVALID_PARAM;
+        return NANORTC_ERR_INVALID_PARAM;
     }
 
     /* Estimate: header(20) + USERNAME(4+padded) + PRIORITY(8) + ICE-*(12)
@@ -466,7 +466,7 @@ int stun_encode_binding_request(const char *username, size_t username_len, uint3
     size_t needed = STUN_HEADER_SIZE + (4 + attr_padded((uint16_t)username_len)) + 8 + 12 +
                     (use_candidate ? 4 : 0) + 24 + 8;
     if (buf_len < needed) {
-        return NANO_ERR_BUFFER_TOO_SMALL;
+        return NANORTC_ERR_BUFFER_TOO_SMALL;
     }
 
     /* Header */
@@ -512,5 +512,5 @@ int stun_encode_binding_request(const char *username, size_t username_len, uint3
     }
 
     *out_len = (size_t)total;
-    return NANO_OK;
+    return NANORTC_OK;
 }

@@ -19,7 +19,7 @@
  * @param maxlen Maximum number of bytes to examine.
  * @return Index of the first NUL byte, or @p maxlen if none found.
  */
-static inline size_t nano_strnlen(const char *s, size_t maxlen)
+static inline size_t nanortc_strnlen(const char *s, size_t maxlen)
 {
     size_t i = 0;
     while (i < maxlen && s[i] != '\0')
@@ -35,7 +35,7 @@ static inline size_t nano_strnlen(const char *s, size_t maxlen)
  * @param buf  Buffer to zero.
  * @param len  Number of bytes to clear.
  */
-static inline void nano_memzero(void *buf, size_t len)
+static inline void nanortc_memzero(void *buf, size_t len)
 {
     volatile uint8_t *p = (volatile uint8_t *)buf;
     for (size_t i = 0; i < len; i++)
@@ -52,7 +52,7 @@ static inline void nano_memzero(void *buf, size_t len)
  * @param out  Receives the parsed value on success.
  * @return 0 on success, -1 on error.
  */
-static inline int nano_parse_uint32(const char *buf, size_t len, uint32_t *out)
+static inline int nanortc_parse_uint32(const char *buf, size_t len, uint32_t *out)
 {
     if (!buf || len == 0 || !out)
         return -1;

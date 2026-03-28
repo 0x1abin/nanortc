@@ -1,7 +1,7 @@
 /*
  * nanortc interop tests — NanoRTC peer wrapper
  *
- * Runs a nano_rtc_t instance in a dedicated thread with a real UDP
+ * Runs a nanortc_t instance in a dedicated thread with a real UDP
  * socket, exchanging SDP/ICE with the remote peer via the signaling
  * pipe.
  *
@@ -12,7 +12,6 @@
 #define INTEROP_NANORTC_PEER_H_
 
 #include "interop_common.h"
-#include "nano_rtc_internal.h"
 #include "run_loop.h"
 
 #include <pthread.h>
@@ -24,7 +23,7 @@ extern "C" {
 
 typedef struct {
     /* NanoRTC state */
-    nano_rtc_t rtc;
+    nanortc_t rtc;
     nano_run_loop_t loop;
 
     /* Signaling pipe (our end) */

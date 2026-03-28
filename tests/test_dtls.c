@@ -9,7 +9,7 @@
 
 #include "nanortc.h"
 #include "nano_dtls.h"
-#include "nano_crypto.h"
+#include "nanortc_crypto.h"
 #include "nano_test.h"
 #include "nano_test_config.h"
 #include <string.h>
@@ -23,11 +23,11 @@ TEST(test_dtls_init_server)
     nano_dtls_t dtls;
     int rc = dtls_init(&dtls, nano_test_crypto(), 1);
     ASSERT_OK(rc);
-    ASSERT_EQ(dtls.state, NANO_DTLS_STATE_INIT);
+    ASSERT_EQ(dtls.state, NANORTC_DTLS_STATE_INIT);
     ASSERT_TRUE(dtls.crypto_ctx != NULL);
     ASSERT_TRUE(dtls.is_server == 1);
     dtls_destroy(&dtls);
-    ASSERT_EQ(dtls.state, NANO_DTLS_STATE_CLOSED);
+    ASSERT_EQ(dtls.state, NANORTC_DTLS_STATE_CLOSED);
 }
 
 TEST(test_dtls_init_client)
@@ -35,7 +35,7 @@ TEST(test_dtls_init_client)
     nano_dtls_t dtls;
     int rc = dtls_init(&dtls, nano_test_crypto(), 0);
     ASSERT_OK(rc);
-    ASSERT_EQ(dtls.state, NANO_DTLS_STATE_INIT);
+    ASSERT_EQ(dtls.state, NANORTC_DTLS_STATE_INIT);
     ASSERT_TRUE(dtls.is_server == 0);
     dtls_destroy(&dtls);
 }
@@ -106,7 +106,7 @@ static int dtls_relay(nano_dtls_t *from, nano_dtls_t *to)
     size_t len = 0;
     int relayed = 0;
 
-    while (dtls_poll_output(from, buf, sizeof(buf), &len) == NANO_OK && len > 0) {
+    while (dtls_poll_output(from, buf, sizeof(buf), &len) == NANORTC_OK && len > 0) {
         int rc = dtls_handle_data(to, buf, len);
         if (rc < 0) {
             return rc;
@@ -120,7 +120,7 @@ static int dtls_relay(nano_dtls_t *from, nano_dtls_t *to)
 TEST(test_dtls_handshake_loopback)
 {
     nano_dtls_t server, client;
-    const nano_crypto_provider_t *crypto = nano_test_crypto();
+    const nanortc_crypto_provider_t *crypto = nano_test_crypto();
 
     /* Initialize both sides */
     ASSERT_OK(dtls_init(&server, crypto, 1));
@@ -128,7 +128,7 @@ TEST(test_dtls_handshake_loopback)
 
     /* Client initiates handshake (sends ClientHello) */
     ASSERT_OK(dtls_start(&client));
-    ASSERT_EQ(client.state, NANO_DTLS_STATE_HANDSHAKING);
+    ASSERT_EQ(client.state, NANORTC_DTLS_STATE_HANDSHAKING);
 
     /* Pump: relay DTLS records back and forth until both are established
      * DTLS 1.2 handshake typically takes 4-6 round trips */
@@ -140,16 +140,16 @@ TEST(test_dtls_handshake_loopback)
         /* server → client */
         dtls_relay(&server, &client);
 
-        if (server.state == NANO_DTLS_STATE_ESTABLISHED &&
-            client.state == NANO_DTLS_STATE_ESTABLISHED) {
+        if (server.state == NANORTC_DTLS_STATE_ESTABLISHED &&
+            client.state == NANORTC_DTLS_STATE_ESTABLISHED) {
             established = 1;
             break;
         }
     }
 
     ASSERT_TRUE(established);
-    ASSERT_EQ(server.state, NANO_DTLS_STATE_ESTABLISHED);
-    ASSERT_EQ(client.state, NANO_DTLS_STATE_ESTABLISHED);
+    ASSERT_EQ(server.state, NANORTC_DTLS_STATE_ESTABLISHED);
+    ASSERT_EQ(client.state, NANORTC_DTLS_STATE_ESTABLISHED);
 
     dtls_destroy(&server);
     dtls_destroy(&client);
@@ -166,8 +166,8 @@ static int dtls_do_handshake(nano_dtls_t *client, nano_dtls_t *server)
     for (int round = 0; round < 30; round++) {
         dtls_relay(client, server);
         dtls_relay(server, client);
-        if (server->state == NANO_DTLS_STATE_ESTABLISHED &&
-            client->state == NANO_DTLS_STATE_ESTABLISHED) {
+        if (server->state == NANORTC_DTLS_STATE_ESTABLISHED &&
+            client->state == NANORTC_DTLS_STATE_ESTABLISHED) {
             return 0;
         }
     }
@@ -177,7 +177,7 @@ static int dtls_do_handshake(nano_dtls_t *client, nano_dtls_t *server)
 TEST(test_dtls_encrypt_decrypt)
 {
     nano_dtls_t server, client;
-    const nano_crypto_provider_t *crypto = nano_test_crypto();
+    const nanortc_crypto_provider_t *crypto = nano_test_crypto();
     ASSERT_OK(dtls_init(&server, crypto, 1));
     ASSERT_OK(dtls_init(&client, crypto, 0));
     ASSERT_OK(dtls_do_handshake(&client, &server));
@@ -220,7 +220,7 @@ TEST(test_dtls_encrypt_decrypt)
 TEST(test_dtls_keying_material)
 {
     nano_dtls_t server, client;
-    const nano_crypto_provider_t *crypto = nano_test_crypto();
+    const nanortc_crypto_provider_t *crypto = nano_test_crypto();
     ASSERT_OK(dtls_init(&server, crypto, 1));
     ASSERT_OK(dtls_init(&client, crypto, 0));
     ASSERT_OK(dtls_do_handshake(&client, &server));

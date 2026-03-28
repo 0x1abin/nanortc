@@ -5,7 +5,6 @@
  */
 
 #include "nanortc.h"
-#include "nano_rtc_internal.h"
 #include "nano_sdp.h"
 #include "nano_test.h"
 #include "nano_test_config.h"
@@ -47,7 +46,7 @@ TEST(test_sdp_parse_chrome_offer)
     ASSERT_MEM_EQ(sdp.remote_ufrag, "abcd", 4);
     ASSERT_MEM_EQ(sdp.remote_pwd, "secretpassword1234567890", 24);
     ASSERT_EQ(sdp.remote_sctp_port, 5000);
-    ASSERT_EQ(sdp.remote_setup, NANO_SDP_SETUP_ACTPASS);
+    ASSERT_EQ(sdp.remote_setup, NANORTC_SDP_SETUP_ACTPASS);
 
     /* Fingerprint should start with "sha-256 AA:BB:" */
     ASSERT_TRUE(sdp.remote_fingerprint[0] != '\0');
@@ -89,7 +88,7 @@ TEST(test_sdp_parse_setup_active)
         len++;
 
     ASSERT_OK(sdp_parse(&sdp, offer, len));
-    ASSERT_EQ(sdp.remote_setup, NANO_SDP_SETUP_ACTIVE);
+    ASSERT_EQ(sdp.remote_setup, NANORTC_SDP_SETUP_ACTIVE);
 }
 
 /* ================================================================
@@ -104,7 +103,7 @@ TEST(test_sdp_generate_answer)
     memcpy(sdp.local_ufrag, "abcd1234", 8);
     memcpy(sdp.local_pwd, "password0123456789ab", 20);
     sdp.local_sctp_port = 5000;
-    sdp.local_setup = NANO_SDP_SETUP_PASSIVE;
+    sdp.local_setup = NANORTC_SDP_SETUP_PASSIVE;
 
     char buf[1024];
     size_t out_len = 0;
@@ -117,7 +116,7 @@ TEST(test_sdp_generate_answer)
     ASSERT_TRUE(strstr(buf, "a=ice-ufrag:abcd1234") != NULL);
     ASSERT_TRUE(strstr(buf, "a=ice-pwd:password0123456789ab") != NULL);
     ASSERT_TRUE(strstr(buf, "a=setup:passive") != NULL);
-#if NANO_FEATURE_DATACHANNEL
+#if NANORTC_FEATURE_DATACHANNEL
     ASSERT_TRUE(strstr(buf, "a=sctp-port:5000") != NULL);
     ASSERT_TRUE(strstr(buf, "a=max-message-size:262144") != NULL);
 #endif
@@ -142,7 +141,7 @@ TEST(test_sdp_roundtrip)
     memcpy(sdp.local_ufrag, "myufrag", 7);
     memcpy(sdp.local_pwd, "mypassword123456", 16);
     sdp.local_sctp_port = 5000;
-    sdp.local_setup = NANO_SDP_SETUP_ACTIVE;
+    sdp.local_setup = NANORTC_SDP_SETUP_ACTIVE;
 
     /* Generate */
     char buf[1024];
@@ -155,10 +154,10 @@ TEST(test_sdp_roundtrip)
     ASSERT_OK(sdp_parse(&sdp2, buf, out_len));
     ASSERT_MEM_EQ(sdp2.remote_ufrag, "myufrag", 7);
     ASSERT_MEM_EQ(sdp2.remote_pwd, "mypassword123456", 16);
-#if NANO_FEATURE_DATACHANNEL
+#if NANORTC_FEATURE_DATACHANNEL
     ASSERT_EQ(sdp2.remote_sctp_port, 5000);
 #endif
-    ASSERT_EQ(sdp2.remote_setup, NANO_SDP_SETUP_ACTIVE);
+    ASSERT_EQ(sdp2.remote_setup, NANORTC_SDP_SETUP_ACTIVE);
 }
 
 /* ================================================================
@@ -200,7 +199,7 @@ TEST(test_sdp_parse_firefox_offer)
     ASSERT_MEM_EQ(sdp.remote_ufrag, "ffufrag1", 8);
     ASSERT_MEM_EQ(sdp.remote_pwd, "firefoxpassword12345678", 23);
     ASSERT_EQ(sdp.remote_sctp_port, 5000);
-    ASSERT_EQ(sdp.remote_setup, NANO_SDP_SETUP_ACTPASS);
+    ASSERT_EQ(sdp.remote_setup, NANORTC_SDP_SETUP_ACTPASS);
     ASSERT_TRUE(sdp.remote_fingerprint[0] != '\0');
 }
 
@@ -238,7 +237,7 @@ TEST(test_sdp_parse_safari_offer)
     ASSERT_MEM_EQ(sdp.remote_ufrag, "sfufrag", 7);
     ASSERT_MEM_EQ(sdp.remote_pwd, "safaripassword1234567", 21);
     ASSERT_EQ(sdp.remote_sctp_port, 5000);
-    ASSERT_EQ(sdp.remote_setup, NANO_SDP_SETUP_ACTPASS);
+    ASSERT_EQ(sdp.remote_setup, NANORTC_SDP_SETUP_ACTPASS);
 }
 
 /* Minimal offer with only required fields */
@@ -257,7 +256,7 @@ TEST(test_sdp_parse_minimal)
 
     ASSERT_OK(sdp_parse(&sdp, offer, len));
     ASSERT_MEM_EQ(sdp.remote_ufrag, "min", 3);
-    ASSERT_EQ(sdp.remote_setup, NANO_SDP_SETUP_PASSIVE);
+    ASSERT_EQ(sdp.remote_setup, NANORTC_SDP_SETUP_PASSIVE);
 }
 
 /* ================================================================
@@ -305,7 +304,7 @@ TEST(test_sdp_parse_libdatachannel_offer)
     ASSERT_MEM_EQ(sdp.remote_ufrag, "ldcufrag1", 9);
     ASSERT_MEM_EQ(sdp.remote_pwd, "ldcpassword123456789012", 23);
     ASSERT_EQ(sdp.remote_sctp_port, 5000);
-    ASSERT_EQ(sdp.remote_setup, NANO_SDP_SETUP_ACTPASS);
+    ASSERT_EQ(sdp.remote_setup, NANORTC_SDP_SETUP_ACTPASS);
     ASSERT_TRUE(sdp.remote_fingerprint[0] != '\0');
     ASSERT_MEM_EQ(sdp.remote_fingerprint, "sha-256 A1:B2:", 14);
 
@@ -339,17 +338,17 @@ TEST(test_sdp_parse_no_candidates)
 
 TEST(test_accept_offer_generates_answer)
 {
-    nano_rtc_t rtc;
-    nano_rtc_config_t cfg;
+    nanortc_t rtc;
+    nanortc_config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.crypto = nano_test_crypto();
-    cfg.role = NANO_ROLE_CONTROLLED;
+    cfg.role = NANORTC_ROLE_CONTROLLED;
 
-    ASSERT_OK(nano_rtc_init(&rtc, &cfg));
+    ASSERT_OK(nanortc_init(&rtc, &cfg));
 
     char answer[2048];
     size_t answer_len = 0;
-    int rc = nano_accept_offer(&rtc, CHROME_OFFER, answer, sizeof(answer), &answer_len);
+    int rc = nanortc_accept_offer(&rtc, CHROME_OFFER, answer, sizeof(answer), &answer_len);
     ASSERT_OK(rc);
     ASSERT_TRUE(answer_len > 0);
 
@@ -357,7 +356,7 @@ TEST(test_accept_offer_generates_answer)
     ASSERT_TRUE(strstr(answer, "v=0") != NULL);
     ASSERT_TRUE(strstr(answer, "a=ice-ufrag:") != NULL);
     ASSERT_TRUE(strstr(answer, "a=ice-pwd:") != NULL);
-#if NANO_FEATURE_DATACHANNEL
+#if NANORTC_FEATURE_DATACHANNEL
     ASSERT_TRUE(strstr(answer, "a=sctp-port:5000") != NULL);
 #endif
 
@@ -367,14 +366,14 @@ TEST(test_accept_offer_generates_answer)
     ASSERT_TRUE(rtc.ice.local_ufrag[0] != '\0');
     ASSERT_TRUE(rtc.ice.local_pwd[0] != '\0');
 
-    nano_rtc_destroy(&rtc);
+    nanortc_destroy(&rtc);
 }
 
 /* ================================================================
- * Audio SDP tests (NANO_HAVE_MEDIA_TRANSPORT)
+ * Audio SDP tests (NANORTC_HAVE_MEDIA_TRANSPORT)
  * ================================================================ */
 
-#if NANO_HAVE_MEDIA_TRANSPORT
+#if NANORTC_HAVE_MEDIA_TRANSPORT
 
 /* Chrome audio+DC offer with Opus */
 static const char *CHROME_AUDIO_OFFER =
@@ -464,7 +463,7 @@ TEST(test_sdp_generate_audio_answer)
     memcpy(sdp.local_ufrag, "myufrag", 7);
     memcpy(sdp.local_pwd, "mypassword123456", 16);
     sdp.local_sctp_port = 5000;
-    sdp.local_setup = NANO_SDP_SETUP_PASSIVE;
+    sdp.local_setup = NANORTC_SDP_SETUP_PASSIVE;
     sdp.has_audio = true;
     sdp.audio_pt = 111;
     sdp.audio_sample_rate = 48000;
@@ -490,7 +489,7 @@ TEST(test_sdp_audio_roundtrip)
     sdp_init(&sdp);
     memcpy(sdp.local_ufrag, "rtufrag", 7);
     memcpy(sdp.local_pwd, "rtpassword12345678", 18);
-    sdp.local_setup = NANO_SDP_SETUP_ACTIVE;
+    sdp.local_setup = NANORTC_SDP_SETUP_ACTIVE;
     sdp.has_audio = true;
     sdp.audio_pt = 111;
     sdp.audio_sample_rate = 48000;
@@ -511,7 +510,7 @@ TEST(test_sdp_audio_roundtrip)
     ASSERT_EQ(sdp2.audio_channels, 2);
 }
 
-#endif /* NANO_HAVE_MEDIA_TRANSPORT */
+#endif /* NANORTC_HAVE_MEDIA_TRANSPORT */
 
 /* ================================================================
  * Test runner
@@ -531,7 +530,7 @@ RUN(test_sdp_roundtrip);
 RUN(test_sdp_parse_libdatachannel_offer);
 RUN(test_sdp_parse_no_candidates);
 RUN(test_accept_offer_generates_answer);
-#if NANO_HAVE_MEDIA_TRANSPORT
+#if NANORTC_HAVE_MEDIA_TRANSPORT
 RUN(test_sdp_parse_audio_offer);
 RUN(test_sdp_parse_audio_only_offer);
 RUN(test_sdp_generate_audio_answer);

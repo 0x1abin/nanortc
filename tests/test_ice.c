@@ -16,12 +16,12 @@
 #include "nanortc.h"
 #include "nano_ice.h"
 #include "nano_stun.h"
-#include "nano_crypto.h"
+#include "nanortc_crypto.h"
 #include "nano_test.h"
 #include "nano_test_config.h"
 #include <string.h>
 
-static const nano_crypto_provider_t *crypto(void)
+static const nanortc_crypto_provider_t *crypto(void)
 {
     return nano_test_crypto();
 }
@@ -65,9 +65,9 @@ static int do_ice_roundtrip(nano_ice_t *ctrl, nano_ice_t *ctld,
 
     int rc = ice_generate_check(ctrl, now_ms, crypto(),
                                  req_buf, sizeof(req_buf), &req_len);
-    if (rc != NANO_OK || req_len == 0) return rc;
+    if (rc != NANORTC_OK || req_len == 0) return rc;
 
-    nano_addr_t src;
+    nanortc_addr_t src;
     memset(&src, 0, sizeof(src));
     src.family = 4;
     src.addr[0] = 10; src.addr[3] = 1;
@@ -75,9 +75,9 @@ static int do_ice_roundtrip(nano_ice_t *ctrl, nano_ice_t *ctld,
 
     rc = ice_handle_stun(ctld, req_buf, req_len, &src, crypto(),
                           resp_buf, sizeof(resp_buf), &resp_len);
-    if (rc != NANO_OK) return rc;
+    if (rc != NANORTC_OK) return rc;
 
-    nano_addr_t resp_src;
+    nanortc_addr_t resp_src;
     memset(&resp_src, 0, sizeof(resp_src));
     resp_src.family = 4;
     resp_src.addr[0] = 10; resp_src.addr[3] = 2;
@@ -95,7 +95,7 @@ TEST(test_ice_init)
 {
     nano_ice_t ice;
     ASSERT_OK(ice_init(&ice, 0));
-    ASSERT_EQ(ice.state, NANO_ICE_STATE_NEW);
+    ASSERT_EQ(ice.state, NANORTC_ICE_STATE_NEW);
     ASSERT_EQ(ice.is_controlling, 0);
     ASSERT_EQ(ice.check_interval_ms, 50);
 
@@ -136,7 +136,7 @@ TEST(test_ice_generate_check_basic)
     size_t out_len = 0;
     ASSERT_OK(ice_generate_check(&ctrl, 0, crypto(), buf, sizeof(buf), &out_len));
     ASSERT_TRUE(out_len > 0);
-    ASSERT_EQ(ctrl.state, NANO_ICE_STATE_CHECKING);
+    ASSERT_EQ(ctrl.state, NANORTC_ICE_STATE_CHECKING);
     ASSERT_EQ(ctrl.check_count, 1);
 
     /* Verify the generated request is valid STUN */
@@ -223,7 +223,7 @@ TEST(test_ice_controlled_handle_request)
     ASSERT_OK(ice_generate_check(&ctrl, 100, crypto(),
                                   req_buf, sizeof(req_buf), &req_len));
 
-    nano_addr_t src;
+    nanortc_addr_t src;
     memset(&src, 0, sizeof(src));
     src.family = 4;
     src.addr[0] = 10; src.addr[3] = 1;
@@ -274,7 +274,7 @@ TEST(test_ice_reject_bad_username)
                                           crypto()->hmac_sha1,
                                           req_buf, sizeof(req_buf), &req_len));
 
-    nano_addr_t src;
+    nanortc_addr_t src;
     memset(&src, 0, sizeof(src));
     src.family = 4;
 
@@ -303,7 +303,7 @@ TEST(test_ice_reject_bad_password)
                                           crypto()->hmac_sha1,
                                           req_buf, sizeof(req_buf), &req_len));
 
-    nano_addr_t src;
+    nanortc_addr_t src;
     memset(&src, 0, sizeof(src));
     src.family = 4;
 
@@ -336,7 +336,7 @@ TEST(test_ice_use_candidate_nominates)
     ASSERT_OK(stun_parse(req_buf, req_len, &req));
     ASSERT_TRUE(req.use_candidate);
 
-    nano_addr_t src;
+    nanortc_addr_t src;
     memset(&src, 0, sizeof(src));
     src.family = 4;
     src.addr[0] = 10; src.addr[3] = 1;
@@ -348,7 +348,7 @@ TEST(test_ice_use_candidate_nominates)
                                resp_buf, sizeof(resp_buf), &resp_len));
 
     /* Controlled should be CONNECTED with selected address */
-    ASSERT_EQ(ctld.state, NANO_ICE_STATE_CONNECTED);
+    ASSERT_EQ(ctld.state, NANORTC_ICE_STATE_CONNECTED);
     ASSERT_TRUE(ctld.nominated);
     ASSERT_EQ(ctld.selected_port, 4000);
     ASSERT_EQ(ctld.selected_addr[0], 10);
@@ -386,7 +386,7 @@ TEST(test_ice_no_use_candidate_no_nomination)
         crypto()->hmac_sha1,
         req_buf, sizeof(req_buf), &req_len));
 
-    nano_addr_t src;
+    nanortc_addr_t src;
     memset(&src, 0, sizeof(src));
     src.family = 4;
     src.addr[0] = 10; src.addr[3] = 1;
@@ -399,7 +399,7 @@ TEST(test_ice_no_use_candidate_no_nomination)
 
     /* Response generated but NOT nominated */
     ASSERT_TRUE(resp_len > 0);
-    ASSERT_EQ(ctld.state, NANO_ICE_STATE_NEW); /* not CONNECTED */
+    ASSERT_EQ(ctld.state, NANORTC_ICE_STATE_NEW); /* not CONNECTED */
     ASSERT_FALSE(ctld.nominated);
 }
 
@@ -416,9 +416,9 @@ TEST(test_ice_controlling_receives_response)
 
     ASSERT_OK(do_ice_roundtrip(&ctrl, &ctld, 100));
 
-    ASSERT_EQ(ctrl.state, NANO_ICE_STATE_CONNECTED);
+    ASSERT_EQ(ctrl.state, NANORTC_ICE_STATE_CONNECTED);
     ASSERT_TRUE(ctrl.nominated);
-    ASSERT_EQ(ctld.state, NANO_ICE_STATE_CONNECTED);
+    ASSERT_EQ(ctld.state, NANORTC_ICE_STATE_CONNECTED);
     ASSERT_TRUE(ctld.nominated);
 }
 
@@ -436,7 +436,7 @@ TEST(test_ice_controlling_rejects_wrong_txid)
     /* Tamper: change the last txid byte in ctrl so response won't match */
     ctrl.last_txid[11] ^= 0xFF;
 
-    nano_addr_t src;
+    nanortc_addr_t src;
     memset(&src, 0, sizeof(src));
     src.family = 4; src.port = 4000;
 
@@ -448,14 +448,14 @@ TEST(test_ice_controlling_rejects_wrong_txid)
     /* Feed response to controlling — should fail (txid mismatch) */
     uint8_t dummy[256];
     size_t dummy_len = 0;
-    nano_addr_t resp_src;
+    nanortc_addr_t resp_src;
     memset(&resp_src, 0, sizeof(resp_src));
     resp_src.family = 4;
     ASSERT_FAIL(ice_handle_stun(&ctrl, resp_buf, resp_len, &resp_src, crypto(),
                                  dummy, sizeof(dummy), &dummy_len));
 
     /* Should NOT be connected */
-    ASSERT_NEQ(ctrl.state, NANO_ICE_STATE_CONNECTED);
+    ASSERT_NEQ(ctrl.state, NANORTC_ICE_STATE_CONNECTED);
 }
 
 /* ================================================================
@@ -467,12 +467,12 @@ TEST(test_ice_state_new_to_checking)
     nano_ice_t ctrl, ctld;
     setup_ice_pair(&ctrl, &ctld);
 
-    ASSERT_EQ(ctrl.state, NANO_ICE_STATE_NEW);
+    ASSERT_EQ(ctrl.state, NANORTC_ICE_STATE_NEW);
 
     uint8_t buf[256];
     size_t out_len = 0;
     ASSERT_OK(ice_generate_check(&ctrl, 0, crypto(), buf, sizeof(buf), &out_len));
-    ASSERT_EQ(ctrl.state, NANO_ICE_STATE_CHECKING);
+    ASSERT_EQ(ctrl.state, NANORTC_ICE_STATE_CHECKING);
 }
 
 TEST(test_ice_state_checking_to_connected)
@@ -482,13 +482,13 @@ TEST(test_ice_state_checking_to_connected)
 
     ASSERT_OK(do_ice_roundtrip(&ctrl, &ctld, 100));
 
-    ASSERT_EQ(ctrl.state, NANO_ICE_STATE_CONNECTED);
-    ASSERT_EQ(ctld.state, NANO_ICE_STATE_CONNECTED);
+    ASSERT_EQ(ctrl.state, NANORTC_ICE_STATE_CONNECTED);
+    ASSERT_EQ(ctld.state, NANORTC_ICE_STATE_CONNECTED);
 }
 
 TEST(test_ice_state_checking_to_failed)
 {
-    /* After NANO_ICE_MAX_CHECKS without response → FAILED */
+    /* After NANORTC_ICE_MAX_CHECKS without response → FAILED */
     nano_ice_t ctrl, ctld;
     setup_ice_pair(&ctrl, &ctld);
 
@@ -496,21 +496,21 @@ TEST(test_ice_state_checking_to_failed)
     size_t out_len = 0;
     uint32_t t = 0;
 
-    for (int i = 0; i < NANO_ICE_MAX_CHECKS; i++) {
+    for (int i = 0; i < NANORTC_ICE_MAX_CHECKS; i++) {
         out_len = 0;
         ASSERT_OK(ice_generate_check(&ctrl, t, crypto(),
                                       buf, sizeof(buf), &out_len));
         ASSERT_TRUE(out_len > 0);
         t += 50;
     }
-    ASSERT_EQ(ctrl.check_count, NANO_ICE_MAX_CHECKS);
-    ASSERT_EQ(ctrl.state, NANO_ICE_STATE_CHECKING);
+    ASSERT_EQ(ctrl.check_count, NANORTC_ICE_MAX_CHECKS);
+    ASSERT_EQ(ctrl.state, NANORTC_ICE_STATE_CHECKING);
 
     /* One more attempt → FAILED */
     out_len = 0;
     ASSERT_OK(ice_generate_check(&ctrl, t, crypto(), buf, sizeof(buf), &out_len));
     ASSERT_EQ(out_len, 0);
-    ASSERT_EQ(ctrl.state, NANO_ICE_STATE_FAILED);
+    ASSERT_EQ(ctrl.state, NANORTC_ICE_STATE_FAILED);
 }
 
 TEST(test_ice_no_checks_after_connected)
@@ -520,7 +520,7 @@ TEST(test_ice_no_checks_after_connected)
     setup_ice_pair(&ctrl, &ctld);
 
     ASSERT_OK(do_ice_roundtrip(&ctrl, &ctld, 100));
-    ASSERT_EQ(ctrl.state, NANO_ICE_STATE_CONNECTED);
+    ASSERT_EQ(ctrl.state, NANORTC_ICE_STATE_CONNECTED);
 
     uint8_t buf[256];
     size_t out_len = 0;
@@ -562,7 +562,7 @@ TEST(test_ice_credential_usage)
                                       crypto()->hmac_sha1));
 
     /* 2. Controlled receives, response signed with local_pwd */
-    nano_addr_t src;
+    nanortc_addr_t src;
     memset(&src, 0, sizeof(src));
     src.family = 4; src.port = 4000;
 

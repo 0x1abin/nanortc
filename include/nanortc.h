@@ -23,9 +23,9 @@ extern "C" {
 
 /** @brief Mark a symbol as part of the public API (default visibility). */
 #if defined(__GNUC__) || defined(__clang__)
-#define NANO_API __attribute__((visibility("default")))
+#define NANORTC_API __attribute__((visibility("default")))
 #else
-#define NANO_API
+#define NANORTC_API
 #endif
 
 /* ----------------------------------------------------------------
@@ -48,7 +48,7 @@ extern "C" {
  * @param x Host-order value.
  * @return Network-order (big-endian) value.
  */
-static inline uint16_t nano_htons(uint16_t x)
+static inline uint16_t nanortc_htons(uint16_t x)
 {
     return (uint16_t)((x >> 8) | (x << 8));
 }
@@ -58,9 +58,9 @@ static inline uint16_t nano_htons(uint16_t x)
  * @param x Network-order (big-endian) value.
  * @return Host-order value.
  */
-static inline uint16_t nano_ntohs(uint16_t x)
+static inline uint16_t nanortc_ntohs(uint16_t x)
 {
-    return nano_htons(x);
+    return nanortc_htons(x);
 }
 
 /**
@@ -68,7 +68,7 @@ static inline uint16_t nano_ntohs(uint16_t x)
  * @param x Host-order value.
  * @return Network-order (big-endian) value.
  */
-static inline uint32_t nano_htonl(uint32_t x)
+static inline uint32_t nanortc_htonl(uint32_t x)
 {
     return ((x >> 24) & 0x000000FFu) | ((x >> 8) & 0x0000FF00u) | ((x << 8) & 0x00FF0000u) |
            ((x << 24) & 0xFF000000u);
@@ -79,9 +79,9 @@ static inline uint32_t nano_htonl(uint32_t x)
  * @param x Network-order (big-endian) value.
  * @return Host-order value.
  */
-static inline uint32_t nano_ntohl(uint32_t x)
+static inline uint32_t nanortc_ntohl(uint32_t x)
 {
-    return nano_htonl(x);
+    return nanortc_htonl(x);
 }
 
 /* ----------------------------------------------------------------
@@ -100,7 +100,7 @@ static inline uint32_t nano_ntohl(uint32_t x)
  * @param p Pointer to at least 2 bytes.
  * @return Host-order 16-bit value.
  */
-static inline uint16_t nano_read_u16be(const uint8_t *p)
+static inline uint16_t nanortc_read_u16be(const uint8_t *p)
 {
     return (uint16_t)((uint16_t)p[0] << 8 | p[1]);
 }
@@ -110,7 +110,7 @@ static inline uint16_t nano_read_u16be(const uint8_t *p)
  * @param p Pointer to at least 4 bytes.
  * @return Host-order 32-bit value.
  */
-static inline uint32_t nano_read_u32be(const uint8_t *p)
+static inline uint32_t nanortc_read_u32be(const uint8_t *p)
 {
     return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3];
 }
@@ -120,7 +120,7 @@ static inline uint32_t nano_read_u32be(const uint8_t *p)
  * @param p Pointer to at least 2 bytes of output.
  * @param v Host-order value to write.
  */
-static inline void nano_write_u16be(uint8_t *p, uint16_t v)
+static inline void nanortc_write_u16be(uint8_t *p, uint16_t v)
 {
     p[0] = (uint8_t)(v >> 8);
     p[1] = (uint8_t)(v);
@@ -131,7 +131,7 @@ static inline void nano_write_u16be(uint8_t *p, uint16_t v)
  * @param p Pointer to at least 4 bytes of output.
  * @param v Host-order value to write.
  */
-static inline void nano_write_u32be(uint8_t *p, uint32_t v)
+static inline void nanortc_write_u32be(uint8_t *p, uint32_t v)
 {
     p[0] = (uint8_t)(v >> 24);
     p[1] = (uint8_t)(v >> 16);
@@ -145,16 +145,16 @@ static inline void nano_write_u32be(uint8_t *p, uint32_t v)
 
 /** @brief Error codes returned by all NanoRTC API functions. */
 /** @{ */
-#define NANO_OK                   0  /**< Success. */
-#define NANO_ERR_INVALID_PARAM    -1 /**< NULL pointer or out-of-range argument. */
-#define NANO_ERR_BUFFER_TOO_SMALL -2 /**< Caller-provided buffer is too small. */
-#define NANO_ERR_STATE            -3 /**< Invalid state for this operation. */
-#define NANO_ERR_CRYPTO           -4 /**< Cryptographic operation failed. */
-#define NANO_ERR_PROTOCOL         -5 /**< Protocol violation (remote peer). */
-#define NANO_ERR_NOT_IMPLEMENTED  -6 /**< Feature not compiled in or not yet implemented. */
-#define NANO_ERR_PARSE            -7 /**< Malformed input data. */
-#define NANO_ERR_NO_DATA          -8 /**< No data available (non-fatal). */
-#define NANO_ERR_INTERNAL         -9 /**< Internal logic error (bug). */
+#define NANORTC_OK                   0  /**< Success. */
+#define NANORTC_ERR_INVALID_PARAM    -1 /**< NULL pointer or out-of-range argument. */
+#define NANORTC_ERR_BUFFER_TOO_SMALL -2 /**< Caller-provided buffer is too small. */
+#define NANORTC_ERR_STATE            -3 /**< Invalid state for this operation. */
+#define NANORTC_ERR_CRYPTO           -4 /**< Cryptographic operation failed. */
+#define NANORTC_ERR_PROTOCOL         -5 /**< Protocol violation (remote peer). */
+#define NANORTC_ERR_NOT_IMPLEMENTED  -6 /**< Feature not compiled in or not yet implemented. */
+#define NANORTC_ERR_PARSE            -7 /**< Malformed input data. */
+#define NANORTC_ERR_NO_DATA          -8 /**< No data available (non-fatal). */
+#define NANORTC_ERR_INTERNAL         -9 /**< Internal logic error (bug). */
 /** @} */
 
 /* Configuration limits are defined in nanortc_config.h */
@@ -165,12 +165,12 @@ static inline void nano_write_u32be(uint8_t *p, uint32_t v)
 
 /** @brief Log severity levels. */
 typedef enum {
-    NANO_LOG_ERROR = 0, /**< Unrecoverable errors that prevent operation. */
-    NANO_LOG_WARN = 1,  /**< Unusual but recoverable conditions. */
-    NANO_LOG_INFO = 2,  /**< Normal operation milestones. */
-    NANO_LOG_DEBUG = 3, /**< Diagnostic information. */
-    NANO_LOG_TRACE = 4, /**< Detailed packet-level diagnostics. */
-} nano_log_level_t;
+    NANORTC_LOG_ERROR = 0, /**< Unrecoverable errors that prevent operation. */
+    NANORTC_LOG_WARN = 1,  /**< Unusual but recoverable conditions. */
+    NANORTC_LOG_INFO = 2,  /**< Normal operation milestones. */
+    NANORTC_LOG_DEBUG = 3, /**< Diagnostic information. */
+    NANORTC_LOG_TRACE = 4, /**< Detailed packet-level diagnostics. */
+} nanortc_log_level_t;
 
 /**
  * @brief Structured log message passed to the user callback.
@@ -178,14 +178,14 @@ typedef enum {
  * All pointer fields are valid only during the callback invocation.
  * The application must copy any data it needs to retain.
  */
-typedef struct nano_log_message {
-    nano_log_level_t level; /**< Severity level. */
-    const char *subsystem;  /**< Component tag (e.g. "ICE", "SCTP"). */
-    const char *message;    /**< Human-readable message (static string). */
-    const char *file;       /**< Source file name, or NULL. */
-    uint32_t line;          /**< Source line number, or 0. */
-    const char *function;   /**< Function name, or NULL. */
-} nano_log_message_t;
+typedef struct nanortc_log_message {
+    nanortc_log_level_t level; /**< Severity level. */
+    const char *subsystem;     /**< Component tag (e.g. "ICE", "SCTP"). */
+    const char *message;       /**< Human-readable message (static string). */
+    const char *file;          /**< Source file name, or NULL. */
+    uint32_t line;             /**< Source line number, or 0. */
+    const char *function;      /**< Function name, or NULL. */
+} nanortc_log_message_t;
 
 /**
  * @brief Log callback function type.
@@ -194,29 +194,29 @@ typedef struct nano_log_message {
  * level. Must not call NanoRTC functions (no re-entrancy).
  *
  * @param msg   Pointer to the log message (never NULL).
- * @param ctx   User-supplied context pointer from nano_log_config_t.
+ * @param ctx   User-supplied context pointer from nanortc_log_config_t.
  */
-typedef void (*nano_log_fn_t)(const nano_log_message_t *msg, void *ctx);
+typedef void (*nanortc_log_fn_t)(const nanortc_log_message_t *msg, void *ctx);
 
 /**
  * @brief Logging subsystem configuration.
  *
- * Embed in nano_rtc_config_t. Set callback to NULL to disable logging.
- * The compile-time NANO_LOG_LEVEL caps the runtime level.
+ * Embed in nanortc_config_t. Set callback to NULL to disable logging.
+ * The compile-time NANORTC_LOG_LEVEL caps the runtime level.
  */
-typedef struct nano_log_config {
-    nano_log_level_t level; /**< Runtime minimum level (capped by NANO_LOG_LEVEL). */
-    nano_log_fn_t callback; /**< Log callback, or NULL to disable. */
-    void *user_data;        /**< Opaque pointer passed to callback. */
-} nano_log_config_t;
+typedef struct nanortc_log_config {
+    nanortc_log_level_t level; /**< Runtime minimum level (capped by NANORTC_LOG_LEVEL). */
+    nanortc_log_fn_t callback; /**< Log callback, or NULL to disable. */
+    void *user_data;           /**< Opaque pointer passed to callback. */
+} nanortc_log_config_t;
 
 /* ----------------------------------------------------------------
  * Forward declarations
  * ---------------------------------------------------------------- */
 
-#ifndef NANO_CRYPTO_PROVIDER_T_DECLARED
-#define NANO_CRYPTO_PROVIDER_T_DECLARED
-typedef struct nano_crypto_provider nano_crypto_provider_t;
+#ifndef NANORTC_CRYPTO_PROVIDER_T_DECLARED
+#define NANORTC_CRYPTO_PROVIDER_T_DECLARED
+typedef struct nanortc_crypto_provider nanortc_crypto_provider_t;
 #endif
 
 /* ----------------------------------------------------------------
@@ -224,97 +224,85 @@ typedef struct nano_crypto_provider nano_crypto_provider_t;
  * ---------------------------------------------------------------- */
 
 /** @brief Network-agnostic socket address (IPv4 / IPv6). */
-#ifndef NANO_ADDR_T_DECLARED
-#define NANO_ADDR_T_DECLARED
-typedef struct nano_addr nano_addr_t;
+#ifndef NANORTC_ADDR_T_DECLARED
+#define NANORTC_ADDR_T_DECLARED
+typedef struct nanortc_addr nanortc_addr_t;
 #endif
 
-/* Protocol-fixed address sizes */
-#define NANO_ADDR_SIZE     16 /**< IPv6 binary address length (RFC 4291). */
-#define NANO_IPV6_STR_SIZE 46 /**< Max IPv6 string length (INET6_ADDRSTRLEN). */
+/* NANORTC_ADDR_SIZE and NANORTC_IPV6_STR_SIZE are in nanortc_config.h */
 
-struct nano_addr {
-    uint8_t family;               /**< Address family: 4 = IPv4, 6 = IPv6. */
-    uint8_t addr[NANO_ADDR_SIZE]; /**< Binary address (network byte order). */
-    uint16_t port;                /**< Port number (host byte order). */
+struct nanortc_addr {
+    uint8_t family;                  /**< Address family: 4 = IPv4, 6 = IPv6. */
+    uint8_t addr[NANORTC_ADDR_SIZE]; /**< Binary address (network byte order). */
+    uint16_t port;                   /**< Port number (host byte order). */
 };
 
 /* ----------------------------------------------------------------
  * Output / Event enums
  * ---------------------------------------------------------------- */
 
-/** @brief Type of output produced by nano_poll_output(). */
+/** @brief Type of output produced by nanortc_poll_output(). */
 typedef enum {
-    NANO_OUTPUT_TRANSMIT, /**< UDP data to send to the network. */
-    NANO_OUTPUT_EVENT,    /**< Application-level event. */
-    NANO_OUTPUT_TIMEOUT,  /**< Requested callback delay in milliseconds. */
-} nano_output_type_t;
+    NANORTC_OUTPUT_TRANSMIT, /**< UDP data to send to the network. */
+    NANORTC_OUTPUT_EVENT,    /**< Application-level event. */
+    NANORTC_OUTPUT_TIMEOUT,  /**< Requested callback delay in milliseconds. */
+} nanortc_output_type_t;
 
-/** @brief Application event types delivered via NANO_OUTPUT_EVENT. */
+/** @brief Application event types delivered via NANORTC_OUTPUT_EVENT. */
 typedef enum {
     /* Connection lifecycle */
-    NANO_EVENT_ICE_CONNECTED = 0,  /**< ICE connectivity check succeeded. */
-    NANO_EVENT_DTLS_CONNECTED = 1, /**< DTLS handshake completed. */
-    NANO_EVENT_SCTP_CONNECTED = 2, /**< SCTP association established. */
-    NANO_EVENT_DISCONNECTED = 3,   /**< Peer disconnected or timeout. */
+    NANORTC_EVENT_ICE_CONNECTED = 0,  /**< ICE connectivity check succeeded. */
+    NANORTC_EVENT_DTLS_CONNECTED = 1, /**< DTLS handshake completed. */
+    NANORTC_EVENT_SCTP_CONNECTED = 2, /**< SCTP association established. */
+    NANORTC_EVENT_DISCONNECTED = 3,   /**< Peer disconnected or timeout. */
 
     /* DataChannel */
-    NANO_EVENT_DATACHANNEL_OPEN = 4,   /**< DataChannel opened (DCEP complete). */
-    NANO_EVENT_DATACHANNEL_CLOSE = 5,  /**< DataChannel closed. */
-    NANO_EVENT_DATACHANNEL_DATA = 6,   /**< Binary data received on DataChannel. */
-    NANO_EVENT_DATACHANNEL_STRING = 7, /**< UTF-8 string received on DataChannel. */
+    NANORTC_EVENT_DATACHANNEL_OPEN = 4,   /**< DataChannel opened (DCEP complete). */
+    NANORTC_EVENT_DATACHANNEL_CLOSE = 5,  /**< DataChannel closed. */
+    NANORTC_EVENT_DATACHANNEL_DATA = 6,   /**< Binary data received on DataChannel. */
+    NANORTC_EVENT_DATACHANNEL_STRING = 7, /**< UTF-8 string received on DataChannel. */
 
     /* Audio */
-    NANO_EVENT_AUDIO_DATA = 8, /**< Decoded audio frame available. */
+    NANORTC_EVENT_AUDIO_DATA = 8, /**< Decoded audio frame available. */
 
     /* Video */
-    NANO_EVENT_VIDEO_DATA = 9,        /**< Decoded video frame available. */
-    NANO_EVENT_KEYFRAME_REQUEST = 10, /**< Remote peer requests a keyframe. */
-} nano_event_type_t;
+    NANORTC_EVENT_VIDEO_DATA = 9,        /**< Decoded video frame available. */
+    NANORTC_EVENT_KEYFRAME_REQUEST = 10, /**< Remote peer requests a keyframe. */
+} nanortc_event_type_t;
 
 /* ----------------------------------------------------------------
  * Event structure
  * ---------------------------------------------------------------- */
 
-/** @brief Application event delivered through nano_poll_output(). */
-typedef struct nano_event {
-    nano_event_type_t type; /**< Event type discriminator. */
-    uint16_t stream_id;     /**< DataChannel stream ID (DC events only). */
-    const uint8_t *data;    /**< Payload pointer (valid until next poll). */
-    size_t len;             /**< Payload length in bytes. */
-    uint32_t timestamp;     /**< RTP timestamp (media events only). */
-    bool is_keyframe;       /**< True if video frame is a keyframe. */
-} nano_event_t;
+/** @brief Application event delivered through nanortc_poll_output(). */
+typedef struct nanortc_event {
+    nanortc_event_type_t type; /**< Event type discriminator. */
+    uint16_t stream_id;        /**< DataChannel stream ID (DC events only). */
+    const uint8_t *data;       /**< Payload pointer (valid until next poll). */
+    size_t len;                /**< Payload length in bytes. */
+    uint32_t timestamp;        /**< RTP timestamp (media events only). */
+    bool is_keyframe;          /**< True if video frame is a keyframe. */
+} nanortc_event_t;
 
 /* ----------------------------------------------------------------
  * Output structure
  * ---------------------------------------------------------------- */
 
-/** @brief Output item produced by nano_poll_output(). Tagged union on @c type. */
-typedef struct nano_output {
-    nano_output_type_t type; /**< Discriminator for the anonymous union. */
+/** @brief Output item produced by nanortc_poll_output(). Tagged union on @c type. */
+typedef struct nanortc_output {
+    nanortc_output_type_t type; /**< Discriminator for the anonymous union. */
     union {
         struct {
             const uint8_t *data; /**< Packet payload. */
             size_t len;          /**< Packet length in bytes. */
-            nano_addr_t dest;    /**< Destination address. */
-        } transmit;              /**< Valid when type == NANO_OUTPUT_TRANSMIT. */
-        nano_event_t event;      /**< Valid when type == NANO_OUTPUT_EVENT. */
-        uint32_t timeout_ms;     /**< Valid when type == NANO_OUTPUT_TIMEOUT. */
+            nanortc_addr_t dest; /**< Destination address. */
+        } transmit;              /**< Valid when type == NANORTC_OUTPUT_TRANSMIT. */
+        nanortc_event_t event;   /**< Valid when type == NANORTC_OUTPUT_EVENT. */
+        uint32_t timeout_ms;     /**< Valid when type == NANORTC_OUTPUT_TIMEOUT. */
     };
-} nano_output_t;
+} nanortc_output_t;
 
-/* ----------------------------------------------------------------
- * Direction (media)
- * ---------------------------------------------------------------- */
-
-/** @brief SDP media direction attribute. */
-typedef enum {
-    NANO_DIR_SENDRECV, /**< Send and receive. */
-    NANO_DIR_SENDONLY, /**< Send only. */
-    NANO_DIR_RECVONLY, /**< Receive only. */
-    NANO_DIR_INACTIVE, /**< Neither send nor receive. */
-} nano_direction_t;
+/* nanortc_direction_t is defined in nanortc_config.h */
 
 /* ----------------------------------------------------------------
  * Codec identifiers
@@ -322,13 +310,13 @@ typedef enum {
 
 /** @brief Supported audio/video codec identifiers for SDP negotiation. */
 typedef enum {
-    NANO_CODEC_NONE = 0, /**< No codec selected. */
-    NANO_CODEC_OPUS,     /**< Opus audio (RFC 6716). */
-    NANO_CODEC_PCMA,     /**< G.711 A-law (RFC 3551). */
-    NANO_CODEC_PCMU,     /**< G.711 mu-law (RFC 3551). */
-    NANO_CODEC_H264,     /**< H.264 video (RFC 6184). */
-    NANO_CODEC_VP8,      /**< VP8 video (RFC 7741). */
-} nano_codec_t;
+    NANORTC_CODEC_NONE = 0, /**< No codec selected. */
+    NANORTC_CODEC_OPUS,     /**< Opus audio (RFC 6716). */
+    NANORTC_CODEC_PCMA,     /**< G.711 A-law (RFC 3551). */
+    NANORTC_CODEC_PCMU,     /**< G.711 mu-law (RFC 3551). */
+    NANORTC_CODEC_H264,     /**< H.264 video (RFC 6184). */
+    NANORTC_CODEC_VP8,      /**< VP8 video (RFC 7741). */
+} nanortc_codec_t;
 
 /* ----------------------------------------------------------------
  * ICE role
@@ -336,46 +324,138 @@ typedef enum {
 
 /** @brief ICE agent role (RFC 8445). */
 typedef enum {
-    NANO_ROLE_CONTROLLED,  /**< Answerer: respond to STUN checks (ICE-Lite). */
-    NANO_ROLE_CONTROLLING, /**< Offerer: initiate STUN connectivity checks. */
-} nano_ice_role_t;
+    NANORTC_ROLE_CONTROLLED,  /**< Answerer: respond to STUN checks (ICE-Lite). */
+    NANORTC_ROLE_CONTROLLING, /**< Offerer: initiate STUN connectivity checks. */
+} nanortc_ice_role_t;
 
 /* ----------------------------------------------------------------
  * Configuration
  * ---------------------------------------------------------------- */
 
-/** @brief Configuration passed to nano_rtc_init(). */
-typedef struct nano_rtc_config {
-    const nano_crypto_provider_t *crypto; /**< Crypto backend (required, non-NULL). */
-    nano_ice_role_t role;                 /**< ICE role (controlled or controlling). */
+/** @brief Configuration passed to nanortc_init(). */
+typedef struct nanortc_config {
+    const nanortc_crypto_provider_t *crypto; /**< Crypto backend (required, non-NULL). */
+    nanortc_ice_role_t role;                 /**< ICE role (controlled or controlling). */
 
     /** @brief Logging configuration (optional, zero-init disables). */
-    nano_log_config_t log;
+    nanortc_log_config_t log;
 
     /* Memory configuration */
     uint32_t sctp_send_buf_size; /**< SCTP send buffer size (0 = default). */
     uint32_t sctp_recv_buf_size; /**< SCTP receive buffer size (0 = default). */
 
-#if NANO_FEATURE_AUDIO
-    nano_codec_t audio_codec;         /**< Audio codec to negotiate. */
-    uint32_t audio_sample_rate;       /**< Sample rate in Hz (e.g. 48000). */
-    uint8_t audio_channels;           /**< Number of audio channels. */
-    nano_direction_t audio_direction; /**< Audio direction attribute. */
-    uint32_t jitter_depth_ms;         /**< Jitter buffer depth in ms. */
+#if NANORTC_FEATURE_AUDIO
+    nanortc_codec_t audio_codec;         /**< Audio codec to negotiate. */
+    uint32_t audio_sample_rate;          /**< Sample rate in Hz (e.g. 48000). */
+    uint8_t audio_channels;              /**< Number of audio channels. */
+    nanortc_direction_t audio_direction; /**< Audio direction attribute. */
+    uint32_t jitter_depth_ms;            /**< Jitter buffer depth in ms. */
 #endif
 
-#if NANO_FEATURE_VIDEO
-    nano_codec_t video_codec;         /**< Video codec to negotiate. */
-    nano_direction_t video_direction; /**< Video direction attribute. */
+#if NANORTC_FEATURE_VIDEO
+    nanortc_codec_t video_codec;         /**< Video codec to negotiate. */
+    nanortc_direction_t video_direction; /**< Video direction attribute. */
 #endif
-} nano_rtc_config_t;
+} nanortc_config_t;
 
 /* ----------------------------------------------------------------
- * Main state machine (opaque internals)
+ * Internal subsystem types (needed for struct layout — do not use directly)
+ * ---------------------------------------------------------------- */
+#include "nano_ice.h"
+#include "nano_dtls.h"
+#include "nano_sdp.h"
+
+#if NANORTC_FEATURE_DATACHANNEL
+#include "nano_sctp.h"
+#include "nano_datachannel.h"
+#endif
+
+#if NANORTC_HAVE_MEDIA_TRANSPORT
+#include "nano_rtp.h"
+#include "nano_rtcp.h"
+#include "nano_srtp.h"
+#endif
+
+#if NANORTC_FEATURE_AUDIO
+#include "nano_jitter.h"
+#endif
+
+#if NANORTC_FEATURE_VIDEO
+#include "nano_bwe.h"
+#endif
+
+/* ----------------------------------------------------------------
+ * Connection state
  * ---------------------------------------------------------------- */
 
-/** @brief Opaque RTC state machine. Defined in nano_rtc_internal.h. */
-typedef struct nano_rtc nano_rtc_t;
+typedef enum {
+    NANORTC_STATE_NEW,
+    NANORTC_STATE_ICE_CHECKING,
+    NANORTC_STATE_ICE_CONNECTED,
+    NANORTC_STATE_DTLS_HANDSHAKING,
+    NANORTC_STATE_DTLS_CONNECTED,
+    NANORTC_STATE_SCTP_CONNECTING,
+    NANORTC_STATE_CONNECTED,
+    NANORTC_STATE_CLOSED,
+} nano_conn_state_t;
+
+/* ----------------------------------------------------------------
+ * Main state machine
+ * ---------------------------------------------------------------- */
+
+/**
+ * @brief RTC state machine.
+ *
+ * @internal Layout is public for stack/static allocation only.
+ *           Do not access struct members directly — use the nanortc_*() API.
+ *           Internal layout may change between releases.
+ */
+struct nanortc {
+    nanortc_config_t config;
+    nano_conn_state_t state;
+    uint32_t now_ms; /* last known time */
+
+    /* Subsystem state */
+    nano_ice_t ice;
+    nano_dtls_t dtls;
+    nano_sdp_t sdp;
+
+#if NANORTC_FEATURE_DATACHANNEL
+    nano_sctp_t sctp;
+    nano_dc_t datachannel;
+#endif
+
+#if NANORTC_HAVE_MEDIA_TRANSPORT
+    nano_rtp_t rtp;
+    nano_rtcp_t rtcp;
+    nano_srtp_t srtp;
+#endif
+
+#if NANORTC_FEATURE_AUDIO
+    nano_jitter_t jitter;
+#endif
+
+#if NANORTC_FEATURE_VIDEO
+    nano_bwe_t bwe;
+#endif
+
+    /* Output queue (simple ring buffer) */
+    nanortc_output_t out_queue[NANORTC_OUT_QUEUE_SIZE];
+    uint8_t out_head;
+    uint8_t out_tail;
+
+    /* Scratch buffer for STUN encode/decode.
+     * Sans I/O contract: caller must drain outputs before next handle_receive. */
+    uint8_t stun_buf[NANORTC_STUN_BUF_SIZE];
+
+    /* Scratch buffer for DTLS output polling */
+    uint8_t dtls_scratch[NANORTC_DTLS_BUF_SIZE];
+
+    /* Stored remote address for SCTP output routing */
+    nanortc_addr_t remote_addr;
+};
+
+typedef struct nanortc nanortc_t;
 
 /* ----------------------------------------------------------------
  * Lifecycle API
@@ -386,16 +466,16 @@ typedef struct nano_rtc nano_rtc_t;
  *
  * @param rtc  Caller-allocated state (must be zeroed before first call).
  * @param cfg  Configuration (pointer contents copied; need not persist).
- * @return NANO_OK on success.
- * @retval NANO_ERR_INVALID_PARAM  @p rtc or @p cfg is NULL, or crypto missing.
+ * @return NANORTC_OK on success.
+ * @retval NANORTC_ERR_INVALID_PARAM  @p rtc or @p cfg is NULL, or crypto missing.
  */
-NANO_API int nano_rtc_init(nano_rtc_t *rtc, const nano_rtc_config_t *cfg);
+NANORTC_API int nanortc_init(nanortc_t *rtc, const nanortc_config_t *cfg);
 
 /**
  * @brief Release resources held by the RTC state machine.
- * @param rtc  State previously initialized with nano_rtc_init(), or NULL (no-op).
+ * @param rtc  State previously initialized with nanortc_init(), or NULL (no-op).
  */
-NANO_API void nano_rtc_destroy(nano_rtc_t *rtc);
+NANORTC_API void nanortc_destroy(nanortc_t *rtc);
 
 /* ----------------------------------------------------------------
  * SDP API
@@ -409,12 +489,12 @@ NANO_API void nano_rtc_destroy(nano_rtc_t *rtc);
  * @param answer_buf     Buffer to receive the generated SDP answer.
  * @param answer_buf_len Size of @p answer_buf in bytes.
  * @param out_len        Receives answer length in bytes (may be NULL).
- * @return NANO_OK on success.
- * @retval NANO_ERR_BUFFER_TOO_SMALL  @p answer_buf_len is insufficient.
- * @retval NANO_ERR_PARSE             Malformed SDP offer.
+ * @return NANORTC_OK on success.
+ * @retval NANORTC_ERR_BUFFER_TOO_SMALL  @p answer_buf_len is insufficient.
+ * @retval NANORTC_ERR_PARSE             Malformed SDP offer.
  */
-NANO_API int nano_accept_offer(nano_rtc_t *rtc, const char *offer, char *answer_buf,
-                               size_t answer_buf_len, size_t *out_len);
+NANORTC_API int nanortc_accept_offer(nanortc_t *rtc, const char *offer, char *answer_buf,
+                                     size_t answer_buf_len, size_t *out_len);
 
 /**
  * @brief Generate an SDP offer (controlling/offerer role).
@@ -423,22 +503,22 @@ NANO_API int nano_accept_offer(nano_rtc_t *rtc, const char *offer, char *answer_
  * @param offer_buf     Buffer to receive the SDP offer.
  * @param offer_buf_len Size of @p offer_buf in bytes.
  * @param out_len       Receives offer length in bytes (may be NULL).
- * @return NANO_OK on success.
- * @retval NANO_ERR_BUFFER_TOO_SMALL  @p offer_buf_len is insufficient.
+ * @return NANORTC_OK on success.
+ * @retval NANORTC_ERR_BUFFER_TOO_SMALL  @p offer_buf_len is insufficient.
  */
-NANO_API int nano_create_offer(nano_rtc_t *rtc, char *offer_buf, size_t offer_buf_len,
-                               size_t *out_len);
+NANORTC_API int nanortc_create_offer(nanortc_t *rtc, char *offer_buf, size_t offer_buf_len,
+                                     size_t *out_len);
 
 /**
  * @brief Parse a remote SDP answer (after creating an offer).
  *
- * @param rtc     Initialized RTC state (must have called nano_create_offer first).
+ * @param rtc     Initialized RTC state (must have called nanortc_create_offer first).
  * @param answer  NUL-terminated remote SDP answer string.
- * @return NANO_OK on success.
- * @retval NANO_ERR_PARSE  Malformed SDP answer.
- * @retval NANO_ERR_STATE  No pending offer.
+ * @return NANORTC_OK on success.
+ * @retval NANORTC_ERR_PARSE  Malformed SDP answer.
+ * @retval NANORTC_ERR_STATE  No pending offer.
  */
-NANO_API int nano_accept_answer(nano_rtc_t *rtc, const char *answer);
+NANORTC_API int nanortc_accept_answer(nanortc_t *rtc, const char *answer);
 
 /* ----------------------------------------------------------------
  * ICE API
@@ -450,21 +530,21 @@ NANO_API int nano_accept_answer(nano_rtc_t *rtc, const char *answer);
  * @param rtc   Initialized RTC state.
  * @param ip    NUL-terminated IP address string (IPv4 or IPv6).
  * @param port  UDP port number (host byte order).
- * @return NANO_OK on success.
- * @retval NANO_ERR_INVALID_PARAM  @p ip is NULL or invalid.
- * @retval NANO_ERR_BUFFER_TOO_SMALL  Candidate table full.
+ * @return NANORTC_OK on success.
+ * @retval NANORTC_ERR_INVALID_PARAM  @p ip is NULL or invalid.
+ * @retval NANORTC_ERR_BUFFER_TOO_SMALL  Candidate table full.
  */
-NANO_API int nano_add_local_candidate(nano_rtc_t *rtc, const char *ip, uint16_t port);
+NANORTC_API int nanortc_add_local_candidate(nanortc_t *rtc, const char *ip, uint16_t port);
 
 /**
  * @brief Add a remote ICE candidate from an SDP candidate attribute.
  *
  * @param rtc            Initialized RTC state.
  * @param candidate_str  NUL-terminated SDP candidate line (a=candidate:...).
- * @return NANO_OK on success.
- * @retval NANO_ERR_PARSE  Malformed candidate string.
+ * @return NANORTC_OK on success.
+ * @retval NANORTC_ERR_PARSE  Malformed candidate string.
  */
-NANO_API int nano_add_remote_candidate(nano_rtc_t *rtc, const char *candidate_str);
+NANORTC_API int nanortc_add_remote_candidate(nanortc_t *rtc, const char *candidate_str);
 
 /* ----------------------------------------------------------------
  * Event loop (Sans I/O core)
@@ -473,14 +553,14 @@ NANO_API int nano_add_remote_candidate(nano_rtc_t *rtc, const char *candidate_st
 /**
  * @brief Dequeue the next output from the state machine.
  *
- * Call in a loop until it returns NANO_ERR_NO_DATA.
+ * Call in a loop until it returns NANORTC_ERR_NO_DATA.
  *
  * @param rtc  Initialized RTC state.
  * @param out  Receives the next output item.
- * @return NANO_OK if @p out was filled.
- * @retval NANO_ERR_NO_DATA  No more pending outputs.
+ * @return NANORTC_OK if @p out was filled.
+ * @retval NANORTC_ERR_NO_DATA  No more pending outputs.
  */
-NANO_API int nano_poll_output(nano_rtc_t *rtc, nano_output_t *out);
+NANORTC_API int nanortc_poll_output(nanortc_t *rtc, nanortc_output_t *out);
 
 /**
  * @brief Feed an incoming UDP packet into the state machine.
@@ -490,27 +570,27 @@ NANO_API int nano_poll_output(nano_rtc_t *rtc, nano_output_t *out);
  * @param data    Packet payload.
  * @param len     Payload length in bytes.
  * @param src     Source address of the packet.
- * @return NANO_OK on success.
+ * @return NANORTC_OK on success.
  */
-NANO_API int nano_handle_receive(nano_rtc_t *rtc, uint32_t now_ms, const uint8_t *data, size_t len,
-                                 const nano_addr_t *src);
+NANORTC_API int nanortc_handle_receive(nanortc_t *rtc, uint32_t now_ms, const uint8_t *data,
+                                       size_t len, const nanortc_addr_t *src);
 
 /**
  * @brief Advance timers in the state machine.
  *
- * Call when the timeout requested by NANO_OUTPUT_TIMEOUT expires.
+ * Call when the timeout requested by NANORTC_OUTPUT_TIMEOUT expires.
  *
  * @param rtc     Initialized RTC state.
  * @param now_ms  Current monotonic time in milliseconds.
- * @return NANO_OK on success.
+ * @return NANORTC_OK on success.
  */
-NANO_API int nano_handle_timeout(nano_rtc_t *rtc, uint32_t now_ms);
+NANORTC_API int nanortc_handle_timeout(nanortc_t *rtc, uint32_t now_ms);
 
 /* ----------------------------------------------------------------
  * DataChannel API
  * ---------------------------------------------------------------- */
 
-#if NANO_FEATURE_DATACHANNEL
+#if NANORTC_FEATURE_DATACHANNEL
 /**
  * @brief Send binary data on a DataChannel.
  *
@@ -518,11 +598,11 @@ NANO_API int nano_handle_timeout(nano_rtc_t *rtc, uint32_t now_ms);
  * @param stream_id  SCTP stream ID of the DataChannel.
  * @param data       Payload to send.
  * @param len        Payload length in bytes.
- * @return NANO_OK on success.
- * @retval NANO_ERR_STATE  DataChannel not open.
+ * @return NANORTC_OK on success.
+ * @retval NANORTC_ERR_STATE  DataChannel not open.
  */
-NANO_API int nano_send_datachannel(nano_rtc_t *rtc, uint16_t stream_id, const void *data,
-                                   size_t len);
+NANORTC_API int nanortc_send_datachannel(nanortc_t *rtc, uint16_t stream_id, const void *data,
+                                         size_t len);
 
 /**
  * @brief Send a UTF-8 string on a DataChannel.
@@ -530,17 +610,18 @@ NANO_API int nano_send_datachannel(nano_rtc_t *rtc, uint16_t stream_id, const vo
  * @param rtc        Initialized RTC state.
  * @param stream_id  SCTP stream ID of the DataChannel.
  * @param str        NUL-terminated UTF-8 string to send.
- * @return NANO_OK on success.
- * @retval NANO_ERR_STATE  DataChannel not open.
+ * @return NANORTC_OK on success.
+ * @retval NANORTC_ERR_STATE  DataChannel not open.
  */
-NANO_API int nano_send_datachannel_string(nano_rtc_t *rtc, uint16_t stream_id, const char *str);
+NANORTC_API int nanortc_send_datachannel_string(nanortc_t *rtc, uint16_t stream_id,
+                                                const char *str);
 #endif
 
 /* ----------------------------------------------------------------
  * Media API
  * ---------------------------------------------------------------- */
 
-#if NANO_FEATURE_AUDIO
+#if NANORTC_FEATURE_AUDIO
 /**
  * @brief Send an audio frame.
  *
@@ -548,12 +629,13 @@ NANO_API int nano_send_datachannel_string(nano_rtc_t *rtc, uint16_t stream_id, c
  * @param timestamp  RTP timestamp for this frame.
  * @param data       Encoded audio payload.
  * @param len        Payload length in bytes.
- * @return NANO_OK on success.
+ * @return NANORTC_OK on success.
  */
-NANO_API int nano_send_audio(nano_rtc_t *rtc, uint32_t timestamp, const void *data, size_t len);
+NANORTC_API int nanortc_send_audio(nanortc_t *rtc, uint32_t timestamp, const void *data,
+                                   size_t len);
 #endif
 
-#if NANO_FEATURE_VIDEO
+#if NANORTC_FEATURE_VIDEO
 /**
  * @brief Send a video frame.
  *
@@ -562,18 +644,18 @@ NANO_API int nano_send_audio(nano_rtc_t *rtc, uint32_t timestamp, const void *da
  * @param data         Encoded video payload.
  * @param len          Payload length in bytes.
  * @param is_keyframe  Non-zero if this is a keyframe (IDR).
- * @return NANO_OK on success.
+ * @return NANORTC_OK on success.
  */
-NANO_API int nano_send_video(nano_rtc_t *rtc, uint32_t timestamp, const void *data, size_t len,
-                             int is_keyframe);
+NANORTC_API int nanortc_send_video(nanortc_t *rtc, uint32_t timestamp, const void *data, size_t len,
+                                   int is_keyframe);
 
 /**
  * @brief Request a keyframe from the remote video sender (RTCP FIR/PLI).
  *
  * @param rtc  Initialized RTC state.
- * @return NANO_OK on success.
+ * @return NANORTC_OK on success.
  */
-NANO_API int nano_request_keyframe(nano_rtc_t *rtc);
+NANORTC_API int nanortc_request_keyframe(nanortc_t *rtc);
 #endif
 
 /* ----------------------------------------------------------------
@@ -583,10 +665,10 @@ NANO_API int nano_request_keyframe(nano_rtc_t *rtc);
 /**
  * @brief Return a human-readable name for an error code.
  *
- * @param err  Error code (NANO_OK, NANO_ERR_*, or unknown).
- * @return Static string such as "NANO_OK" or "NANO_ERR_PARSE". Never NULL.
+ * @param err  Error code (NANORTC_OK, NANORTC_ERR_*, or unknown).
+ * @return Static string such as "NANORTC_OK" or "NANORTC_ERR_PARSE". Never NULL.
  */
-NANO_API const char *nano_err_to_name(int err);
+NANORTC_API const char *nanortc_err_to_name(int err);
 
 #ifdef __cplusplus
 }

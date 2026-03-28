@@ -7,8 +7,8 @@
  * SPDX-License-Identifier: MIT
  */
 
-#ifndef NANO_TEST_H_
-#define NANO_TEST_H_
+#ifndef NANORTC_TEST_H_
+#define NANORTC_TEST_H_
 
 #include <stdio.h>
 
@@ -51,7 +51,7 @@ static int nano_tests_failed = 0;
     int main(void)                                                                       \
     {                                                                                    \
         printf("%s (DC=%d AUDIO=%d VIDEO=%d)\n", suite_name, \
-               NANO_FEATURE_DATACHANNEL, NANO_FEATURE_AUDIO, NANO_FEATURE_VIDEO);
+               NANORTC_FEATURE_DATACHANNEL, NANORTC_FEATURE_AUDIO, NANORTC_FEATURE_VIDEO);
 
 #define RUN(name) run_##name()
 
@@ -64,4 +64,4 @@ static int nano_tests_failed = 0;
         return (nano_tests_failed == 0) ? 0 : 1;                                        \
     }
 
-#endif /* NANO_TEST_H_ */
+#endif /* NANORTC_TEST_H_ */

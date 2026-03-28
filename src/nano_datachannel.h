@@ -1,13 +1,14 @@
 /*
  * nanortc — DataChannel / DCEP internal interface (RFC 8831, RFC 8832)
+ * @internal Not part of the public API.
  *
  * Reference: str0m src/sctp/dcep.rs (message format).
  *
  * SPDX-License-Identifier: MIT
  */
 
-#ifndef NANO_DATACHANNEL_H_
-#define NANO_DATACHANNEL_H_
+#ifndef NANORTC_DATACHANNEL_H_
+#define NANORTC_DATACHANNEL_H_
 
 #include "nanortc_config.h"
 
@@ -64,15 +65,15 @@ typedef struct {
  * ---------------------------------------------------------------- */
 
 typedef enum {
-    NANO_DC_STATE_CLOSED,
-    NANO_DC_STATE_OPENING, /* sent OPEN, awaiting ACK */
-    NANO_DC_STATE_OPEN,
+    NANORTC_DC_STATE_CLOSED,
+    NANORTC_DC_STATE_OPENING, /* sent OPEN, awaiting ACK */
+    NANORTC_DC_STATE_OPEN,
 } nano_dc_state_t;
 
 typedef struct nano_dc_channel {
     nano_dc_state_t state;
     uint16_t stream_id;
-    char label[NANO_DC_LABEL_SIZE];
+    char label[NANORTC_DC_LABEL_SIZE];
     uint8_t channel_type;
     bool ordered;
     uint16_t max_retransmits;
@@ -83,11 +84,11 @@ typedef struct nano_dc_channel {
  * ---------------------------------------------------------------- */
 
 typedef struct nano_dc {
-    nano_dc_channel_t channels[NANO_MAX_DATACHANNELS];
+    nano_dc_channel_t channels[NANORTC_MAX_DATACHANNELS];
     uint8_t channel_count;
 
     /* Output: DCEP message to send via SCTP (PPID=50) */
-    uint8_t out_buf[NANO_DC_OUT_BUF_SIZE];
+    uint8_t out_buf[NANORTC_DC_OUT_BUF_SIZE];
     uint16_t out_len;
     uint16_t out_stream;
     bool has_output;
@@ -111,7 +112,7 @@ int dc_init(nano_dc_t *dc);
  * @param ppid      Payload Protocol Identifier.
  * @param data      Payload data.
  * @param len       Payload length.
- * @return NANO_OK on success, negative error code on failure.
+ * @return NANORTC_OK on success, negative error code on failure.
  */
 int dc_handle_message(nano_dc_t *dc, uint16_t stream_id, uint32_t ppid, const uint8_t *data,
                       size_t len);
@@ -122,7 +123,7 @@ int dc_handle_message(nano_dc_t *dc, uint16_t stream_id, uint32_t ppid, const ui
  * @param dc        DataChannel manager.
  * @param stream_id SCTP stream ID to use.
  * @param label     Channel label (null-terminated).
- * @return NANO_OK on success.
+ * @return NANORTC_OK on success.
  */
 int dc_open(nano_dc_t *dc, uint16_t stream_id, const char *label);
 
@@ -132,4 +133,4 @@ int dc_poll_output(nano_dc_t *dc, uint8_t *buf, size_t buf_len, size_t *out_len,
 
 /* DCEP codec functions are static in nano_datachannel.c */
 
-#endif /* NANO_DATACHANNEL_H_ */
+#endif /* NANORTC_DATACHANNEL_H_ */

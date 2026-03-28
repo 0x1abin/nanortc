@@ -56,11 +56,11 @@ NanoRTC uses AI coding agents for implementation. Time estimates use **agent ses
 
 | Task | File | RFC | Tests |
 |------|------|-----|-------|
-| mbedtls DTLS init (server mode) | `nano_crypto_mbedtls.c` | RFC 6347 | Handshake with openssl s_client |
-| OpenSSL DTLS init (server mode) | `nano_crypto_openssl.c` | RFC 6347 | Handshake with browser |
+| mbedtls DTLS init (server mode) | `nanortc_crypto_mbedtls.c` | RFC 6347 | Handshake with openssl s_client |
+| OpenSSL DTLS init (server mode) | `nanortc_crypto_openssl.c` | RFC 6347 | Handshake with browser |
 | BIO adapter (Sans I/O ↔ crypto provider) | `nano_dtls.c` | — | Feed handshake bytes, verify output |
-| Self-signed certificate generation | `nano_crypto_*.c` | — | Fingerprint matches SDP |
-| Keying material export | `nano_crypto_*.c` | RFC 5764 | Verify SRTP key derivation |
+| Self-signed certificate generation | `nanortc_crypto_*.c` | — | Fingerprint matches SDP |
+| Keying material export | `nanortc_crypto_*.c` | RFC 5764 | Verify SRTP key derivation |
 
 **Gate:** DTLS handshake two-instance loopback test passes (both backends)
 **Human gate:** Browser DTLS handshake verification
@@ -122,7 +122,7 @@ SCTP is the most complex module (~2500 lines). May need multiple sessions.
 | 2026-03-27 | libdatachannel as interop reference peer | Known-good C/C++ WebRTC implementation with C API; validates full protocol stack over real UDP. apt not available; fetched via CMake FetchContent. |
 | 2026-03-27 | Interop tests as mandatory Phase 1 gate | Unit tests alone cannot catch SDP format mismatches, DTLS parameter negotiation bugs, or SCTP interop issues. Interop tests are required for Phase 1 sign-off. |
 | 2026-03-27 | Renamed `sctp_` to `nsctp_` prefix | Avoid usrsctp symbol collision in interop builds where both libraries are linked |
-| 2026-03-27 | Named array size macros mandatory | All struct arrays use `NANO_*` or `MODULE_*_SIZE` macros — enforced by CI |
+| 2026-03-27 | Named array size macros mandatory | All struct arrays use `NANORTC_*` or `MODULE_*_SIZE` macros — enforced by CI |
 | 2026-03-27 | ESP32 signaling: HTTP instead of MQTT | Zero new code (`http_signaling.c` already exists with ESP32 compat), zero external deps (no MQTT broker), unified test flow with `signaling_server.py` |
 
 ## Progress
@@ -146,7 +146,7 @@ SCTP is the most complex module (~2500 lines). May need multiple sessions.
 - MI/FP ordering enforcement (RFC 8489 §14.5/§14.7)
 - Edge cases: bad credentials, pacing, max checks → FAILED, ERROR-CODE parsing
 
-**Files created/modified:** nano_crc32.c/h (new), nano_stun.c/h, nano_ice.c/h, nano_rtc.c, nano_rtc_internal.h, nano_crypto_openssl.c, nano_crypto_mbedtls.c, CMakeLists.txt, 4 test files
+**Files created/modified:** nano_crc32.c/h (new), nano_stun.c/h, nano_ice.c/h, nano_rtc.c, nano_rtc_internal.h, nanortc_crypto_openssl.c, nanortc_crypto_mbedtls.c, CMakeLists.txt, 4 test files
 
 ### Step 2: DTLS integration (Completed 2026-03-26, 1 session)
 
@@ -158,7 +158,7 @@ SCTP is the most complex module (~2500 lines). May need multiple sessions.
 - Application data encrypt/decrypt (post-handshake DTLS records)
 - SRTP keying material export (RFC 5764 "EXTRACTOR-dtls_srtp" label, 60 bytes)
 - FSM integration: ICE_CONNECTED → dtls_init + dtls_start → DTLS_HANDSHAKING → DTLS_CONNECTED
-- DTLS demux in nano_handle_receive (RFC 7983 byte range 0x14-0x3F)
+- DTLS demux in nanortc_handle_receive (RFC 7983 byte range 0x14-0x3F)
 
 **Tests (79 total across 5 suites, 10 new):**
 - DTLS init/destroy for server and client roles
@@ -176,7 +176,7 @@ SCTP is the most complex module (~2500 lines). May need multiple sessions.
 - Heap allocation in crypto providers: mbedtls/OpenSSL need internal malloc; `crypto/` is allowed
 - mbedtls 3.x API: `mbedtls_ssl_set_export_keys_cb` replaces 2.x `_ext_cb`
 
-**Files created/modified:** nano_dtls.c/h, nano_crypto.h, nano_crypto_mbedtls.c, nano_crypto_openssl.c, nano_rtc.c, nano_rtc_internal.h, test_dtls.c (new), test_e2e.c
+**Files created/modified:** nano_dtls.c/h, nanortc_crypto.h, nanortc_crypto_mbedtls.c, nanortc_crypto_openssl.c, nano_rtc.c, nano_rtc_internal.h, test_dtls.c (new), test_e2e.c
 
 ### Step 3: SCTP-Lite (Completed 2026-03-27, 1 session)
 
@@ -210,14 +210,14 @@ SCTP is the most complex module (~2500 lines). May need multiple sessions.
 - Bidirectional string/binary message routing via SCTP PPID dispatch
 - SDP parser: handles Chrome, Firefox, Safari offer formats
 - SDP generator: creates valid WebRTC answer with DataChannel m-line
-- `nano_accept_offer` integration in main FSM (SDP parse → ICE/DTLS/SCTP config)
-- E2E loopback test: two `nano_rtc_t` instances exchange DataChannel messages
+- `nanortc_accept_offer` integration in main FSM (SDP parse → ICE/DTLS/SCTP config)
+- E2E loopback test: two `nanortc_t` instances exchange DataChannel messages
 
 **Tests (11 SDP tests + DCEP/e2e):**
 - Chrome/Firefox/Safari SDP offer parsing
 - SDP generator output validation
 - SDP roundtrip (generate → parse own output)
-- `nano_accept_offer` full pipeline test
+- `nanortc_accept_offer` full pipeline test
 - E2E DataChannel string/binary loopback (CI-passing)
 
 **Key files:** `nano_datachannel.c/h`, `nano_sdp.c/h`, `nano_rtc.c`, `test_sdp.c`, `test_e2e.c`

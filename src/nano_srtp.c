@@ -9,7 +9,7 @@
 
 #include "nano_srtp.h"
 #include "nano_rtp.h"
-#include "nano_crypto.h"
+#include "nanortc_crypto.h"
 #include "nanortc.h"
 #include <string.h>
 
@@ -34,9 +34,9 @@
  * AES-CM with zero plaintext = AES-ECB of the IV, which is exactly what
  * the KDF requires: AES_ECB(master_key, input || counter).
  */
-static int srtp_kdf(const nano_crypto_provider_t *crypto,
-                    const uint8_t master_key[NANO_SRTP_KEY_SIZE],
-                    const uint8_t master_salt[NANO_SRTP_SALT_SIZE], uint8_t label, uint8_t *out,
+static int srtp_kdf(const nanortc_crypto_provider_t *crypto,
+                    const uint8_t master_key[NANORTC_SRTP_KEY_SIZE],
+                    const uint8_t master_salt[NANORTC_SRTP_SALT_SIZE], uint8_t label, uint8_t *out,
                     size_t out_len)
 {
     uint8_t iv[16];
@@ -44,12 +44,12 @@ static int srtp_kdf(const nano_crypto_provider_t *crypto,
     uint8_t derived[SRTP_KDF_MAX_OUT];
 
     if (out_len > SRTP_KDF_MAX_OUT) {
-        return NANO_ERR_INVALID_PARAM;
+        return NANORTC_ERR_INVALID_PARAM;
     }
 
     /* Build IV: copy salt into first 14 bytes, XOR label at byte 7 */
     memset(iv, 0, 16);
-    memcpy(iv, master_salt, NANO_SRTP_SALT_SIZE);
+    memcpy(iv, master_salt, NANORTC_SRTP_SALT_SIZE);
     iv[7] ^= label;
     /* Bytes 14-15 = 0 (counter starts at 0, handled by AES-CM) */
 
@@ -59,31 +59,31 @@ static int srtp_kdf(const nano_crypto_provider_t *crypto,
 
     int rc = crypto->aes_128_cm(master_key, iv, zeros, derive_len, derived);
     if (rc != 0) {
-        return NANO_ERR_CRYPTO;
+        return NANORTC_ERR_CRYPTO;
     }
 
     memcpy(out, derived, out_len);
-    return NANO_OK;
+    return NANORTC_OK;
 }
 
-int srtp_init(nano_srtp_t *srtp, const nano_crypto_provider_t *crypto, int is_client)
+int srtp_init(nano_srtp_t *srtp, const nanortc_crypto_provider_t *crypto, int is_client)
 {
     if (!srtp) {
-        return NANO_ERR_INVALID_PARAM;
+        return NANORTC_ERR_INVALID_PARAM;
     }
     memset(srtp, 0, sizeof(*srtp));
     srtp->crypto = crypto;
     srtp->is_client = is_client;
-    return NANO_OK;
+    return NANORTC_OK;
 }
 
 int srtp_derive_keys(nano_srtp_t *srtp, const uint8_t *keying_material, size_t len)
 {
     if (!srtp || !keying_material || !srtp->crypto) {
-        return NANO_ERR_INVALID_PARAM;
+        return NANORTC_ERR_INVALID_PARAM;
     }
     if (len < 60) {
-        return NANO_ERR_INVALID_PARAM;
+        return NANORTC_ERR_INVALID_PARAM;
     }
 
     /*
@@ -117,70 +117,70 @@ int srtp_derive_keys(nano_srtp_t *srtp, const uint8_t *keying_material, size_t l
 
     /* Derive send RTP keys */
     rc = srtp_kdf(srtp->crypto, send_master_key, send_master_salt, SRTP_LABEL_RTP_CIPHER,
-                  srtp->send_key, NANO_SRTP_KEY_SIZE);
+                  srtp->send_key, NANORTC_SRTP_KEY_SIZE);
     if (rc != 0)
         return rc;
 
     rc = srtp_kdf(srtp->crypto, send_master_key, send_master_salt, SRTP_LABEL_RTP_AUTH,
-                  srtp->send_auth_key, NANO_SRTP_AUTH_KEY_SIZE);
+                  srtp->send_auth_key, NANORTC_SRTP_AUTH_KEY_SIZE);
     if (rc != 0)
         return rc;
 
     rc = srtp_kdf(srtp->crypto, send_master_key, send_master_salt, SRTP_LABEL_RTP_SALT,
-                  srtp->send_salt, NANO_SRTP_SALT_SIZE);
+                  srtp->send_salt, NANORTC_SRTP_SALT_SIZE);
     if (rc != 0)
         return rc;
 
     /* Derive send RTCP keys */
     rc = srtp_kdf(srtp->crypto, send_master_key, send_master_salt, SRTP_LABEL_RTCP_CIPHER,
-                  srtp->send_rtcp_key, NANO_SRTP_KEY_SIZE);
+                  srtp->send_rtcp_key, NANORTC_SRTP_KEY_SIZE);
     if (rc != 0)
         return rc;
 
     rc = srtp_kdf(srtp->crypto, send_master_key, send_master_salt, SRTP_LABEL_RTCP_AUTH,
-                  srtp->send_rtcp_auth_key, NANO_SRTP_AUTH_KEY_SIZE);
+                  srtp->send_rtcp_auth_key, NANORTC_SRTP_AUTH_KEY_SIZE);
     if (rc != 0)
         return rc;
 
     rc = srtp_kdf(srtp->crypto, send_master_key, send_master_salt, SRTP_LABEL_RTCP_SALT,
-                  srtp->send_rtcp_salt, NANO_SRTP_SALT_SIZE);
+                  srtp->send_rtcp_salt, NANORTC_SRTP_SALT_SIZE);
     if (rc != 0)
         return rc;
 
     /* Derive recv RTP keys */
     rc = srtp_kdf(srtp->crypto, recv_master_key, recv_master_salt, SRTP_LABEL_RTP_CIPHER,
-                  srtp->recv_key, NANO_SRTP_KEY_SIZE);
+                  srtp->recv_key, NANORTC_SRTP_KEY_SIZE);
     if (rc != 0)
         return rc;
 
     rc = srtp_kdf(srtp->crypto, recv_master_key, recv_master_salt, SRTP_LABEL_RTP_AUTH,
-                  srtp->recv_auth_key, NANO_SRTP_AUTH_KEY_SIZE);
+                  srtp->recv_auth_key, NANORTC_SRTP_AUTH_KEY_SIZE);
     if (rc != 0)
         return rc;
 
     rc = srtp_kdf(srtp->crypto, recv_master_key, recv_master_salt, SRTP_LABEL_RTP_SALT,
-                  srtp->recv_salt, NANO_SRTP_SALT_SIZE);
+                  srtp->recv_salt, NANORTC_SRTP_SALT_SIZE);
     if (rc != 0)
         return rc;
 
     /* Derive recv RTCP keys */
     rc = srtp_kdf(srtp->crypto, recv_master_key, recv_master_salt, SRTP_LABEL_RTCP_CIPHER,
-                  srtp->recv_rtcp_key, NANO_SRTP_KEY_SIZE);
+                  srtp->recv_rtcp_key, NANORTC_SRTP_KEY_SIZE);
     if (rc != 0)
         return rc;
 
     rc = srtp_kdf(srtp->crypto, recv_master_key, recv_master_salt, SRTP_LABEL_RTCP_AUTH,
-                  srtp->recv_rtcp_auth_key, NANO_SRTP_AUTH_KEY_SIZE);
+                  srtp->recv_rtcp_auth_key, NANORTC_SRTP_AUTH_KEY_SIZE);
     if (rc != 0)
         return rc;
 
     rc = srtp_kdf(srtp->crypto, recv_master_key, recv_master_salt, SRTP_LABEL_RTCP_SALT,
-                  srtp->recv_rtcp_salt, NANO_SRTP_SALT_SIZE);
+                  srtp->recv_rtcp_salt, NANORTC_SRTP_SALT_SIZE);
     if (rc != 0)
         return rc;
 
     srtp->ready = 1;
-    return NANO_OK;
+    return NANORTC_OK;
 }
 
 /*
@@ -193,8 +193,8 @@ int srtp_derive_keys(nano_srtp_t *srtp, const uint8_t *keying_material, size_t l
  *   bytes 0-13:  XOR with session salt
  *   bytes 14-15: 0 (block counter, handled by AES-CM)
  */
-static void srtp_compute_iv(uint8_t iv[16], const uint8_t salt[NANO_SRTP_SALT_SIZE], uint32_t ssrc,
-                            uint64_t index)
+static void srtp_compute_iv(uint8_t iv[16], const uint8_t salt[NANORTC_SRTP_SALT_SIZE],
+                            uint32_t ssrc, uint64_t index)
 {
     memset(iv, 0, 16);
 
@@ -215,7 +215,7 @@ static void srtp_compute_iv(uint8_t iv[16], const uint8_t salt[NANO_SRTP_SALT_SI
      * Bytes 12-13 of index are always 0 for 48-bit values. */
 
     /* XOR salt at bytes 0-13 */
-    for (int i = 0; i < NANO_SRTP_SALT_SIZE; i++) {
+    for (int i = 0; i < NANORTC_SRTP_SALT_SIZE; i++) {
         iv[i] ^= salt[i];
     }
 }
@@ -223,28 +223,28 @@ static void srtp_compute_iv(uint8_t iv[16], const uint8_t salt[NANO_SRTP_SALT_SI
 int srtp_protect(nano_srtp_t *srtp, uint8_t *packet, size_t len, size_t *out_len)
 {
     if (!srtp || !packet || !out_len || !srtp->ready) {
-        return NANO_ERR_INVALID_PARAM;
+        return NANORTC_ERR_INVALID_PARAM;
     }
     if (len < RTP_HEADER_SIZE) {
-        return NANO_ERR_INVALID_PARAM;
+        return NANORTC_ERR_INVALID_PARAM;
     }
 
     /* Parse RTP header fields we need */
-    uint16_t seq = nano_read_u16be(packet + 2);
-    uint32_t ssrc = nano_read_u32be(packet + 8);
+    uint16_t seq = nanortc_read_u16be(packet + 2);
+    uint32_t ssrc = nanortc_read_u32be(packet + 8);
 
     /* Determine actual header length (CSRC + extensions) */
     uint8_t cc = packet[0] & 0x0F;
     size_t hdr_len = RTP_HEADER_SIZE + (size_t)cc * 4;
     if (packet[0] & 0x10) { /* X bit: extension header */
         if (len < hdr_len + 4) {
-            return NANO_ERR_PARSE;
+            return NANORTC_ERR_PARSE;
         }
-        uint16_t ext_words = nano_read_u16be(packet + hdr_len + 2);
+        uint16_t ext_words = nanortc_read_u16be(packet + hdr_len + 2);
         hdr_len += 4 + (size_t)ext_words * 4;
     }
     if (len < hdr_len) {
-        return NANO_ERR_PARSE;
+        return NANORTC_ERR_PARSE;
     }
 
     /* RFC 3711 section 3.3.1: packet index = ROC * 65536 + SEQ */
@@ -259,7 +259,7 @@ int srtp_protect(nano_srtp_t *srtp, uint8_t *packet, size_t len, size_t *out_len
         int rc = srtp->crypto->aes_128_cm(srtp->send_key, iv, packet + hdr_len, payload_len,
                                           packet + hdr_len);
         if (rc != 0) {
-            return NANO_ERR_CRYPTO;
+            return NANORTC_ERR_CRYPTO;
         }
     }
 
@@ -283,7 +283,7 @@ int srtp_protect(nano_srtp_t *srtp, uint8_t *packet, size_t len, size_t *out_len
         memcpy(packet + len, roc_be, 4);
 
         /* Compute HMAC-SHA1-80 over [packet || ROC] */
-        srtp->crypto->hmac_sha1_80(srtp->send_auth_key, NANO_SRTP_AUTH_KEY_SIZE, packet, len + 4,
+        srtp->crypto->hmac_sha1_80(srtp->send_auth_key, NANORTC_SRTP_AUTH_KEY_SIZE, packet, len + 4,
                                    packet + len);
         /* Auth tag now at packet + len, ROC was overwritten by the tag (first 10 bytes).
          * The tag is 10 bytes, placed right after the original packet data. */
@@ -295,37 +295,37 @@ int srtp_protect(nano_srtp_t *srtp, uint8_t *packet, size_t len, size_t *out_len
     }
     srtp->send_seq = seq;
 
-    *out_len = len + NANO_SRTP_AUTH_TAG_SIZE;
-    return NANO_OK;
+    *out_len = len + NANORTC_SRTP_AUTH_TAG_SIZE;
+    return NANORTC_OK;
 }
 
 int srtp_unprotect(nano_srtp_t *srtp, uint8_t *packet, size_t len, size_t *out_len)
 {
     if (!srtp || !packet || !out_len || !srtp->ready) {
-        return NANO_ERR_INVALID_PARAM;
+        return NANORTC_ERR_INVALID_PARAM;
     }
-    if (len < RTP_HEADER_SIZE + NANO_SRTP_AUTH_TAG_SIZE) {
-        return NANO_ERR_INVALID_PARAM;
+    if (len < RTP_HEADER_SIZE + NANORTC_SRTP_AUTH_TAG_SIZE) {
+        return NANORTC_ERR_INVALID_PARAM;
     }
 
     /* Parse RTP header */
-    uint16_t seq = nano_read_u16be(packet + 2);
-    uint32_t ssrc = nano_read_u32be(packet + 8);
+    uint16_t seq = nanortc_read_u16be(packet + 2);
+    uint32_t ssrc = nanortc_read_u32be(packet + 8);
 
     /* Determine header length */
     uint8_t cc = packet[0] & 0x0F;
     size_t hdr_len = RTP_HEADER_SIZE + (size_t)cc * 4;
     if (packet[0] & 0x10) {
-        if (len < hdr_len + 4 + NANO_SRTP_AUTH_TAG_SIZE) {
-            return NANO_ERR_PARSE;
+        if (len < hdr_len + 4 + NANORTC_SRTP_AUTH_TAG_SIZE) {
+            return NANORTC_ERR_PARSE;
         }
-        uint16_t ext_words = nano_read_u16be(packet + hdr_len + 2);
+        uint16_t ext_words = nanortc_read_u16be(packet + hdr_len + 2);
         hdr_len += 4 + (size_t)ext_words * 4;
     }
 
-    size_t srtp_len = len - NANO_SRTP_AUTH_TAG_SIZE; /* original RTP packet length */
+    size_t srtp_len = len - NANORTC_SRTP_AUTH_TAG_SIZE; /* original RTP packet length */
     if (srtp_len < hdr_len) {
-        return NANO_ERR_PARSE;
+        return NANORTC_ERR_PARSE;
     }
 
     /* Estimate packet index (RFC 3711 section 3.3.1)
@@ -350,26 +350,26 @@ int srtp_unprotect(nano_srtp_t *srtp, uint8_t *packet, size_t len, size_t *out_l
         roc_be[3] = (uint8_t)(est_roc);
 
         /* Save the received tag, then write ROC temporarily after the SRTP payload */
-        uint8_t recv_tag[NANO_SRTP_AUTH_TAG_SIZE];
-        memcpy(recv_tag, packet + srtp_len, NANO_SRTP_AUTH_TAG_SIZE);
+        uint8_t recv_tag[NANORTC_SRTP_AUTH_TAG_SIZE];
+        memcpy(recv_tag, packet + srtp_len, NANORTC_SRTP_AUTH_TAG_SIZE);
 
         /* Temporarily place ROC after encrypted payload for HMAC computation */
         memcpy(packet + srtp_len, roc_be, 4);
 
-        uint8_t computed_tag[NANO_SRTP_AUTH_TAG_SIZE];
-        srtp->crypto->hmac_sha1_80(srtp->recv_auth_key, NANO_SRTP_AUTH_KEY_SIZE, packet,
+        uint8_t computed_tag[NANORTC_SRTP_AUTH_TAG_SIZE];
+        srtp->crypto->hmac_sha1_80(srtp->recv_auth_key, NANORTC_SRTP_AUTH_KEY_SIZE, packet,
                                    srtp_len + 4, computed_tag);
 
         /* Restore the original tag (for debugging) and verify */
-        memcpy(packet + srtp_len, recv_tag, NANO_SRTP_AUTH_TAG_SIZE);
+        memcpy(packet + srtp_len, recv_tag, NANORTC_SRTP_AUTH_TAG_SIZE);
 
         /* Constant-time comparison */
         uint8_t diff = 0;
-        for (int i = 0; i < NANO_SRTP_AUTH_TAG_SIZE; i++) {
+        for (int i = 0; i < NANORTC_SRTP_AUTH_TAG_SIZE; i++) {
             diff |= recv_tag[i] ^ computed_tag[i];
         }
         if (diff != 0) {
-            return NANO_ERR_CRYPTO;
+            return NANORTC_ERR_CRYPTO;
         }
     }
 
@@ -382,7 +382,7 @@ int srtp_unprotect(nano_srtp_t *srtp, uint8_t *packet, size_t len, size_t *out_l
         int rc = srtp->crypto->aes_128_cm(srtp->recv_key, iv, packet + hdr_len, payload_len,
                                           packet + hdr_len);
         if (rc != 0) {
-            return NANO_ERR_CRYPTO;
+            return NANORTC_ERR_CRYPTO;
         }
     }
 
@@ -394,5 +394,5 @@ int srtp_unprotect(nano_srtp_t *srtp, uint8_t *packet, size_t len, size_t *out_l
     }
 
     *out_len = srtp_len;
-    return NANO_OK;
+    return NANORTC_OK;
 }

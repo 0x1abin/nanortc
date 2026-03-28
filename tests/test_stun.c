@@ -16,12 +16,12 @@
 #include "nanortc.h"
 #include "nano_stun.h"
 #include "nano_crc32.h"
-#include "nano_crypto.h"
+#include "nanortc_crypto.h"
 #include "nano_test.h"
 #include "nano_test_config.h"
 #include <string.h>
 
-static const nano_crypto_provider_t *crypto(void)
+static const nanortc_crypto_provider_t *crypto(void)
 {
     return nano_test_crypto();
 }

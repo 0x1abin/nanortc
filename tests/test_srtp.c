@@ -10,12 +10,12 @@
 #include "nanortc.h"
 #include "nano_srtp.h"
 #include "nano_rtp.h"
-#include "nano_crypto.h"
+#include "nanortc_crypto.h"
 #include "nano_test.h"
 #include "nano_test_config.h"
 #include <string.h>
 
-#if NANO_HAVE_MEDIA_TRANSPORT
+#if NANORTC_HAVE_MEDIA_TRANSPORT
 
 /* ---- RFC 3711 Appendix B.3 key derivation test vectors ---- */
 
@@ -59,7 +59,7 @@ static const uint8_t rfc3711_session_salt[14] = {
  */
 TEST(test_srtp_key_derivation_rfc3711_b3)
 {
-    const nano_crypto_provider_t *crypto = nano_test_crypto();
+    const nanortc_crypto_provider_t *crypto = nano_test_crypto();
 
     /* Build 60-byte keying material:
      * client_key(16) | server_key(16) | client_salt(14) | server_salt(14) */
@@ -87,7 +87,7 @@ TEST(test_srtp_key_derivation_rfc3711_b3)
  */
 TEST(test_srtp_key_direction)
 {
-    const nano_crypto_provider_t *crypto = nano_test_crypto();
+    const nanortc_crypto_provider_t *crypto = nano_test_crypto();
 
     uint8_t km[60];
     memcpy(km, rfc3711_master_key, 16);       /* client_key */
@@ -118,7 +118,7 @@ TEST(test_srtp_key_direction)
  */
 TEST(test_srtp_protect_unprotect_roundtrip)
 {
-    const nano_crypto_provider_t *crypto = nano_test_crypto();
+    const nanortc_crypto_provider_t *crypto = nano_test_crypto();
 
     /* Generate random keying material */
     uint8_t km[60];
@@ -169,7 +169,7 @@ TEST(test_srtp_protect_unprotect_roundtrip)
  */
 TEST(test_srtp_tamper_detection)
 {
-    const nano_crypto_provider_t *crypto = nano_test_crypto();
+    const nanortc_crypto_provider_t *crypto = nano_test_crypto();
 
     uint8_t km[60];
     crypto->random_bytes(km, sizeof(km));
@@ -192,7 +192,7 @@ TEST(test_srtp_tamper_detection)
     buf[12] ^= 0xFF;
 
     /* Unprotect should fail due to auth mismatch */
-    ASSERT_EQ(srtp_unprotect(&receiver, buf, srtp_len, &out_len), NANO_ERR_CRYPTO);
+    ASSERT_EQ(srtp_unprotect(&receiver, buf, srtp_len, &out_len), NANORTC_ERR_CRYPTO);
 }
 
 /*
@@ -200,7 +200,7 @@ TEST(test_srtp_tamper_detection)
  */
 TEST(test_srtp_multiple_packets)
 {
-    const nano_crypto_provider_t *crypto = nano_test_crypto();
+    const nanortc_crypto_provider_t *crypto = nano_test_crypto();
 
     uint8_t km[60];
     crypto->random_bytes(km, sizeof(km));
@@ -235,7 +235,7 @@ TEST(test_srtp_multiple_packets)
  */
 TEST(test_aes_128_cm_basic)
 {
-    const nano_crypto_provider_t *crypto = nano_test_crypto();
+    const nanortc_crypto_provider_t *crypto = nano_test_crypto();
 
     /* Encrypt zeros with known key/IV, decrypt result, should get zeros back */
     uint8_t key[16] = {0x2B, 0x7E, 0x15, 0x16, 0x28, 0xAE, 0xD2, 0xA6,
@@ -255,12 +255,12 @@ TEST(test_aes_128_cm_basic)
     ASSERT_MEM_EQ(decrypted, zeros, 16);
 }
 
-#endif /* NANO_HAVE_MEDIA_TRANSPORT */
+#endif /* NANORTC_HAVE_MEDIA_TRANSPORT */
 
 /* ---- Runner ---- */
 
 TEST_MAIN_BEGIN("SRTP tests")
-#if NANO_HAVE_MEDIA_TRANSPORT
+#if NANORTC_HAVE_MEDIA_TRANSPORT
     RUN(test_srtp_key_derivation_rfc3711_b3);
     RUN(test_srtp_key_direction);
     RUN(test_srtp_protect_unprotect_roundtrip);

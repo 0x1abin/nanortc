@@ -1,6 +1,6 @@
 menu "NanoRTC Configuration"
 
-    config NANO_FEATURE_DATACHANNEL
+    config NANORTC_FEATURE_DATACHANNEL
         bool "Enable DataChannel (SCTP+DCEP)"
         default y
         help
@@ -8,53 +8,53 @@ menu "NanoRTC Configuration"
             and CRC-32c modules. Disable to save ~2500 lines of code
             for media-only devices.
 
-    config NANO_FEATURE_DC_RELIABLE
+    config NANORTC_FEATURE_DC_RELIABLE
         bool "Enable reliable DataChannel delivery"
         default y
-        depends on NANO_FEATURE_DATACHANNEL
+        depends on NANORTC_FEATURE_DATACHANNEL
         help
             Enable DATA chunk retransmission (RTO backoff, SACK-driven).
             When OFF, all DataChannels are fire-and-forget (unreliable).
 
-    config NANO_FEATURE_DC_ORDERED
+    config NANORTC_FEATURE_DC_ORDERED
         bool "Enable ordered DataChannel delivery"
         default y
-        depends on NANO_FEATURE_DATACHANNEL
+        depends on NANORTC_FEATURE_DATACHANNEL
         help
             Enable SSN-based ordered delivery. When OFF, all DATA chunks
             are sent with the Unordered flag set.
 
-    config NANO_FEATURE_AUDIO
+    config NANORTC_FEATURE_AUDIO
         bool "Enable audio (RTP/SRTP/Jitter)"
         default n
         help
             Enable audio media transport. Compiles RTP, RTCP, SRTP,
             and jitter buffer modules.
 
-    config NANO_FEATURE_VIDEO
+    config NANORTC_FEATURE_VIDEO
         bool "Enable video (RTP/SRTP/BWE)"
         default n
         help
             Enable video media transport. Compiles RTP, RTCP, SRTP,
             and bandwidth estimation modules.
 
-    config NANO_MAX_DATACHANNELS
+    config NANORTC_MAX_DATACHANNELS
         int "Maximum number of DataChannels"
         default 8
         range 1 64
-        depends on NANO_FEATURE_DATACHANNEL
+        depends on NANORTC_FEATURE_DATACHANNEL
         help
             Maximum number of DataChannels that can be open simultaneously.
             Each channel uses approximately 40 bytes of RAM.
 
-    config NANO_MAX_ICE_CANDIDATES
+    config NANORTC_MAX_ICE_CANDIDATES
         int "Maximum ICE candidates"
         default 4
         range 1 16
         help
             Maximum number of ICE candidates stored per connection.
 
-    config NANO_ICE_MAX_CHECKS
+    config NANORTC_ICE_MAX_CHECKS
         int "Maximum ICE connectivity checks"
         default 25
         range 5 100
@@ -62,7 +62,7 @@ menu "NanoRTC Configuration"
             Number of STUN Binding Requests sent before declaring ICE failure.
             See RFC 8445.
 
-    config NANO_ICE_CHECK_INTERVAL_MS
+    config NANORTC_ICE_CHECK_INTERVAL_MS
         int "ICE check pacing interval (ms)"
         default 50
         range 20 500
@@ -70,7 +70,7 @@ menu "NanoRTC Configuration"
             Interval in milliseconds between STUN connectivity checks.
             RFC 8445 recommends at least 20ms.
 
-    config NANO_DTLS_BUF_SIZE
+    config NANORTC_DTLS_BUF_SIZE
         int "DTLS I/O buffer size (bytes)"
         default 2048
         range 256 16384
@@ -78,41 +78,41 @@ menu "NanoRTC Configuration"
             Size of the DTLS read/write scratch buffer. Must accommodate
             the largest DTLS record expected.
 
-    config NANO_SDP_BUF_SIZE
+    config NANORTC_SDP_BUF_SIZE
         int "SDP parsing buffer size (bytes)"
         default 2048
         range 512 16384
         help
             Size of the buffer used for SDP offer/answer parsing.
 
-    config NANO_SCTP_SEND_BUF_SIZE
+    config NANORTC_SCTP_SEND_BUF_SIZE
         int "SCTP send buffer size (bytes)"
         default 65536
         range 4096 262144
-        depends on NANO_FEATURE_DATACHANNEL
+        depends on NANORTC_FEATURE_DATACHANNEL
         help
             Size of the SCTP send buffer for outgoing DataChannel messages.
 
-    config NANO_SCTP_RECV_BUF_SIZE
+    config NANORTC_SCTP_RECV_BUF_SIZE
         int "SCTP receive buffer size (bytes)"
         default 65536
         range 4096 262144
-        depends on NANO_FEATURE_DATACHANNEL
+        depends on NANORTC_FEATURE_DATACHANNEL
         help
             Size of the SCTP receive buffer for incoming DataChannel messages.
 
-    config NANO_OUT_QUEUE_SIZE
+    config NANORTC_OUT_QUEUE_SIZE
         int "Output event queue depth"
         default 8
         range 4 64
         help
             Depth of the output event ring buffer. Must be a power of 2.
 
-    config NANO_JITTER_SLOTS
+    config NANORTC_JITTER_SLOTS
         int "Jitter buffer slots"
         default 64
         range 8 256
-        depends on NANO_FEATURE_AUDIO
+        depends on NANORTC_FEATURE_AUDIO
         help
             Number of slots in the jitter buffer. Each slot holds one
             RTP packet (up to 1500 bytes).
