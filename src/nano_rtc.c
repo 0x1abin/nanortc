@@ -300,9 +300,9 @@ int nanortc_create_offer(nanortc_t *rtc, char *offer_buf, size_t offer_buf_len, 
     /* Offerer is DTLS active, setup=actpass in SDP (RFC 8842) */
     rtc->sdp.local_setup = NANORTC_SDP_SETUP_ACTPASS;
 
-    /* Early DTLS init for fingerprint */
+    /* Early DTLS init — need certificate fingerprint for SDP.
+     * Role is tentative (client); accept_answer() finalizes via dtls_set_role. */
     if (rtc->config.crypto && !rtc->dtls.crypto_ctx) {
-        /* Offerer default is active (client), but actpass in SDP */
         int drc = dtls_init(&rtc->dtls, rtc->config.crypto, 0);
         if (drc != NANORTC_OK) {
             return drc;
@@ -359,9 +359,17 @@ int nanortc_accept_answer(nanortc_t *rtc, const char *answer)
         rtc->sdp.local_setup = NANORTC_SDP_SETUP_ACTIVE;
     }
 
-    /* Update DTLS role if context already exists */
+    /* Finalize DTLS role based on negotiated SDP setup attribute.
+     * create_offer() inits DTLS early (for fingerprint) with a tentative role;
+     * the answer determines the actual role. dtls_set_role switches the crypto
+     * provider's internal state machine without regenerating the certificate. */
     if (rtc->dtls.crypto_ctx) {
-        rtc->dtls.is_server = (rtc->sdp.local_setup == NANORTC_SDP_SETUP_PASSIVE);
+        int is_server = (rtc->sdp.local_setup == NANORTC_SDP_SETUP_PASSIVE);
+        if (rtc->config.crypto->dtls_set_role) {
+            rtc->config.crypto->dtls_set_role((nanortc_crypto_dtls_ctx_t *)rtc->dtls.crypto_ctx,
+                                              is_server);
+        }
+        rtc->dtls.is_server = is_server;
     }
 
     rtc_add_sdp_candidates(rtc);

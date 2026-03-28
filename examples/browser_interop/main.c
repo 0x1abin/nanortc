@@ -26,6 +26,10 @@
 #include <arpa/inet.h>
 #include <net/if.h>
 
+typedef struct {
+    int offer_mode;
+} app_ctx_t;
+
 static nano_run_loop_t loop;
 static volatile sig_atomic_t g_quit;
 
@@ -38,7 +42,7 @@ static void on_signal(int sig)
 
 static void on_event(nanortc_t *rtc, const nanortc_event_t *evt, void *userdata)
 {
-    (void)userdata;
+    app_ctx_t *ctx = (app_ctx_t *)userdata;
 
     switch (evt->type) {
     case NANORTC_EVENT_ICE_CONNECTED:
@@ -51,6 +55,17 @@ static void on_event(nanortc_t *rtc, const nanortc_event_t *evt, void *userdata)
 
     case NANORTC_EVENT_SCTP_CONNECTED:
         fprintf(stderr, "[event] SCTP connected\n");
+        /* Offerer must create the DataChannel after SCTP is ready */
+        if (ctx->offer_mode) {
+            nanortc_datachannel_config_t dc_cfg = {.label = "test", .ordered = true};
+            uint16_t sid = 0;
+            int drc = nanortc_create_datachannel(rtc, &dc_cfg, &sid);
+            if (drc == NANORTC_OK) {
+                fprintf(stderr, "[event] Created DataChannel 'test' (stream=%d)\n", sid);
+            } else {
+                fprintf(stderr, "[event] Failed to create DataChannel: %d\n", drc);
+            }
+        }
         break;
 
     case NANORTC_EVENT_DATACHANNEL_OPEN:
@@ -250,6 +265,7 @@ int main(int argc, char *argv[])
         }
     }
 
+    app_ctx_t app_ctx = {.offer_mode = offer_mode};
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
 
@@ -310,7 +326,7 @@ int main(int argc, char *argv[])
     }
     /* Override 0.0.0.0 candidate with actual IP for SDP */
     nanortc_add_local_candidate(&rtc, bind_ip, port);
-    nano_run_loop_set_event_cb(&loop, on_event, NULL);
+    nano_run_loop_set_event_cb(&loop, on_event, &app_ctx);
 
     fprintf(stderr, "nanortc browser_interop (mode=%s, udp=%s:%d, sig=%s:%u)\n",
             offer_mode ? "offer" : "answer", bind_ip, port, sig_host, sig_port);

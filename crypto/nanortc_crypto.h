@@ -64,6 +64,10 @@ struct nanortc_crypto_provider {
     int (*dtls_get_fingerprint)(nanortc_crypto_dtls_ctx_t *ctx, char *buf, size_t buf_len);
     void (*dtls_free)(nanortc_crypto_dtls_ctx_t *ctx);
 
+    /* Switch DTLS role after context is created (for SDP actpass negotiation).
+     * is_server: 1 = DTLS server, 0 = DTLS client. Optional; may be NULL. */
+    int (*dtls_set_role)(nanortc_crypto_dtls_ctx_t *ctx, int is_server);
+
     /* ---- HMAC-SHA1 (required, for STUN MESSAGE-INTEGRITY) ---- */
     void (*hmac_sha1)(const uint8_t *key, size_t key_len, const uint8_t *data, size_t data_len,
                       uint8_t out[20]);

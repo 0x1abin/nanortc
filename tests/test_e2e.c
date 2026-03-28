@@ -598,6 +598,84 @@ TEST(test_e2e_offer_answer_roundtrip)
     nanortc_destroy(&answerer);
 }
 
+TEST(test_e2e_full_sdp_to_dtls)
+{
+    /* Full flow: create_offer → accept_offer → accept_answer → ICE → DTLS
+     * This exercises dtls_set_role() on the offerer path:
+     *   create_offer() inits DTLS as client (tentative),
+     *   accept_answer() calls dtls_set_role() to finalize active role,
+     *   then DTLS handshake must complete with the switched role. */
+    nanortc_t offerer, answerer;
+
+    nanortc_config_t off_cfg = e2e_default_config();
+    off_cfg.role = NANORTC_ROLE_CONTROLLING;
+    ASSERT_OK(nanortc_init(&offerer, &off_cfg));
+
+    nanortc_config_t ans_cfg = e2e_default_config();
+    ans_cfg.role = NANORTC_ROLE_CONTROLLED;
+    ASSERT_OK(nanortc_init(&answerer, &ans_cfg));
+
+    /* Add local candidate on answerer so it appears in answer SDP */
+    ASSERT_OK(nanortc_add_local_candidate(&answerer, "192.168.1.2", 5000));
+
+    /* --- SDP negotiation --- */
+    char offer[4096];
+    size_t offer_len = 0;
+    ASSERT_OK(nanortc_create_offer(&offerer, offer, sizeof(offer), &offer_len));
+    offer[offer_len] = '\0';
+
+    char answer[4096];
+    size_t answer_len = 0;
+    ASSERT_OK(nanortc_accept_offer(&answerer, offer, answer, sizeof(answer), &answer_len));
+    answer[answer_len] = '\0';
+
+    /* accept_answer triggers dtls_set_role on offerer */
+    ASSERT_OK(nanortc_accept_answer(&offerer, answer));
+
+    /* Verify DTLS roles: offerer=active(client), answerer=passive(server) */
+    ASSERT_EQ(offerer.dtls.is_server, 0);
+    ASSERT_EQ(answerer.dtls.is_server, 1);
+
+    /* --- ICE + DTLS handshake --- */
+    /* Offerer needs remote candidate to send to (already parsed from SDP).
+     * Answerer needs offerer's address — set a remote candidate manually
+     * since offerer didn't include one in the offer SDP. */
+    answerer.ice.remote_candidates[0].family = 4;
+    answerer.ice.remote_candidates[0].addr[0] = 192;
+    answerer.ice.remote_candidates[0].addr[1] = 168;
+    answerer.ice.remote_candidates[0].addr[2] = 1;
+    answerer.ice.remote_candidates[0].addr[3] = 1;
+    answerer.ice.remote_candidates[0].port = 9999;
+    answerer.ice.remote_candidate_count = 1;
+
+    /* Kick off ICE on the controlling side */
+    uint32_t now_ms = 100;
+    ASSERT_OK(nanortc_handle_timeout(&offerer, now_ms));
+
+    /* Pump ICE + DTLS: relay packets between the two instances */
+    int connected = 0;
+    for (int round = 0; round < 30; round++) {
+        e2e_pump(&offerer, &answerer, now_ms, 5);
+
+        if (offerer.state >= NANORTC_STATE_DTLS_CONNECTED &&
+            answerer.state >= NANORTC_STATE_DTLS_CONNECTED) {
+            connected = 1;
+            break;
+        }
+    }
+
+    ASSERT_TRUE(connected);
+    ASSERT_TRUE(offerer.state >= NANORTC_STATE_DTLS_CONNECTED);
+    ASSERT_TRUE(answerer.state >= NANORTC_STATE_DTLS_CONNECTED);
+
+    /* Verify keying material was derived (proves DTLS completed) */
+    ASSERT_TRUE(offerer.dtls.keying_material_ready);
+    ASSERT_TRUE(answerer.dtls.keying_material_ready);
+
+    nanortc_destroy(&offerer);
+    nanortc_destroy(&answerer);
+}
+
 TEST(test_e2e_get_state_transitions)
 {
     /* Use nanortc_get_state() API instead of direct .state access */
@@ -851,6 +929,7 @@ RUN(test_e2e_ice_loopback);
 RUN(test_e2e_ice_dtls_loopback);
 RUN(test_e2e_create_offer_content);
 RUN(test_e2e_offer_answer_roundtrip);
+RUN(test_e2e_full_sdp_to_dtls);
 RUN(test_e2e_get_state_transitions);
 #if NANORTC_FEATURE_DATACHANNEL
 RUN(test_e2e_create_datachannel_wrong_state);

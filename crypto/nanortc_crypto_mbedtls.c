@@ -698,6 +698,20 @@ static int mbed_dtls_get_fingerprint(nanortc_crypto_dtls_ctx_t *ctx, char *buf, 
     return 0;
 }
 
+/* Switch DTLS role without regenerating certificate (for actpass negotiation) */
+static int mbed_dtls_set_role(nanortc_crypto_dtls_ctx_t *ctx, int is_server)
+{
+    if (!ctx)
+        return -1;
+    ctx->is_server = is_server;
+    mbedtls_ssl_conf_endpoint(&ctx->conf,
+                              is_server ? MBEDTLS_SSL_IS_SERVER : MBEDTLS_SSL_IS_CLIENT);
+    /* Reset SSL state machine to pick up new endpoint from config.
+     * Safe before handshake; preserves certificate and config. */
+    mbedtls_ssl_session_reset(&ctx->ssl);
+    return 0;
+}
+
 static void mbed_dtls_free(nanortc_crypto_dtls_ctx_t *ctx)
 {
     if (!ctx) {
@@ -821,6 +835,7 @@ static const nanortc_crypto_provider_t mbedtls_provider = {
     .dtls_export_keying_material = mbed_dtls_export_keying_material,
     .dtls_get_fingerprint = mbed_dtls_get_fingerprint,
     .dtls_free = mbed_dtls_free,
+    .dtls_set_role = mbed_dtls_set_role,
     .hmac_sha1 = mbed_hmac_sha1,
     .random_bytes = mbed_random_bytes,
 #if NANORTC_HAVE_MEDIA_TRANSPORT

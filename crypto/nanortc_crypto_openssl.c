@@ -452,6 +452,21 @@ static void ossl_hmac_sha1_80(const uint8_t *key, size_t key_len, const uint8_t 
 }
 #endif
 
+/* Switch DTLS role without regenerating certificate (for actpass negotiation) */
+static int ossl_dtls_set_role(nanortc_crypto_dtls_ctx_t *ctx, int is_server)
+{
+    if (!ctx || !ctx->ssl) {
+        return -1;
+    }
+    ctx->is_server = is_server;
+    if (is_server) {
+        SSL_set_accept_state(ctx->ssl);
+    } else {
+        SSL_set_connect_state(ctx->ssl);
+    }
+    return 0;
+}
+
 /* ---- Provider instance ---- */
 
 static const nanortc_crypto_provider_t openssl_provider = {
@@ -464,6 +479,7 @@ static const nanortc_crypto_provider_t openssl_provider = {
     .dtls_export_keying_material = ossl_dtls_export_keying_material,
     .dtls_get_fingerprint = ossl_dtls_get_fingerprint,
     .dtls_free = ossl_dtls_free,
+    .dtls_set_role = ossl_dtls_set_role,
     .hmac_sha1 = ossl_hmac_sha1,
     .random_bytes = ossl_random_bytes,
 #if NANORTC_HAVE_MEDIA_TRANSPORT
