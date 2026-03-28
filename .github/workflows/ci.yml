@@ -121,3 +121,25 @@ jobs:
 
       - name: Test
         run: ctest --test-dir build --output-on-failure
+
+  interop:
+    name: Interop (libdatachannel)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libssl-dev
+
+      - name: Configure
+        run: |
+          cmake -B build \
+            -DNANORTC_BUILD_INTEROP_TESTS=ON \
+            -DNANORTC_CRYPTO=openssl \
+            -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        run: cmake --build build -j$(nproc)
+
+      - name: Test
+        run: ctest --test-dir build -R interop --output-on-failure
