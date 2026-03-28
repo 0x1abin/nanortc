@@ -121,16 +121,19 @@ TEST(test_e2e_stubs_not_implemented)
     nanortc_config_t cfg = e2e_default_config();
     ASSERT_OK(nanortc_init(&rtc, &cfg));
 
-    char buf[256];
+    char buf[2048];
     /* nanortc_accept_offer now works (parses SDP), but invalid SDP returns parse error */
     ASSERT_FAIL(nanortc_accept_offer(&rtc, "v=0\r\n", buf, sizeof(buf), NULL));
-    ASSERT_EQ(nanortc_create_offer(&rtc, buf, sizeof(buf), NULL), NANORTC_ERR_NOT_IMPLEMENTED);
-    ASSERT_EQ(nanortc_accept_answer(&rtc, "v=0\r\n"), NANORTC_ERR_NOT_IMPLEMENTED);
+    /* nanortc_create_offer now works on NEW state */
+    ASSERT_OK(nanortc_create_offer(&rtc, buf, sizeof(buf), NULL));
+    /* After create_offer, state is still NEW (waiting for answer), accept_answer parses SDP */
+    ASSERT_FAIL(nanortc_accept_answer(&rtc, "v=0\r\n"));
     ASSERT_OK(nanortc_add_local_candidate(&rtc, "192.168.1.1", 9999));
     /* nanortc_add_remote_candidate now parses SDP candidate; invalid format returns parse error */
     ASSERT_EQ(nanortc_add_remote_candidate(&rtc, "candidate:..."), NANORTC_ERR_PARSE);
     /* Valid candidate succeeds */
-    ASSERT_OK(nanortc_add_remote_candidate(&rtc, "candidate:0 1 UDP 2122260223 192.168.1.100 50000 typ host"));
+    ASSERT_OK(nanortc_add_remote_candidate(
+        &rtc, "candidate:0 1 UDP 2122260223 192.168.1.100 50000 typ host"));
     ASSERT_OK(nanortc_add_remote_candidate(&rtc, "192.168.1.200 60000"));
 
     /* nanortc_handle_receive and nanortc_handle_timeout are now implemented */
@@ -170,14 +173,16 @@ TEST(test_e2e_loopback_skeleton)
     nanortc_config_t cfg = e2e_default_config();
 
     ASSERT_OK(nanortc_init(&server, &cfg));
+
+    cfg.role = NANORTC_ROLE_CONTROLLING;
     ASSERT_OK(nanortc_init(&client, &cfg));
 
-    /* Client creates offer (stub: returns NOT_IMPLEMENTED) */
+    /* Client creates offer (now implemented) */
     char offer[2048];
     int rc = nanortc_create_offer(&client, offer, sizeof(offer), NULL);
-    ASSERT_EQ(rc, NANORTC_ERR_NOT_IMPLEMENTED);
+    ASSERT_OK(rc);
 
-    /* No output should be queued */
+    /* No transmit output should be queued yet (no remote candidate) */
     nanortc_output_t out;
     ASSERT_EQ(nanortc_poll_output(&server, &out), NANORTC_ERR_NO_DATA);
     ASSERT_EQ(nanortc_poll_output(&client, &out), NANORTC_ERR_NO_DATA);
@@ -239,7 +244,8 @@ TEST(test_e2e_demux_byte_ranges)
 
     /* DTLS range: 0x14-0x40 — rejected before ICE connects */
     uint8_t dtls_pkt[20] = {0x14, 0xFE, 0xFD};
-    ASSERT_EQ(nanortc_handle_receive(&rtc, 0, dtls_pkt, sizeof(dtls_pkt), &addr), NANORTC_ERR_STATE);
+    ASSERT_EQ(nanortc_handle_receive(&rtc, 0, dtls_pkt, sizeof(dtls_pkt), &addr),
+              NANORTC_ERR_STATE);
 
     /* SRTP range: 0x80-0xBF */
     uint8_t srtp_pkt[20] = {0x80, 0x60};
@@ -296,12 +302,13 @@ TEST(test_e2e_ice_loopback)
     answerer.ice.remote_pwd_len = 21;
 
     /* Set remote candidate address on offerer (where to send checks) */
-    offerer.ice.remote_family = 4;
-    offerer.ice.remote_addr[0] = 192;
-    offerer.ice.remote_addr[1] = 168;
-    offerer.ice.remote_addr[2] = 1;
-    offerer.ice.remote_addr[3] = 2;
-    offerer.ice.remote_port = 5000;
+    offerer.ice.remote_candidates[0].family = 4;
+    offerer.ice.remote_candidates[0].addr[0] = 192;
+    offerer.ice.remote_candidates[0].addr[1] = 168;
+    offerer.ice.remote_candidates[0].addr[2] = 1;
+    offerer.ice.remote_candidates[0].addr[3] = 2;
+    offerer.ice.remote_candidates[0].port = 5000;
+    offerer.ice.remote_candidate_count = 1;
 
     /* Step 1: offerer generates STUN Binding Request via timeout */
     uint32_t now_ms = 100;
@@ -319,7 +326,13 @@ TEST(test_e2e_ice_loopback)
     size_t saved_req_len = out.transmit.len;
     memcpy(saved_req, out.transmit.data, saved_req_len);
 
-    /* Drain the TIMEOUT output from handle_timeout */
+    /* Drain the ICE_STATE_CHANGE event (CHECKING) + TIMEOUT from handle_timeout */
+    nanortc_output_t ice_chg;
+    ASSERT_OK(nanortc_poll_output(&offerer, &ice_chg));
+    ASSERT_EQ(ice_chg.type, NANORTC_OUTPUT_EVENT);
+    ASSERT_EQ(ice_chg.event.type, NANORTC_EVENT_ICE_STATE_CHANGE);
+    ASSERT_EQ(ice_chg.event.stream_id, (uint16_t)NANORTC_ICE_STATE_CHECKING);
+
     nanortc_output_t tout;
     ASSERT_OK(nanortc_poll_output(&offerer, &tout));
     ASSERT_EQ(tout.type, NANORTC_OUTPUT_TIMEOUT);
@@ -350,11 +363,16 @@ TEST(test_e2e_ice_loopback)
     size_t saved_resp_len = ans_out.transmit.len;
     memcpy(saved_resp, ans_out.transmit.data, saved_resp_len);
 
-    /* Check for ICE_CONNECTED event on answerer */
+    /* Check for ICE_CONNECTED + ICE_STATE_CHANGE events on answerer */
     nanortc_output_t evt;
     ASSERT_OK(nanortc_poll_output(&answerer, &evt));
     ASSERT_EQ(evt.type, NANORTC_OUTPUT_EVENT);
     ASSERT_EQ(evt.event.type, NANORTC_EVENT_ICE_CONNECTED);
+
+    nanortc_output_t ans_ice_chg;
+    ASSERT_OK(nanortc_poll_output(&answerer, &ans_ice_chg));
+    ASSERT_EQ(ans_ice_chg.type, NANORTC_OUTPUT_EVENT);
+    ASSERT_EQ(ans_ice_chg.event.type, NANORTC_EVENT_ICE_STATE_CHANGE);
 
     /* Feed response into offerer */
     nanortc_addr_t answerer_addr;
@@ -372,11 +390,16 @@ TEST(test_e2e_ice_loopback)
     ASSERT_EQ(offerer.ice.state, NANORTC_ICE_STATE_CONNECTED);
     ASSERT_EQ(offerer.state, NANORTC_STATE_DTLS_HANDSHAKING);
 
-    /* ICE_CONNECTED event should be queued for offerer */
+    /* ICE_CONNECTED + ICE_STATE_CHANGE events should be queued for offerer */
     nanortc_output_t off_evt;
     ASSERT_OK(nanortc_poll_output(&offerer, &off_evt));
     ASSERT_EQ(off_evt.type, NANORTC_OUTPUT_EVENT);
     ASSERT_EQ(off_evt.event.type, NANORTC_EVENT_ICE_CONNECTED);
+
+    nanortc_output_t off_ice_chg;
+    ASSERT_OK(nanortc_poll_output(&offerer, &off_ice_chg));
+    ASSERT_EQ(off_ice_chg.type, NANORTC_OUTPUT_EVENT);
+    ASSERT_EQ(off_ice_chg.event.type, NANORTC_EVENT_ICE_STATE_CHANGE);
 
     /* Offerer (client role) should have a ClientHello TRANSMIT output */
     nanortc_output_t ch_out;
@@ -416,12 +439,13 @@ static void e2e_setup_ice_creds(nanortc_t *offerer, nanortc_t *answerer)
     memcpy(answerer->ice.remote_pwd, "offerer-password-1234", 22);
     answerer->ice.remote_pwd_len = 21;
 
-    offerer->ice.remote_family = 4;
-    offerer->ice.remote_addr[0] = 192;
-    offerer->ice.remote_addr[1] = 168;
-    offerer->ice.remote_addr[2] = 1;
-    offerer->ice.remote_addr[3] = 2;
-    offerer->ice.remote_port = 5000;
+    offerer->ice.remote_candidates[0].family = 4;
+    offerer->ice.remote_candidates[0].addr[0] = 192;
+    offerer->ice.remote_candidates[0].addr[1] = 168;
+    offerer->ice.remote_candidates[0].addr[2] = 1;
+    offerer->ice.remote_candidates[0].addr[3] = 2;
+    offerer->ice.remote_candidates[0].port = 5000;
+    offerer->ice.remote_candidate_count = 1;
 }
 
 TEST(test_e2e_ice_dtls_loopback)
@@ -472,6 +496,349 @@ TEST(test_e2e_ice_dtls_loopback)
     nanortc_destroy(&answerer);
 }
 
+/* ----------------------------------------------------------------
+ * Helper: check if NUL-terminated haystack contains needle
+ * ---------------------------------------------------------------- */
+static int str_contains(const char *haystack, const char *needle)
+{
+    if (!haystack || !needle)
+        return 0;
+    size_t nlen = 0;
+    while (needle[nlen])
+        nlen++;
+    if (nlen == 0)
+        return 1;
+    for (const char *p = haystack; *p; p++) {
+        int match = 1;
+        for (size_t i = 0; i < nlen; i++) {
+            if (p[i] == '\0' || p[i] != needle[i]) {
+                match = 0;
+                break;
+            }
+        }
+        if (match)
+            return 1;
+    }
+    return 0;
+}
+
+/* ----------------------------------------------------------------
+ * Part C: New API coverage tests
+ * ---------------------------------------------------------------- */
+
+TEST(test_e2e_create_offer_content)
+{
+    /* Verify offer SDP contains ufrag, pwd, fingerprint, sctp-port */
+    nanortc_t rtc;
+    nanortc_config_t cfg = e2e_default_config();
+    cfg.role = NANORTC_ROLE_CONTROLLING;
+    ASSERT_OK(nanortc_init(&rtc, &cfg));
+
+    char offer[4096];
+    size_t offer_len = 0;
+    ASSERT_OK(nanortc_create_offer(&rtc, offer, sizeof(offer), &offer_len));
+    ASSERT_TRUE(offer_len > 0);
+    offer[offer_len] = '\0';
+
+    ASSERT_TRUE(str_contains(offer, "a=ice-ufrag:"));
+    ASSERT_TRUE(str_contains(offer, "a=ice-pwd:"));
+    ASSERT_TRUE(str_contains(offer, "a=fingerprint:sha-256 "));
+    ASSERT_TRUE(str_contains(offer, "a=setup:actpass"));
+#if NANORTC_FEATURE_DATACHANNEL
+    ASSERT_TRUE(str_contains(offer, "a=sctp-port:"));
+#endif
+
+    /* Verify ICE credentials were propagated to ICE state */
+    ASSERT_TRUE(rtc.ice.local_ufrag_len > 0);
+    ASSERT_TRUE(rtc.ice.local_pwd_len > 0);
+
+    nanortc_destroy(&rtc);
+}
+
+TEST(test_e2e_offer_answer_roundtrip)
+{
+    /* create_offer → accept_offer → accept_answer full SDP roundtrip */
+    nanortc_t offerer, answerer;
+    nanortc_config_t off_cfg = e2e_default_config();
+    off_cfg.role = NANORTC_ROLE_CONTROLLING;
+    ASSERT_OK(nanortc_init(&offerer, &off_cfg));
+
+    nanortc_config_t ans_cfg = e2e_default_config();
+    ans_cfg.role = NANORTC_ROLE_CONTROLLED;
+    ASSERT_OK(nanortc_init(&answerer, &ans_cfg));
+
+    /* Add local candidate on answerer so it appears in the answer SDP */
+    ASSERT_OK(nanortc_add_local_candidate(&answerer, "192.168.1.2", 5000));
+
+    /* Offerer creates offer */
+    char offer[4096];
+    size_t offer_len = 0;
+    ASSERT_OK(nanortc_create_offer(&offerer, offer, sizeof(offer), &offer_len));
+    offer[offer_len] = '\0';
+
+    /* Answerer accepts offer, produces answer */
+    char answer[4096];
+    size_t answer_len = 0;
+    ASSERT_OK(nanortc_accept_offer(&answerer, offer, answer, sizeof(answer), &answer_len));
+    answer[answer_len] = '\0';
+    ASSERT_TRUE(answer_len > 0);
+    ASSERT_TRUE(str_contains(answer, "a=ice-ufrag:"));
+    ASSERT_TRUE(str_contains(answer, "a=setup:passive"));
+
+    /* Offerer accepts answer */
+    ASSERT_OK(nanortc_accept_answer(&offerer, answer));
+
+    /* Verify remote ICE creds propagated to offerer */
+    ASSERT_TRUE(offerer.ice.remote_ufrag_len > 0);
+    ASSERT_TRUE(offerer.ice.remote_pwd_len > 0);
+    /* Verify remote candidate from SDP was added */
+    ASSERT_TRUE(offerer.ice.remote_candidate_count >= 1);
+
+    nanortc_destroy(&offerer);
+    nanortc_destroy(&answerer);
+}
+
+TEST(test_e2e_get_state_transitions)
+{
+    /* Use nanortc_get_state() API instead of direct .state access */
+    nanortc_t rtc;
+    nanortc_config_t cfg = e2e_default_config();
+    ASSERT_OK(nanortc_init(&rtc, &cfg));
+
+    ASSERT_EQ(nanortc_get_state(&rtc), NANORTC_STATE_NEW);
+    ASSERT_EQ(nanortc_get_state(NULL), NANORTC_STATE_CLOSED);
+
+    nanortc_destroy(&rtc);
+    ASSERT_EQ(nanortc_get_state(&rtc), NANORTC_STATE_CLOSED);
+}
+
+#if NANORTC_FEATURE_DATACHANNEL
+TEST(test_e2e_create_datachannel_wrong_state)
+{
+    /* Creating a DC in NEW state should fail */
+    nanortc_t rtc;
+    nanortc_config_t cfg = e2e_default_config();
+    ASSERT_OK(nanortc_init(&rtc, &cfg));
+
+    nanortc_datachannel_config_t dc_cfg;
+    memset(&dc_cfg, 0, sizeof(dc_cfg));
+    dc_cfg.label = "test";
+    dc_cfg.ordered = true;
+
+    uint16_t stream_id = 0;
+    ASSERT_EQ(nanortc_create_datachannel(&rtc, &dc_cfg, &stream_id), NANORTC_ERR_STATE);
+
+    nanortc_destroy(&rtc);
+}
+
+TEST(test_e2e_create_datachannel)
+{
+    /* Force state to CONNECTED and create a DC */
+    nanortc_t rtc;
+    nanortc_config_t cfg = e2e_default_config();
+    ASSERT_OK(nanortc_init(&rtc, &cfg));
+
+    /* Fake connected state for unit testing */
+    rtc.state = NANORTC_STATE_CONNECTED;
+    rtc.dtls.is_server = 0; /* client → even stream IDs */
+
+    nanortc_datachannel_config_t dc_cfg;
+    memset(&dc_cfg, 0, sizeof(dc_cfg));
+    dc_cfg.label = "my-channel";
+    dc_cfg.ordered = true;
+
+    uint16_t stream_id = 0xFFFF;
+    ASSERT_OK(nanortc_create_datachannel(&rtc, &dc_cfg, &stream_id));
+    ASSERT_EQ(stream_id, 0); /* first even stream ID */
+
+    /* Verify channel exists in DC state */
+    ASSERT_EQ(rtc.datachannel.channel_count, 1);
+
+    nanortc_destroy(&rtc);
+}
+
+TEST(test_e2e_close_datachannel)
+{
+    /* Create then close a DC, verify CLOSE event is emitted */
+    nanortc_t rtc;
+    nanortc_config_t cfg = e2e_default_config();
+    ASSERT_OK(nanortc_init(&rtc, &cfg));
+
+    rtc.state = NANORTC_STATE_CONNECTED;
+    rtc.dtls.is_server = 0;
+
+    nanortc_datachannel_config_t dc_cfg;
+    memset(&dc_cfg, 0, sizeof(dc_cfg));
+    dc_cfg.label = "closable";
+    dc_cfg.ordered = true;
+
+    uint16_t stream_id = 0;
+    ASSERT_OK(nanortc_create_datachannel(&rtc, &dc_cfg, &stream_id));
+
+    /* Drain any outputs from create */
+    nanortc_output_t tmp;
+    while (nanortc_poll_output(&rtc, &tmp) == NANORTC_OK) {
+    }
+
+    /* Close the datachannel */
+    ASSERT_OK(nanortc_close_datachannel(&rtc, stream_id));
+
+    /* Should emit DATACHANNEL_CLOSE event */
+    nanortc_output_t evt;
+    ASSERT_OK(nanortc_poll_output(&rtc, &evt));
+    ASSERT_EQ(evt.type, NANORTC_OUTPUT_EVENT);
+    ASSERT_EQ(evt.event.type, NANORTC_EVENT_DATACHANNEL_CLOSE);
+    ASSERT_EQ(evt.event.stream_id, stream_id);
+
+    nanortc_destroy(&rtc);
+}
+
+TEST(test_e2e_close_datachannel_invalid)
+{
+    /* Closing a nonexistent stream_id should return ERR_INVALID_PARAM */
+    nanortc_t rtc;
+    nanortc_config_t cfg = e2e_default_config();
+    ASSERT_OK(nanortc_init(&rtc, &cfg));
+
+    rtc.state = NANORTC_STATE_CONNECTED;
+    ASSERT_EQ(nanortc_close_datachannel(&rtc, 9999), NANORTC_ERR_INVALID_PARAM);
+
+    nanortc_destroy(&rtc);
+}
+
+TEST(test_e2e_get_datachannel_label)
+{
+    /* Create a DC and verify label retrieval */
+    nanortc_t rtc;
+    nanortc_config_t cfg = e2e_default_config();
+    ASSERT_OK(nanortc_init(&rtc, &cfg));
+
+    rtc.state = NANORTC_STATE_CONNECTED;
+    rtc.dtls.is_server = 0;
+
+    nanortc_datachannel_config_t dc_cfg;
+    memset(&dc_cfg, 0, sizeof(dc_cfg));
+    dc_cfg.label = "my-label";
+    dc_cfg.ordered = true;
+
+    uint16_t stream_id = 0;
+    ASSERT_OK(nanortc_create_datachannel(&rtc, &dc_cfg, &stream_id));
+
+    const char *label = NULL;
+    ASSERT_OK(nanortc_get_datachannel_label(&rtc, stream_id, &label));
+    ASSERT_TRUE(label != NULL);
+    ASSERT_TRUE(str_contains(label, "my-label"));
+
+    /* Invalid stream_id */
+    ASSERT_EQ(nanortc_get_datachannel_label(&rtc, 9999, &label), NANORTC_ERR_INVALID_PARAM);
+
+    nanortc_destroy(&rtc);
+}
+#endif /* NANORTC_FEATURE_DATACHANNEL */
+
+TEST(test_e2e_graceful_close)
+{
+    /* nanortc_close() on a DTLS_CONNECTED instance emits DISCONNECTED */
+    nanortc_t rtc;
+    nanortc_config_t cfg = e2e_default_config();
+    ASSERT_OK(nanortc_init(&rtc, &cfg));
+
+    /* Fake connected-enough state */
+    rtc.state = NANORTC_STATE_DTLS_CONNECTED;
+
+    ASSERT_OK(nanortc_close(&rtc));
+    ASSERT_EQ(nanortc_get_state(&rtc), NANORTC_STATE_CLOSED);
+
+    /* Should emit DISCONNECTED event */
+    nanortc_output_t evt;
+    int found_disconnect = 0;
+    while (nanortc_poll_output(&rtc, &evt) == NANORTC_OK) {
+        if (evt.type == NANORTC_OUTPUT_EVENT && evt.event.type == NANORTC_EVENT_DISCONNECTED) {
+            found_disconnect = 1;
+        }
+    }
+    ASSERT_TRUE(found_disconnect);
+
+    nanortc_destroy(&rtc);
+}
+
+TEST(test_e2e_close_wrong_state)
+{
+    /* nanortc_close() on NEW state should return ERR_STATE */
+    nanortc_t rtc;
+    nanortc_config_t cfg = e2e_default_config();
+    ASSERT_OK(nanortc_init(&rtc, &cfg));
+
+    ASSERT_EQ(nanortc_close(&rtc), NANORTC_ERR_STATE);
+
+    nanortc_destroy(&rtc);
+}
+
+TEST(test_e2e_ice_multi_candidate)
+{
+    /* Add multiple remote candidates and verify round-robin in ICE checks */
+    nanortc_t rtc;
+    nanortc_config_t cfg = e2e_default_config();
+    cfg.role = NANORTC_ROLE_CONTROLLING;
+    ASSERT_OK(nanortc_init(&rtc, &cfg));
+
+    /* Set up ICE credentials */
+    memcpy(rtc.ice.local_ufrag, "TEST1234", 9);
+    rtc.ice.local_ufrag_len = 8;
+    memcpy(rtc.ice.local_pwd, "password-for-testing12", 23);
+    rtc.ice.local_pwd_len = 22;
+    memcpy(rtc.ice.remote_ufrag, "REMO1234", 9);
+    rtc.ice.remote_ufrag_len = 8;
+    memcpy(rtc.ice.remote_pwd, "remote-password-abcdef", 23);
+    rtc.ice.remote_pwd_len = 22;
+    rtc.ice.tie_breaker = 0xAABBCCDDEEFF0011ull;
+
+    /* Add 3 remote candidates */
+    ASSERT_OK(nanortc_add_remote_candidate(&rtc, "10.0.0.1 5001"));
+    ASSERT_OK(nanortc_add_remote_candidate(&rtc, "10.0.0.2 5002"));
+    ASSERT_OK(nanortc_add_remote_candidate(&rtc, "10.0.0.3 5003"));
+    ASSERT_EQ(rtc.ice.remote_candidate_count, 3);
+
+    /* First timeout: should send check to candidate 0 */
+    uint32_t now_ms = 100;
+    ASSERT_OK(nanortc_handle_timeout(&rtc, now_ms));
+
+    nanortc_output_t out;
+    ASSERT_OK(nanortc_poll_output(&rtc, &out));
+    ASSERT_EQ(out.type, NANORTC_OUTPUT_TRANSMIT);
+    ASSERT_EQ(out.transmit.dest.port, 5001);
+    ASSERT_EQ(out.transmit.dest.addr[3], 1);
+
+    /* Drain remaining outputs (ICE_STATE_CHANGE + TIMEOUT) */
+    while (nanortc_poll_output(&rtc, &out) == NANORTC_OK) {
+    }
+
+    /* Second timeout: should advance to candidate 1 */
+    now_ms += rtc.ice.check_interval_ms + 1;
+    ASSERT_OK(nanortc_handle_timeout(&rtc, now_ms));
+
+    ASSERT_OK(nanortc_poll_output(&rtc, &out));
+    ASSERT_EQ(out.type, NANORTC_OUTPUT_TRANSMIT);
+    ASSERT_EQ(out.transmit.dest.port, 5002);
+    ASSERT_EQ(out.transmit.dest.addr[3], 2);
+
+    nanortc_destroy(&rtc);
+}
+
+TEST(test_e2e_accept_answer_state_guard)
+{
+    /* accept_answer should fail if not in NEW state (e.g., after accept_offer) */
+    nanortc_t rtc;
+    nanortc_config_t cfg = e2e_default_config();
+    ASSERT_OK(nanortc_init(&rtc, &cfg));
+
+    /* Simulate non-NEW state */
+    rtc.state = NANORTC_STATE_ICE_CHECKING;
+    ASSERT_EQ(nanortc_accept_answer(&rtc, "v=0\r\n"), NANORTC_ERR_STATE);
+
+    nanortc_destroy(&rtc);
+}
+
 /* ---- Runner ---- */
 
 TEST_MAIN_BEGIN("nanortc E2E tests")
@@ -482,4 +849,18 @@ RUN(test_e2e_multiple_instances);
 RUN(test_e2e_demux_byte_ranges);
 RUN(test_e2e_ice_loopback);
 RUN(test_e2e_ice_dtls_loopback);
+RUN(test_e2e_create_offer_content);
+RUN(test_e2e_offer_answer_roundtrip);
+RUN(test_e2e_get_state_transitions);
+#if NANORTC_FEATURE_DATACHANNEL
+RUN(test_e2e_create_datachannel_wrong_state);
+RUN(test_e2e_create_datachannel);
+RUN(test_e2e_close_datachannel);
+RUN(test_e2e_close_datachannel_invalid);
+RUN(test_e2e_get_datachannel_label);
+#endif
+RUN(test_e2e_graceful_close);
+RUN(test_e2e_close_wrong_state);
+RUN(test_e2e_ice_multi_candidate);
+RUN(test_e2e_accept_answer_state_guard);
 TEST_MAIN_END

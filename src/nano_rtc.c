@@ -19,6 +19,9 @@
 
 #include <string.h>
 
+/* Shared hex alphabet for ICE credential generation */
+static const char hex_chars[] = "0123456789abcdef";
+
 /* Enqueue an output. Returns NANORTC_OK or NANORTC_ERR_BUFFER_TOO_SMALL. */
 static inline int rtc_enqueue_output(nanortc_t *rtc, const nanortc_output_t *out)
 {
@@ -29,6 +32,130 @@ static inline int rtc_enqueue_output(nanortc_t *rtc, const nanortc_output_t *out
     rtc->out_queue[rtc->out_tail & (NANORTC_OUT_QUEUE_SIZE - 1)] = *out;
     rtc->out_tail++;
     return NANORTC_OK;
+}
+
+/* ----------------------------------------------------------------
+ * Static helpers — deduplicated from accept_offer/create_offer/accept_answer
+ * ---------------------------------------------------------------- */
+
+/* A1: Generate random ICE ufrag+pwd into SDP and ICE state */
+static int rtc_generate_ice_credentials(nanortc_t *rtc)
+{
+    if (!rtc->config.crypto) {
+        return NANORTC_OK;
+    }
+
+    /* Generate ufrag as hex (NANORTC_ICE_UFRAG_LEN/2 random bytes) */
+    uint8_t rnd[NANORTC_ICE_UFRAG_LEN / 2];
+    rtc->config.crypto->random_bytes(rnd, sizeof(rnd));
+    for (int i = 0; i < (int)sizeof(rnd); i++) {
+        rtc->sdp.local_ufrag[i * 2] = hex_chars[(rnd[i] >> 4) & 0xF];
+        rtc->sdp.local_ufrag[i * 2 + 1] = hex_chars[rnd[i] & 0xF];
+    }
+    rtc->sdp.local_ufrag[NANORTC_ICE_UFRAG_LEN] = '\0';
+
+    /* Generate pwd as hex (NANORTC_ICE_PWD_LEN/2 random bytes) */
+    uint8_t rnd2[NANORTC_ICE_PWD_LEN / 2];
+    rtc->config.crypto->random_bytes(rnd2, sizeof(rnd2));
+    for (int i = 0; i < (int)sizeof(rnd2); i++) {
+        rtc->sdp.local_pwd[i * 2] = hex_chars[(rnd2[i] >> 4) & 0xF];
+        rtc->sdp.local_pwd[i * 2 + 1] = hex_chars[rnd2[i] & 0xF];
+    }
+    rtc->sdp.local_pwd[NANORTC_ICE_PWD_LEN] = '\0';
+
+    /* Copy to ICE state */
+    memcpy(rtc->ice.local_ufrag, rtc->sdp.local_ufrag, sizeof(rtc->ice.local_ufrag));
+    memcpy(rtc->ice.local_pwd, rtc->sdp.local_pwd, sizeof(rtc->ice.local_pwd));
+    rtc->ice.local_ufrag_len = NANORTC_ICE_UFRAG_LEN;
+    rtc->ice.local_pwd_len = NANORTC_ICE_PWD_LEN;
+
+    return NANORTC_OK;
+}
+
+/* A5: Apply remote ICE/SCTP credentials from parsed SDP to subsystem state */
+static void rtc_apply_remote_sdp(nanortc_t *rtc)
+{
+    /* Copy remote ICE credentials to ICE state */
+    memcpy(rtc->ice.remote_ufrag, rtc->sdp.remote_ufrag, sizeof(rtc->ice.remote_ufrag));
+    memcpy(rtc->ice.remote_pwd, rtc->sdp.remote_pwd, sizeof(rtc->ice.remote_pwd));
+    rtc->ice.remote_ufrag_len =
+        nanortc_strnlen(rtc->sdp.remote_ufrag, sizeof(rtc->sdp.remote_ufrag));
+    rtc->ice.remote_pwd_len = nanortc_strnlen(rtc->sdp.remote_pwd, sizeof(rtc->sdp.remote_pwd));
+
+#if NANORTC_FEATURE_DATACHANNEL
+    /* Set SCTP remote port from SDP */
+    if (rtc->sdp.remote_sctp_port > 0) {
+        rtc->sctp.remote_port = rtc->sdp.remote_sctp_port;
+    }
+    /* Set crypto provider on SCTP for cookie generation */
+    rtc->sctp.crypto = rtc->config.crypto;
+#endif
+}
+
+/* A2: Auto-add ICE candidates embedded in SDP (RFC 8839) */
+static void rtc_add_sdp_candidates(nanortc_t *rtc)
+{
+    for (uint8_t i = 0; i < rtc->sdp.candidate_count; i++) {
+        const nano_sdp_candidate_t *c = &rtc->sdp.remote_candidates[i];
+        char cand_str[NANORTC_IPV6_STR_SIZE + 16];
+        size_t addr_len = 0;
+        while (c->addr[addr_len] && addr_len < NANORTC_IPV6_STR_SIZE)
+            addr_len++;
+        /* Format: "<addr> <port>" (simple format) */
+        if (addr_len + 8 < sizeof(cand_str)) {
+            memcpy(cand_str, c->addr, addr_len);
+            cand_str[addr_len] = ' ';
+            /* Convert port to decimal string manually */
+            size_t pos = addr_len + 1;
+            char tmp[8];
+            int ti = 0;
+            uint16_t v = c->port;
+            if (v == 0) {
+                tmp[ti++] = '0';
+            } else {
+                char rev[8];
+                int ri = 0;
+                while (v > 0) {
+                    rev[ri++] = '0' + (v % 10);
+                    v /= 10;
+                }
+                while (ri > 0)
+                    tmp[ti++] = rev[--ri];
+            }
+            memcpy(cand_str + pos, tmp, (size_t)ti);
+            cand_str[pos + (size_t)ti] = '\0';
+            nanortc_add_remote_candidate(rtc, cand_str);
+        }
+    }
+}
+
+/* A3: Drain DTLS output into the transmit queue */
+static void rtc_drain_dtls_output(nanortc_t *rtc, const nanortc_addr_t *dest)
+{
+    size_t dout_len = 0;
+    while (dtls_poll_output(&rtc->dtls, rtc->dtls_scratch, sizeof(rtc->dtls_scratch), &dout_len) ==
+               NANORTC_OK &&
+           dout_len > 0) {
+        nanortc_output_t tout;
+        memset(&tout, 0, sizeof(tout));
+        tout.type = NANORTC_OUTPUT_TRANSMIT;
+        tout.transmit.data = rtc->dtls_scratch;
+        tout.transmit.len = dout_len;
+        tout.transmit.dest = *dest;
+        rtc_enqueue_output(rtc, &tout);
+        dout_len = 0;
+    }
+}
+
+/* A4: Emit an event with optional stream_id */
+static int rtc_emit_event(nanortc_t *rtc, nanortc_event_type_t type, uint16_t stream_id)
+{
+    nanortc_output_t evt;
+    memset(&evt, 0, sizeof(evt));
+    evt.type = NANORTC_OUTPUT_EVENT;
+    evt.event.type = type;
+    evt.event.stream_id = stream_id;
+    return rtc_enqueue_output(rtc, &evt);
 }
 
 int nanortc_init(nanortc_t *rtc, const nanortc_config_t *cfg)
@@ -119,49 +246,8 @@ int nanortc_accept_offer(nanortc_t *rtc, const char *offer, char *answer_buf, si
         return rc;
     }
 
-    /* Copy remote ICE credentials to ICE state */
-    memcpy(rtc->ice.remote_ufrag, rtc->sdp.remote_ufrag, sizeof(rtc->ice.remote_ufrag));
-    memcpy(rtc->ice.remote_pwd, rtc->sdp.remote_pwd, sizeof(rtc->ice.remote_pwd));
-    rtc->ice.remote_ufrag_len = strlen(rtc->sdp.remote_ufrag); /* NANORTC_SAFE: API boundary */
-    rtc->ice.remote_pwd_len = strlen(rtc->sdp.remote_pwd);     /* NANORTC_SAFE: API boundary */
-
-#if NANORTC_FEATURE_DATACHANNEL
-    /* Set SCTP remote port from SDP */
-    if (rtc->sdp.remote_sctp_port > 0) {
-        rtc->sctp.remote_port = rtc->sdp.remote_sctp_port;
-    }
-
-    /* Set crypto provider on SCTP for cookie generation */
-    rtc->sctp.crypto = rtc->config.crypto;
-#endif
-
-    /* Generate local ICE credentials via crypto random */
-    if (rtc->config.crypto) {
-        /* Generate ufrag as hex (NANORTC_ICE_UFRAG_LEN/2 random bytes) */
-        uint8_t rnd[NANORTC_ICE_UFRAG_LEN / 2];
-        rtc->config.crypto->random_bytes(rnd, sizeof(rnd));
-        static const char hex[] = "0123456789abcdef";
-        for (int i = 0; i < (int)sizeof(rnd); i++) {
-            rtc->sdp.local_ufrag[i * 2] = hex[(rnd[i] >> 4) & 0xF];
-            rtc->sdp.local_ufrag[i * 2 + 1] = hex[rnd[i] & 0xF];
-        }
-        rtc->sdp.local_ufrag[NANORTC_ICE_UFRAG_LEN] = '\0';
-
-        /* Generate pwd as hex (NANORTC_ICE_PWD_LEN/2 random bytes) */
-        uint8_t rnd2[NANORTC_ICE_PWD_LEN / 2];
-        rtc->config.crypto->random_bytes(rnd2, sizeof(rnd2));
-        for (int i = 0; i < (int)sizeof(rnd2); i++) {
-            rtc->sdp.local_pwd[i * 2] = hex[(rnd2[i] >> 4) & 0xF];
-            rtc->sdp.local_pwd[i * 2 + 1] = hex[rnd2[i] & 0xF];
-        }
-        rtc->sdp.local_pwd[NANORTC_ICE_PWD_LEN] = '\0';
-
-        /* Copy to ICE state */
-        memcpy(rtc->ice.local_ufrag, rtc->sdp.local_ufrag, sizeof(rtc->ice.local_ufrag));
-        memcpy(rtc->ice.local_pwd, rtc->sdp.local_pwd, sizeof(rtc->ice.local_pwd));
-        rtc->ice.local_ufrag_len = NANORTC_ICE_UFRAG_LEN;
-        rtc->ice.local_pwd_len = NANORTC_ICE_PWD_LEN;
-    }
+    rtc_apply_remote_sdp(rtc);
+    rtc_generate_ice_credentials(rtc);
 
     /* Determine DTLS role from remote setup (RFC 8842 §5.2) */
     if (rtc->sdp.remote_setup == NANORTC_SDP_SETUP_ACTIVE) {
@@ -194,40 +280,7 @@ int nanortc_accept_offer(nanortc_t *rtc, const char *offer, char *answer_buf, si
         *out_len = answer_len;
     }
 
-    /* Auto-add ICE candidates embedded in SDP (RFC 8839) */
-    for (uint8_t i = 0; i < rtc->sdp.candidate_count; i++) {
-        const nano_sdp_candidate_t *c = &rtc->sdp.remote_candidates[i];
-        /* Build candidate string for nanortc_add_remote_candidate */
-        char cand_str[NANORTC_IPV6_STR_SIZE + 16];
-        size_t addr_len = 0;
-        while (c->addr[addr_len] && addr_len < NANORTC_IPV6_STR_SIZE)
-            addr_len++;
-        /* Format: "<addr> <port>" (simple format) */
-        if (addr_len + 8 < sizeof(cand_str)) {
-            memcpy(cand_str, c->addr, addr_len);
-            cand_str[addr_len] = ' ';
-            /* Convert port to string */
-            size_t pos = addr_len + 1;
-            char tmp[8];
-            int ti = 0;
-            uint16_t v = c->port;
-            if (v == 0) {
-                tmp[ti++] = '0';
-            } else {
-                char rev[8];
-                int ri = 0;
-                while (v > 0) {
-                    rev[ri++] = '0' + (v % 10);
-                    v /= 10;
-                }
-                while (ri > 0)
-                    tmp[ti++] = rev[--ri];
-            }
-            memcpy(cand_str + pos, tmp, (size_t)ti);
-            cand_str[pos + (size_t)ti] = '\0';
-            nanortc_add_remote_candidate(rtc, cand_str);
-        }
-    }
+    rtc_add_sdp_candidates(rtc);
 
     NANORTC_LOGI("RTC", "offer accepted, answer generated");
     return NANORTC_OK;
@@ -235,18 +288,86 @@ int nanortc_accept_offer(nanortc_t *rtc, const char *offer, char *answer_buf, si
 
 int nanortc_create_offer(nanortc_t *rtc, char *offer_buf, size_t offer_buf_len, size_t *out_len)
 {
-    (void)rtc;
-    (void)offer_buf;
-    (void)offer_buf_len;
-    (void)out_len;
-    return NANORTC_ERR_NOT_IMPLEMENTED;
+    if (!rtc || !offer_buf) {
+        return NANORTC_ERR_INVALID_PARAM;
+    }
+    if (rtc->state != NANORTC_STATE_NEW) {
+        return NANORTC_ERR_STATE;
+    }
+
+    rtc_generate_ice_credentials(rtc);
+
+    /* Offerer is DTLS active, setup=actpass in SDP (RFC 8842) */
+    rtc->sdp.local_setup = NANORTC_SDP_SETUP_ACTPASS;
+
+    /* Early DTLS init for fingerprint */
+    if (rtc->config.crypto && !rtc->dtls.crypto_ctx) {
+        /* Offerer default is active (client), but actpass in SDP */
+        int drc = dtls_init(&rtc->dtls, rtc->config.crypto, 0);
+        if (drc != NANORTC_OK) {
+            return drc;
+        }
+        rtc_cache_fingerprint(rtc);
+    }
+
+    /* Generate offer SDP (reuse answer generator — offer format is the same for WebRTC) */
+    size_t offer_len = 0;
+    int rc = sdp_generate_answer(&rtc->sdp, offer_buf, offer_buf_len, &offer_len);
+    if (rc != NANORTC_OK) {
+        return rc;
+    }
+
+    if (out_len) {
+        *out_len = offer_len;
+    }
+
+    NANORTC_LOGI("RTC", "offer created");
+    return NANORTC_OK;
 }
 
 int nanortc_accept_answer(nanortc_t *rtc, const char *answer)
 {
-    (void)rtc;
-    (void)answer;
-    return NANORTC_ERR_NOT_IMPLEMENTED;
+    if (!rtc || !answer) {
+        return NANORTC_ERR_INVALID_PARAM;
+    }
+
+    /* B1: State guard — must have called create_offer first */
+    if (rtc->state != NANORTC_STATE_NEW) {
+        return NANORTC_ERR_STATE;
+    }
+
+    size_t answer_len = strlen(answer); /* NANORTC_SAFE: API boundary */
+
+    /* Parse remote SDP answer */
+    int rc = sdp_parse(&rtc->sdp, answer, answer_len);
+    if (rc != NANORTC_OK) {
+        return rc;
+    }
+
+    rtc_apply_remote_sdp(rtc);
+
+    /* Determine DTLS role from answer's setup attribute.
+     * Offerer sent actpass; answerer picks active or passive. */
+    if (rtc->sdp.remote_setup == NANORTC_SDP_SETUP_PASSIVE) {
+        rtc->sdp.local_setup = NANORTC_SDP_SETUP_ACTIVE;
+    } else if (rtc->sdp.remote_setup == NANORTC_SDP_SETUP_ACTIVE) {
+        rtc->sdp.local_setup = NANORTC_SDP_SETUP_PASSIVE;
+    } else {
+        /* B2: Answerer returned actpass — invalid per RFC 8842 §5.2.
+         * Both sides would become server. Log warning and default to active. */
+        NANORTC_LOGW("RTC", "remote answer has setup:actpass, forcing local active");
+        rtc->sdp.local_setup = NANORTC_SDP_SETUP_ACTIVE;
+    }
+
+    /* Update DTLS role if context already exists */
+    if (rtc->dtls.crypto_ctx) {
+        rtc->dtls.is_server = (rtc->sdp.local_setup == NANORTC_SDP_SETUP_PASSIVE);
+    }
+
+    rtc_add_sdp_candidates(rtc);
+
+    NANORTC_LOGI("RTC", "answer accepted");
+    return NANORTC_OK;
 }
 
 int nanortc_add_local_candidate(nanortc_t *rtc, const char *ip, uint16_t port)
@@ -369,11 +490,17 @@ int nanortc_add_remote_candidate(nanortc_t *rtc, const char *candidate_str)
         return NANORTC_ERR_PARSE;
     }
 
-    /* Store in ICE state */
-    rtc->ice.remote_family = 4;
-    memset(rtc->ice.remote_addr, 0, NANORTC_ADDR_SIZE);
-    memcpy(rtc->ice.remote_addr, ip, 4);
-    rtc->ice.remote_port = port;
+    /* Store in ICE remote candidates array */
+    if (rtc->ice.remote_candidate_count >= NANORTC_MAX_ICE_CANDIDATES) {
+        NANORTC_LOGW("RTC", "remote candidate table full");
+        return NANORTC_ERR_BUFFER_TOO_SMALL;
+    }
+    uint8_t idx = rtc->ice.remote_candidate_count;
+    rtc->ice.remote_candidates[idx].family = 4;
+    memset(rtc->ice.remote_candidates[idx].addr, 0, NANORTC_ADDR_SIZE);
+    memcpy(rtc->ice.remote_candidates[idx].addr, ip, 4);
+    rtc->ice.remote_candidates[idx].port = port;
+    rtc->ice.remote_candidate_count++;
 
     NANORTC_LOGI("RTC", "remote candidate added");
     return NANORTC_OK;
@@ -410,18 +537,7 @@ static int rtc_begin_dtls_handshake(nanortc_t *rtc, const nanortc_addr_t *src)
         int rc = dtls_start(&rtc->dtls);
         if (rc != NANORTC_OK)
             return rc;
-        size_t dout_len = 0;
-        if (dtls_poll_output(&rtc->dtls, rtc->dtls_scratch, sizeof(rtc->dtls_scratch), &dout_len) ==
-                NANORTC_OK &&
-            dout_len > 0) {
-            nanortc_output_t tout;
-            memset(&tout, 0, sizeof(tout));
-            tout.type = NANORTC_OUTPUT_TRANSMIT;
-            tout.transmit.data = rtc->dtls_scratch;
-            tout.transmit.len = dout_len;
-            tout.transmit.dest = *src;
-            rtc_enqueue_output(rtc, &tout);
-        }
+        rtc_drain_dtls_output(rtc, src);
     }
     return NANORTC_OK;
 }
@@ -495,12 +611,10 @@ int nanortc_handle_receive(nanortc_t *rtc, uint32_t now_ms, const uint8_t *data,
         if (rtc->ice.state == NANORTC_ICE_STATE_CONNECTED &&
             rtc->state < NANORTC_STATE_ICE_CONNECTED) {
             rtc->state = NANORTC_STATE_ICE_CONNECTED;
-
-            nanortc_output_t evt;
-            memset(&evt, 0, sizeof(evt));
-            evt.type = NANORTC_OUTPUT_EVENT;
-            evt.event.type = NANORTC_EVENT_ICE_CONNECTED;
-            rtc_enqueue_output(rtc, &evt);
+            rtc_emit_event(rtc, NANORTC_EVENT_ICE_CONNECTED, 0);
+            /* B3: Also emit generic ICE_STATE_CHANGE */
+            rtc_emit_event(rtc, NANORTC_EVENT_ICE_STATE_CHANGE,
+                           (uint16_t)NANORTC_ICE_STATE_CONNECTED);
 
             int drc = rtc_begin_dtls_handshake(rtc, src);
             if (drc != NANORTC_OK) {
@@ -522,31 +636,14 @@ int nanortc_handle_receive(nanortc_t *rtc, uint32_t now_ms, const uint8_t *data,
         }
 
         /* Drain DTLS output into transmit queue */
-        size_t dout_len = 0;
-        while (dtls_poll_output(&rtc->dtls, rtc->dtls_scratch, sizeof(rtc->dtls_scratch),
-                                &dout_len) == NANORTC_OK &&
-               dout_len > 0) {
-            nanortc_output_t tout;
-            memset(&tout, 0, sizeof(tout));
-            tout.type = NANORTC_OUTPUT_TRANSMIT;
-            tout.transmit.data = rtc->dtls_scratch;
-            tout.transmit.len = dout_len;
-            tout.transmit.dest = *src;
-            rtc_enqueue_output(rtc, &tout);
-            dout_len = 0;
-        }
+        rtc_drain_dtls_output(rtc, src);
 
         /* Check for DTLS state transition → emit event */
         if (rtc->dtls.state == NANORTC_DTLS_STATE_ESTABLISHED &&
             rtc->state < NANORTC_STATE_DTLS_CONNECTED) {
             rtc->state = NANORTC_STATE_DTLS_CONNECTED;
             rtc->remote_addr = *src; /* save for timeout-driven output */
-
-            nanortc_output_t devt;
-            memset(&devt, 0, sizeof(devt));
-            devt.type = NANORTC_OUTPUT_EVENT;
-            devt.event.type = NANORTC_EVENT_DTLS_CONNECTED;
-            rtc_enqueue_output(rtc, &devt);
+            rtc_emit_event(rtc, NANORTC_EVENT_DTLS_CONNECTED, 0);
 
             rtc_cache_fingerprint(rtc);
 
@@ -579,13 +676,7 @@ int nanortc_handle_receive(nanortc_t *rtc, uint32_t now_ms, const uint8_t *data,
                 if (rtc->sctp.state == NANORTC_SCTP_STATE_ESTABLISHED &&
                     rtc->state < NANORTC_STATE_CONNECTED) {
                     rtc->state = NANORTC_STATE_CONNECTED;
-
-                    nanortc_output_t sevt;
-                    memset(&sevt, 0, sizeof(sevt));
-                    sevt.type = NANORTC_OUTPUT_EVENT;
-                    sevt.event.type = NANORTC_EVENT_SCTP_CONNECTED;
-                    rtc_enqueue_output(rtc, &sevt);
-
+                    rtc_emit_event(rtc, NANORTC_EVENT_SCTP_CONNECTED, 0);
                     NANORTC_LOGI("RTC", "SCTP established");
                 }
 
@@ -597,33 +688,37 @@ int nanortc_handle_receive(nanortc_t *rtc, uint32_t now_ms, const uint8_t *data,
                     rtc->sctp.has_delivered = false;
 
                     /* Emit DC events for data messages */
+                    nanortc_event_type_t etype;
                     if (rtc->sctp.delivered_ppid == DCEP_PPID_STRING ||
                         rtc->sctp.delivered_ppid == DCEP_PPID_STRING_EMPTY) {
-                        nanortc_output_t devt2;
-                        memset(&devt2, 0, sizeof(devt2));
-                        devt2.type = NANORTC_OUTPUT_EVENT;
-                        devt2.event.type = NANORTC_EVENT_DATACHANNEL_STRING;
-                        devt2.event.stream_id = rtc->sctp.delivered_stream;
-                        devt2.event.data = rtc->sctp.delivered_data;
-                        devt2.event.len = rtc->sctp.delivered_len;
-                        rtc_enqueue_output(rtc, &devt2);
+                        etype = NANORTC_EVENT_DATACHANNEL_STRING;
                     } else if (rtc->sctp.delivered_ppid == DCEP_PPID_BINARY ||
                                rtc->sctp.delivered_ppid == DCEP_PPID_BINARY_EMPTY) {
+                        etype = NANORTC_EVENT_DATACHANNEL_DATA;
+                    } else if (rtc->sctp.delivered_ppid == DCEP_PPID_CONTROL) {
+                        etype = NANORTC_EVENT_DATACHANNEL_OPEN;
+                    } else {
+                        etype = NANORTC_EVENT_DATACHANNEL_DATA; /* fallback */
+                    }
+
+                    {
                         nanortc_output_t devt2;
                         memset(&devt2, 0, sizeof(devt2));
                         devt2.type = NANORTC_OUTPUT_EVENT;
-                        devt2.event.type = NANORTC_EVENT_DATACHANNEL_DATA;
+                        devt2.event.type = etype;
                         devt2.event.stream_id = rtc->sctp.delivered_stream;
                         devt2.event.data = rtc->sctp.delivered_data;
                         devt2.event.len = rtc->sctp.delivered_len;
-                        rtc_enqueue_output(rtc, &devt2);
-                    } else if (rtc->sctp.delivered_ppid == DCEP_PPID_CONTROL) {
-                        /* DC OPEN triggers channel event */
-                        nanortc_output_t devt2;
-                        memset(&devt2, 0, sizeof(devt2));
-                        devt2.type = NANORTC_OUTPUT_EVENT;
-                        devt2.event.type = NANORTC_EVENT_DATACHANNEL_OPEN;
-                        devt2.event.stream_id = rtc->sctp.delivered_stream;
+                        /* Attach label for OPEN events */
+                        if (etype == NANORTC_EVENT_DATACHANNEL_OPEN) {
+                            for (uint8_t ci = 0; ci < rtc->datachannel.channel_count; ci++) {
+                                if (rtc->datachannel.channels[ci].stream_id ==
+                                    rtc->sctp.delivered_stream) {
+                                    devt2.event.label = rtc->datachannel.channels[ci].label;
+                                    break;
+                                }
+                            }
+                        }
                         rtc_enqueue_output(rtc, &devt2);
                     }
                 }
@@ -673,6 +768,8 @@ int nanortc_handle_timeout(nanortc_t *rtc, uint32_t now_ms)
     /* ICE: generate connectivity checks (controlling role) */
     if (rtc->ice.is_controlling && rtc->ice.state != NANORTC_ICE_STATE_CONNECTED &&
         rtc->ice.state != NANORTC_ICE_STATE_FAILED) {
+        nano_ice_state_t prev_ice = rtc->ice.state;
+        uint8_t ci_before = rtc->ice.current_candidate;
         size_t out_len = 0;
         int rc = ice_generate_check(&rtc->ice, now_ms, rtc->config.crypto, rtc->stun_buf,
                                     sizeof(rtc->stun_buf), &out_len);
@@ -680,17 +777,24 @@ int nanortc_handle_timeout(nanortc_t *rtc, uint32_t now_ms)
             return rc;
         }
 
-        if (out_len > 0) {
+        if (out_len > 0 && ci_before < rtc->ice.remote_candidate_count) {
+            uint8_t ci = ci_before;
             nanortc_output_t out;
             memset(&out, 0, sizeof(out));
             out.type = NANORTC_OUTPUT_TRANSMIT;
             out.transmit.data = rtc->stun_buf;
             out.transmit.len = out_len;
-            /* Destination: remote candidate address */
-            out.transmit.dest.family = rtc->ice.remote_family;
-            memcpy(out.transmit.dest.addr, rtc->ice.remote_addr, NANORTC_ADDR_SIZE);
-            out.transmit.dest.port = rtc->ice.remote_port;
+            /* Destination: current remote candidate */
+            out.transmit.dest.family = rtc->ice.remote_candidates[ci].family;
+            memcpy(out.transmit.dest.addr, rtc->ice.remote_candidates[ci].addr, NANORTC_ADDR_SIZE);
+            out.transmit.dest.port = rtc->ice.remote_candidates[ci].port;
             rtc_enqueue_output(rtc, &out);
+        }
+
+        /* B3: Emit ICE_STATE_CHANGE on transition to CHECKING */
+        if (rtc->ice.state != prev_ice && rtc->ice.state == NANORTC_ICE_STATE_CHECKING) {
+            rtc_emit_event(rtc, NANORTC_EVENT_ICE_STATE_CHANGE,
+                           (uint16_t)NANORTC_ICE_STATE_CHECKING);
         }
 
         /* Schedule next timeout */
@@ -704,6 +808,7 @@ int nanortc_handle_timeout(nanortc_t *rtc, uint32_t now_ms)
 
         /* Propagate ICE failure */
         if (rtc->ice.state == NANORTC_ICE_STATE_FAILED) {
+            rtc_emit_event(rtc, NANORTC_EVENT_ICE_STATE_CHANGE, (uint16_t)NANORTC_ICE_STATE_FAILED);
             rtc->state = NANORTC_STATE_CLOSED;
         }
     }
@@ -726,6 +831,82 @@ int nanortc_handle_timeout(nanortc_t *rtc, uint32_t now_ms)
  * ---------------------------------------------------------------- */
 
 #if NANORTC_FEATURE_DATACHANNEL
+
+/* Allocate the next even (local-initiated) stream ID.
+ * RFC 8832 §6.4: DTLS client uses even stream IDs (0, 2, 4, ...),
+ * DTLS server uses odd (1, 3, 5, ...). */
+static uint16_t rtc_alloc_stream_id(nanortc_t *rtc)
+{
+    uint16_t base = rtc->dtls.is_server ? 1 : 0;
+    uint16_t max_id = base;
+    for (uint8_t i = 0; i < rtc->datachannel.channel_count; i++) {
+        uint16_t sid = rtc->datachannel.channels[i].stream_id;
+        if ((sid % 2) == (base % 2) && sid >= max_id) {
+            max_id = sid + 2;
+        }
+    }
+    return max_id;
+}
+
+int nanortc_create_datachannel(nanortc_t *rtc, const nanortc_datachannel_config_t *cfg,
+                               uint16_t *stream_id)
+{
+    if (!rtc || !cfg || !cfg->label || !stream_id) {
+        return NANORTC_ERR_INVALID_PARAM;
+    }
+    if (rtc->state != NANORTC_STATE_CONNECTED) {
+        return NANORTC_ERR_STATE;
+    }
+
+    uint16_t sid = rtc_alloc_stream_id(rtc);
+    int rc = dc_open(&rtc->datachannel, sid, cfg->label);
+    if (rc != NANORTC_OK) {
+        return rc;
+    }
+
+    /* Drain DCEP OPEN → SCTP → DTLS → output queue */
+    uint8_t dc_buf[NANORTC_DC_OUT_BUF_SIZE];
+    size_t dc_len = 0;
+    uint16_t dc_stream = 0;
+    while (dc_poll_output(&rtc->datachannel, dc_buf, sizeof(dc_buf), &dc_len, &dc_stream) ==
+               NANORTC_OK &&
+           dc_len > 0) {
+        nsctp_send(&rtc->sctp, dc_stream, DCEP_PPID_CONTROL, dc_buf, dc_len);
+        rtc_pump_sctp_through_dtls(rtc, &rtc->remote_addr);
+        dc_len = 0;
+    }
+
+    *stream_id = sid;
+    NANORTC_LOGI("RTC", "datachannel created");
+    return NANORTC_OK;
+}
+
+int nanortc_close_datachannel(nanortc_t *rtc, uint16_t stream_id)
+{
+    if (!rtc) {
+        return NANORTC_ERR_INVALID_PARAM;
+    }
+
+    /* Find channel and mark closed */
+    nano_dc_channel_t *ch = NULL;
+    for (uint8_t i = 0; i < rtc->datachannel.channel_count; i++) {
+        if (rtc->datachannel.channels[i].stream_id == stream_id &&
+            rtc->datachannel.channels[i].state != NANORTC_DC_STATE_CLOSED) {
+            ch = &rtc->datachannel.channels[i];
+            break;
+        }
+    }
+    if (!ch) {
+        return NANORTC_ERR_INVALID_PARAM;
+    }
+
+    ch->state = NANORTC_DC_STATE_CLOSED;
+    rtc_emit_event(rtc, NANORTC_EVENT_DATACHANNEL_CLOSE, stream_id);
+
+    NANORTC_LOGI("RTC", "datachannel closed");
+    return NANORTC_OK;
+}
+
 int nanortc_send_datachannel(nanortc_t *rtc, uint16_t stream_id, const void *data, size_t len)
 {
     if (!rtc || !data) {
@@ -736,7 +917,11 @@ int nanortc_send_datachannel(nanortc_t *rtc, uint16_t stream_id, const void *dat
     }
 
     uint32_t ppid = (len > 0) ? DCEP_PPID_BINARY : DCEP_PPID_BINARY_EMPTY;
-    return nsctp_send(&rtc->sctp, stream_id, ppid, (const uint8_t *)data, len);
+    int rc = nsctp_send(&rtc->sctp, stream_id, ppid, (const uint8_t *)data, len);
+    if (rc == NANORTC_ERR_BUFFER_TOO_SMALL) {
+        return NANORTC_ERR_WOULD_BLOCK; /* send queue full — backpressure */
+    }
+    return rc;
 }
 
 int nanortc_send_datachannel_string(nanortc_t *rtc, uint16_t stream_id, const char *str)
@@ -751,9 +936,77 @@ int nanortc_send_datachannel_string(nanortc_t *rtc, uint16_t stream_id, const ch
     size_t len = strlen(str); /* NANORTC_SAFE: API boundary */
 
     uint32_t ppid = (len > 0) ? DCEP_PPID_STRING : DCEP_PPID_STRING_EMPTY;
-    return nsctp_send(&rtc->sctp, stream_id, ppid, (const uint8_t *)str, len);
+    int rc = nsctp_send(&rtc->sctp, stream_id, ppid, (const uint8_t *)str, len);
+    if (rc == NANORTC_ERR_BUFFER_TOO_SMALL) {
+        return NANORTC_ERR_WOULD_BLOCK; /* send queue full — backpressure */
+    }
+    return rc;
+}
+
+int nanortc_get_datachannel_label(nanortc_t *rtc, uint16_t stream_id, const char **label)
+{
+    if (!rtc || !label) {
+        return NANORTC_ERR_INVALID_PARAM;
+    }
+    for (uint8_t i = 0; i < rtc->datachannel.channel_count; i++) {
+        if (rtc->datachannel.channels[i].stream_id == stream_id &&
+            rtc->datachannel.channels[i].state != NANORTC_DC_STATE_CLOSED) {
+            *label = rtc->datachannel.channels[i].label;
+            return NANORTC_OK;
+        }
+    }
+    return NANORTC_ERR_INVALID_PARAM;
 }
 #endif /* NANORTC_FEATURE_DATACHANNEL */
+
+/* ----------------------------------------------------------------
+ * Connection state API
+ * ---------------------------------------------------------------- */
+
+nano_conn_state_t nanortc_get_state(const nanortc_t *rtc)
+{
+    if (!rtc) {
+        return NANORTC_STATE_CLOSED;
+    }
+    return rtc->state;
+}
+
+int nanortc_close(nanortc_t *rtc)
+{
+    if (!rtc) {
+        return NANORTC_ERR_INVALID_PARAM;
+    }
+    if (rtc->state == NANORTC_STATE_CLOSED || rtc->state == NANORTC_STATE_NEW) {
+        return NANORTC_ERR_STATE;
+    }
+
+#if NANORTC_FEATURE_DATACHANNEL
+    /* Send SCTP SHUTDOWN if association is established */
+    if (rtc->sctp.state == NANORTC_SCTP_STATE_ESTABLISHED) {
+        /* Encode SHUTDOWN chunk — cumulative TSN of received data */
+        uint8_t shutdown_pkt[64];
+        size_t hdr_len = nsctp_encode_header(shutdown_pkt, rtc->sctp.local_port,
+                                             rtc->sctp.remote_port, rtc->sctp.remote_vtag);
+        size_t chunk_len = nsctp_encode_shutdown(shutdown_pkt + hdr_len, rtc->sctp.cumulative_tsn);
+        nsctp_finalize_checksum(shutdown_pkt, hdr_len + chunk_len);
+
+        /* Encrypt through DTLS and enqueue */
+        dtls_encrypt(&rtc->dtls, shutdown_pkt, hdr_len + chunk_len);
+        rtc_drain_dtls_output(rtc, &rtc->remote_addr);
+        rtc->sctp.state = NANORTC_SCTP_STATE_SHUTDOWN_SENT;
+    }
+#endif
+
+    /* Send DTLS close_notify */
+    dtls_close(&rtc->dtls);
+    rtc_drain_dtls_output(rtc, &rtc->remote_addr);
+
+    rtc->state = NANORTC_STATE_CLOSED;
+    rtc_emit_event(rtc, NANORTC_EVENT_DISCONNECTED, 0);
+
+    NANORTC_LOGI("RTC", "graceful close initiated");
+    return NANORTC_OK;
+}
 
 #if NANORTC_FEATURE_AUDIO
 int nanortc_send_audio(nanortc_t *rtc, uint32_t timestamp, const void *data, size_t len)
@@ -808,6 +1061,8 @@ const char *nanortc_err_to_name(int err)
         return "NANORTC_ERR_NO_DATA";
     case NANORTC_ERR_INTERNAL:
         return "NANORTC_ERR_INTERNAL";
+    case NANORTC_ERR_WOULD_BLOCK:
+        return "NANORTC_ERR_WOULD_BLOCK";
     default:
         return "NANORTC_ERR_UNKNOWN";
     }

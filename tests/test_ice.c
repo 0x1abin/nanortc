@@ -41,10 +41,11 @@ static void setup_ice_pair(nano_ice_t *controlling, nano_ice_t *controlled)
     memcpy(controlling->remote_pwd, "peer-password-123456", 21);
     controlling->remote_pwd_len = 20;
     controlling->tie_breaker = 0xAABBCCDDEEFF0011ull;
-    controlling->remote_family = 4;
-    controlling->remote_addr[0] = 10;
-    controlling->remote_addr[3] = 2;
-    controlling->remote_port = 5000;
+    controlling->remote_candidates[0].family = 4;
+    controlling->remote_candidates[0].addr[0] = 10;
+    controlling->remote_candidates[0].addr[3] = 2;
+    controlling->remote_candidates[0].port = 5000;
+    controlling->remote_candidate_count = 1;
 
     memcpy(controlled->local_ufrag, "PEER", 5);
     controlled->local_ufrag_len = 4;
@@ -57,34 +58,36 @@ static void setup_ice_pair(nano_ice_t *controlling, nano_ice_t *controlled)
 }
 
 /* Helper: generate a check and feed to peer */
-static int do_ice_roundtrip(nano_ice_t *ctrl, nano_ice_t *ctld,
-                            uint32_t now_ms)
+static int do_ice_roundtrip(nano_ice_t *ctrl, nano_ice_t *ctld, uint32_t now_ms)
 {
     uint8_t req_buf[256], resp_buf[256], dummy[256];
     size_t req_len = 0, resp_len = 0, dummy_len = 0;
 
-    int rc = ice_generate_check(ctrl, now_ms, crypto(),
-                                 req_buf, sizeof(req_buf), &req_len);
-    if (rc != NANORTC_OK || req_len == 0) return rc;
+    int rc = ice_generate_check(ctrl, now_ms, crypto(), req_buf, sizeof(req_buf), &req_len);
+    if (rc != NANORTC_OK || req_len == 0)
+        return rc;
 
     nanortc_addr_t src;
     memset(&src, 0, sizeof(src));
     src.family = 4;
-    src.addr[0] = 10; src.addr[3] = 1;
+    src.addr[0] = 10;
+    src.addr[3] = 1;
     src.port = 4000;
 
-    rc = ice_handle_stun(ctld, req_buf, req_len, &src, crypto(),
-                          resp_buf, sizeof(resp_buf), &resp_len);
-    if (rc != NANORTC_OK) return rc;
+    rc = ice_handle_stun(ctld, req_buf, req_len, &src, crypto(), resp_buf, sizeof(resp_buf),
+                         &resp_len);
+    if (rc != NANORTC_OK)
+        return rc;
 
     nanortc_addr_t resp_src;
     memset(&resp_src, 0, sizeof(resp_src));
     resp_src.family = 4;
-    resp_src.addr[0] = 10; resp_src.addr[3] = 2;
+    resp_src.addr[0] = 10;
+    resp_src.addr[3] = 2;
     resp_src.port = 5000;
 
-    return ice_handle_stun(ctrl, resp_buf, resp_len, &resp_src, crypto(),
-                            dummy, sizeof(dummy), &dummy_len);
+    return ice_handle_stun(ctrl, resp_buf, resp_len, &resp_src, crypto(), dummy, sizeof(dummy),
+                           &dummy_len);
 }
 
 /* ================================================================
@@ -161,8 +164,7 @@ TEST(test_ice_generate_check_basic)
     ASSERT_TRUE(msg.has_fingerprint);
 
     /* Signed with remote_pwd */
-    ASSERT_OK(stun_verify_integrity(buf, out_len, &msg,
-                                    (const uint8_t *)"peer-password-123456", 20,
+    ASSERT_OK(stun_verify_integrity(buf, out_len, &msg, (const uint8_t *)"peer-password-123456", 20,
                                     crypto()->hmac_sha1));
     ASSERT_OK(stun_verify_fingerprint(buf, out_len));
 }
@@ -220,19 +222,19 @@ TEST(test_ice_controlled_handle_request)
 
     uint8_t req_buf[256];
     size_t req_len = 0;
-    ASSERT_OK(ice_generate_check(&ctrl, 100, crypto(),
-                                  req_buf, sizeof(req_buf), &req_len));
+    ASSERT_OK(ice_generate_check(&ctrl, 100, crypto(), req_buf, sizeof(req_buf), &req_len));
 
     nanortc_addr_t src;
     memset(&src, 0, sizeof(src));
     src.family = 4;
-    src.addr[0] = 10; src.addr[3] = 1;
+    src.addr[0] = 10;
+    src.addr[3] = 1;
     src.port = 4000;
 
     uint8_t resp_buf[256];
     size_t resp_len = 0;
-    ASSERT_OK(ice_handle_stun(&ctld, req_buf, req_len, &src, crypto(),
-                               resp_buf, sizeof(resp_buf), &resp_len));
+    ASSERT_OK(ice_handle_stun(&ctld, req_buf, req_len, &src, crypto(), resp_buf, sizeof(resp_buf),
+                              &resp_len));
     ASSERT_TRUE(resp_len > 0);
 
     /* Verify response is valid Binding Response */
@@ -268,11 +270,9 @@ TEST(test_ice_reject_bad_username)
     uint8_t key[] = "my-password";
     uint8_t req_buf[256];
     size_t req_len = 0;
-    ASSERT_OK(stun_encode_binding_request("WRONG:OTHER", 11, 100, false,
-                                          true, 0, txid,
-                                          key, sizeof(key) - 1,
-                                          crypto()->hmac_sha1,
-                                          req_buf, sizeof(req_buf), &req_len));
+    ASSERT_OK(stun_encode_binding_request("WRONG:OTHER", 11, 100, false, true, 0, txid, key,
+                                          sizeof(key) - 1, crypto()->hmac_sha1, req_buf,
+                                          sizeof(req_buf), &req_len));
 
     nanortc_addr_t src;
     memset(&src, 0, sizeof(src));
@@ -280,8 +280,8 @@ TEST(test_ice_reject_bad_username)
 
     uint8_t resp_buf[256];
     size_t resp_len = 0;
-    ASSERT_FAIL(ice_handle_stun(&ctld, req_buf, req_len, &src, crypto(),
-                                 resp_buf, sizeof(resp_buf), &resp_len));
+    ASSERT_FAIL(ice_handle_stun(&ctld, req_buf, req_len, &src, crypto(), resp_buf, sizeof(resp_buf),
+                                &resp_len));
 }
 
 TEST(test_ice_reject_bad_password)
@@ -298,10 +298,9 @@ TEST(test_ice_reject_bad_password)
     uint8_t wrong_key[] = "wrong-pw";
     uint8_t req_buf[256];
     size_t req_len = 0;
-    ASSERT_OK(stun_encode_binding_request("ME:OTHER", 8, 100, false, true, 0,
-                                          txid, wrong_key, sizeof(wrong_key) - 1,
-                                          crypto()->hmac_sha1,
-                                          req_buf, sizeof(req_buf), &req_len));
+    ASSERT_OK(stun_encode_binding_request("ME:OTHER", 8, 100, false, true, 0, txid, wrong_key,
+                                          sizeof(wrong_key) - 1, crypto()->hmac_sha1, req_buf,
+                                          sizeof(req_buf), &req_len));
 
     nanortc_addr_t src;
     memset(&src, 0, sizeof(src));
@@ -309,8 +308,8 @@ TEST(test_ice_reject_bad_password)
 
     uint8_t resp_buf[256];
     size_t resp_len = 0;
-    ASSERT_FAIL(ice_handle_stun(&ctld, req_buf, req_len, &src, crypto(),
-                                 resp_buf, sizeof(resp_buf), &resp_len));
+    ASSERT_FAIL(ice_handle_stun(&ctld, req_buf, req_len, &src, crypto(), resp_buf, sizeof(resp_buf),
+                                &resp_len));
 }
 
 /* ================================================================
@@ -328,8 +327,7 @@ TEST(test_ice_use_candidate_nominates)
 
     uint8_t req_buf[256];
     size_t req_len = 0;
-    ASSERT_OK(ice_generate_check(&ctrl, 100, crypto(),
-                                  req_buf, sizeof(req_buf), &req_len));
+    ASSERT_OK(ice_generate_check(&ctrl, 100, crypto(), req_buf, sizeof(req_buf), &req_len));
 
     /* Verify USE-CANDIDATE is present in the request */
     stun_msg_t req;
@@ -339,13 +337,14 @@ TEST(test_ice_use_candidate_nominates)
     nanortc_addr_t src;
     memset(&src, 0, sizeof(src));
     src.family = 4;
-    src.addr[0] = 10; src.addr[3] = 1;
+    src.addr[0] = 10;
+    src.addr[3] = 1;
     src.port = 4000;
 
     uint8_t resp_buf[256];
     size_t resp_len = 0;
-    ASSERT_OK(ice_handle_stun(&ctld, req_buf, req_len, &src, crypto(),
-                               resp_buf, sizeof(resp_buf), &resp_len));
+    ASSERT_OK(ice_handle_stun(&ctld, req_buf, req_len, &src, crypto(), resp_buf, sizeof(resp_buf),
+                              &resp_len));
 
     /* Controlled should be CONNECTED with selected address */
     ASSERT_EQ(ctld.state, NANORTC_ICE_STATE_CONNECTED);
@@ -378,24 +377,21 @@ TEST(test_ice_no_use_candidate_no_nomination)
     size_t req_len = 0;
 
     /* use_candidate=false, is_controlling=true */
-    ASSERT_OK(stun_encode_binding_request(
-        "PEER:CTRL", 9, 0x6E001EFF,
-        false, /* no USE-CANDIDATE */
-        true, 0x1234ull, txid,
-        key, sizeof(key) - 1,
-        crypto()->hmac_sha1,
-        req_buf, sizeof(req_buf), &req_len));
+    ASSERT_OK(stun_encode_binding_request("PEER:CTRL", 9, 0x6E001EFF, false, /* no USE-CANDIDATE */
+                                          true, 0x1234ull, txid, key, sizeof(key) - 1,
+                                          crypto()->hmac_sha1, req_buf, sizeof(req_buf), &req_len));
 
     nanortc_addr_t src;
     memset(&src, 0, sizeof(src));
     src.family = 4;
-    src.addr[0] = 10; src.addr[3] = 1;
+    src.addr[0] = 10;
+    src.addr[3] = 1;
     src.port = 4000;
 
     uint8_t resp_buf[256];
     size_t resp_len = 0;
-    ASSERT_OK(ice_handle_stun(&ctld, req_buf, req_len, &src, crypto(),
-                               resp_buf, sizeof(resp_buf), &resp_len));
+    ASSERT_OK(ice_handle_stun(&ctld, req_buf, req_len, &src, crypto(), resp_buf, sizeof(resp_buf),
+                              &resp_len));
 
     /* Response generated but NOT nominated */
     ASSERT_TRUE(resp_len > 0);
@@ -430,20 +426,20 @@ TEST(test_ice_controlling_rejects_wrong_txid)
 
     uint8_t req_buf[256];
     size_t req_len = 0;
-    ASSERT_OK(ice_generate_check(&ctrl, 100, crypto(),
-                                  req_buf, sizeof(req_buf), &req_len));
+    ASSERT_OK(ice_generate_check(&ctrl, 100, crypto(), req_buf, sizeof(req_buf), &req_len));
 
     /* Tamper: change the last txid byte in ctrl so response won't match */
     ctrl.last_txid[11] ^= 0xFF;
 
     nanortc_addr_t src;
     memset(&src, 0, sizeof(src));
-    src.family = 4; src.port = 4000;
+    src.family = 4;
+    src.port = 4000;
 
     uint8_t resp_buf[256];
     size_t resp_len = 0;
-    ASSERT_OK(ice_handle_stun(&ctld, req_buf, req_len, &src, crypto(),
-                               resp_buf, sizeof(resp_buf), &resp_len));
+    ASSERT_OK(ice_handle_stun(&ctld, req_buf, req_len, &src, crypto(), resp_buf, sizeof(resp_buf),
+                              &resp_len));
 
     /* Feed response to controlling — should fail (txid mismatch) */
     uint8_t dummy[256];
@@ -451,8 +447,8 @@ TEST(test_ice_controlling_rejects_wrong_txid)
     nanortc_addr_t resp_src;
     memset(&resp_src, 0, sizeof(resp_src));
     resp_src.family = 4;
-    ASSERT_FAIL(ice_handle_stun(&ctrl, resp_buf, resp_len, &resp_src, crypto(),
-                                 dummy, sizeof(dummy), &dummy_len));
+    ASSERT_FAIL(ice_handle_stun(&ctrl, resp_buf, resp_len, &resp_src, crypto(), dummy,
+                                sizeof(dummy), &dummy_len));
 
     /* Should NOT be connected */
     ASSERT_NEQ(ctrl.state, NANORTC_ICE_STATE_CONNECTED);
@@ -498,8 +494,7 @@ TEST(test_ice_state_checking_to_failed)
 
     for (int i = 0; i < NANORTC_ICE_MAX_CHECKS; i++) {
         out_len = 0;
-        ASSERT_OK(ice_generate_check(&ctrl, t, crypto(),
-                                      buf, sizeof(buf), &out_len));
+        ASSERT_OK(ice_generate_check(&ctrl, t, crypto(), buf, sizeof(buf), &out_len));
         ASSERT_TRUE(out_len > 0);
         t += 50;
     }
@@ -546,30 +541,28 @@ TEST(test_ice_credential_usage)
     /* 1. Controlling generates request signed with remote_pwd */
     uint8_t req_buf[256];
     size_t req_len = 0;
-    ASSERT_OK(ice_generate_check(&ctrl, 100, crypto(),
-                                  req_buf, sizeof(req_buf), &req_len));
+    ASSERT_OK(ice_generate_check(&ctrl, 100, crypto(), req_buf, sizeof(req_buf), &req_len));
 
     stun_msg_t req;
     ASSERT_OK(stun_parse(req_buf, req_len, &req));
 
     /* Request signed with ctrl's remote_pwd = "peer-password-123456" */
-    ASSERT_OK(stun_verify_integrity(req_buf, req_len, &req,
-                                    (const uint8_t *)"peer-password-123456", 20,
-                                    crypto()->hmac_sha1));
+    ASSERT_OK(stun_verify_integrity(req_buf, req_len, &req, (const uint8_t *)"peer-password-123456",
+                                    20, crypto()->hmac_sha1));
     /* Wrong key fails */
-    ASSERT_FAIL(stun_verify_integrity(req_buf, req_len, &req,
-                                      (const uint8_t *)"ctrl-password-abcdef", 20,
-                                      crypto()->hmac_sha1));
+    ASSERT_FAIL(stun_verify_integrity(
+        req_buf, req_len, &req, (const uint8_t *)"ctrl-password-abcdef", 20, crypto()->hmac_sha1));
 
     /* 2. Controlled receives, response signed with local_pwd */
     nanortc_addr_t src;
     memset(&src, 0, sizeof(src));
-    src.family = 4; src.port = 4000;
+    src.family = 4;
+    src.port = 4000;
 
     uint8_t resp_buf[256];
     size_t resp_len = 0;
-    ASSERT_OK(ice_handle_stun(&ctld, req_buf, req_len, &src, crypto(),
-                               resp_buf, sizeof(resp_buf), &resp_len));
+    ASSERT_OK(ice_handle_stun(&ctld, req_buf, req_len, &src, crypto(), resp_buf, sizeof(resp_buf),
+                              &resp_len));
 
     stun_msg_t resp;
     ASSERT_OK(stun_parse(resp_buf, resp_len, &resp));
@@ -583,28 +576,28 @@ TEST(test_ice_credential_usage)
 /* ---- Runner ---- */
 
 TEST_MAIN_BEGIN("nanortc ICE tests")
-    /* Lifecycle */
-    RUN(test_ice_init);
-    RUN(test_ice_is_stun);
-    /* §7.1.1: Controlling generates requests */
-    RUN(test_ice_generate_check_basic);
-    RUN(test_ice_generate_check_pacing);
-    RUN(test_ice_controlled_does_not_generate);
-    /* §7.2.1: Controlled receives requests */
-    RUN(test_ice_controlled_handle_request);
-    RUN(test_ice_reject_bad_username);
-    RUN(test_ice_reject_bad_password);
-    /* §7.2.1.4: USE-CANDIDATE / nomination */
-    RUN(test_ice_use_candidate_nominates);
-    RUN(test_ice_no_use_candidate_no_nomination);
-    /* §7.3: Processing responses */
-    RUN(test_ice_controlling_receives_response);
-    RUN(test_ice_controlling_rejects_wrong_txid);
-    /* §8: State transitions */
-    RUN(test_ice_state_new_to_checking);
-    RUN(test_ice_state_checking_to_connected);
-    RUN(test_ice_state_checking_to_failed);
-    RUN(test_ice_no_checks_after_connected);
-    /* Credential usage */
-    RUN(test_ice_credential_usage);
+/* Lifecycle */
+RUN(test_ice_init);
+RUN(test_ice_is_stun);
+/* §7.1.1: Controlling generates requests */
+RUN(test_ice_generate_check_basic);
+RUN(test_ice_generate_check_pacing);
+RUN(test_ice_controlled_does_not_generate);
+/* §7.2.1: Controlled receives requests */
+RUN(test_ice_controlled_handle_request);
+RUN(test_ice_reject_bad_username);
+RUN(test_ice_reject_bad_password);
+/* §7.2.1.4: USE-CANDIDATE / nomination */
+RUN(test_ice_use_candidate_nominates);
+RUN(test_ice_no_use_candidate_no_nomination);
+/* §7.3: Processing responses */
+RUN(test_ice_controlling_receives_response);
+RUN(test_ice_controlling_rejects_wrong_txid);
+/* §8: State transitions */
+RUN(test_ice_state_new_to_checking);
+RUN(test_ice_state_checking_to_connected);
+RUN(test_ice_state_checking_to_failed);
+RUN(test_ice_no_checks_after_connected);
+/* Credential usage */
+RUN(test_ice_credential_usage);
 TEST_MAIN_END

@@ -145,16 +145,17 @@ static inline void nanortc_write_u32be(uint8_t *p, uint32_t v)
 
 /** @brief Error codes returned by all NanoRTC API functions. */
 /** @{ */
-#define NANORTC_OK                   0  /**< Success. */
-#define NANORTC_ERR_INVALID_PARAM    -1 /**< NULL pointer or out-of-range argument. */
-#define NANORTC_ERR_BUFFER_TOO_SMALL -2 /**< Caller-provided buffer is too small. */
-#define NANORTC_ERR_STATE            -3 /**< Invalid state for this operation. */
-#define NANORTC_ERR_CRYPTO           -4 /**< Cryptographic operation failed. */
-#define NANORTC_ERR_PROTOCOL         -5 /**< Protocol violation (remote peer). */
-#define NANORTC_ERR_NOT_IMPLEMENTED  -6 /**< Feature not compiled in or not yet implemented. */
-#define NANORTC_ERR_PARSE            -7 /**< Malformed input data. */
-#define NANORTC_ERR_NO_DATA          -8 /**< No data available (non-fatal). */
-#define NANORTC_ERR_INTERNAL         -9 /**< Internal logic error (bug). */
+#define NANORTC_OK                   0   /**< Success. */
+#define NANORTC_ERR_INVALID_PARAM    -1  /**< NULL pointer or out-of-range argument. */
+#define NANORTC_ERR_BUFFER_TOO_SMALL -2  /**< Caller-provided buffer is too small. */
+#define NANORTC_ERR_STATE            -3  /**< Invalid state for this operation. */
+#define NANORTC_ERR_CRYPTO           -4  /**< Cryptographic operation failed. */
+#define NANORTC_ERR_PROTOCOL         -5  /**< Protocol violation (remote peer). */
+#define NANORTC_ERR_NOT_IMPLEMENTED  -6  /**< Feature not compiled in or not yet implemented. */
+#define NANORTC_ERR_PARSE            -7  /**< Malformed input data. */
+#define NANORTC_ERR_NO_DATA          -8  /**< No data available (non-fatal). */
+#define NANORTC_ERR_INTERNAL         -9  /**< Internal logic error (bug). */
+#define NANORTC_ERR_WOULD_BLOCK      -10 /**< Temporary backpressure (send queue full). */
 /** @} */
 
 /* Configuration limits are defined in nanortc_config.h */
@@ -268,18 +269,28 @@ typedef enum {
     /* Video */
     NANORTC_EVENT_VIDEO_DATA = 9,        /**< Decoded video frame available. */
     NANORTC_EVENT_KEYFRAME_REQUEST = 10, /**< Remote peer requests a keyframe. */
+
+    /* Connection lifecycle (extended) */
+    NANORTC_EVENT_ICE_STATE_CHANGE = 11, /**< ICE state changed (stream_id = new state). */
+    NANORTC_EVENT_DATACHANNEL_BUFFERED_AMOUNT_LOW = 12, /**< Send buffer drained below threshold. */
 } nanortc_event_type_t;
 
 /* ----------------------------------------------------------------
  * Event structure
  * ---------------------------------------------------------------- */
 
-/** @brief Application event delivered through nanortc_poll_output(). */
+/**
+ * @brief Application event delivered through nanortc_poll_output().
+ *
+ * Pointer fields (@c data, @c label) are valid only until the next call
+ * to nanortc_poll_output() or nanortc_handle_receive(). Copy if needed.
+ */
 typedef struct nanortc_event {
     nanortc_event_type_t type; /**< Event type discriminator. */
     uint16_t stream_id;        /**< DataChannel stream ID (DC events only). */
     const uint8_t *data;       /**< Payload pointer (valid until next poll). */
     size_t len;                /**< Payload length in bytes. */
+    const char *label;         /**< Channel label (DATACHANNEL_OPEN only, else NULL). */
     uint32_t timestamp;        /**< RTP timestamp (media events only). */
     bool is_keyframe;          /**< True if video frame is a keyframe. */
 } nanortc_event_t;
@@ -591,6 +602,43 @@ NANORTC_API int nanortc_handle_timeout(nanortc_t *rtc, uint32_t now_ms);
  * ---------------------------------------------------------------- */
 
 #if NANORTC_FEATURE_DATACHANNEL
+
+/** @brief DataChannel configuration for nanortc_create_datachannel(). */
+typedef struct nanortc_datachannel_config {
+    const char *label;        /**< Channel label (NUL-terminated, required). */
+    bool ordered;             /**< Ordered delivery (default: true). */
+    uint16_t max_retransmits; /**< Max retransmit count (0 = reliable). */
+} nanortc_datachannel_config_t;
+
+/**
+ * @brief Create a DataChannel (offerer side).
+ *
+ * Sends a DCEP OPEN message. The channel enters OPENING state and
+ * transitions to OPEN when the remote peer sends a DCEP ACK.
+ *
+ * @param rtc        Initialized RTC state (must be CONNECTED).
+ * @param cfg        Channel configuration.
+ * @param stream_id  Receives the allocated SCTP stream ID.
+ * @return NANORTC_OK on success.
+ * @retval NANORTC_ERR_STATE           Not connected.
+ * @retval NANORTC_ERR_BUFFER_TOO_SMALL  Channel table full.
+ */
+NANORTC_API int nanortc_create_datachannel(nanortc_t *rtc, const nanortc_datachannel_config_t *cfg,
+                                           uint16_t *stream_id);
+
+/**
+ * @brief Close a single DataChannel.
+ *
+ * Sends a SCTP RESET to close the stream. The channel transitions to
+ * CLOSED and a NANORTC_EVENT_DATACHANNEL_CLOSE event is emitted.
+ *
+ * @param rtc        Initialized RTC state.
+ * @param stream_id  SCTP stream ID of the DataChannel to close.
+ * @return NANORTC_OK on success.
+ * @retval NANORTC_ERR_INVALID_PARAM  Unknown stream ID.
+ */
+NANORTC_API int nanortc_close_datachannel(nanortc_t *rtc, uint16_t stream_id);
+
 /**
  * @brief Send binary data on a DataChannel.
  *
@@ -599,7 +647,8 @@ NANORTC_API int nanortc_handle_timeout(nanortc_t *rtc, uint32_t now_ms);
  * @param data       Payload to send.
  * @param len        Payload length in bytes.
  * @return NANORTC_OK on success.
- * @retval NANORTC_ERR_STATE  DataChannel not open.
+ * @retval NANORTC_ERR_STATE        DataChannel not open.
+ * @retval NANORTC_ERR_WOULD_BLOCK  Send queue full (try again after timeout).
  */
 NANORTC_API int nanortc_send_datachannel(nanortc_t *rtc, uint16_t stream_id, const void *data,
                                          size_t len);
@@ -611,10 +660,23 @@ NANORTC_API int nanortc_send_datachannel(nanortc_t *rtc, uint16_t stream_id, con
  * @param stream_id  SCTP stream ID of the DataChannel.
  * @param str        NUL-terminated UTF-8 string to send.
  * @return NANORTC_OK on success.
- * @retval NANORTC_ERR_STATE  DataChannel not open.
+ * @retval NANORTC_ERR_STATE        DataChannel not open.
+ * @retval NANORTC_ERR_WOULD_BLOCK  Send queue full (try again after timeout).
  */
 NANORTC_API int nanortc_send_datachannel_string(nanortc_t *rtc, uint16_t stream_id,
                                                 const char *str);
+
+/**
+ * @brief Get the label of a DataChannel.
+ *
+ * @param rtc        Initialized RTC state.
+ * @param stream_id  SCTP stream ID of the DataChannel.
+ * @param label      Receives pointer to internal label string (valid until destroy).
+ * @return NANORTC_OK on success.
+ * @retval NANORTC_ERR_INVALID_PARAM  Unknown stream ID.
+ */
+NANORTC_API int nanortc_get_datachannel_label(nanortc_t *rtc, uint16_t stream_id,
+                                              const char **label);
 #endif
 
 /* ----------------------------------------------------------------
@@ -657,6 +719,31 @@ NANORTC_API int nanortc_send_video(nanortc_t *rtc, uint32_t timestamp, const voi
  */
 NANORTC_API int nanortc_request_keyframe(nanortc_t *rtc);
 #endif
+
+/* ----------------------------------------------------------------
+ * Connection state API
+ * ---------------------------------------------------------------- */
+
+/**
+ * @brief Get the current connection state.
+ *
+ * @param rtc  Initialized RTC state.
+ * @return Current state, or NANORTC_STATE_CLOSED if @p rtc is NULL.
+ */
+NANORTC_API nano_conn_state_t nanortc_get_state(const nanortc_t *rtc);
+
+/**
+ * @brief Initiate graceful connection close.
+ *
+ * Enqueues SCTP SHUTDOWN (if DataChannel) and DTLS close_notify.
+ * Continue calling nanortc_poll_output() to drain the close frames,
+ * then call nanortc_destroy() to release resources.
+ *
+ * @param rtc  Initialized RTC state.
+ * @return NANORTC_OK on success.
+ * @retval NANORTC_ERR_STATE  Already closed or not connected.
+ */
+NANORTC_API int nanortc_close(nanortc_t *rtc);
 
 /* ----------------------------------------------------------------
  * Diagnostics

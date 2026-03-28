@@ -250,6 +250,16 @@ const char *dtls_get_fingerprint(nano_dtls_t *dtls)
     return dtls->local_fingerprint;
 }
 
+void dtls_close(nano_dtls_t *dtls)
+{
+    if (!dtls) {
+        return;
+    }
+    /* TODO: send close_notify via crypto provider when API is extended.
+     * For now, mark as closed so no further data is processed. */
+    dtls->state = NANORTC_DTLS_STATE_CLOSED;
+}
+
 void dtls_destroy(nano_dtls_t *dtls)
 {
     if (!dtls) {
