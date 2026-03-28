@@ -62,6 +62,10 @@ typedef struct nano_sdp {
     uint32_t audio_sample_rate; /* e.g. 48000 */
     uint8_t audio_channels;     /* e.g. 2 for stereo */
     nanortc_direction_t audio_direction;
+
+    /* m-line ordering from parsed offer (RFC 8829: answer must match offer order).
+     * Chrome puts media transceivers before data channels, so audio may come first. */
+    bool audio_before_datachannel;
 #endif
 } nano_sdp_t;
 

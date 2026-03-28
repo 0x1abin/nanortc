@@ -16,6 +16,7 @@ int rtp_init(nano_rtp_t *rtp, uint32_t ssrc, uint8_t pt)
     memset(rtp, 0, sizeof(*rtp));
     rtp->ssrc = ssrc;
     rtp->payload_type = pt;
+    rtp->marker = 1; /* M=1 on first packet (talk-spurt boundary, RFC 3550 §5.1) */
     return NANORTC_OK;
 }
 

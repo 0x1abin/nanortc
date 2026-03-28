@@ -440,6 +440,7 @@ struct nanortc {
     nano_rtp_t rtp;
     nano_rtcp_t rtcp;
     nano_srtp_t srtp;
+    uint8_t media_buf[NANORTC_MEDIA_BUF_SIZE]; /* RTP pack + SRTP protect scratch */
 #endif
 
 #if NANORTC_FEATURE_AUDIO

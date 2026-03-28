@@ -17,6 +17,11 @@
 #include "nano_datachannel.h"
 #endif
 
+#if NANORTC_HAVE_MEDIA_TRANSPORT
+#include "nano_rtp.h"
+#include "nano_srtp.h"
+#endif
+
 #include <string.h>
 
 /* Shared hex alphabet for ICE credential generation */
@@ -196,6 +201,13 @@ int nanortc_init(nanortc_t *rtc, const nanortc_config_t *cfg)
 
 #if NANORTC_FEATURE_AUDIO
     jitter_init(&rtc->jitter, cfg->jitter_depth_ms);
+    if (cfg->audio_codec != NANORTC_CODEC_NONE) {
+        rtc->sdp.has_audio = true;
+        rtc->sdp.audio_pt = 111; /* Opus standard dynamic PT */
+        rtc->sdp.audio_sample_rate = cfg->audio_sample_rate;
+        rtc->sdp.audio_channels = cfg->audio_channels;
+        rtc->sdp.audio_direction = cfg->audio_direction;
+    }
 #endif
 
 #if NANORTC_FEATURE_VIDEO
@@ -655,6 +667,27 @@ int nanortc_handle_receive(nanortc_t *rtc, uint32_t now_ms, const uint8_t *data,
 
             rtc_cache_fingerprint(rtc);
 
+#if NANORTC_HAVE_MEDIA_TRANSPORT
+            /* Derive SRTP keys from DTLS keying material (RFC 5764 §4.2) */
+            if (rtc->dtls.keying_material_ready) {
+                int is_client = !rtc->dtls.is_server;
+                srtp_init(&rtc->srtp, rtc->config.crypto, is_client);
+                srtp_derive_keys(&rtc->srtp, rtc->dtls.keying_material, NANORTC_DTLS_KEYING_SIZE);
+                /* Random SSRC + negotiated PT (RFC 3550 §5.1) */
+                uint32_t ssrc = 0;
+                uint16_t init_seq = 0;
+                if (rtc->config.crypto) {
+                    uint8_t rnd[6];
+                    rtc->config.crypto->random_bytes(rnd, 6);
+                    ssrc = nanortc_read_u32be(rnd);
+                    init_seq = nanortc_read_u16be(rnd + 4);
+                }
+                rtp_init(&rtc->rtp, ssrc, rtc->sdp.has_audio ? rtc->sdp.audio_pt : 0);
+                rtc->rtp.seq = init_seq; /* RFC 3550: random initial seq */
+                NANORTC_LOGI("RTC", "SRTP keys derived, RTP ready");
+            }
+#endif
+
 #if NANORTC_FEATURE_DATACHANNEL
             /* Initiate SCTP: DTLS client sends INIT (RFC 8831) */
             if (!rtc->dtls.is_server) {
@@ -1019,11 +1052,39 @@ int nanortc_close(nanortc_t *rtc)
 #if NANORTC_FEATURE_AUDIO
 int nanortc_send_audio(nanortc_t *rtc, uint32_t timestamp, const void *data, size_t len)
 {
-    (void)rtc;
-    (void)timestamp;
-    (void)data;
-    (void)len;
-    return NANORTC_ERR_NOT_IMPLEMENTED;
+    if (!rtc || !data || len == 0) {
+        return NANORTC_ERR_INVALID_PARAM;
+    }
+    if (rtc->state < NANORTC_STATE_DTLS_CONNECTED) {
+        return NANORTC_ERR_STATE;
+    }
+    if (!rtc->srtp.ready) {
+        return NANORTC_ERR_STATE;
+    }
+
+    /* RTP pack into media_buf */
+    size_t rtp_len = 0;
+    int rc = rtp_pack(&rtc->rtp, timestamp, (const uint8_t *)data, len, rtc->media_buf,
+                      sizeof(rtc->media_buf), &rtp_len);
+    if (rc != NANORTC_OK) {
+        return rc;
+    }
+
+    /* SRTP protect (in-place, appends 10B auth tag) */
+    size_t srtp_len = 0;
+    rc = srtp_protect(&rtc->srtp, rtc->media_buf, rtp_len, &srtp_len);
+    if (rc != NANORTC_OK) {
+        return rc;
+    }
+
+    /* Enqueue for transmission */
+    nanortc_output_t out;
+    memset(&out, 0, sizeof(out));
+    out.type = NANORTC_OUTPUT_TRANSMIT;
+    out.transmit.data = rtc->media_buf;
+    out.transmit.len = srtp_len;
+    out.transmit.dest = rtc->remote_addr;
+    return rtc_enqueue_output(rtc, &out);
 }
 #endif
 

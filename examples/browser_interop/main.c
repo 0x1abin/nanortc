@@ -16,6 +16,7 @@
 #include "nanortc_crypto.h"
 #include "run_loop.h"
 #include "http_signaling.h"
+#include "media_source.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,6 +29,7 @@
 
 typedef struct {
     int offer_mode;
+    int audio_connected; /* DTLS+SRTP ready for audio */
 } app_ctx_t;
 
 static nano_run_loop_t loop;
@@ -51,6 +53,7 @@ static void on_event(nanortc_t *rtc, const nanortc_event_t *evt, void *userdata)
 
     case NANORTC_EVENT_DTLS_CONNECTED:
         fprintf(stderr, "[event] DTLS connected\n");
+        ctx->audio_connected = 1;
         break;
 
     case NANORTC_EVENT_SCTP_CONNECTED:
@@ -102,6 +105,7 @@ static void usage(const char *prog)
     fprintf(stderr, "  -p PORT        UDP port (default: 9999)\n");
     fprintf(stderr, "  -b IP          Bind/candidate IP (default: auto-detect)\n");
     fprintf(stderr, "  -s HOST:PORT   Signaling server (default: localhost:8765)\n");
+    fprintf(stderr, "  -a DIR         Opus frame directory for audio send\n");
     fprintf(stderr, "  --offer        Act as offerer (CONTROLLING)\n");
     fprintf(stderr, "  --answer       Act as answerer (CONTROLLED, default)\n");
 }
@@ -231,6 +235,7 @@ int main(int argc, char *argv[])
     char sig_host[256] = "localhost";
     uint16_t sig_port = 8765;
     int offer_mode = 0;
+    const char *audio_dir = NULL;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-p") == 0 && i + 1 < argc) {
@@ -255,6 +260,8 @@ int main(int argc, char *argv[])
                 memcpy(sig_host, argv[i], hlen);
                 sig_host[hlen] = '\0';
             }
+        } else if (strcmp(argv[i], "-a") == 0 && i + 1 < argc) {
+            audio_dir = argv[++i];
         } else if (strcmp(argv[i], "--offer") == 0) {
             offer_mode = 1;
         } else if (strcmp(argv[i], "--answer") == 0) {
@@ -288,6 +295,15 @@ int main(int argc, char *argv[])
     cfg.crypto = nanortc_crypto_mbedtls();
 #endif
     cfg.role = offer_mode ? NANORTC_ROLE_CONTROLLING : NANORTC_ROLE_CONTROLLED;
+
+#if NANORTC_FEATURE_AUDIO
+    if (audio_dir) {
+        cfg.audio_codec = NANORTC_CODEC_OPUS;
+        cfg.audio_sample_rate = 48000;
+        cfg.audio_channels = 2;
+        cfg.audio_direction = NANORTC_DIR_SENDONLY;
+    }
+#endif
 
     rc = nanortc_init(&rtc, &cfg);
     if (rc != NANORTC_OK) {
@@ -328,6 +344,20 @@ int main(int argc, char *argv[])
     nanortc_add_local_candidate(&rtc, bind_ip, port);
     nano_run_loop_set_event_cb(&loop, on_event, &app_ctx);
 
+    /* Audio media source */
+    nano_media_source_t audio_src;
+    int has_audio_src = 0;
+#if NANORTC_FEATURE_AUDIO
+    if (audio_dir) {
+        if (nano_media_source_init(&audio_src, NANORTC_MEDIA_OPUS, audio_dir) == 0) {
+            has_audio_src = 1;
+            fprintf(stderr, "Audio source: %s (Opus, 20ms frames)\n", audio_dir);
+        } else {
+            fprintf(stderr, "Warning: failed to init audio source from %s\n", audio_dir);
+        }
+    }
+#endif
+
     fprintf(stderr, "nanortc browser_interop (mode=%s, udp=%s:%d, sig=%s:%u)\n",
             offer_mode ? "offer" : "answer", bind_ip, port, sig_host, sig_port);
 
@@ -341,15 +371,52 @@ int main(int argc, char *argv[])
         goto cleanup;
     }
 
-    /* 6. Event loop with trickle ICE polling */
+    /* 6. Event loop with trickle ICE polling + audio send */
     fprintf(stderr, "Entering event loop...\n");
+    uint32_t audio_epoch_ms = 0; /* wall-clock start time for audio */
+    uint32_t audio_frame_count = 0; /* frames sent since epoch */
+    if (has_audio_src) {
+        loop.max_poll_ms = 5; /* 5ms poll for smooth 20ms audio pacing */
+    }
     loop.running = 1;
     while (loop.running) {
         nano_run_loop_step(&loop);
         poll_trickle_ice(&sig, &rtc);
+
+#if NANORTC_FEATURE_AUDIO
+        /* Send audio frames at 20ms intervals (epoch-based for drift-free timing) */
+        if (has_audio_src && app_ctx.audio_connected) {
+            uint32_t now = nano_get_millis();
+            if (audio_epoch_ms == 0) audio_epoch_ms = now;
+            uint32_t target_frames = (now - audio_epoch_ms) / 20;
+            /* Prevent burst: if we fell behind by >2 frames, skip ahead */
+            if (target_frames - audio_frame_count > 2) {
+                audio_frame_count = target_frames - 1;
+            }
+            if (audio_frame_count < target_frames) {
+                uint8_t frame_buf[1024];
+                size_t frame_len = 0;
+                uint32_t ts_ms = 0;
+                if (nano_media_source_next_frame(&audio_src, frame_buf,
+                        sizeof(frame_buf), &frame_len, &ts_ms) == 0) {
+                    uint32_t audio_ts_rtp = audio_frame_count * 960;
+                    int arc = nanortc_send_audio(&rtc, audio_ts_rtp,
+                                                 frame_buf, frame_len);
+                    if (arc == NANORTC_OK) {
+                        audio_frame_count++;
+                    } else if (arc != NANORTC_ERR_STATE) {
+                        fprintf(stderr, "[audio] send error: %d\n", arc);
+                    }
+                }
+            }
+        }
+#endif
     }
 
 cleanup:
+    if (has_audio_src) {
+        nano_media_source_destroy(&audio_src);
+    }
     http_sig_leave(&sig);
     nano_run_loop_destroy(&loop);
     nanortc_destroy(&rtc);

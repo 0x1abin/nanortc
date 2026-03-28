@@ -41,6 +41,11 @@
   <button id="btnSend" onclick="sendMsg()" disabled>Send</button>
 </div>
 
+<div class="row">
+  <label>Audio:</label>
+  <audio id="remoteAudio" autoplay controls></audio>
+</div>
+
 <div id="log"></div>
 
 <script>
@@ -51,6 +56,7 @@ let peerId = -1;
 let pc = null;
 let dc = null;
 let pollTimer = null;
+let pollAbort = null;
 
 function log(cls, msg) {
   const el = document.getElementById('log');
@@ -84,8 +90,9 @@ async function sigSend(base, id, msg) {
   });
 }
 
-async function sigRecv(base, id, timeout) {
-  const r = await fetch(base + '/recv?id=' + id + '&timeout=' + timeout);
+async function sigRecv(base, id, timeout, signal) {
+  const r = await fetch(base + '/recv?id=' + id + '&timeout=' + timeout,
+                        signal ? {signal} : undefined);
   if (r.status === 204) return null;
   if (!r.ok) throw new Error('recv error: ' + r.status);
   return await r.json();
@@ -101,9 +108,14 @@ function startPolling(base) {
   if (pollTimer) return;
   async function poll() {
     try {
-      const msg = await sigRecv(base, peerId, 2);
-      if (msg) handleSignalingMessage(msg);
+      pollAbort = new AbortController();
+      const msg = await sigRecv(base, peerId, 2, pollAbort.signal);
+      if (msg) {
+        log('info', 'Poll got: type=' + msg.type);
+        await handleSignalingMessage(msg);
+      }
     } catch(e) {
+      if (e.name === 'AbortError') return; /* stopPolling() called */
       log('err', 'Poll error: ' + e.message);
     }
     if (pollTimer !== null) pollTimer = setTimeout(poll, 100);
@@ -112,6 +124,7 @@ function startPolling(base) {
 }
 
 function stopPolling() {
+  if (pollAbort) { pollAbort.abort(); pollAbort = null; }
   if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
 }
 
@@ -185,6 +198,15 @@ async function start() {
     }
   };
 
+  pc.ontrack = (e) => {
+    log('ok', 'Got remote track: ' + e.track.kind);
+    if (e.track.kind === 'audio') {
+      const audio = document.getElementById('remoteAudio');
+      audio.srcObject = e.streams[0] || new MediaStream([e.track]);
+      log('info', 'Audio track attached to player');
+    }
+  };
+
   pc.onicecandidate = async (e) => {
     if (e.candidate) {
       let c = e.candidate.candidate;
@@ -206,6 +228,10 @@ async function start() {
     dc = pc.createDataChannel('test');
     setupDC(dc);
     log('info', 'Created DataChannel "test"');
+
+    // Add audio transceiver for receiving remote audio
+    pc.addTransceiver('audio', {direction: 'recvonly'});
+    log('info', 'Added audio transceiver (recvonly)');
 
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);

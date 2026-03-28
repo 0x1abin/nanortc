@@ -136,6 +136,10 @@ cmake --build build -j$(nproc)
 # Build with openssl (Linux host)
 cmake -B build -DNANORTC_CRYPTO=openssl -DNANORTC_BUILD_EXAMPLES=ON
 cmake --build build -j$(nproc)
+
+# Build with audio support
+cmake -B build -DNANORTC_CRYPTO=openssl -DNANORTC_BUILD_EXAMPLES=ON -DNANO_FEATURE_AUDIO=ON
+cmake --build build -j$(nproc)
 ```
 
 ### Step 1: Start signaling server
@@ -166,12 +170,33 @@ Navigate to `http://localhost:8765/`
 # Browser: select "Answerer", click Connect, wait for DataChannel
 ```
 
+### Step 3c: Test audio sending (answerer mode)
+
+```bash
+# Terminal: nanortc as answerer with audio
+./build/examples/browser_interop/browser_interop --answer -p 9999 \
+    -a examples/sample_data/opusSampleFrames
+
+# Browser: select "Offerer", click Connect → should hear Opus audio
+```
+
+### Step 3d: Test audio sending (offerer mode)
+
+```bash
+# Terminal: nanortc as offerer with audio
+./build/examples/browser_interop/browser_interop --offer -p 9999 \
+    -a examples/sample_data/opusSampleFrames
+
+# Browser: select "Answerer", click Connect → should hear Opus audio
+```
+
 ### CLI Options
 
 ```
   -p PORT        UDP port (default: 9999)
   -b IP          Bind/candidate IP (default: auto-detect)
   -s HOST:PORT   Signaling server (default: localhost:8765)
+  -a DIR         Opus frame directory for audio send
   --offer        Act as offerer (CONTROLLING)
   --answer       Act as answerer (CONTROLLED, default)
 ```

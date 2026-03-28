@@ -147,7 +147,8 @@ TEST(test_e2e_stubs_not_implemented)
 #endif
 
 #if NANORTC_FEATURE_AUDIO
-    ASSERT_EQ(nanortc_send_audio(&rtc, 0, data, sizeof(data)), NANORTC_ERR_NOT_IMPLEMENTED);
+    /* nanortc_send_audio is now implemented; returns ERR_STATE when not connected */
+    ASSERT_EQ(nanortc_send_audio(&rtc, 0, data, sizeof(data)), NANORTC_ERR_STATE);
 #endif
 
 #if NANORTC_FEATURE_VIDEO

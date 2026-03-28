@@ -76,6 +76,7 @@ TEST(test_rtp_pack_basic)
     nano_rtp_t rtp;
     rtp_init(&rtp, 0xDEADBEEF, 111);
     rtp.seq = 1234;
+    rtp.marker = 0; /* clear first-packet marker for vector comparison */
 
     uint8_t buf[64];
     size_t out_len;

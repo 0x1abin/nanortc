@@ -11,7 +11,7 @@ NanoRTC is built by AI coding agents. Estimates use **agent sessions** (one focu
 | Plan | Phase | Status | Effort | Target |
 |------|-------|--------|--------|--------|
 | [Phase 1: DataChannel E2E](exec-plans/active/phase1-datachannel.md) | 1 | **Code Complete** — 5/5 interop tests pass, 19 e2e tests, full public API (commit `4d143f2`); browser + ESP32 integration pending (human gate) | 6 sessions | DataChannel working with libdatachannel + browser |
-| [Phase 2: Audio](exec-plans/active/phase2-audio.md) | 2 | **Active** — Session 2 complete (RTCP + Jitter + SDP audio + consistency fixes) | 2-3 sessions | Bidirectional audio with browser |
+| [Phase 2: Audio](exec-plans/active/phase2-audio.md) | 2 | **Active** — Session 3 complete: SRTP IV fix, RTP marker/seq, SDP ptime, browser audio verified (Opus → Chrome 0% concealed). Remaining: ESP32 audio intercom | 2-3 sessions | Bidirectional audio with browser |
 | [Phase 3: Video](exec-plans/active/phase3-video.md) | 3 | Queued | 2 sessions | Camera streaming to browser |
 
 **Total Phase 1-3:** ~9-12 agent sessions (~1-2 weeks elapsed)

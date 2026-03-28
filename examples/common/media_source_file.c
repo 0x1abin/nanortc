@@ -79,10 +79,8 @@ int nano_media_source_init(nano_media_source_t *src,
         break;
     }
 
-    /* Verify first frame is accessible */
+    /* Verify first frame is accessible (just check fopen, don't read) */
     char path[NANORTC_MEDIA_MAX_PATH + 32];
-    uint8_t probe[16];
-    size_t probe_len;
 
     switch (type) {
     case NANORTC_MEDIA_H264:
@@ -96,9 +94,13 @@ int nano_media_source_init(nano_media_source_t *src,
         break;
     }
 
-    if (read_file(path, probe, sizeof(probe), &probe_len) < 0) {
-        fprintf(stderr, "media_source: cannot open %s\n", path);
-        return -1;
+    {
+        FILE *f = fopen(path, "rb");
+        if (!f) {
+            fprintf(stderr, "media_source: cannot open %s\n", path);
+            return -1;
+        }
+        fclose(f);
     }
 
     return 0;

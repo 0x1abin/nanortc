@@ -198,21 +198,23 @@ static void srtp_compute_iv(uint8_t iv[16], const uint8_t salt[NANORTC_SRTP_SALT
 {
     memset(iv, 0, 16);
 
-    /* SSRC at bytes 4-7 */
+    /* SSRC at bytes 4-7 (RFC 3711 §4.1.1) */
     iv[4] = (uint8_t)(ssrc >> 24);
     iv[5] = (uint8_t)(ssrc >> 16);
     iv[6] = (uint8_t)(ssrc >> 8);
     iv[7] = (uint8_t)(ssrc);
 
-    /* XOR packet index (48-bit) at bytes 6-13 */
-    iv[6] ^= (uint8_t)(index >> 40);
-    iv[7] ^= (uint8_t)(index >> 32);
-    iv[8] ^= (uint8_t)(index >> 24);
-    iv[9] ^= (uint8_t)(index >> 16);
-    iv[10] ^= (uint8_t)(index >> 8);
-    iv[11] ^= (uint8_t)(index);
-    /* index is 48-bit, so only 6 bytes are significant.
-     * Bytes 12-13 of index are always 0 for 48-bit values. */
+    /* XOR 64-bit packet index at bytes 6-13 (RFC 3711 §4.1.1, matches libsrtp/str0m).
+     * The 48-bit SRTP index is right-aligned in a 64-bit field, so the
+     * upper 16 bits (bytes 6-7) are always 0 and don't disturb the SSRC. */
+    iv[6] ^= (uint8_t)(index >> 56);
+    iv[7] ^= (uint8_t)(index >> 48);
+    iv[8] ^= (uint8_t)(index >> 40);
+    iv[9] ^= (uint8_t)(index >> 32);
+    iv[10] ^= (uint8_t)(index >> 24);
+    iv[11] ^= (uint8_t)(index >> 16);
+    iv[12] ^= (uint8_t)(index >> 8);
+    iv[13] ^= (uint8_t)(index);
 
     /* XOR salt at bytes 0-13 */
     for (int i = 0; i < NANORTC_SRTP_SALT_SIZE; i++) {

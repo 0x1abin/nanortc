@@ -1,6 +1,6 @@
 # Phase 2: Audio Support
 
-**Status:** Active — Session 2 complete
+**Status:** Active — Session 3 complete (browser audio verified)
 **Estimated effort:** 2-3 agent sessions (~1-2 days elapsed)
 **Goal:** Bidirectional audio between NanoRTC (ESP32) and browser
 
@@ -15,7 +15,8 @@
 - [x] RTCP NACK generation and handling
 - [x] Jitter buffer with configurable depth
 - [x] SDP audio m-line negotiation
-- [ ] Integration: bidirectional audio with browser
+- [x] Integration: nanortc → Chrome audio verified (Opus, 0% concealed samples)
+- [ ] Integration: Chrome → nanortc audio receive (bidirectional)
 - [ ] ESP32 example: audio intercom
 
 ## Implementation Steps
@@ -33,6 +34,7 @@
 | G.711 packetization | `nano_rtp.c` | RFC 3551 §4.5 |
 
 **Gate:** SRTP round-trip test, RTP pack/unpack tests in CI — **PASSED**
+**Post-gate fixes (Session 3):** SRTP IV computation (bytes 6-13, RFC 3711 §4.1.1), RTP marker=1 for first frame, random initial seq (RFC 3550), SDP ptime:20
 
 ### Step 2: RTCP + Jitter Buffer + SDP Audio (1 agent session) — **COMPLETE**
 
@@ -48,7 +50,7 @@
 | Consistency fixes | multiple | — | Done — byte-order helpers, config macros, types, logging |
 
 **Gate:** All 6 feature combos build + test — **PASSED**
-**Remaining:** Browser bidirectional audio verification (Step 3)
+**Remaining:** Chrome → nanortc receive path, ESP32 audio intercom (Step 3)
 
 ### Step 3: ESP32 example (1 agent session, optional — can parallel)
 

@@ -2,6 +2,7 @@ add_executable(browser_interop
     main.c
     http_signaling.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../common/run_loop_linux.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../common/media_source_file.c
 )
 
 target_include_directories(browser_interop PRIVATE

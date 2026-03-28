@@ -146,9 +146,15 @@ static void parse_rtpmap(nano_sdp_t *sdp, const char *line, size_t line_len)
     if (next == p || next >= end || *next != ' ') {
         return;
     }
-    p = next + 1; /* skip space */
 
-    sdp->audio_pt = (uint8_t)pt;
+    /* Only update fields for the preferred PT (first in m= line).
+     * Chrome offers multiple codecs (opus, red, G722, PCMU, PCMA, ...);
+     * we only want the primary one set by parse_audio_mline(). */
+    if ((uint8_t)pt != sdp->audio_pt) {
+        return;
+    }
+
+    p = next + 1; /* skip space */
 
     /* Skip codec name, find '/' */
     while (p < end && *p != '/') {
@@ -216,6 +222,7 @@ int sdp_parse(nano_sdp_t *sdp, const char *sdp_str, size_t len)
 
 #if NANORTC_HAVE_MEDIA_TRANSPORT
     int current_mline = SDP_MLINE_NONE;
+    int first_mline_type = SDP_MLINE_NONE; /* track which m-line appears first */
 #endif
 
     size_t pos = 0;
@@ -234,9 +241,17 @@ int sdp_parse(nano_sdp_t *sdp, const char *sdp_str, size_t len)
 #if NANORTC_HAVE_MEDIA_TRANSPORT
         if (line_starts_with(line, line_len, "m=application ")) {
             current_mline = SDP_MLINE_APPLICATION;
+            if (first_mline_type == SDP_MLINE_NONE) {
+                first_mline_type = SDP_MLINE_APPLICATION;
+            }
         } else if (line_starts_with(line, line_len, "m=audio ")) {
             current_mline = SDP_MLINE_AUDIO;
             sdp->has_audio = true;
+            if (first_mline_type == SDP_MLINE_NONE) {
+                first_mline_type = SDP_MLINE_AUDIO;
+            }
+            /* If audio came before application, record it */
+            sdp->audio_before_datachannel = (first_mline_type == SDP_MLINE_AUDIO);
             parse_audio_mline(sdp, line, line_len);
         } else if (line_len >= 2 && line[0] == 'm' && line[1] == '=') {
             current_mline = SDP_MLINE_NONE;
@@ -326,6 +341,163 @@ int sdp_parse(nano_sdp_t *sdp, const char *sdp_str, size_t len)
 }
 
 /* ================================================================
+ * Generator — m-line helpers
+ * ================================================================ */
+
+/** Append ICE/DTLS transport attributes shared by all m-lines (BUNDLE). */
+static bool sdp_append_transport_attrs(nano_sdp_t *sdp, char *buf, size_t buf_len, size_t *pos)
+{
+    if (!sdp_append(buf, buf_len, pos, "a=ice-ufrag:"))
+        return false;
+    if (!sdp_append(buf, buf_len, pos, sdp->local_ufrag))
+        return false;
+    if (!sdp_append(buf, buf_len, pos, "\r\n"))
+        return false;
+    if (!sdp_append(buf, buf_len, pos, "a=ice-pwd:"))
+        return false;
+    if (!sdp_append(buf, buf_len, pos, sdp->local_pwd))
+        return false;
+    if (!sdp_append(buf, buf_len, pos, "\r\n"))
+        return false;
+    if (sdp->local_fingerprint[0] != '\0') {
+        if (!sdp_append(buf, buf_len, pos, "a=fingerprint:"))
+            return false;
+        if (!sdp_append(buf, buf_len, pos, sdp->local_fingerprint))
+            return false;
+        if (!sdp_append(buf, buf_len, pos, "\r\n"))
+            return false;
+    }
+    {
+        const char *s = "a=setup:passive\r\n";
+        if (sdp->local_setup == NANORTC_SDP_SETUP_ACTIVE) {
+            s = "a=setup:active\r\n";
+        } else if (sdp->local_setup == NANORTC_SDP_SETUP_ACTPASS) {
+            s = "a=setup:actpass\r\n";
+        }
+        if (!sdp_append(buf, buf_len, pos, s))
+            return false;
+    }
+    return true;
+}
+
+/** Append local ICE candidate (RFC 8839 §5.1). Called once for the BUNDLE anchor m-line. */
+static bool sdp_append_candidate(nano_sdp_t *sdp, char *buf, size_t buf_len, size_t *pos)
+{
+    if (!sdp->has_local_candidate || sdp->local_candidate_ip[0] == '\0')
+        return true;
+    if (!sdp_append(buf, buf_len, pos, "a=candidate:1 1 UDP 2122252543 "))
+        return false;
+    if (!sdp_append(buf, buf_len, pos, sdp->local_candidate_ip))
+        return false;
+    if (!sdp_append(buf, buf_len, pos, " "))
+        return false;
+    if (!sdp_append_u16(buf, buf_len, pos, sdp->local_candidate_port))
+        return false;
+    if (!sdp_append(buf, buf_len, pos, " typ host\r\n"))
+        return false;
+    return true;
+}
+
+/** Append DataChannel (application) m-line block. */
+static bool sdp_append_datachannel_mline(nano_sdp_t *sdp, char *buf, size_t buf_len, size_t *pos,
+                                         const char *mid)
+{
+    if (!sdp_append(buf, buf_len, pos, "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n"))
+        return false;
+    if (!sdp_append(buf, buf_len, pos, "c=IN IP4 0.0.0.0\r\n"))
+        return false;
+    if (!sdp_append(buf, buf_len, pos, "a=mid:"))
+        return false;
+    if (!sdp_append(buf, buf_len, pos, mid))
+        return false;
+    if (!sdp_append(buf, buf_len, pos, "\r\n"))
+        return false;
+    if (!sdp_append(buf, buf_len, pos, "a=sendrecv\r\n"))
+        return false;
+    if (!sdp_append(buf, buf_len, pos, "a=ice-options:trickle\r\n"))
+        return false;
+    if (!sdp_append_transport_attrs(sdp, buf, buf_len, pos))
+        return false;
+#if NANORTC_FEATURE_DATACHANNEL
+    if (!sdp_append(buf, buf_len, pos, "a=sctp-port:"))
+        return false;
+    if (!sdp_append_u16(buf, buf_len, pos, sdp->local_sctp_port))
+        return false;
+    if (!sdp_append(buf, buf_len, pos, "\r\n"))
+        return false;
+    if (!sdp_append(buf, buf_len, pos, "a=max-message-size:262144\r\n"))
+        return false;
+#endif
+    return true;
+}
+
+#if NANORTC_HAVE_MEDIA_TRANSPORT
+/** Append audio m-line block. */
+static bool sdp_append_audio_mline(nano_sdp_t *sdp, char *buf, size_t buf_len, size_t *pos,
+                                   const char *mid)
+{
+    if (!sdp_append(buf, buf_len, pos, "m=audio 9 UDP/TLS/RTP/SAVPF "))
+        return false;
+    if (!sdp_append_u16(buf, buf_len, pos, (uint16_t)sdp->audio_pt))
+        return false;
+    if (!sdp_append(buf, buf_len, pos, "\r\n"))
+        return false;
+    if (!sdp_append(buf, buf_len, pos, "c=IN IP4 0.0.0.0\r\n"))
+        return false;
+    if (!sdp_append(buf, buf_len, pos, "a=mid:"))
+        return false;
+    if (!sdp_append(buf, buf_len, pos, mid))
+        return false;
+    if (!sdp_append(buf, buf_len, pos, "\r\n"))
+        return false;
+    /* Direction */
+    {
+        const char *dir_str = "a=sendrecv\r\n";
+        if (sdp->audio_direction == NANORTC_DIR_SENDONLY) {
+            dir_str = "a=sendonly\r\n";
+        } else if (sdp->audio_direction == NANORTC_DIR_RECVONLY) {
+            dir_str = "a=recvonly\r\n";
+        } else if (sdp->audio_direction == NANORTC_DIR_INACTIVE) {
+            dir_str = "a=inactive\r\n";
+        }
+        if (!sdp_append(buf, buf_len, pos, dir_str))
+            return false;
+    }
+    if (!sdp_append_transport_attrs(sdp, buf, buf_len, pos))
+        return false;
+    if (!sdp_append(buf, buf_len, pos, "a=rtcp-mux\r\n"))
+        return false;
+    /* a=rtpmap */
+    if (!sdp_append(buf, buf_len, pos, "a=rtpmap:"))
+        return false;
+    if (!sdp_append_u16(buf, buf_len, pos, (uint16_t)sdp->audio_pt))
+        return false;
+    {
+        const char *codec_str = " opus/48000/2";
+        if (sdp->audio_sample_rate == 8000 && sdp->audio_channels <= 1) {
+            codec_str = " PCMU/8000";
+        }
+        if (!sdp_append(buf, buf_len, pos, codec_str))
+            return false;
+    }
+    if (!sdp_append(buf, buf_len, pos, "\r\n"))
+        return false;
+    /* a=fmtp (Opus decoder hints, RFC 7587 §6.1) */
+    if (sdp->audio_sample_rate == 48000) {
+        if (!sdp_append(buf, buf_len, pos, "a=fmtp:"))
+            return false;
+        if (!sdp_append_u16(buf, buf_len, pos, (uint16_t)sdp->audio_pt))
+            return false;
+        if (!sdp_append(buf, buf_len, pos, " minptime=10;useinbandfec=1;stereo=1\r\n"))
+            return false;
+        if (!sdp_append(buf, buf_len, pos, "a=ptime:20\r\n"))
+            return false;
+    }
+    return true;
+}
+#endif /* NANORTC_HAVE_MEDIA_TRANSPORT */
+
+/* ================================================================
  * Generator
  * ================================================================ */
 
@@ -359,119 +531,40 @@ int sdp_generate_answer(nano_sdp_t *sdp, char *buf, size_t buf_len, size_t *out_
             goto overflow;
     }
 
-    /* First m-line: DataChannel or DTLS-only bundle anchor (MID=0) */
-    if (!sdp_append(buf, buf_len, &pos, "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n"))
-        goto overflow;
-    if (!sdp_append(buf, buf_len, &pos, "c=IN IP4 0.0.0.0\r\n"))
-        goto overflow;
-    if (!sdp_append(buf, buf_len, &pos, "a=mid:0\r\n"))
-        goto overflow;
-    if (!sdp_append(buf, buf_len, &pos, "a=sendrecv\r\n"))
-        goto overflow;
-    if (!sdp_append(buf, buf_len, &pos, "a=ice-options:trickle\r\n"))
-        goto overflow;
-
-    /* ICE credentials */
-    if (!sdp_append(buf, buf_len, &pos, "a=ice-ufrag:"))
-        goto overflow;
-    if (!sdp_append(buf, buf_len, &pos, sdp->local_ufrag))
-        goto overflow;
-    if (!sdp_append(buf, buf_len, &pos, "\r\n"))
-        goto overflow;
-
-    if (!sdp_append(buf, buf_len, &pos, "a=ice-pwd:"))
-        goto overflow;
-    if (!sdp_append(buf, buf_len, &pos, sdp->local_pwd))
-        goto overflow;
-    if (!sdp_append(buf, buf_len, &pos, "\r\n"))
-        goto overflow;
-
-    /* Fingerprint */
-    if (sdp->local_fingerprint[0] != '\0') {
-        if (!sdp_append(buf, buf_len, &pos, "a=fingerprint:"))
+    /* m-lines: order must match the parsed offer (RFC 8829 §5.3.1).
+     * Chrome puts media transceivers before data channels, so audio
+     * may be MID=0 and datachannel MID=1.
+     * ICE candidate goes in the first m-line (BUNDLE anchor). */
+#if NANORTC_HAVE_MEDIA_TRANSPORT
+    if (sdp->has_audio && sdp->audio_before_datachannel) {
+        /* Audio first (MID=0), datachannel second (MID=1) */
+        if (!sdp_append_audio_mline(sdp, buf, buf_len, &pos, "0"))
             goto overflow;
-        if (!sdp_append(buf, buf_len, &pos, sdp->local_fingerprint))
+        if (!sdp_append_candidate(sdp, buf, buf_len, &pos))
             goto overflow;
-        if (!sdp_append(buf, buf_len, &pos, "\r\n"))
+        if (!sdp_append_datachannel_mline(sdp, buf, buf_len, &pos, "1"))
+            goto overflow;
+    } else if (sdp->has_audio) {
+        /* Datachannel first (MID=0), audio second (MID=1) */
+        if (!sdp_append_datachannel_mline(sdp, buf, buf_len, &pos, "0"))
+            goto overflow;
+        if (!sdp_append_candidate(sdp, buf, buf_len, &pos))
+            goto overflow;
+        if (!sdp_append_audio_mline(sdp, buf, buf_len, &pos, "1"))
+            goto overflow;
+    } else {
+        /* Datachannel only (MID=0) */
+        if (!sdp_append_datachannel_mline(sdp, buf, buf_len, &pos, "0"))
+            goto overflow;
+        if (!sdp_append_candidate(sdp, buf, buf_len, &pos))
             goto overflow;
     }
-
-    /* Setup role */
-    {
-        const char *setup_str = "a=setup:passive\r\n";
-        if (sdp->local_setup == NANORTC_SDP_SETUP_ACTIVE) {
-            setup_str = "a=setup:active\r\n";
-        } else if (sdp->local_setup == NANORTC_SDP_SETUP_ACTPASS) {
-            setup_str = "a=setup:actpass\r\n";
-        }
-        if (!sdp_append(buf, buf_len, &pos, setup_str))
-            goto overflow;
-    }
-
-#if NANORTC_FEATURE_DATACHANNEL
-    /* SCTP port */
-    if (!sdp_append(buf, buf_len, &pos, "a=sctp-port:"))
+#else
+    if (!sdp_append_datachannel_mline(sdp, buf, buf_len, &pos, "0"))
         goto overflow;
-    if (!sdp_append_u16(buf, buf_len, &pos, sdp->local_sctp_port))
-        goto overflow;
-    if (!sdp_append(buf, buf_len, &pos, "\r\n"))
-        goto overflow;
-
-    /* Max message size */
-    if (!sdp_append(buf, buf_len, &pos, "a=max-message-size:262144\r\n"))
+    if (!sdp_append_candidate(sdp, buf, buf_len, &pos))
         goto overflow;
 #endif
-
-    /* Local ICE candidate (RFC 8839 §5.1) */
-    if (sdp->has_local_candidate && sdp->local_candidate_ip[0] != '\0') {
-        if (!sdp_append(buf, buf_len, &pos, "a=candidate:1 1 UDP 2122252543 "))
-            goto overflow;
-        if (!sdp_append(buf, buf_len, &pos, sdp->local_candidate_ip))
-            goto overflow;
-        if (!sdp_append(buf, buf_len, &pos, " "))
-            goto overflow;
-        if (!sdp_append_u16(buf, buf_len, &pos, sdp->local_candidate_port))
-            goto overflow;
-        if (!sdp_append(buf, buf_len, &pos, " typ host\r\n"))
-            goto overflow;
-    }
-
-#if NANORTC_HAVE_MEDIA_TRANSPORT
-    /* Audio m-line (MID=1) */
-    if (sdp->has_audio) {
-        if (!sdp_append(buf, buf_len, &pos, "m=audio 9 UDP/TLS/RTP/SAVPF "))
-            goto overflow;
-        if (!sdp_append_u16(buf, buf_len, &pos, (uint16_t)sdp->audio_pt))
-            goto overflow;
-        if (!sdp_append(buf, buf_len, &pos, "\r\n"))
-            goto overflow;
-
-        if (!sdp_append(buf, buf_len, &pos, "c=IN IP4 0.0.0.0\r\n"))
-            goto overflow;
-        if (!sdp_append(buf, buf_len, &pos, "a=mid:1\r\n"))
-            goto overflow;
-        if (!sdp_append(buf, buf_len, &pos, "a=sendrecv\r\n"))
-            goto overflow;
-
-        /* a=rtpmap:<pt> <codec>/<rate>/<channels> */
-        if (!sdp_append(buf, buf_len, &pos, "a=rtpmap:"))
-            goto overflow;
-        if (!sdp_append_u16(buf, buf_len, &pos, (uint16_t)sdp->audio_pt))
-            goto overflow;
-
-        /* Determine codec name from sample rate/channels */
-        {
-            const char *codec_str = " opus/48000/2";
-            if (sdp->audio_sample_rate == 8000 && sdp->audio_channels <= 1) {
-                codec_str = " PCMU/8000";
-            }
-            if (!sdp_append(buf, buf_len, &pos, codec_str))
-                goto overflow;
-        }
-        if (!sdp_append(buf, buf_len, &pos, "\r\n"))
-            goto overflow;
-    }
-#endif /* NANORTC_HAVE_MEDIA_TRANSPORT */
 
     *out_len = pos;
     NANORTC_LOGD("SDP", "answer generated");

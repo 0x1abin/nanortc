@@ -119,7 +119,7 @@ int nano_run_loop_step(nano_run_loop_t *loop)
         return -1;
     }
 
-    uint32_t timeout_ms = 100; /* default poll interval */
+    uint32_t timeout_ms = loop->max_poll_ms ? loop->max_poll_ms : 100;
 
     /* Drain output queue */
     dispatch_outputs(loop, &timeout_ms);
