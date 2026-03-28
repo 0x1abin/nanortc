@@ -38,6 +38,12 @@ typedef enum {
 
 /* ICE_MAX_CHECKS is now NANORTC_ICE_MAX_CHECKS in nanortc_config.h */
 
+typedef struct nano_ice_candidate {
+    uint8_t addr[NANORTC_ADDR_SIZE];
+    uint16_t port;
+    uint8_t family; /* 4 = IPv4, 6 = IPv6 */
+} nano_ice_candidate_t;
+
 typedef struct nano_ice {
     nano_ice_state_t state;
     int is_controlling; /* 0 = controlled (answerer), 1 = controlling (offerer) */
@@ -62,11 +68,7 @@ typedef struct nano_ice {
     bool nominated;                    /* selected pair nominated */
 
     /* Remote candidates array (trickle ICE support) */
-    struct {
-        uint8_t addr[NANORTC_ADDR_SIZE];
-        uint16_t port;
-        uint8_t family; /* 4 = IPv4, 6 = IPv6 */
-    } remote_candidates[NANORTC_MAX_ICE_CANDIDATES];
+    nano_ice_candidate_t remote_candidates[NANORTC_MAX_ICE_CANDIDATES];
     uint8_t remote_candidate_count;
     uint8_t current_candidate; /* index of candidate currently being checked */
 } nano_ice_t;

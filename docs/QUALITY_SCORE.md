@@ -19,7 +19,7 @@ Per-module quality grades for NanoRTC. Updated as implementation progresses.
 
 | Module | File | Grade | Tests | Notes |
 |--------|------|-------|-------|-------|
-| Main FSM | `nano_rtc.c` | **B-** | init/destroy, poll, demux, timeout, ICE→DTLS→SCTP→DC pipeline | RFC 7983 demux, full pipeline integration, SCTP timeout pump, remote candidate API. Stubs: `create_offer`, `accept_answer`. |
+| Main FSM | `nano_rtc.c` | **B** | 19 e2e tests: init, demux, ICE→DTLS→SCTP→DC pipeline, offer/answer roundtrip, DC create/close/label, graceful close, state transitions, ICE multi-candidate | RFC 7983 demux, full pipeline integration, all public API implemented. Refactored: 5 static helpers eliminate duplication. ICE_STATE_CHANGE events emitted. |
 | STUN codec | `nano_stun.c` | **B** | 40 tests (RFC 5769 vectors, str0m, roundtrip, edge cases) | Full parser/encoder, MI (HMAC-SHA1), FP (CRC-32), ERROR-CODE. Safe byte access. |
 | ICE | `nano_ice.c` | **B** | 17 tests (§7.1.1, §7.2.1, §7.3, §8, credentials) | Dual-role FSM, controlled + controlling, pacing, nomination |
 | DTLS | `nano_dtls.c` | **B** | 9 tests (handshake loopback, encrypt/decrypt, keying material, fingerprint) | Sans I/O BIO adapter, ECDSA P-256 self-signed cert, RFC 5764 key export |
@@ -50,8 +50,8 @@ Per-module quality grades for NanoRTC. Updated as implementation progresses.
 |-----------|-------|-------|
 | Crypto provider interface | **B** | Interface complete; HMAC-SHA1 + CSPRNG + DTLS + AES-128-CM + HMAC-SHA1-80 (both backends) |
 | Build system (CMake) | **B** | 3 profiles, 2 crypto backends, ESP-IDF detection, `-fvisibility=hidden` |
-| Test infrastructure | **B** | Shared macros (`nano_test.h`), 130+ tests across 11 suites, RFC 5769/3711 vectors, e2e ICE+DTLS loopback |
-| Interop test framework | **B** | libdatachannel v0.22.5 as reference peer, 5 interop tests all pass (handshake, DC open, text/binary). SDP compat fixed (commit `4b5f7bb`). |
+| Test infrastructure | **B** | Shared macros (`nano_test.h`), 140+ tests across 11 suites, RFC 5769/3711 vectors, e2e ICE+DTLS loopback, full public API coverage |
+| Interop test framework | **B** | libdatachannel v0.22.5 as reference peer, 5 interop tests all pass (handshake, DC open, text/binary). SDP compat fixed (commit `4d143f2`). |
 | CI pipeline | **B** | GitHub Actions: 3-profile × 2-crypto matrix, constraints, ASan. Local: `scripts/ci-check.sh` |
 | Examples | **C** | Linux datachannel + media_send templates + browser interop (HTTP signaling + `signaling_server.py`). ESP32 example planned (HTTP signaling, reusing `http_signaling.c`). Not yet tested with real connections. |
 | Documentation | **B** | AGENTS.md, ARCHITECTURE.md, exec plans, quality scores, core beliefs, RFC index |
@@ -73,7 +73,7 @@ Per-module quality grades for NanoRTC. Updated as implementation progresses.
 3. ~~DTLS handshake needs real implementation (D → B)~~ **DONE** — Sans I/O BIO adapter + both crypto backends
 4. ~~SCTP, DataChannel, SDP all still D~~ **DONE** — All at B- with full codec, FSM, tests
 5. ~~No interop testing framework~~ **DONE** — libdatachannel interop framework with 5 test cases
-6. ~~Interop tests must all pass~~ **DONE** — 5/5 pass after SDP compat fix (commit `4b5f7bb`)
+6. ~~Interop tests must all pass~~ **DONE** — 5/5 pass after SDP compat fix (commit `4d143f2`)
 7. Browser end-to-end validation — Phase 1 remaining milestone (human gate)
 8. ESP32 hardware validation — Phase 1 remaining milestone (HTTP signaling, reusing `http_signaling.c`)
 
