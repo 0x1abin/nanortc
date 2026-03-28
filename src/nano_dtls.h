@@ -1,5 +1,6 @@
 /*
  * nanortc — DTLS state machine internal interface (RFC 6347)
+ * @internal Not part of the public API.
  *
  * Sans I/O BIO adapter: bridges crypto providers (mbedtls/OpenSSL)
  * with NanoRTC's buffer-based event loop.

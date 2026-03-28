@@ -1,5 +1,6 @@
 /*
  * nanortc — RTP packing/unpacking internal interface (RFC 3550)
+ * @internal Not part of the public API.
  *
  * SPDX-License-Identifier: MIT
  */

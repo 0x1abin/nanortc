@@ -1,5 +1,6 @@
 /*
  * nanortc — ICE internal interface (RFC 8445)
+ * @internal Not part of the public API.
  *
  * Supports two roles:
  *   CONTROLLED (answerer)  — respond to incoming STUN checks (ICE-Lite)

@@ -1,5 +1,6 @@
 /*
  * nanortc — Internal logging macros
+ * @internal Not part of the public API.
  *
  * Include this header in src/ .c files that need logging.
  * The user-facing types are in nanortc.h; this header provides

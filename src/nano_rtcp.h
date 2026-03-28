@@ -1,5 +1,6 @@
 /*
  * nanortc — RTCP internal interface (RFC 3550 / RFC 4585)
+ * @internal Not part of the public API.
  *
  * SPDX-License-Identifier: MIT
  */

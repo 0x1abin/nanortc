@@ -1,5 +1,6 @@
 /*
  * nanortc — SDP parser/generator internal interface (RFC 8866)
+ * @internal Not part of the public API.
  *
  * Reference: RFC 8829 (WebRTC SDP).
  *

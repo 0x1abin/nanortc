@@ -1,5 +1,6 @@
 /*
  * nanortc — Jitter buffer internal interface
+ * @internal Not part of the public API.
  *
  * Fixed-size ring buffer indexed by RTP sequence number.
  * Reorders out-of-order packets and adds playout delay.

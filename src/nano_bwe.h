@@ -1,5 +1,6 @@
 /*
  * nanortc — Bandwidth estimation internal interface (MEDIA profile)
+ * @internal Not part of the public API.
  *
  * SPDX-License-Identifier: MIT
  */

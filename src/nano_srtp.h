@@ -1,5 +1,6 @@
 /*
  * nanortc — SRTP encryption/decryption internal interface (RFC 3711)
+ * @internal Not part of the public API.
  *
  * SPDX-License-Identifier: MIT
  */

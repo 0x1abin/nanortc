@@ -1,5 +1,6 @@
 /*
  * nanortc — CRC-32 (ISO HDLC) for STUN FINGERPRINT (RFC 8489 §14.7)
+ * @internal Not part of the public API.
  *
  * NOT the same as CRC-32c (Castagnoli) used by SCTP.
  * Polynomial: 0xEDB88320 (reflected) / 0x04C11DB7 (normal)

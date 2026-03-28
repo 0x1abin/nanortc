@@ -1,5 +1,6 @@
 /*
  * nanortc — STUN message codec internal interface (RFC 8489)
+ * @internal Not part of the public API.
  *
  * SPDX-License-Identifier: MIT
  */

@@ -1,5 +1,6 @@
 /*
  * nanortc — DataChannel / DCEP internal interface (RFC 8831, RFC 8832)
+ * @internal Not part of the public API.
  *
  * Reference: str0m src/sctp/dcep.rs (message format).
  *

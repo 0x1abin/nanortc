@@ -1,5 +1,6 @@
 /*
  * nanortc — SCTP-Lite internal interface (RFC 4960, RFC 3758)
+ * @internal Not part of the public API.
  *
  * Minimal SCTP for WebRTC DataChannel over DTLS.
  * Reference: str0m sctp/mod.rs (Sans I/O).

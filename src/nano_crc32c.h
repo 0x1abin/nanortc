@@ -1,5 +1,6 @@
 /*
  * nanortc — CRC-32c for SCTP checksums
+ * @internal Not part of the public API.
  *
  * SPDX-License-Identifier: MIT
  */
