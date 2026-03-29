@@ -26,9 +26,13 @@
 /* ----------------------------------------------------------------
  * ESP-IDF Kconfig mapping
  *
- * When built as an ESP-IDF component, sdkconfig.h is auto-included
- * by the toolchain. Map CONFIG_NANORTC_* to NANORTC_* macros.
+ * Include sdkconfig.h to access CONFIG_NANORTC_* Kconfig values.
+ * Map CONFIG_NANORTC_* to NANORTC_* macros.
  * ---------------------------------------------------------------- */
+
+#if defined(IDF_VER) || defined(ESP_PLATFORM)
+#include "sdkconfig.h"
+#endif
 
 #if defined(CONFIG_NANORTC_MAX_DATACHANNELS) && !defined(NANORTC_MAX_DATACHANNELS)
 #define NANORTC_MAX_DATACHANNELS CONFIG_NANORTC_MAX_DATACHANNELS

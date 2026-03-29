@@ -200,10 +200,49 @@ class ThreadedHTTPServer(HTTPServer):
             self.shutdown_request(request)
 
 
+def discovery_listener(http_port, discovery_port=19730):
+    """UDP broadcast listener for ESP32 auto-discovery.
+
+    Protocol (19 bytes fixed):
+      Request:  "NANORTC_DISCOVER" (16B) + version(1B) + port(2B big-endian)
+      Response: "NANORTC_FOUND\\0\\0\\0" (16B) + version(1B) + port(2B big-endian)
+    """
+    import socket as _socket
+    sock = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+    sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+    try:
+        sock.bind(("0.0.0.0", discovery_port))
+    except OSError as e:
+        print(f"[discovery] Cannot bind UDP port {discovery_port}: {e}")
+        return
+    print(f"[discovery] Listening on UDP port {discovery_port}")
+    while True:
+        try:
+            data, addr = sock.recvfrom(64)
+            if len(data) >= 19 and data[:16] == b"NANORTC_DISCOVER":
+                resp = (b"NANORTC_FOUND\x00\x00\x00"
+                        + bytes([1])
+                        + http_port.to_bytes(2, "big"))
+                sock.sendto(resp, addr)
+                print(f"[discovery] Replied to {addr[0]}:{addr[1]}"
+                      f" (HTTP port={http_port})")
+        except Exception as e:
+            print(f"[discovery] Error: {e}")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="HTTP signaling relay")
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--discovery-port", type=int, default=19730,
+                        help="UDP port for ESP32 auto-discovery (0 to disable)")
     args = parser.parse_args()
+
+    # Start UDP discovery listener in background
+    if args.discovery_port > 0:
+        dt = threading.Thread(target=discovery_listener,
+                              args=(args.port, args.discovery_port),
+                              daemon=True)
+        dt.start()
 
     print(f"[sig] Signaling server on http://0.0.0.0:{args.port}")
     print(f"[sig]   Browser UI:  http://localhost:{args.port}/")

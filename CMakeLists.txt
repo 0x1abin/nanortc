@@ -12,11 +12,34 @@ if(DEFINED ENV{IDF_PATH})
         src/nano_crc32.c
         crypto/nanortc_crypto_mbedtls.c
     )
-    # Feature-conditional sources added via Kconfig (see nanortc_config.h)
+
+    # DataChannel sources (conditional on Kconfig)
+    if(CONFIG_NANORTC_FEATURE_DATACHANNEL)
+        list(APPEND NANORTC_CORE_SRCS
+            src/nano_sctp.c
+            src/nano_datachannel.c
+            src/nano_crc32c.c
+        )
+    endif()
+
+    # Media transport (conditional on Kconfig)
+    if(CONFIG_NANORTC_FEATURE_AUDIO OR CONFIG_NANORTC_FEATURE_VIDEO)
+        list(APPEND NANORTC_CORE_SRCS
+            src/nano_rtp.c
+            src/nano_rtcp.c
+            src/nano_srtp.c
+        )
+    endif()
+    if(CONFIG_NANORTC_FEATURE_AUDIO)
+        list(APPEND NANORTC_CORE_SRCS src/nano_jitter.c)
+    endif()
+    if(CONFIG_NANORTC_FEATURE_VIDEO)
+        list(APPEND NANORTC_CORE_SRCS src/nano_bwe.c)
+    endif()
+
     idf_component_register(
         SRCS ${NANORTC_CORE_SRCS}
-        INCLUDE_DIRS include
-        PRIV_INCLUDE_DIRS src crypto
+        INCLUDE_DIRS include src crypto
         REQUIRES mbedtls
     )
     return()

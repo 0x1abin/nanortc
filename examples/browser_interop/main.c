@@ -73,6 +73,7 @@ static void on_event(nanortc_t *rtc, const nanortc_event_t *evt, void *userdata)
 
     case NANORTC_EVENT_DATACHANNEL_OPEN:
         fprintf(stderr, "[event] DataChannel open (stream=%d)\n", evt->stream_id);
+        nanortc_send_datachannel_string(rtc, evt->stream_id, "hello");
         break;
 
     case NANORTC_EVENT_DATACHANNEL_DATA:

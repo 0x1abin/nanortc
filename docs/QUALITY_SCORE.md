@@ -53,14 +53,14 @@ Per-module quality grades for NanoRTC. Updated as implementation progresses.
 | Test infrastructure | **B** | Shared macros (`nano_test.h`), 140+ tests across 11 suites, RFC 5769/3711 vectors, e2e ICE+DTLS loopback, full public API coverage |
 | Interop test framework | **B** | libdatachannel v0.22.5 as reference peer, 5 interop tests all pass (handshake, DC open, text/binary). SDP compat fixed (commit `4d143f2`). |
 | CI pipeline | **B** | GitHub Actions: 3-profile × 2-crypto matrix, constraints, ASan. Local: `scripts/ci-check.sh` |
-| Examples | **B-** | Linux datachannel + media_send templates + browser interop (HTTP signaling + `signaling_server.py`). Browser audio verified: Opus → Chrome with 0% concealed samples. Includes opus_verify + opus_gen_tone tools. ESP32 example planned. |
+| Examples | **B** | Linux datachannel + media_send templates + browser interop (HTTP signaling + `signaling_server.py`). Browser audio verified: Opus → Chrome with 0% concealed samples. Includes opus_verify + opus_gen_tone tools. ESP32 DataChannel example verified (WiFi + Discovery + ICE/DTLS/SCTP/DC echo, ESP32-S3). |
 | Documentation | **B** | AGENTS.md, ARCHITECTURE.md, exec plans, quality scores, core beliefs, RFC index |
 
 ## Quality Targets
 
 | Phase | Target |
 |-------|--------|
-| Phase 1 complete | All core modules at **B** or above + all interop tests pass ✓ + browser & ESP32 integration verified |
+| Phase 1 complete | All core modules at **B** or above + all interop tests pass ✓ + browser & ESP32 integration verified ✓ |
 | Phase 2 complete | All audio modules at **B** or above |
 | Phase 3 complete | All modules at **B** or above |
 | Phase 4 | All modules at **A** (fuzz-tested, browser-verified, interop-verified) |
@@ -75,10 +75,10 @@ Per-module quality grades for NanoRTC. Updated as implementation progresses.
 5. ~~No interop testing framework~~ **DONE** — libdatachannel interop framework with 5 test cases
 6. ~~Interop tests must all pass~~ **DONE** — 5/5 pass after SDP compat fix (commit `4d143f2`)
 7. ~~Browser end-to-end validation~~ **DONE** — DataChannel + Audio (Opus → Chrome) verified via browser_interop example
-8. ESP32 hardware validation — Phase 1 remaining milestone (HTTP signaling, reusing `http_signaling.c`)
+8. ~~ESP32 hardware validation~~ **DONE** — ESP32-S3 DataChannel echo verified (WiFi + UDP Discovery + ICE/DTLS/SCTP/DC, HTTP signaling via `http_signaling.c`)
 
 **Acceptable gaps (address in later phases):**
 1. No fuzz testing yet (Phase 4)
-2. No ESP32 hardware validation yet (Phase 1 — HTTP signaling via `http_signaling.c`)
+2. ~~No ESP32 hardware validation yet~~ **DONE** (see gap #8)
 3. No code coverage measurement (Phase 4)
 4. SCTP gap tracking / RECONFIG not yet implemented (needed for robust browser interop)

@@ -246,3 +246,10 @@ Entering event loop...
 | Stuck at "ICE connected" | DTLS handshake failure | Check `dtls_set_role` implementation for your crypto backend |
 | No ICE candidates | Browser uses mDNS candidates | Ensure STUN server is reachable, or test on same machine |
 | `Signaling error waiting for offer` | Browser didn't connect in time | Start nanortc first, then click Connect in browser within ~10s |
+
+## ESP32 Interop
+
+The same signaling server and protocol work with the ESP32 DataChannel example.
+The ESP32 acts as answerer while the browser or Linux CLI acts as offerer.
+
+See [`../esp32_datachannel/README.md`](../esp32_datachannel/README.md) for setup instructions.

@@ -1,6 +1,6 @@
 # Phase 1: DataChannel End-to-End
 
-**Status:** Code Complete — interop tests pass (5/5), browser + ESP32 integration pending
+**Status:** Complete — interop tests pass (5/5), browser + ESP32-S3 DataChannel verified
 **Estimated effort:** 4-6 agent sessions (~2-4 days elapsed)
 **Goal:** NanoRTC ↔ browser DataChannel communication working on ESP32
 
@@ -34,8 +34,8 @@ NanoRTC uses AI coding agents for implementation. Time estimates use **agent ses
 - [x] `test_interop_dc_binary` — Binary data from libdatachannel → nanortc
 
 ### Integration tests (human gate)
-- [ ] Integration test: NanoRTC ↔ browser on Linux (`examples/linux_datachannel`)
-- [ ] ESP32 example: HTTP signaling + DataChannel echo (`examples/esp32_datachannel/`)
+- [x] Integration test: NanoRTC ↔ browser on Linux (`examples/browser_interop/`)
+- [x] ESP32 example: HTTP signaling + DataChannel echo (`examples/esp32_datachannel/`, ESP32-S3-DevKitC-1, ESP-IDF v6.0)
 
 ## Implementation Steps
 
@@ -242,9 +242,31 @@ SCTP is the most complex module (~2500 lines). May need multiple sessions.
 - `test_interop_dc_string_nanortc_to_libdatachannel` — Text message nanortc → libdatachannel
 - `test_interop_dc_binary` — Binary payload (256 bytes) libdatachannel → nanortc
 
-**Status:** All 5 interop tests pass (`ctest -R interop`, ~6s). SDP compatibility fixed in commit `4b5f7bb`. Remaining: browser integration (human gate) and ESP32 hardware test.
+**Status:** All 5 interop tests pass (`ctest -R interop`, ~6s). SDP compatibility fixed in commit `4b5f7bb`.
 
 **Files created:** tests/interop/ (8 new files), CMakeLists.txt modified
+
+### Step 6: Browser + ESP32 Integration (Completed 2026-03-29, 2 sessions)
+
+**Implemented:**
+- Browser interop example (`examples/browser_interop/`): HTTP signaling + `signaling_server.py` with UDP auto-discovery, `index.html` browser UI
+- ESP32 DataChannel example (`examples/esp32_datachannel/`): WiFi → UDP Discovery → HTTP signaling → ICE/DTLS/SCTP/DC echo
+- `http_signaling.c` reused across Linux and ESP32 (`#ifdef ESP_PLATFORM` for `esp_http_client`)
+- `run_loop_esp.c` with lwIP sockets for ESP32 event loop
+- `udp_discovery.c` for zero-config signaling server discovery on LAN
+- `Kconfig.projbuild` for ESP-IDF menuconfig (WiFi, signaling, UDP port config)
+- `nanortc_config.h` maps `CONFIG_NANORTC_*` → `NANORTC_*` via Kconfig
+- mbedTLS 4.x compatibility (ESP-IDF v6.0 ships mbedTLS 4)
+- Automated E2E test script (`tests/esp32/test_esp32_dc.py`)
+
+**Verified on:**
+- ESP32-S3-DevKitC-1 (N8R2), ESP-IDF v6.0
+- Full pipeline: WiFi connect → UDP discovery → HTTP signaling join → SDP offer/answer → ICE → DTLS → SCTP → DataChannel open → echo string/binary
+
+**Key decisions:**
+- HTTP signaling over MQTT: zero external deps, unified flow with `signaling_server.py`
+- lwIP sockets instead of POSIX: stable across ESP-IDF versions, avoids `MSG_NOSIGNAL` / `<netdb.h>` portability issues
+- USB-JTAG console (`CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y`) for ESP32-S3 serial output
 
 ## Risks
 
