@@ -381,9 +381,12 @@
  * Media transport configuration
  * ---------------------------------------------------------------- */
 
-/* Media scratch buffer size (for RTP/SRTP processing) */
+/* Media scratch buffer size (for RTP/SRTP processing).
+ * 1200 bytes matches NANORTC_VIDEO_MTU — sufficient for any RTP-over-DTLS
+ * packet within a typical UDP MTU.  Increase to 1500 if jumbo payloads are
+ * expected. */
 #ifndef NANORTC_MEDIA_BUF_SIZE
-#define NANORTC_MEDIA_BUF_SIZE 1500
+#define NANORTC_MEDIA_BUF_SIZE 1200
 #endif
 
 /* RTCP send interval in milliseconds (RFC 3550 §6.2) */
@@ -418,9 +421,12 @@
 #define NANORTC_JITTER_SLOTS 64
 #endif
 
-/* Maximum RTP packet data per jitter slot (bytes) */
+/* Maximum RTP payload data per jitter slot (bytes).
+ * 640 covers Opus 20ms @ 510 kbps (extreme) and all common audio codecs.
+ * Opus 20ms @ 128 kbps ≈ 320 B, G.711 20ms = 160 B.
+ * Increase for wideband video-over-jitter or unusually large audio frames. */
 #ifndef NANORTC_JITTER_SLOT_DATA_SIZE
-#define NANORTC_JITTER_SLOT_DATA_SIZE 1500
+#define NANORTC_JITTER_SLOT_DATA_SIZE 640
 #endif
 
 /* ----------------------------------------------------------------

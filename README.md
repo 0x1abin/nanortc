@@ -25,11 +25,17 @@ NanoRTC is a WebRTC protocol stack designed from the ground up for resource-cons
 
 - **Orthogonal feature flags** — Include only what you need:
 
-| Flag | What it adds | Flash | RAM (1 conn) |
-|------|-------------|-------|-------------|
-| `NANORTC_FEATURE_DATACHANNEL` | SCTP + DCEP DataChannels | ~80 KB | ~60 KB |
-| `+ NANORTC_FEATURE_AUDIO` | RTP/SRTP, jitter buffer | ~130 KB | ~100 KB |
-| `+ NANORTC_FEATURE_VIDEO` | H.264/VP8, bandwidth estimation | ~180 KB | ~160 KB |
+| Configuration | Flash (.text) | RAM (sizeof) | Flags |
+|--------------|---------------|-------------|-------|
+| Core only | 16.5 KB | 10.0 KB | DC=OFF AUDIO=OFF VIDEO=OFF |
+| DataChannel | 27.9 KB | 19.7 KB | DC=ON |
+| Audio only | 25.1 KB | 32.7 KB | DC=OFF AUDIO=ON |
+| DataChannel + Audio | 36.4 KB | 42.4 KB | DC=ON AUDIO=ON |
+| Media only (no DC) | 27.4 KB | 74.1 KB | DC=OFF AUDIO=ON VIDEO=ON |
+| Full media | 38.7 KB | 83.8 KB | DC=ON AUDIO=ON VIDEO=ON |
+
+> Measured on ESP32-P4 (RISC-V HP), mbedTLS, -O2.
+> `sizeof(nanortc_t)` is the full per-connection RAM — no heap allocation.
 
 Any combination works — audio without DataChannel, video without audio, etc.
 
@@ -162,7 +168,7 @@ examples/                   Linux application templates
   linux_datachannel/        DataChannel echo server
   linux_media_send/         H.264/Opus sender from sample files
   sample_data/              Media samples (git submodule)
-browser_interop/            Browser-based interop test harness
+  browser_interop/          Browser-based interop test harness
 docs/                       Design docs, execution plans, engineering standards
 ```
 
@@ -196,7 +202,7 @@ The repository structure itself is designed for agent legibility: [AGENTS.md](AG
 
 ## Contributing
 
-NanoRTC is in active development — Phase 1 code complete (DataChannel: 140+ unit tests, 5/5 interop pass with libdatachannel), Phase 2 audio in progress.
+NanoRTC is in active development — Phase 1 (DataChannel) and Phase 2 (Audio) complete, Phase 3 (Video/H.264) in progress. All features interop-tested against libdatachannel and browser WebRTC.
 
 Contributions welcome. Please read [AGENTS.md](AGENTS.md) for build instructions and mandatory rules before submitting changes.
 

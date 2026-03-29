@@ -87,19 +87,22 @@ menu "NanoRTC Configuration"
 
     config NANORTC_SCTP_SEND_BUF_SIZE
         int "SCTP send buffer size (bytes)"
-        default 65536
+        default 4096
         range 4096 262144
         depends on NANORTC_FEATURE_DATACHANNEL
         help
             Size of the SCTP send buffer for outgoing DataChannel messages.
+            Aligned with nanortc_config.h default. Increase for high-throughput
+            DataChannel use cases.
 
     config NANORTC_SCTP_RECV_BUF_SIZE
         int "SCTP receive buffer size (bytes)"
-        default 65536
+        default 4096
         range 4096 262144
         depends on NANORTC_FEATURE_DATACHANNEL
         help
             Size of the SCTP receive buffer for incoming DataChannel messages.
+            Aligned with nanortc_config.h default.
 
     config NANORTC_OUT_QUEUE_SIZE
         int "Output event queue depth"
@@ -108,6 +111,26 @@ menu "NanoRTC Configuration"
         help
             Depth of the output event ring buffer. Must be a power of 2.
 
+    config NANORTC_MEDIA_BUF_SIZE
+        int "Media scratch buffer size (bytes)"
+        default 1200
+        range 256 4096
+        depends on NANORTC_FEATURE_AUDIO || NANORTC_FEATURE_VIDEO
+        help
+            Scratch buffer for RTP/SRTP pack/unpack. Also sets the per-slot
+            size of the packet ring buffer. 1200 matches the default RTP MTU.
+            Increase to 1500 if jumbo payloads are expected.
+
+    config NANORTC_VIDEO_NAL_BUF_SIZE
+        int "H.264 NAL reassembly buffer size (bytes)"
+        default 32768
+        range 4096 131072
+        depends on NANORTC_FEATURE_VIDEO
+        help
+            Maximum reassembled NAL unit size for the FU-A depacketizer.
+            720p IDR NALs can reach ~30 KB. Reduce on constrained devices
+            if only low-resolution video is expected.
+
     config NANORTC_JITTER_SLOTS
         int "Jitter buffer slots"
         default 64
@@ -115,6 +138,16 @@ menu "NanoRTC Configuration"
         depends on NANORTC_FEATURE_AUDIO
         help
             Number of slots in the jitter buffer. Each slot holds one
-            RTP packet (up to 1500 bytes).
+            RTP packet.
+
+    config NANORTC_JITTER_SLOT_DATA_SIZE
+        int "Jitter buffer slot data size (bytes)"
+        default 320
+        range 160 1500
+        depends on NANORTC_FEATURE_AUDIO
+        help
+            Maximum RTP payload per jitter slot. Opus 20ms@128kbps needs
+            ~320 bytes, 640 covers Opus@510kbps. Host builds default to
+            640 (nanortc_config.h). ESP-IDF defaults to 320 for minimal RAM.
 
 endmenu
