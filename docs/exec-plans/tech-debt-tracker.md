@@ -7,7 +7,8 @@ Track known debt, prioritize by impact, pay down continuously.
 | ID | Category | Description | Impact | Priority | Plan to Resolve |
 |----|----------|-------------|--------|----------|-----------------|
 | TD-001 | Build | `-Wno-unused-parameter` suppresses useful warnings | Low | Phase 3 | Remove per-file as stubs are replaced (all audio modules implemented, only BWE stub remains) |
-| TD-002 | Test | No test framework — manual macros only (90+ tests, exceeds 50 threshold) | Medium | Phase 2 | Evaluate Unity (embedded C test framework) — threshold reached |
+| TD-002 | Test | No test framework — manual macros only (150+ tests, exceeds 50 threshold) | Medium | Phase 3 | Evaluate Unity (embedded C test framework) — threshold reached |
+| TD-008 | CI | `scripts/ci-check.sh` uses `declare -A` (bash 4+), fails on macOS default bash 3.2 | Low | Phase 3 | Replace associative array with positional args or install bash 4+ in CI |
 | ~~TD-003~~ | ~~CI~~ | ~~No CI pipeline yet~~ | ~~Medium~~ | ~~Phase 1~~ | ~~Resolved~~ |
 | ~~TD-004~~ | ~~Crypto~~ | ~~DTLS stubs remain in both backends~~ | ~~High~~ | ~~Phase 1 Step 2~~ | ~~Resolved~~ |
 | ~~TD-005~~ | ~~Build~~ | ~~No `Kconfig` for ESP-IDF menuconfig~~ | ~~Low~~ | ~~Phase 1 Week 4~~ | ~~Resolved~~ |

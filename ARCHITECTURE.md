@@ -46,9 +46,10 @@ Dependencies flow strictly downward. No cycles allowed.
                                                │
                                     ┌──────────┼──────────┐
                                     ▼          ▼          ▼
-                              ┌──────────┐ ┌────────┐ ┌────────┐
-                              │nano_rtcp │ │ jitter │ │  bwe   │ ← AUDIO / VIDEO
-                              └──────────┘ └────────┘ └────────┘
+                              ┌──────────┐ ┌────────┐ ┌────────┐ ┌──────────┐
+                              │nano_rtcp │ │ jitter │ │  bwe   │ │nano_h264 │
+                              └──────────┘ └────────┘ └────────┘ └──────────┘
+                                            ↑ AUDIO    ↑ VIDEO    ↑ VIDEO
 
   Cross-cutting:
   ┌──────────────────┐   ┌──────────────┐
@@ -65,7 +66,7 @@ Within the library, code is organized in strict layers:
 |-------|-------|------|
 | **Configuration** | `include/nanortc_config.h` | Compile-time tunables with `#ifndef` defaults. User overrides via `NANORTC_CONFIG_FILE` or ESP-IDF Kconfig. |
 | **Public API** | `include/nanortc.h` | Only file users `#include`. Defines all public types, `struct nanortc` layout (for stack allocation), and functions. |
-| **State Machine** | `src/nano_rtc.c` | Orchestrates all modules. Internal helpers: `rtc_generate_ice_credentials`, `rtc_apply_remote_sdp`, `rtc_add_sdp_candidates`, `rtc_drain_dtls_output`, `rtc_emit_event`. |
+| **State Machine** | `src/nano_rtc.c` | Orchestrates all modules. Internal helpers: `rtc_generate_ice_credentials`, `rtc_apply_remote_sdp`, `rtc_apply_negotiated_media`, `rtc_add_sdp_candidates`, `rtc_drain_dtls_output`, `rtc_emit_event`, `direction_complement`. |
 | **Protocol Modules** | `src/nano_*.c` + `src/nano_*.h` | Each module owns one protocol. Communicates via return values and caller buffers — no callbacks between modules. |
 | **Crypto Interface** | `crypto/nanortc_crypto.h` | Abstract boundary. Protocol modules call this, never mbedtls directly. |
 | **Crypto Provider** | `crypto/nanortc_crypto_mbedtls.c` or `nanortc_crypto_openssl.c` | Concrete implementation. Selected at build time via `-DNANORTC_CRYPTO=`. |
@@ -86,7 +87,7 @@ Orthogonal compile-time feature flags control which modules are included:
 | `NANORTC_FEATURE_DATACHANNEL` | sctp, datachannel, crc32c | `#if NANORTC_FEATURE_DATACHANNEL` |
 | `NANORTC_FEATURE_AUDIO` or `VIDEO` | rtp, rtcp, srtp | `#if NANORTC_HAVE_MEDIA_TRANSPORT` |
 | `NANORTC_FEATURE_AUDIO` | jitter | `#if NANORTC_FEATURE_AUDIO` |
-| `NANORTC_FEATURE_VIDEO` | bwe | `#if NANORTC_FEATURE_VIDEO` |
+| `NANORTC_FEATURE_VIDEO` | h264, bwe | `#if NANORTC_FEATURE_VIDEO` |
 
 Sub-features (only when `DATACHANNEL=1`):
 - `NANORTC_FEATURE_DC_RELIABLE` — retransmit/RTO logic (default ON)

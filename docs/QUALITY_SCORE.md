@@ -19,13 +19,13 @@ Per-module quality grades for NanoRTC. Updated as implementation progresses.
 
 | Module | File | Grade | Tests | Notes |
 |--------|------|-------|-------|-------|
-| Main FSM | `nano_rtc.c` | **B** | 19 e2e tests: init, demux, ICE→DTLS→SCTP→DC pipeline, offer/answer roundtrip, DC create/close/label, graceful close, state transitions, ICE multi-candidate | RFC 7983 demux, full pipeline integration, all public API implemented. Refactored: 5 static helpers eliminate duplication. ICE_STATE_CHANGE events emitted. Audio path: SRTP key derivation on DTLS connected, random initial SSRC/seq (RFC 3550). |
+| Main FSM | `nano_rtc.c` | **B** | 19 e2e tests: init, demux, ICE→DTLS→SCTP→DC pipeline, offer/answer roundtrip, DC create/close/label, graceful close, state transitions, ICE multi-candidate | RFC 7983 demux, full pipeline integration, all public API implemented. Refactored: `direction_complement()`, `rtc_apply_negotiated_media()` helpers. Video send path: H.264 FU-A → RTP → SRTP → per-slot pkt_ring. Audio+Video PT applied in both accept_offer and accept_answer. |
 | STUN codec | `nano_stun.c` | **B** | 40 tests (RFC 5769 vectors, str0m, roundtrip, edge cases) | Full parser/encoder, MI (HMAC-SHA1), FP (CRC-32), ERROR-CODE. Safe byte access. |
 | ICE | `nano_ice.c` | **B** | 17 tests (§7.1.1, §7.2.1, §7.3, §8, credentials) | Dual-role FSM, controlled + controlling, pacing, nomination |
 | DTLS | `nano_dtls.c` | **B** | 9 tests (handshake loopback, encrypt/decrypt, keying material, fingerprint) | Sans I/O BIO adapter, ECDSA P-256 self-signed cert, RFC 5764 key export |
 | SCTP-Lite | `nano_sctp.c` | **B-** | 27 tests (codec, CRC, handshake, data exchange, SACK, FORWARD-TSN, output queue) | Full codec + 4-way handshake FSM + send queue + SACK + retransmit + heartbeat + ring output queue. Missing: gap tracking, RECONFIG, SHUTDOWN-ACK. |
 | DataChannel | `nano_datachannel.c` | **B-** | DCEP codec + FSM tested via SCTP e2e | DCEP OPEN/ACK codec, channel management, bidirectional FSM. Missing: partial reliability, RECONFIG. |
-| SDP | `nano_sdp.c` | **B** | 11 tests (Chrome/Firefox/Safari offers, generator, roundtrip, accept_offer) | Parser + generator refactored with helper functions. Chrome/Firefox/Safari SDP compat. Audio m-line with Opus/ptime:20. M-line ordering matches offer (RFC 8829). |
+| SDP | `nano_sdp.c` | **B** | 14 tests (Chrome/Firefox/Safari offers, generator, roundtrip, accept_offer, video PT, direction) | Parser + generator with helper functions. Chrome/Firefox/Safari SDP compat. Audio m-line with Opus/ptime:20. Video m-line: H264 PT via rtpmap+fmtp cross-validation (packetization-mode=1). M-line ordering matches offer (RFC 8829). Direction complement (RFC 3264 §6). |
 | CRC-32c | `nano_crc32c.c` | **B** | test vector verified | 100% — Castagnoli polynomial for SCTP checksums |
 | CRC-32 | `nano_crc32.c` | **B** | test vector verified | 100% — ISO HDLC polynomial for STUN FINGERPRINT |
 
@@ -38,11 +38,12 @@ Per-module quality grades for NanoRTC. Updated as implementation progresses.
 | SRTP | `nano_srtp.c` | **B** | 6 tests (RFC 3711 B.3 key derivation vectors, protect/unprotect roundtrip, tamper detection, multi-packet) | RFC 3711 AES-128-CM-HMAC-SHA1-80, key derivation, protect/unprotect with ROC tracking. IV computation verified against libsrtp/str0m (packet_index bytes 6-13). |
 | Jitter | `nano_jitter.c` | **B-** | 8 tests (push/pop, reorder, wraparound, playout delay, overflow) | Fixed ring buffer with playout delay and reordering |
 
-### Video (MEDIA profile)
+### Video (VIDEO/MEDIA profiles)
 
-| Module | File | Grade | Notes |
-|--------|------|-------|-------|
-| BWE | `nano_bwe.c` | **D** | Bandwidth estimation stub |
+| Module | File | Grade | Tests | Notes |
+|--------|------|-------|-------|-------|
+| H.264 packetizer | `nano_h264.c` | **B** | 8 tests (single NAL, FU-A fragment, reassembly, edge cases) | RFC 6184 FU-A packetizer + depacketizer/reassembly. MTU-aware fragmentation. |
+| BWE | `nano_bwe.c` | **D** | — | Bandwidth estimation stub |
 
 ### Infrastructure
 
@@ -50,10 +51,10 @@ Per-module quality grades for NanoRTC. Updated as implementation progresses.
 |-----------|-------|-------|
 | Crypto provider interface | **B** | Interface complete; HMAC-SHA1 + CSPRNG + DTLS + AES-128-CM + HMAC-SHA1-80 (both backends) |
 | Build system (CMake) | **B** | 3 profiles, 2 crypto backends, ESP-IDF detection, `-fvisibility=hidden` |
-| Test infrastructure | **B** | Shared macros (`nano_test.h`), 140+ tests across 11 suites, RFC 5769/3711 vectors, e2e ICE+DTLS loopback, full public API coverage |
+| Test infrastructure | **B** | Shared macros (`nano_test.h`), 150+ tests across 12 suites, RFC 5769/3711 vectors, e2e ICE+DTLS loopback, full public API coverage |
 | Interop test framework | **B** | libdatachannel v0.22.5 as reference peer, 5 interop tests all pass (handshake, DC open, text/binary). SDP compat fixed (commit `4d143f2`). |
 | CI pipeline | **B** | GitHub Actions: 3-profile × 2-crypto matrix, constraints, ASan. Local: `scripts/ci-check.sh` |
-| Examples | **B** | Linux datachannel + media_send templates + browser interop (HTTP signaling + `signaling_server.py`). Browser audio verified: Opus → Chrome with 0% concealed samples. Includes opus_verify + opus_gen_tone tools. ESP32 DataChannel example verified (WiFi + Discovery + ICE/DTLS/SCTP/DC echo, ESP32-S3). |
+| Examples | **B** | Linux datachannel + media_send + browser interop (HTTP signaling + `signaling_server.py`). Browser audio+video verified: Opus → Chrome (0% concealed), H.264 → Chrome video playback. Shared `h264_utils.h` for Annex-B NAL parsing. Includes opus_verify + opus_gen_tone tools. ESP32 DataChannel example verified (WiFi + Discovery + ICE/DTLS/SCTP/DC echo, ESP32-S3). |
 | Documentation | **B** | AGENTS.md, ARCHITECTURE.md, exec plans, quality scores, core beliefs, RFC index |
 
 ## Quality Targets
@@ -74,7 +75,7 @@ Per-module quality grades for NanoRTC. Updated as implementation progresses.
 4. ~~SCTP, DataChannel, SDP all still D~~ **DONE** — All at B- with full codec, FSM, tests
 5. ~~No interop testing framework~~ **DONE** — libdatachannel interop framework with 5 test cases
 6. ~~Interop tests must all pass~~ **DONE** — 5/5 pass after SDP compat fix (commit `4d143f2`)
-7. ~~Browser end-to-end validation~~ **DONE** — DataChannel + Audio (Opus → Chrome) verified via browser_interop example
+7. ~~Browser end-to-end validation~~ **DONE** — DataChannel + Audio (Opus → Chrome) + Video (H.264 → Chrome) verified via browser_interop example
 8. ~~ESP32 hardware validation~~ **DONE** — ESP32-S3 DataChannel echo verified (WiFi + UDP Discovery + ICE/DTLS/SCTP/DC, HTTP signaling via `http_signaling.c`)
 
 **Acceptable gaps (address in later phases):**

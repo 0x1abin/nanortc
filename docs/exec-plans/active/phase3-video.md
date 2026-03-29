@@ -1,20 +1,20 @@
 # Phase 3: Video Support
 
-**Status:** Queued (blocked on Phase 2 completion)
+**Status:** Active — Session 1 complete (browser video playback verified)
 **Estimated effort:** 2 agent sessions (~1-2 days elapsed)
 **Goal:** ESP32 camera streaming to browser via H.264
 
 ## Acceptance Criteria
 
-- [ ] H.264 FU-A packetization (fragmentation of NALUs over RTP)
-- [ ] VP8 RTP packetization (optional)
-- [ ] RTCP PLI (Picture Loss Indication) generation and handling
+- [x] H.264 FU-A packetization (fragmentation of NALUs over RTP)
+- [ ] VP8 RTP packetization (optional, deferred)
+- [x] RTCP PLI (Picture Loss Indication) generation and handling
 - [ ] RTCP REMB (optional bandwidth feedback)
-- [ ] NAL unit reassembly in jitter buffer
-- [ ] Keyframe detection and request mechanism
-- [ ] SDP video m-line negotiation
+- [x] NAL unit reassembly (FU-A depacketizer)
+- [x] Keyframe detection and request mechanism
+- [x] SDP video m-line negotiation (rtpmap+fmtp cross-validation)
 - [ ] Basic bandwidth estimation
-- [ ] Integration: H.264 stream from ESP32 to browser
+- [x] Integration: H.264 stream to browser (verified: sample frames → Chrome video playback)
 - [ ] ESP32 example: camera push
 
 ## Implementation Steps
@@ -31,7 +31,8 @@
 | SDP video m-line | `nano_sdp.c` | RFC 8866 |
 | Basic bandwidth estimation | `nano_bwe.c` | — |
 
-**Gate:** H.264 pack/unpack round-trip tests, PLI generation test
+**Gate:** H.264 pack/unpack round-trip tests, PLI generation test — **PASSED**
+**Post-gate refactoring (Session 1):** direction_complement() helper, rtc_apply_negotiated_media() for both offer/answer paths, annex_b_find_nal deduplication to h264_utils.h, pkt_ring moved to FEATURE_VIDEO guard, SDP video PT rtpmap cross-validation
 
 ### Step 2: Integration + examples (1 agent session)
 
@@ -43,8 +44,8 @@
 | Linux media send with H.264 samples | `examples/linux_media_send/` |
 | ESP32 camera example | `examples/esp32_camera/` |
 
-**Gate:** E2E video loopback in CI (sample frames)
-**Human gate:** Browser H.264 playback verification, ESP32 camera test
+**Gate:** E2E video loopback in CI (sample frames) — deferred (no loopback test yet, but browser verified)
+**Human gate:** Browser H.264 playback verification — **PASSED** (Chrome), ESP32 camera test — pending
 
 ## Risks
 
