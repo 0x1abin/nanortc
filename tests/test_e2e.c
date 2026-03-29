@@ -152,8 +152,9 @@ TEST(test_e2e_stubs_not_implemented)
 #endif
 
 #if NANORTC_FEATURE_VIDEO
-    ASSERT_EQ(nanortc_send_video(&rtc, 0, data, sizeof(data), 1), NANORTC_ERR_NOT_IMPLEMENTED);
-    ASSERT_EQ(nanortc_request_keyframe(&rtc), NANORTC_ERR_NOT_IMPLEMENTED);
+    /* nanortc_send_video is now implemented; returns ERR_STATE when not connected */
+    ASSERT_EQ(nanortc_send_video(&rtc, 0, data, sizeof(data), 1), NANORTC_ERR_STATE);
+    ASSERT_EQ(nanortc_request_keyframe(&rtc), NANORTC_ERR_STATE);
 #endif
 
     nanortc_destroy(&rtc);
@@ -248,10 +249,15 @@ TEST(test_e2e_demux_byte_ranges)
     ASSERT_EQ(nanortc_handle_receive(&rtc, 0, dtls_pkt, sizeof(dtls_pkt), &addr),
               NANORTC_ERR_STATE);
 
-    /* SRTP range: 0x80-0xBF */
+    /* SRTP range: 0x80-0xBF — silently consumed (no decode path yet) */
     uint8_t srtp_pkt[20] = {0x80, 0x60};
+#if NANORTC_HAVE_MEDIA_TRANSPORT
     ASSERT_EQ(nanortc_handle_receive(&rtc, 0, srtp_pkt, sizeof(srtp_pkt), &addr),
-              NANORTC_ERR_NOT_IMPLEMENTED);
+              NANORTC_OK); /* pre-DTLS media silently dropped */
+#else
+    ASSERT_EQ(nanortc_handle_receive(&rtc, 0, srtp_pkt, sizeof(srtp_pkt), &addr),
+              NANORTC_OK);
+#endif
 
     /* Edge cases: null data returns INVALID_PARAM */
     ASSERT_EQ(nanortc_handle_receive(&rtc, 0, NULL, 0, &addr), NANORTC_ERR_INVALID_PARAM);

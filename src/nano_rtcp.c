@@ -180,6 +180,36 @@ int rtcp_generate_nack(uint32_t ssrc, uint32_t media_ssrc, uint16_t seq, uint8_t
 }
 
 /* ================================================================
+ * PLI — Picture Loss Indication (RFC 4585 §6.3.1)
+ *
+ *  PSFB header (4 bytes): V=2, P=0, FMT=1, PT=206, length=2
+ *  Sender SSRC (4 bytes)
+ *  Media SSRC (4 bytes) = SSRC of the video source to request keyframe from
+ *
+ *  Total: 12 bytes
+ * ================================================================ */
+
+int rtcp_generate_pli(uint32_t sender_ssrc, uint32_t media_ssrc, uint8_t *buf, size_t buf_len,
+                      size_t *out_len)
+{
+    if (!buf || !out_len) {
+        return NANORTC_ERR_INVALID_PARAM;
+    }
+    if (buf_len < RTCP_PLI_SIZE) {
+        return NANORTC_ERR_BUFFER_TOO_SMALL;
+    }
+
+    /* FMT=1, PT=206(PSFB), length=2 words (12 bytes / 4 - 1) */
+    write_header(buf, 1, RTCP_PSFB, 2, sender_ssrc);
+
+    /* Media source SSRC */
+    nanortc_write_u32be(buf + 8, media_ssrc);
+
+    *out_len = RTCP_PLI_SIZE;
+    return NANORTC_OK;
+}
+
+/* ================================================================
  * Parser (RFC 3550 §6 / RFC 4585)
  *
  * Parses a single RTCP packet and fills nano_rtcp_info_t.

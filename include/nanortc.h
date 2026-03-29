@@ -393,6 +393,7 @@ typedef struct nanortc_config {
 
 #if NANORTC_FEATURE_VIDEO
 #include "nano_bwe.h"
+#include "nano_h264.h"
 #endif
 
 /* ----------------------------------------------------------------
@@ -440,7 +441,13 @@ struct nanortc {
     nano_rtp_t rtp;
     nano_rtcp_t rtcp;
     nano_srtp_t srtp;
-    uint8_t media_buf[NANORTC_MEDIA_BUF_SIZE]; /* RTP pack + SRTP protect scratch */
+    uint8_t media_buf[NANORTC_MEDIA_BUF_SIZE]; /* RTP pack + SRTP protect scratch (single-pkt) */
+#endif
+
+#if NANORTC_FEATURE_VIDEO
+    /* Packet ring: each output queue slot gets its own buffer so video FU-A
+     * fragments don't clobber each other before dispatch_outputs sends them. */
+    uint8_t pkt_ring[NANORTC_OUT_QUEUE_SIZE][NANORTC_MEDIA_BUF_SIZE];
 #endif
 
 #if NANORTC_FEATURE_AUDIO
@@ -448,6 +455,8 @@ struct nanortc {
 #endif
 
 #if NANORTC_FEATURE_VIDEO
+    nano_rtp_t video_rtp;         /* Independent SSRC, PT=96, 90kHz clock */
+    nano_h264_depkt_t h264_depkt; /* FU-A reassembly buffer */
     nano_bwe_t bwe;
 #endif
 
@@ -699,18 +708,26 @@ NANORTC_API int nanortc_send_audio(nanortc_t *rtc, uint32_t timestamp, const voi
 #endif
 
 #if NANORTC_FEATURE_VIDEO
+
+/** Flags for nanortc_send_video(). */
+#define NANORTC_VIDEO_FLAG_KEYFRAME 0x01 /**< This NAL is part of a keyframe (IDR). */
+#define NANORTC_VIDEO_FLAG_MARKER   0x02 /**< Last NAL in access unit (sets RTP marker bit). */
+
 /**
- * @brief Send a video frame.
+ * @brief Send a single H.264 NAL unit as video.
+ *
+ * Call once per NAL. All NALs in the same access unit (frame) share the same
+ * timestamp. Set NANORTC_VIDEO_FLAG_MARKER on the last NAL of the frame.
  *
  * @param rtc          Initialized RTC state.
- * @param timestamp    RTP timestamp for this frame.
- * @param data         Encoded video payload.
- * @param len          Payload length in bytes.
- * @param is_keyframe  Non-zero if this is a keyframe (IDR).
+ * @param timestamp    RTP timestamp (90kHz clock).
+ * @param data         Raw NAL unit (no start codes).
+ * @param len          NAL length in bytes.
+ * @param flags        Bitwise OR of NANORTC_VIDEO_FLAG_*.
  * @return NANORTC_OK on success.
  */
 NANORTC_API int nanortc_send_video(nanortc_t *rtc, uint32_t timestamp, const void *data, size_t len,
-                                   int is_keyframe);
+                                   int flags);
 
 /**
  * @brief Request a keyframe from the remote video sender (RTCP FIR/PLI).

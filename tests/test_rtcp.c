@@ -247,6 +247,54 @@ TEST(test_rtcp_init_null)
 }
 
 /* ================================================================
+ * PLI tests (RFC 4585 §6.3.1)
+ * ================================================================ */
+
+TEST(test_rtcp_pli_basic)
+{
+    uint8_t buf[32];
+    size_t out_len = 0;
+    ASSERT_OK(rtcp_generate_pli(0xAAAAAAAA, 0xBBBBBBBB, buf, sizeof(buf), &out_len));
+    ASSERT_EQ(out_len, RTCP_PLI_SIZE); /* 12 bytes */
+
+    /* Header: V=2, P=0, FMT=1, PT=206 (PSFB), length=2 */
+    ASSERT_EQ((buf[0] >> 6) & 0x03, 2);    /* V=2 */
+    ASSERT_EQ(buf[0] & 0x1F, 1);           /* FMT=1 (PLI) */
+    ASSERT_EQ(buf[1], RTCP_PSFB);          /* PT=206 */
+    ASSERT_EQ(nanortc_read_u16be(buf + 2), 2);     /* length=2 words */
+    ASSERT_EQ(nanortc_read_u32be(buf + 4), 0xAAAAAAAA); /* Sender SSRC */
+    ASSERT_EQ(nanortc_read_u32be(buf + 8), 0xBBBBBBBB); /* Media SSRC */
+}
+
+TEST(test_rtcp_pli_buffer_too_small)
+{
+    uint8_t buf[8];
+    size_t out_len = 0;
+    ASSERT_FAIL(rtcp_generate_pli(1, 2, buf, sizeof(buf), &out_len));
+}
+
+TEST(test_rtcp_pli_null_params)
+{
+    uint8_t buf[32];
+    size_t out_len;
+    ASSERT_FAIL(rtcp_generate_pli(1, 2, NULL, 32, &out_len));
+    ASSERT_FAIL(rtcp_generate_pli(1, 2, buf, 32, NULL));
+}
+
+TEST(test_rtcp_pli_parse_roundtrip)
+{
+    /* Generate PLI, then parse it back */
+    uint8_t buf[32];
+    size_t out_len = 0;
+    ASSERT_OK(rtcp_generate_pli(0x11111111, 0x22222222, buf, sizeof(buf), &out_len));
+
+    nano_rtcp_info_t info;
+    ASSERT_OK(rtcp_parse(buf, out_len, &info));
+    ASSERT_EQ(info.type, RTCP_PSFB);
+    ASSERT_EQ(info.ssrc, 0x11111111);
+}
+
+/* ================================================================
  * Test runner
  * ================================================================ */
 
@@ -266,4 +314,8 @@ RUN(test_rtcp_parse_truncated);
 RUN(test_rtcp_parse_bad_version);
 RUN(test_rtcp_parse_null_params);
 RUN(test_rtcp_init_null);
+RUN(test_rtcp_pli_basic);
+RUN(test_rtcp_pli_buffer_too_small);
+RUN(test_rtcp_pli_null_params);
+RUN(test_rtcp_pli_parse_roundtrip);
 TEST_MAIN_END

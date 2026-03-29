@@ -17,6 +17,7 @@
 #include "run_loop.h"
 #include "http_signaling.h"
 #include "media_source.h"
+#include "h264_utils.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -29,7 +30,7 @@
 
 typedef struct {
     int offer_mode;
-    int audio_connected; /* DTLS+SRTP ready for audio */
+    int media_connected; /* DTLS+SRTP ready for media */
 } app_ctx_t;
 
 static nano_run_loop_t loop;
@@ -53,7 +54,7 @@ static void on_event(nanortc_t *rtc, const nanortc_event_t *evt, void *userdata)
 
     case NANORTC_EVENT_DTLS_CONNECTED:
         fprintf(stderr, "[event] DTLS connected\n");
-        ctx->audio_connected = 1;
+        ctx->media_connected = 1;
         break;
 
     case NANORTC_EVENT_SCTP_CONNECTED:
@@ -107,6 +108,7 @@ static void usage(const char *prog)
     fprintf(stderr, "  -b IP          Bind/candidate IP (default: auto-detect)\n");
     fprintf(stderr, "  -s HOST:PORT   Signaling server (default: localhost:8765)\n");
     fprintf(stderr, "  -a DIR         Opus frame directory for audio send\n");
+    fprintf(stderr, "  -v DIR         H.264 frame directory for video send\n");
     fprintf(stderr, "  --offer        Act as offerer (CONTROLLING)\n");
     fprintf(stderr, "  --answer       Act as answerer (CONTROLLED, default)\n");
 }
@@ -122,15 +124,17 @@ static int do_answer_signaling(http_sig_t *sig, nanortc_t *rtc)
 
     fprintf(stderr, "Waiting for SDP offer...\n");
     while (!g_quit) {
-        int rc = http_sig_recv(sig, type, sizeof(type),
-                               payload, sizeof(payload), 2000);
-        if (rc == -2) continue; /* timeout, retry */
+        int rc = http_sig_recv(sig, type, sizeof(type), payload, sizeof(payload), 2000);
+        if (rc == -2)
+            continue; /* timeout, retry */
         if (rc < 0) {
-            if (g_quit) return -1; /* interrupted by signal */
+            if (g_quit)
+                return -1; /* interrupted by signal */
             fprintf(stderr, "Signaling error waiting for offer\n");
             return -1;
         }
-        if (strcmp(type, "offer") == 0) break;
+        if (strcmp(type, "offer") == 0)
+            break;
         fprintf(stderr, "[sig] Ignoring '%s' (waiting for offer)\n", type);
     }
 
@@ -179,14 +183,15 @@ static int do_offer_signaling(http_sig_t *sig, nanortc_t *rtc)
 
     fprintf(stderr, "Waiting for SDP answer...\n");
     while (!g_quit) {
-        rc = http_sig_recv(sig, type, sizeof(type),
-                           payload, sizeof(payload), 2000);
-        if (rc == -2) continue;
+        rc = http_sig_recv(sig, type, sizeof(type), payload, sizeof(payload), 2000);
+        if (rc == -2)
+            continue;
         if (rc < 0) {
             fprintf(stderr, "Signaling error waiting for answer\n");
             return -1;
         }
-        if (strcmp(type, "answer") == 0) break;
+        if (strcmp(type, "answer") == 0)
+            break;
         /* Buffer any early ICE candidates */
         if (strcmp(type, "candidate") == 0 && payload[0] != '\0') {
             fprintf(stderr, "[sig] Early ICE candidate: %.60s...\n", payload);
@@ -211,14 +216,14 @@ static uint32_t last_poll_ms;
 static void poll_trickle_ice(http_sig_t *sig, nanortc_t *rtc)
 {
     uint32_t now = nano_get_millis();
-    if (now - last_poll_ms < 500) return; /* throttle to every 500ms */
+    if (now - last_poll_ms < 500)
+        return; /* throttle to every 500ms */
     last_poll_ms = now;
 
     char type[32];
     char payload[HTTP_SIG_BUF_SIZE];
 
-    int rc = http_sig_recv(sig, type, sizeof(type),
-                           payload, sizeof(payload), 0);
+    int rc = http_sig_recv(sig, type, sizeof(type), payload, sizeof(payload), 0);
     if (rc == 0) {
         if (strcmp(type, "candidate") == 0 && payload[0] != '\0') {
             fprintf(stderr, "[sig] Trickle ICE: %.60s...\n", payload);
@@ -237,13 +242,15 @@ int main(int argc, char *argv[])
     uint16_t sig_port = 8765;
     int offer_mode = 0;
     const char *audio_dir = NULL;
+    const char *video_dir = NULL;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-p") == 0 && i + 1 < argc) {
             port = (uint16_t)atoi(argv[++i]);
         } else if (strcmp(argv[i], "-b") == 0 && i + 1 < argc) {
             size_t len = strlen(argv[++i]);
-            if (len >= sizeof(bind_ip)) len = sizeof(bind_ip) - 1;
+            if (len >= sizeof(bind_ip))
+                len = sizeof(bind_ip) - 1;
             memcpy(bind_ip, argv[i], len);
             bind_ip[len] = '\0';
         } else if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) {
@@ -251,18 +258,22 @@ int main(int argc, char *argv[])
             char *colon = strrchr(argv[i], ':');
             if (colon) {
                 size_t hlen = (size_t)(colon - argv[i]);
-                if (hlen >= sizeof(sig_host)) hlen = sizeof(sig_host) - 1;
+                if (hlen >= sizeof(sig_host))
+                    hlen = sizeof(sig_host) - 1;
                 memcpy(sig_host, argv[i], hlen);
                 sig_host[hlen] = '\0';
                 sig_port = (uint16_t)atoi(colon + 1);
             } else {
                 size_t hlen = strlen(argv[i]);
-                if (hlen >= sizeof(sig_host)) hlen = sizeof(sig_host) - 1;
+                if (hlen >= sizeof(sig_host))
+                    hlen = sizeof(sig_host) - 1;
                 memcpy(sig_host, argv[i], hlen);
                 sig_host[hlen] = '\0';
             }
         } else if (strcmp(argv[i], "-a") == 0 && i + 1 < argc) {
             audio_dir = argv[++i];
+        } else if (strcmp(argv[i], "-v") == 0 && i + 1 < argc) {
+            video_dir = argv[++i];
         } else if (strcmp(argv[i], "--offer") == 0) {
             offer_mode = 1;
         } else if (strcmp(argv[i], "--answer") == 0) {
@@ -303,6 +314,13 @@ int main(int argc, char *argv[])
         cfg.audio_sample_rate = 48000;
         cfg.audio_channels = 2;
         cfg.audio_direction = NANORTC_DIR_SENDONLY;
+    }
+#endif
+
+#if NANORTC_FEATURE_VIDEO
+    if (video_dir) {
+        cfg.video_codec = NANORTC_CODEC_H264;
+        cfg.video_direction = NANORTC_DIR_SENDONLY;
     }
 #endif
 
@@ -359,6 +377,20 @@ int main(int argc, char *argv[])
     }
 #endif
 
+    /* Video media source */
+    nano_media_source_t video_src;
+    int has_video_src = 0;
+#if NANORTC_FEATURE_VIDEO
+    if (video_dir) {
+        if (nano_media_source_init(&video_src, NANORTC_MEDIA_H264, video_dir) == 0) {
+            has_video_src = 1;
+            fprintf(stderr, "Video source: %s (H.264, 25fps)\n", video_dir);
+        } else {
+            fprintf(stderr, "Warning: failed to init video source from %s\n", video_dir);
+        }
+    }
+#endif
+
     fprintf(stderr, "nanortc browser_interop (mode=%s, udp=%s:%d, sig=%s:%u)\n",
             offer_mode ? "offer" : "answer", bind_ip, port, sig_host, sig_port);
 
@@ -372,12 +404,14 @@ int main(int argc, char *argv[])
         goto cleanup;
     }
 
-    /* 6. Event loop with trickle ICE polling + audio send */
+    /* 6. Event loop with trickle ICE polling + media send */
     fprintf(stderr, "Entering event loop...\n");
-    uint32_t audio_epoch_ms = 0; /* wall-clock start time for audio */
+    uint32_t audio_epoch_ms = 0;    /* wall-clock start time for audio */
     uint32_t audio_frame_count = 0; /* frames sent since epoch */
-    if (has_audio_src) {
-        loop.max_poll_ms = 5; /* 5ms poll for smooth 20ms audio pacing */
+    uint32_t video_epoch_ms = 0;    /* wall-clock start time for video */
+    uint32_t video_frame_count = 0; /* frames sent since epoch */
+    if (has_audio_src || has_video_src) {
+        loop.max_poll_ms = 5; /* 5ms poll for smooth media pacing */
     }
     loop.running = 1;
     while (loop.running) {
@@ -386,9 +420,10 @@ int main(int argc, char *argv[])
 
 #if NANORTC_FEATURE_AUDIO
         /* Send audio frames at 20ms intervals (epoch-based for drift-free timing) */
-        if (has_audio_src && app_ctx.audio_connected) {
+        if (has_audio_src && app_ctx.media_connected) {
             uint32_t now = nano_get_millis();
-            if (audio_epoch_ms == 0) audio_epoch_ms = now;
+            if (audio_epoch_ms == 0)
+                audio_epoch_ms = now;
             uint32_t target_frames = (now - audio_epoch_ms) / 20;
             /* Prevent burst: if we fell behind by >2 frames, skip ahead */
             if (target_frames - audio_frame_count > 2) {
@@ -398,11 +433,10 @@ int main(int argc, char *argv[])
                 uint8_t frame_buf[1024];
                 size_t frame_len = 0;
                 uint32_t ts_ms = 0;
-                if (nano_media_source_next_frame(&audio_src, frame_buf,
-                        sizeof(frame_buf), &frame_len, &ts_ms) == 0) {
+                if (nano_media_source_next_frame(&audio_src, frame_buf, sizeof(frame_buf),
+                                                 &frame_len, &ts_ms) == 0) {
                     uint32_t audio_ts_rtp = audio_frame_count * 960;
-                    int arc = nanortc_send_audio(&rtc, audio_ts_rtp,
-                                                 frame_buf, frame_len);
+                    int arc = nanortc_send_audio(&rtc, audio_ts_rtp, frame_buf, frame_len);
                     if (arc == NANORTC_OK) {
                         audio_frame_count++;
                     } else if (arc != NANORTC_ERR_STATE) {
@@ -412,11 +446,56 @@ int main(int argc, char *argv[])
             }
         }
 #endif
+
+#if NANORTC_FEATURE_VIDEO
+        /* Send video frames at 25fps (epoch-based for drift-free timing) */
+        if (has_video_src && app_ctx.media_connected) {
+            uint32_t now = nano_get_millis();
+            if (video_epoch_ms == 0)
+                video_epoch_ms = now;
+            uint32_t target_frames = (now - video_epoch_ms) / 40; /* 25fps = 40ms */
+            if (target_frames - video_frame_count > 2) {
+                video_frame_count = target_frames - 1; /* skip burst */
+            }
+            if (video_frame_count < target_frames) {
+                uint8_t frame_buf[NANORTC_MEDIA_MAX_FRAME_SIZE];
+                size_t frame_len = 0;
+                uint32_t ts_ms = 0;
+                if (nano_media_source_next_frame(&video_src, frame_buf, sizeof(frame_buf),
+                                                 &frame_len, &ts_ms) == 0) {
+                    /* RTP timestamp: 90kHz clock, 3600 ticks per frame at 25fps */
+                    uint32_t video_ts_rtp = video_frame_count * 3600;
+
+                    /* Split Annex-B into individual NALUs */
+                    size_t offset = 0;
+                    size_t nal_len = 0;
+                    const uint8_t *nal;
+                    while ((nal = annex_b_find_nal(frame_buf, frame_len, &offset, &nal_len)) !=
+                           NULL) {
+                        int flags = 0;
+                        if ((nal[0] & 0x1F) == 5) /* IDR slice */
+                            flags |= NANORTC_VIDEO_FLAG_KEYFRAME;
+                        /* Peek: is this the last NAL in the frame? */
+                        size_t peek_off = offset;
+                        size_t peek_len = 0;
+                        if (annex_b_find_nal(frame_buf, frame_len, &peek_off, &peek_len) == NULL) {
+                            flags |= NANORTC_VIDEO_FLAG_MARKER;
+                        }
+                        nanortc_send_video(&rtc, video_ts_rtp, nal, nal_len, flags);
+                    }
+                    video_frame_count++;
+                }
+            }
+        }
+#endif
     }
 
 cleanup:
     if (has_audio_src) {
         nano_media_source_destroy(&audio_src);
+    }
+    if (has_video_src) {
+        nano_media_source_destroy(&video_src);
     }
     http_sig_leave(&sig);
     nano_run_loop_destroy(&loop);

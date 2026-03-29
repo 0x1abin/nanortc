@@ -46,6 +46,12 @@
   <audio id="remoteAudio" autoplay controls></audio>
 </div>
 
+<div class="row">
+  <label>Video:</label>
+  <video id="remoteVideo" autoplay playsinline muted
+         style="max-width:640px; background:#000;"></video>
+</div>
+
 <div id="log"></div>
 
 <script>
@@ -204,6 +210,10 @@ async function start() {
       const audio = document.getElementById('remoteAudio');
       audio.srcObject = e.streams[0] || new MediaStream([e.track]);
       log('info', 'Audio track attached to player');
+    } else if (e.track.kind === 'video') {
+      const video = document.getElementById('remoteVideo');
+      video.srcObject = e.streams[0] || new MediaStream([e.track]);
+      log('info', 'Video track attached to player');
     }
   };
 
@@ -232,6 +242,10 @@ async function start() {
     // Add audio transceiver for receiving remote audio
     pc.addTransceiver('audio', {direction: 'recvonly'});
     log('info', 'Added audio transceiver (recvonly)');
+
+    // Add video transceiver for receiving remote video
+    pc.addTransceiver('video', {direction: 'recvonly'});
+    log('info', 'Added video transceiver (recvonly)');
 
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);

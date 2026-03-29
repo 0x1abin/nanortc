@@ -34,7 +34,7 @@ if(DEFINED ENV{IDF_PATH})
         list(APPEND NANORTC_CORE_SRCS src/nano_jitter.c)
     endif()
     if(CONFIG_NANORTC_FEATURE_VIDEO)
-        list(APPEND NANORTC_CORE_SRCS src/nano_bwe.c)
+        list(APPEND NANORTC_CORE_SRCS src/nano_bwe.c src/nano_h264.c)
     endif()
 
     idf_component_register(
@@ -108,6 +108,7 @@ endif()
 if(NANORTC_FEATURE_VIDEO)
     list(APPEND NANORTC_SOURCES
         src/nano_bwe.c
+        src/nano_h264.c
     )
 endif()
 
@@ -176,6 +177,14 @@ endif()
 # ---- Examples (Linux host only, not default) ----
 option(NANORTC_BUILD_EXAMPLES "Build examples" OFF)
 if(NANORTC_BUILD_EXAMPLES)
+    # Profile level for gating examples: 0=core, 1=DC, 2=media
+    set(PROFILE_NUM 0)
+    if(NANORTC_FEATURE_DATACHANNEL)
+        set(PROFILE_NUM 1)
+    endif()
+    if(NANORTC_FEATURE_AUDIO OR NANORTC_FEATURE_VIDEO)
+        set(PROFILE_NUM 2)
+    endif()
     add_subdirectory(examples)
 endif()
 

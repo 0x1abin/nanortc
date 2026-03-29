@@ -19,6 +19,7 @@
 #include "run_loop.h"
 #include "signaling.h"
 #include "media_source.h"
+#include "h264_utils.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -206,8 +207,14 @@ int main(int argc, char *argv[])
     fprintf(stderr, "Entering event loop... (Ctrl+C to quit)\n");
 
     uint8_t frame_buf[NANORTC_MEDIA_MAX_FRAME_SIZE];
-    uint32_t next_video_ms = 0;
-    uint32_t next_audio_ms = 0;
+    uint32_t video_epoch_ms = 0;
+    uint32_t video_frame_count = 0;
+    uint32_t audio_epoch_ms = 0;
+    uint32_t audio_frame_count = 0;
+
+    if (has_video || has_audio) {
+        loop.max_poll_ms = 5; /* 5ms poll for smooth media pacing */
+    }
 
     loop.running = 1;
     while (loop.running) {
@@ -220,29 +227,63 @@ int main(int argc, char *argv[])
         uint32_t now = nano_get_millis();
 
 #if NANORTC_FEATURE_VIDEO
-        /* Send video frame at 25fps */
-        if (has_video && now >= next_video_ms) {
-            size_t frame_len;
-            uint32_t ts;
-            if (nano_media_source_next_frame(&video_src, frame_buf, sizeof(frame_buf),
-                                             &frame_len, &ts) == 0) {
-                int is_kf = (video_src.frame_index == 2); /* frame after reset = keyframe */
-                nanortc_send_video(&rtc, ts, frame_buf, frame_len, is_kf);
+        /* Send video frames at 25fps (epoch-based for drift-free timing) */
+        if (has_video) {
+            if (video_epoch_ms == 0)
+                video_epoch_ms = now;
+            uint32_t target_frames = (now - video_epoch_ms) / 40;
+            if (target_frames - video_frame_count > 2) {
+                video_frame_count = target_frames - 1;
             }
-            next_video_ms = now + nano_media_source_interval_ms(&video_src);
+            if (video_frame_count < target_frames) {
+                size_t frame_len = 0;
+                uint32_t ts_ms = 0;
+                if (nano_media_source_next_frame(&video_src, frame_buf, sizeof(frame_buf),
+                                                 &frame_len, &ts_ms) == 0) {
+                    /* RTP timestamp: 90kHz clock, 3600 ticks per frame at 25fps */
+                    uint32_t video_ts_rtp = video_frame_count * 3600;
+
+                    /* Split Annex-B into individual NALUs */
+                    size_t offset = 0;
+                    size_t nal_len = 0;
+                    const uint8_t *nal;
+                    while ((nal = annex_b_find_nal(frame_buf, frame_len, &offset, &nal_len)) !=
+                           NULL) {
+                        int flags = 0;
+                        if ((nal[0] & 0x1F) == 5)
+                            flags |= NANORTC_VIDEO_FLAG_KEYFRAME;
+                        size_t peek_off = offset;
+                        size_t peek_len = 0;
+                        if (annex_b_find_nal(frame_buf, frame_len, &peek_off, &peek_len) == NULL) {
+                            flags |= NANORTC_VIDEO_FLAG_MARKER;
+                        }
+                        nanortc_send_video(&rtc, video_ts_rtp, nal, nal_len, flags);
+                    }
+                    video_frame_count++;
+                }
+            }
         }
 #endif
 
 #if NANORTC_FEATURE_AUDIO
-        /* Send audio frame at 50fps (20ms) */
-        if (has_audio && now >= next_audio_ms) {
-            size_t frame_len;
-            uint32_t ts;
-            if (nano_media_source_next_frame(&audio_src, frame_buf, sizeof(frame_buf),
-                                             &frame_len, &ts) == 0) {
-                nanortc_send_audio(&rtc, ts, frame_buf, frame_len);
+        /* Send audio frames at 20ms intervals (epoch-based for drift-free timing) */
+        if (has_audio) {
+            if (audio_epoch_ms == 0)
+                audio_epoch_ms = now;
+            uint32_t target_frames = (now - audio_epoch_ms) / 20;
+            if (target_frames - audio_frame_count > 2) {
+                audio_frame_count = target_frames - 1;
             }
-            next_audio_ms = now + nano_media_source_interval_ms(&audio_src);
+            if (audio_frame_count < target_frames) {
+                size_t frame_len = 0;
+                uint32_t ts_ms = 0;
+                if (nano_media_source_next_frame(&audio_src, frame_buf, sizeof(frame_buf),
+                                                 &frame_len, &ts_ms) == 0) {
+                    uint32_t audio_ts_rtp = audio_frame_count * 960;
+                    nanortc_send_audio(&rtc, audio_ts_rtp, frame_buf, frame_len);
+                    audio_frame_count++;
+                }
+            }
         }
 #endif
     }
@@ -250,8 +291,10 @@ int main(int argc, char *argv[])
     /* 6. Cleanup */
     nano_run_loop_destroy(&loop);
     nanortc_destroy(&rtc);
-    if (has_video) nano_media_source_destroy(&video_src);
-    if (has_audio) nano_media_source_destroy(&audio_src);
+    if (has_video)
+        nano_media_source_destroy(&video_src);
+    if (has_audio)
+        nano_media_source_destroy(&audio_src);
 
     fprintf(stderr, "Done.\n");
     return 0;

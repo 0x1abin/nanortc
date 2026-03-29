@@ -510,6 +510,157 @@ TEST(test_sdp_audio_roundtrip)
     ASSERT_EQ(sdp2.audio_channels, 2);
 }
 
+/* ================================================================
+ * Video SDP tests
+ * ================================================================ */
+
+/* Chrome H.264 video + DC offer */
+static const char *CHROME_VIDEO_OFFER =
+    "v=0\r\n"
+    "o=- 1234567890 2 IN IP4 127.0.0.1\r\n"
+    "s=-\r\n"
+    "t=0 0\r\n"
+    "a=group:BUNDLE 0 1\r\n"
+    "m=video 9 UDP/TLS/RTP/SAVPF 96\r\n"
+    "c=IN IP4 0.0.0.0\r\n"
+    "a=mid:0\r\n"
+    "a=sendrecv\r\n"
+    "a=ice-ufrag:videofrag\r\n"
+    "a=ice-pwd:videopassword1234567890\r\n"
+    "a=fingerprint:sha-256 AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:"
+    "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99\r\n"
+    "a=setup:actpass\r\n"
+    "a=rtpmap:96 H264/90000\r\n"
+    "a=fmtp:96 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f\r\n"
+    "a=rtcp-fb:96 nack pli\r\n"
+    "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n"
+    "c=IN IP4 0.0.0.0\r\n"
+    "a=mid:1\r\n"
+    "a=sctp-port:5000\r\n";
+
+TEST(test_sdp_parse_video_offer)
+{
+    nano_sdp_t sdp;
+    sdp_init(&sdp);
+
+    size_t len = 0;
+    while (CHROME_VIDEO_OFFER[len])
+        len++;
+
+    ASSERT_OK(sdp_parse(&sdp, CHROME_VIDEO_OFFER, len));
+    ASSERT_TRUE(sdp.parsed);
+
+    /* ICE/DTLS fields */
+    ASSERT_MEM_EQ(sdp.remote_ufrag, "videofrag", 9);
+    ASSERT_EQ(sdp.remote_sctp_port, 5000);
+
+    /* Video fields */
+    ASSERT_TRUE(sdp.has_video);
+    ASSERT_EQ(sdp.video_pt, 96);
+    /* Video comes before DC in this offer */
+    ASSERT_TRUE(sdp.video_before_datachannel);
+}
+
+/* Full media offer: audio + video + DC */
+static const char *FULL_MEDIA_OFFER =
+    "v=0\r\n"
+    "o=- 1 1 IN IP4 0.0.0.0\r\n"
+    "s=-\r\n"
+    "t=0 0\r\n"
+    "a=group:BUNDLE 0 1 2\r\n"
+    "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n"
+    "c=IN IP4 0.0.0.0\r\n"
+    "a=mid:0\r\n"
+    "a=sendrecv\r\n"
+    "a=ice-ufrag:fullufrag\r\n"
+    "a=ice-pwd:fullpassword1234567890\r\n"
+    "a=fingerprint:sha-256 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:"
+    "11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00\r\n"
+    "a=setup:actpass\r\n"
+    "a=rtpmap:111 opus/48000/2\r\n"
+    "m=video 9 UDP/TLS/RTP/SAVPF 96\r\n"
+    "c=IN IP4 0.0.0.0\r\n"
+    "a=mid:1\r\n"
+    "a=sendrecv\r\n"
+    "a=rtpmap:96 H264/90000\r\n"
+    "a=fmtp:96 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f\r\n"
+    "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n"
+    "c=IN IP4 0.0.0.0\r\n"
+    "a=mid:2\r\n"
+    "a=sctp-port:5000\r\n";
+
+TEST(test_sdp_parse_full_media_offer)
+{
+    nano_sdp_t sdp;
+    sdp_init(&sdp);
+
+    size_t len = 0;
+    while (FULL_MEDIA_OFFER[len])
+        len++;
+
+    ASSERT_OK(sdp_parse(&sdp, FULL_MEDIA_OFFER, len));
+
+    ASSERT_TRUE(sdp.has_audio);
+    ASSERT_TRUE(sdp.has_video);
+    ASSERT_EQ(sdp.audio_pt, 111);
+    ASSERT_EQ(sdp.video_pt, 96);
+    ASSERT_EQ(sdp.audio_sample_rate, 48000);
+    ASSERT_EQ(sdp.audio_channels, 2);
+    ASSERT_EQ(sdp.remote_sctp_port, 5000);
+    /* audio=MID0, video=MID1, dc=MID2 */
+    ASSERT_EQ(sdp.audio_mid, 0);
+    ASSERT_EQ(sdp.video_mid, 1);
+    ASSERT_EQ(sdp.dc_mid, 2);
+}
+
+TEST(test_sdp_generate_video_answer)
+{
+    nano_sdp_t sdp;
+    sdp_init(&sdp);
+
+    memcpy(sdp.local_ufrag, "vufrag1", 7);
+    memcpy(sdp.local_pwd, "vpassword12345678", 17);
+    sdp.local_sctp_port = 5000;
+    sdp.local_setup = NANORTC_SDP_SETUP_PASSIVE;
+    sdp.has_video = true;
+    sdp.video_pt = 96;
+
+    char buf[4096];
+    size_t out_len = 0;
+    ASSERT_OK(sdp_generate_answer(&sdp, buf, sizeof(buf), &out_len));
+    ASSERT_TRUE(out_len > 0);
+
+    /* Verify video m-line */
+    ASSERT_TRUE(strstr(buf, "m=video 9 UDP/TLS/RTP/SAVPF 96") != NULL);
+    ASSERT_TRUE(strstr(buf, "a=rtpmap:96 H264/90000") != NULL);
+    ASSERT_TRUE(strstr(buf, "profile-level-id=42e01f") != NULL);
+    ASSERT_TRUE(strstr(buf, "a=rtcp-fb:96 nack pli") != NULL);
+    ASSERT_TRUE(strstr(buf, "a=rtcp-mux") != NULL);
+}
+
+TEST(test_sdp_video_roundtrip)
+{
+    nano_sdp_t sdp;
+    sdp_init(&sdp);
+    memcpy(sdp.local_ufrag, "vrtufrag", 8);
+    memcpy(sdp.local_pwd, "vrtpassword1234567", 18);
+    sdp.local_setup = NANORTC_SDP_SETUP_ACTIVE;
+    sdp.has_video = true;
+    sdp.video_pt = 96;
+
+    /* Generate */
+    char buf[4096];
+    size_t out_len = 0;
+    ASSERT_OK(sdp_generate_answer(&sdp, buf, sizeof(buf), &out_len));
+
+    /* Parse back */
+    nano_sdp_t sdp2;
+    sdp_init(&sdp2);
+    ASSERT_OK(sdp_parse(&sdp2, buf, out_len));
+    ASSERT_TRUE(sdp2.has_video);
+    ASSERT_EQ(sdp2.video_pt, 96);
+}
+
 #endif /* NANORTC_HAVE_MEDIA_TRANSPORT */
 
 /* ================================================================
@@ -535,5 +686,9 @@ RUN(test_sdp_parse_audio_offer);
 RUN(test_sdp_parse_audio_only_offer);
 RUN(test_sdp_generate_audio_answer);
 RUN(test_sdp_audio_roundtrip);
+RUN(test_sdp_parse_video_offer);
+RUN(test_sdp_parse_full_media_offer);
+RUN(test_sdp_generate_video_answer);
+RUN(test_sdp_video_roundtrip);
 #endif
 TEST_MAIN_END

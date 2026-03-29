@@ -4,7 +4,13 @@
 file(GLOB TEST_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/test_*.c")
 
 # Tests that require media transport (AUDIO or VIDEO enabled)
-set(MEDIA_TESTS test_rtp test_srtp test_rtcp test_jitter)
+set(MEDIA_TESTS test_rtp test_srtp test_rtcp)
+
+# Tests that require AUDIO specifically
+set(AUDIO_TESTS test_jitter)
+
+# Tests that require VIDEO specifically
+set(VIDEO_TESTS test_h264)
 
 foreach(test_source ${TEST_SOURCES})
     get_filename_component(test_name ${test_source} NAME_WE)
@@ -12,6 +18,18 @@ foreach(test_source ${TEST_SOURCES})
     # Skip media-transport tests when neither AUDIO nor VIDEO is enabled
     list(FIND MEDIA_TESTS ${test_name} _is_media_test)
     if(_is_media_test GREATER -1 AND NOT NANORTC_FEATURE_AUDIO AND NOT NANORTC_FEATURE_VIDEO)
+        continue()
+    endif()
+
+    # Skip AUDIO-only tests when AUDIO is not enabled
+    list(FIND AUDIO_TESTS ${test_name} _is_audio_test)
+    if(_is_audio_test GREATER -1 AND NOT NANORTC_FEATURE_AUDIO)
+        continue()
+    endif()
+
+    # Skip VIDEO-only tests when VIDEO is not enabled
+    list(FIND VIDEO_TESTS ${test_name} _is_video_test)
+    if(_is_video_test GREATER -1 AND NOT NANORTC_FEATURE_VIDEO)
         continue()
     endif()
 

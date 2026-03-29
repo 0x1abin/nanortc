@@ -63,9 +63,29 @@ typedef struct nano_sdp {
     uint8_t audio_channels;     /* e.g. 2 for stereo */
     nanortc_direction_t audio_direction;
 
+    /* Video m-line fields (parsed from remote / configured locally) */
+    bool has_video;
+    uint8_t video_pt; /* Payload type number (e.g. 96 for H.264) */
+    nanortc_direction_t video_direction;
+
+    /* Remote direction (parsed from offer, used to compute answer direction) */
+    nanortc_direction_t remote_audio_direction;
+    nanortc_direction_t remote_video_direction;
+
+    /* H264 PT confirmed via a=rtpmap (0 = not yet seen) */
+    uint8_t video_h264_rtpmap_pt;
+
     /* m-line ordering from parsed offer (RFC 8829: answer must match offer order).
-     * Chrome puts media transceivers before data channels, so audio may come first. */
+     * Chrome puts media transceivers before data channels, so media may come first. */
     bool audio_before_datachannel;
+    bool video_before_datachannel;
+    bool video_before_audio;
+
+    /* m-line MID values (assigned during parsing, used for answer generation) */
+    uint8_t audio_mid; /* MID index for audio m-line */
+    uint8_t video_mid; /* MID index for video m-line */
+    uint8_t dc_mid;    /* MID index for datachannel m-line */
+    uint8_t mid_count; /* Total number of m-lines seen */
 #endif
 } nano_sdp_t;
 

@@ -18,7 +18,7 @@
 extern "C" {
 #endif
 
-#define HTTP_SIG_BUF_SIZE 4096
+#define HTTP_SIG_BUF_SIZE 16384
 
 typedef struct {
     char host[64];

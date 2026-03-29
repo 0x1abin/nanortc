@@ -369,8 +369,12 @@
  * Output queue depth (must be power of 2 for ring buffer masking)
  * ---------------------------------------------------------------- */
 
+/* 32 slots needed for video: a single H.264 frame may produce up to ~20
+ * FU-A fragments at 1200-byte MTU (for a ~24KB IDR NAL), and each fragment
+ * occupies one output queue slot until dispatch. 8 slots suffice for
+ * DataChannel-only or audio-only configurations. */
 #ifndef NANORTC_OUT_QUEUE_SIZE
-#define NANORTC_OUT_QUEUE_SIZE 8
+#define NANORTC_OUT_QUEUE_SIZE 32
 #endif
 
 /* ----------------------------------------------------------------
@@ -385,6 +389,25 @@
 /* RTCP send interval in milliseconds (RFC 3550 §6.2) */
 #ifndef NANORTC_RTCP_INTERVAL_MS
 #define NANORTC_RTCP_INTERVAL_MS 5000
+#endif
+
+/* ----------------------------------------------------------------
+ * Video configuration (VIDEO feature only)
+ * ---------------------------------------------------------------- */
+
+/** @brief Maximum reassembled NAL unit size for FU-A depacketizer (bytes). */
+#ifndef NANORTC_VIDEO_NAL_BUF_SIZE
+#define NANORTC_VIDEO_NAL_BUF_SIZE 32768
+#endif
+
+/** @brief RTP payload MTU for H.264 FU-A fragmentation (bytes). */
+#ifndef NANORTC_VIDEO_MTU
+#define NANORTC_VIDEO_MTU 1200
+#endif
+
+/** @brief Default dynamic Payload Type for H.264 (RFC 6184). */
+#ifndef NANORTC_VIDEO_DEFAULT_PT
+#define NANORTC_VIDEO_DEFAULT_PT 96
 #endif
 
 /* ----------------------------------------------------------------

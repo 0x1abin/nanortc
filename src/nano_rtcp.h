@@ -30,6 +30,9 @@
 /* Generic NACK size (RFC 4585 §6.2.1) */
 #define RTCP_NACK_SIZE 16 /* header(8) + SSRC of media(4) + FCI(4) */
 
+/* PLI size (RFC 4585 §6.3.1): FMT=1, PT=206 (PSFB) */
+#define RTCP_PLI_SIZE 12 /* header(4) + sender_ssrc(4) + media_ssrc(4) */
+
 /* RTCP version */
 #define RTCP_VERSION 2
 
@@ -80,6 +83,11 @@ int rtcp_generate_rr(nano_rtcp_t *rtcp, uint32_t remote_ssrc, uint8_t *buf, size
 /* Generate Generic NACK (RFC 4585 §6.2.1) — 16 bytes */
 int rtcp_generate_nack(uint32_t ssrc, uint32_t media_ssrc, uint16_t seq, uint8_t *buf,
                        size_t buf_len, size_t *out_len);
+
+/* Generate PLI — Picture Loss Indication (RFC 4585 §6.3.1)
+ * FMT=1, PT=206 (PSFB), 12 bytes total */
+int rtcp_generate_pli(uint32_t sender_ssrc, uint32_t media_ssrc, uint8_t *buf, size_t buf_len,
+                      size_t *out_len);
 
 /* Parse incoming RTCP packet */
 int rtcp_parse(const uint8_t *data, size_t len, nano_rtcp_info_t *info);
