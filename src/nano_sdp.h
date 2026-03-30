@@ -82,10 +82,10 @@ typedef struct nano_sdp {
     bool video_before_audio;
 
     /* m-line MID values (assigned during parsing, used for answer generation) */
-    uint8_t audio_mid; /* MID index for audio m-line */
-    uint8_t video_mid; /* MID index for video m-line */
-    uint8_t dc_mid;    /* MID index for datachannel m-line */
-    uint8_t mid_count; /* Total number of m-lines seen */
+    uint8_t audio_mid;    /* MID index for audio m-line */
+    uint8_t video_mid;    /* MID index for video m-line */
+    uint8_t dc_mid;       /* MID index for datachannel m-line */
+    uint8_t mid_count;    /* Total number of m-lines seen */
     bool has_datachannel; /* true if offer contains m=application */
 #endif
 } nano_sdp_t;

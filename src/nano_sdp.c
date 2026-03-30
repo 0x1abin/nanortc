@@ -657,11 +657,11 @@ int sdp_generate_answer(nano_sdp_t *sdp, char *buf, size_t buf_len, size_t *out_
     if (!sdp_append(buf, buf_len, &pos, "t=0 0\r\n"))
         goto overflow;
 
-    /* BUNDLE group: list all active MIDs.
-     * We build the m-line table dynamically based on what's active.
-     * The answer must preserve the offer's m-line order (RFC 8829 §5.3.1).
-     * For offer generation, we use the parsed MID indices; for fresh offers,
-     * MIDs are assigned sequentially (dc=0, audio=1, video=2 by default). */
+        /* BUNDLE group: list all active MIDs.
+         * We build the m-line table dynamically based on what's active.
+         * The answer must preserve the offer's m-line order (RFC 8829 §5.3.1).
+         * For offer generation, we use the parsed MID indices; for fresh offers,
+         * MIDs are assigned sequentially (dc=0, audio=1, video=2 by default). */
 #if NANORTC_HAVE_MEDIA_TRANSPORT
     {
         /* Build m-line table ordered by MID index.
