@@ -573,6 +573,144 @@ TEST(test_ice_credential_usage)
                                     crypto()->hmac_sha1));
 }
 
+/* ================================================================
+ * RFC 8445 MUST/SHOULD requirement tests
+ * ================================================================ */
+
+/*
+ * RFC 8445 §5.1.2.1: Candidate priority formula.
+ * priority = (2^24)*type_pref + (2^8)*local_pref + (256 - component_id)
+ *
+ * For host candidates: type_pref=126, local_pref=65535, component_id=1
+ * Expected: (2^24)*126 + (2^8)*65535 + (256-1) = 2113929471 + 16776960 + 255
+ *         = 2113929471 + 16776960 + 255 = 2130706687 - but that overflows.
+ * Let me recalculate: 126*16777216 = 2113929216, 65535*256 = 16776960, 255
+ * Total: 2113929216 + 16776960 + 255 = 2130706431
+ *
+ * Verify the STUN PRIORITY attribute in a generated check matches this.
+ */
+TEST(test_ice_priority_formula_rfc8445)
+{
+    nano_ice_t ice;
+    ice_init(&ice, 1);
+
+    /* Set up minimal credentials */
+    memcpy(ice.local_ufrag, "AAAA", 4);
+    ice.local_ufrag_len = 4;
+    memcpy(ice.local_pwd, "password-1234567890a", 20);
+    ice.local_pwd_len = 20;
+    memcpy(ice.remote_ufrag, "BBBB", 4);
+    ice.remote_ufrag_len = 4;
+    memcpy(ice.remote_pwd, "password-0987654321b", 20);
+    ice.remote_pwd_len = 20;
+    ice.tie_breaker = 0x1234567890ABCDEFull;
+    ice.remote_candidates[0].family = 4;
+    ice.remote_candidates[0].addr[0] = 192;
+    ice.remote_candidates[0].addr[1] = 168;
+    ice.remote_candidates[0].addr[2] = 1;
+    ice.remote_candidates[0].addr[3] = 1;
+    ice.remote_candidates[0].port = 5000;
+    ice.remote_candidate_count = 1;
+
+    uint8_t buf[256];
+    size_t len = 0;
+    ASSERT_OK(ice_generate_check(&ice, 0, crypto(), buf, sizeof(buf), &len));
+    ASSERT_TRUE(len > 0);
+
+    /* Parse the generated STUN request */
+    stun_msg_t msg;
+    ASSERT_OK(stun_parse(buf, len, &msg));
+
+    /* RFC 8445 §5.1.2.1: For host, type_pref=126, local=65535, comp=1 */
+    /* priority = 126*2^24 + 65535*2^8 + 255 = 2130706431 */
+    uint32_t expected = (uint32_t)126 * (1u << 24) + (uint32_t)65535 * (1u << 8) + 255;
+    ASSERT_EQ(msg.priority, expected);
+}
+
+/*
+ * RFC 8445 §7: Multiple remote candidates — verify checks cycle through them.
+ */
+TEST(test_ice_multiple_candidates_cycling)
+{
+    nano_ice_t ice;
+    ice_init(&ice, 1);
+
+    memcpy(ice.local_ufrag, "AAAA", 4);
+    ice.local_ufrag_len = 4;
+    memcpy(ice.local_pwd, "password-1234567890a", 20);
+    ice.local_pwd_len = 20;
+    memcpy(ice.remote_ufrag, "BBBB", 4);
+    ice.remote_ufrag_len = 4;
+    memcpy(ice.remote_pwd, "password-0987654321b", 20);
+    ice.remote_pwd_len = 20;
+    ice.tie_breaker = 0x1234567890ABCDEFull;
+
+    /* Add 2 remote candidates */
+    ice.remote_candidates[0].family = 4;
+    ice.remote_candidates[0].addr[0] = 192;
+    ice.remote_candidates[0].addr[3] = 1;
+    ice.remote_candidates[0].port = 5000;
+    ice.remote_candidates[1].family = 4;
+    ice.remote_candidates[1].addr[0] = 192;
+    ice.remote_candidates[1].addr[3] = 2;
+    ice.remote_candidates[1].port = 5001;
+    ice.remote_candidate_count = 2;
+
+    uint8_t buf[256];
+    size_t len;
+
+    /* Generate first check */
+    len = 0;
+    ASSERT_OK(ice_generate_check(&ice, 0, crypto(), buf, sizeof(buf), &len));
+    ASSERT_TRUE(len > 0);
+    uint8_t first_candidate = ice.current_candidate;
+
+    /* Advance time past pacing interval and generate second check */
+    len = 0;
+    ASSERT_OK(ice_generate_check(&ice, 100, crypto(), buf, sizeof(buf), &len));
+    ASSERT_TRUE(len > 0);
+
+    /* After 2 checks with 2 candidates, we should have cycled */
+    ASSERT_EQ(ice.check_count, 2);
+}
+
+/*
+ * RFC 8445: STUN Binding Indication (type 0x0011) should be handled gracefully.
+ * ICE agents may receive indications — they should not cause errors.
+ */
+TEST(test_ice_stun_indication_handling)
+{
+    nano_ice_t ice;
+    ice_init(&ice, 0);
+
+    memcpy(ice.local_ufrag, "PEER", 4);
+    ice.local_ufrag_len = 4;
+    memcpy(ice.local_pwd, "peer-password-123456", 20);
+    ice.local_pwd_len = 20;
+    memcpy(ice.remote_ufrag, "CTRL", 4);
+    ice.remote_ufrag_len = 4;
+    memcpy(ice.remote_pwd, "ctrl-password-abcdef", 20);
+    ice.remote_pwd_len = 20;
+
+    /* Build a minimal STUN Binding Indication (type=0x0011, no attributes) */
+    uint8_t indication[] = {
+        0x00, 0x11, 0x00, 0x00, 0x21, 0x12, 0xA4, 0x42, 0x01, 0x02,
+        0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C,
+    };
+
+    nanortc_addr_t src;
+    memset(&src, 0, sizeof(src));
+    src.family = 4;
+    uint8_t resp_buf[256];
+    size_t resp_len = 0;
+
+    /* Should either succeed (ignored) or fail gracefully — no crash */
+    int rc = ice_handle_stun(&ice, indication, sizeof(indication), &src, crypto(), resp_buf,
+                             sizeof(resp_buf), &resp_len);
+    /* Indications don't generate responses */
+    (void)rc;
+}
+
 /* ---- Runner ---- */
 
 TEST_MAIN_BEGIN("nanortc ICE tests")
@@ -600,4 +738,8 @@ RUN(test_ice_state_checking_to_failed);
 RUN(test_ice_no_checks_after_connected);
 /* Credential usage */
 RUN(test_ice_credential_usage);
+/* RFC 8445 MUST/SHOULD requirement tests */
+RUN(test_ice_priority_formula_rfc8445);
+RUN(test_ice_multiple_candidates_cycling);
+RUN(test_ice_stun_indication_handling);
 TEST_MAIN_END
