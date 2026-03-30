@@ -562,8 +562,10 @@ static bool sdp_append_audio_mline(nano_sdp_t *sdp, char *buf, size_t buf_len, s
         return false;
     {
         const char *codec_str = " opus/48000/2";
-        if (sdp->audio_sample_rate == 8000 && sdp->audio_channels <= 1) {
+        if (sdp->audio_pt == 0) {
             codec_str = " PCMU/8000";
+        } else if (sdp->audio_pt == 8) {
+            codec_str = " PCMA/8000";
         }
         if (!sdp_append(buf, buf_len, pos, codec_str))
             return false;
@@ -576,7 +578,10 @@ static bool sdp_append_audio_mline(nano_sdp_t *sdp, char *buf, size_t buf_len, s
             return false;
         if (!sdp_append_u16(buf, buf_len, pos, (uint16_t)sdp->audio_pt))
             return false;
-        if (!sdp_append(buf, buf_len, pos, " minptime=10;useinbandfec=1;stereo=1\r\n"))
+        if (!sdp_append(buf, buf_len, pos,
+                        sdp->audio_channels >= 2
+                            ? " minptime=10;useinbandfec=1;stereo=1\r\n"
+                            : " minptime=10;useinbandfec=1;stereo=0\r\n"))
             return false;
         if (!sdp_append(buf, buf_len, pos, "a=ptime:20\r\n"))
             return false;

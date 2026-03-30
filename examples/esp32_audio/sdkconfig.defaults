@@ -1,0 +1,34 @@
+# nanortc ESP32 Audio example — default SDK configuration
+#
+# Custom partition table (factory = 1.75 MB for Opus builds)
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# mbedTLS DTLS support
+CONFIG_MBEDTLS_SSL_PROTO_DTLS=y
+CONFIG_MBEDTLS_KEY_EXCHANGE_ECDHE_ECDSA=y
+CONFIG_MBEDTLS_ECDSA_C=y
+CONFIG_MBEDTLS_ECP_DP_SECP256R1_ENABLED=y
+CONFIG_MBEDTLS_SSL_MAX_CONTENT_LEN=4096
+CONFIG_MBEDTLS_X509_CREATE_C=y
+CONFIG_MBEDTLS_X509_CRT_WRITE_C=y
+CONFIG_MBEDTLS_PEM_WRITE_C=y
+
+# lwIP
+CONFIG_LWIP_MAX_SOCKETS=8
+CONFIG_LWIP_SO_RCVTIMEO=y
+CONFIG_LWIP_SO_REUSE=y
+
+# Task stack (nanortc_t is large, needs generous stack)
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
+
+# nanortc features: Audio only (no DataChannel)
+CONFIG_NANORTC_FEATURE_AUDIO=y
+# DataChannel off by default (audio-only device)
+# CONFIG_NANORTC_FEATURE_DATACHANNEL is not set
+
+# Output queue (audio needs fewer slots than video)
+CONFIG_NANORTC_OUT_QUEUE_SIZE=8
+
+# Jitter buffer: sendonly example doesn't receive audio, minimize slots
+CONFIG_NANORTC_JITTER_SLOTS=8
