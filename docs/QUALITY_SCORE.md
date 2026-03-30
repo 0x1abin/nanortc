@@ -49,7 +49,7 @@ Per-module quality grades for NanoRTC. Updated as implementation progresses.
 
 | Component | Grade | Notes |
 |-----------|-------|-------|
-| Crypto provider interface | **B** | Interface complete; HMAC-SHA1 + CSPRNG + DTLS + AES-128-CM + HMAC-SHA1-80 (both backends) |
+| Crypto provider interface | **B** | Interface complete; HMAC-SHA1 + CSPRNG + DTLS + AES-128-CM + HMAC-SHA1-80 (both backends). mbedTLS 3-tier compat: 2.x (legacy), 3.6+ (PSA keygen + `set_serial_raw`), 4.x (full PSA). |
 | Build system (CMake) | **B** | 3 profiles, 2 crypto backends, ESP-IDF detection, `-fvisibility=hidden` |
 | Test infrastructure | **B** | Shared macros (`nano_test.h`), 150+ tests across 12 suites, RFC 5769/3711 vectors, e2e ICE+DTLS loopback, full public API coverage |
 | Interop test framework | **B** | libdatachannel v0.22.5 as reference peer, 5 interop tests all pass (handshake, DC open, text/binary). SDP compat fixed (commit `4d143f2`). |

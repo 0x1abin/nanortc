@@ -15,6 +15,7 @@ Track known debt, prioritize by impact, pay down continuously.
 | ~~TD-006~~ | ~~Examples~~ | ~~`run_loop_linux.c` and `signaling_stdin.c` untested with real network~~ | ~~Medium~~ | ~~Phase 1~~ | ~~Partially resolved~~ |
 | ~~TD-007~~ | ~~Interop~~ | ~~SDP parser does not fully parse libdatachannel's SDP offer format~~ | ~~High~~ | ~~Phase 1~~ | ~~Resolved~~ |
 | ~~TD-009~~ | ~~DataChannel~~ | ~~DCEP OPEN retransmit not deduplicated — each retransmit allocates new channel and re-emits open event~~ | ~~Medium~~ | ~~Phase 1~~ | ~~Resolved~~ |
+| ~~TD-010~~ | ~~Crypto~~ | ~~mbedTLS 3.6 (ESP-IDF v5.x) build fails — `MBEDTLS_DEPRECATED_REMOVED` removes `pk_ec()`/`ecp_gen_key()`/`set_serial()`~~ | ~~High~~ | ~~Phase 1~~ | ~~Resolved~~ |
 
 ## Resolved Debt
 
@@ -26,6 +27,7 @@ Track known debt, prioritize by impact, pay down continuously.
 | TD-005 | 2026-03-29 | `Kconfig.projbuild` in `esp32_datachannel` example; `nanortc_config.h` maps `CONFIG_NANORTC_*` → `NANORTC_*` via Kconfig |
 | TD-007 | 2026-03-27 | SDP parser fixed — ICE candidate parsing + `a=sendrecv` for libdatachannel compat (commit `4b5f7bb`). Audio m-line support added in Phase 2 Session 2. |
 | TD-009 | 2026-03-30 | Idempotent DCEP OPEN handling — `dc_find_channel()` dedup before alloc, `last_was_open` flag gates event emission in `nano_rtc.c`. Re-ACKs retransmitted OPENs without duplicate channel or event. |
+| TD-010 | 2026-03-30 | Added `NANORTC_MBEDTLS_3_6` version tier for mbedTLS 3.6+ (ESP-IDF v5.x). Uses PSA keygen (`psa_generate_key` + `pk_copy_from_psa`) and `set_serial_raw()` to avoid deprecated APIs removed by `MBEDTLS_DEPRECATED_REMOVED`. |
 
 ## Principles
 
