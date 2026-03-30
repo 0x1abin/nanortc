@@ -17,6 +17,14 @@
 #define NANORTC_MBEDTLS_3
 #endif
 
+/* mbedtls 3.6+: mbedtls_pk_ec()/ecp_gen_key() may be unavailable
+ * (ESP-IDF defines MBEDTLS_DEPRECATED_REMOVED);
+ * x509write_crt_set_serial() replaced by _set_serial_raw();
+ * PSA Crypto available for key generation via pk_copy_from_psa(). */
+#if MBEDTLS_VERSION_NUMBER >= 0x03060000 && MBEDTLS_VERSION_NUMBER < 0x04000000
+#define NANORTC_MBEDTLS_3_6
+#endif
+
 /* mbedtls 4.x: PSA Crypto API replaces legacy low-level APIs.
  * entropy/ctr_drbg/ecp/bignum/sha256 headers removed;
  * pk_setup()/pk_info_from_type()/ecp_gen_key() removed;
@@ -52,6 +60,9 @@
 #include <mbedtls/timing.h>
 #include <mbedtls/error.h>
 #include <mbedtls/bignum.h>
+#ifdef NANORTC_MBEDTLS_3_6
+#include <psa/crypto.h>
+#endif
 #endif
 
 #include "nanortc_util.h"
@@ -60,14 +71,12 @@
 
 /* ---- Version-adaptive macros (2.x/3.x only) ---- */
 
-#ifndef NANORTC_MBEDTLS_4
-/* mbedtls 3.6+: mbedtls_pk_ec() removed, use mbedtls_pk_ec_rw() */
-#if MBEDTLS_VERSION_NUMBER >= 0x03060000
-#define NANORTC_PK_EC(pk) mbedtls_pk_ec_rw(pk)
-#else
+#if !defined(NANORTC_MBEDTLS_4) && !defined(NANORTC_MBEDTLS_3_6)
+/* mbedtls < 3.6: legacy PK + ECP key generation */
 #define NANORTC_PK_EC(pk) mbedtls_pk_ec(pk)
 #endif
 
+#ifndef NANORTC_MBEDTLS_4
 /*
  * mbedtls 2.x deprecated the non-_ret SHA functions.
  * Use _ret variants on 2.x to avoid -Werror=deprecated-declarations.
@@ -88,7 +97,7 @@
  * PSA Crypto initialization (mbedtls 4.x)
  * ================================================================ */
 
-#ifdef NANORTC_MBEDTLS_4
+#if defined(NANORTC_MBEDTLS_4) || defined(NANORTC_MBEDTLS_3_6)
 static int psa_initialized = 0;
 
 static int mbed_psa_init(void)
@@ -358,8 +367,13 @@ static int mbed_generate_cert(nanortc_crypto_dtls_ctx_t *ctx)
 {
     int ret;
 
-#ifdef NANORTC_MBEDTLS_4
-    /* mbedtls 4.x: generate key via PSA, then copy into PK context */
+#if defined(NANORTC_MBEDTLS_4) || defined(NANORTC_MBEDTLS_3_6)
+    /* mbedtls 3.6+/4.x: generate key via PSA, then copy into PK context.
+     * Avoids mbedtls_pk_ec()/ecp_gen_key() which are removed when
+     * MBEDTLS_DEPRECATED_REMOVED is defined (e.g. ESP-IDF). */
+    if (mbed_psa_init() != 0) {
+        return -1;
+    }
     psa_key_attributes_t key_attr = PSA_KEY_ATTRIBUTES_INIT;
     psa_set_key_type(&key_attr, PSA_KEY_TYPE_ECC_KEY_PAIR(PSA_ECC_FAMILY_SECP_R1));
     psa_set_key_bits(&key_attr, 256);
@@ -381,7 +395,7 @@ static int mbed_generate_cert(nanortc_crypto_dtls_ctx_t *ctx)
         return ret;
     }
 #else
-    /* mbedtls 2.x/3.x: legacy PK + ECP key generation */
+    /* mbedtls 2.x/3.x (<3.6): legacy PK + ECP key generation */
     mbedtls_pk_init(&ctx->pkey);
     ret = mbedtls_pk_setup(&ctx->pkey, mbedtls_pk_info_from_type(MBEDTLS_PK_ECKEY));
     if (ret != 0) {
@@ -421,18 +435,20 @@ static int mbed_generate_cert(nanortc_crypto_dtls_ctx_t *ctx)
     }
 
     /* Random serial number */
-#ifdef NANORTC_MBEDTLS_4
-    /* mbedtls 4.x: set_serial_raw() with byte buffer */
-    unsigned char serial_buf[16];
-    if (psa_generate_random(serial_buf, sizeof(serial_buf)) != PSA_SUCCESS) {
-        mbedtls_x509write_crt_free(&crt);
-        return -1;
-    }
-    serial_buf[0] &= 0x7F; /* Ensure positive (clear MSB) */
-    ret = mbedtls_x509write_crt_set_serial_raw(&crt, serial_buf, sizeof(serial_buf));
-    if (ret != 0) {
-        mbedtls_x509write_crt_free(&crt);
-        return ret;
+#if defined(NANORTC_MBEDTLS_4) || defined(NANORTC_MBEDTLS_3_6)
+    /* mbedtls 3.6+/4.x: set_serial_raw() with byte buffer */
+    {
+        unsigned char serial_buf[16];
+        if (psa_generate_random(serial_buf, sizeof(serial_buf)) != PSA_SUCCESS) {
+            mbedtls_x509write_crt_free(&crt);
+            return -1;
+        }
+        serial_buf[0] &= 0x7F; /* Ensure positive (clear MSB) */
+        ret = mbedtls_x509write_crt_set_serial_raw(&crt, serial_buf, sizeof(serial_buf));
+        if (ret != 0) {
+            mbedtls_x509write_crt_free(&crt);
+            return ret;
+        }
     }
 #else
     {
@@ -496,7 +512,7 @@ static nanortc_crypto_dtls_ctx_t *mbed_dtls_ctx_new(int is_server)
 {
     int ret;
 
-#ifdef NANORTC_MBEDTLS_4
+#if defined(NANORTC_MBEDTLS_4) || defined(NANORTC_MBEDTLS_3_6)
     /* Ensure PSA crypto is initialized */
     if (mbed_psa_init() != 0) {
         return NULL;
