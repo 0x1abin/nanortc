@@ -67,7 +67,7 @@ jobs:
 
       - name: "Check: code formatting"
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq clang-format
+          pip install clang-format==22.1.2
           clang-format --dry-run --Werror src/*.c src/*.h include/*.h crypto/*.h crypto/*.c
 
       - name: "Check: symbol naming"
