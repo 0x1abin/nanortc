@@ -207,7 +207,13 @@ int nanortc_init(nanortc_t *rtc, const nanortc_config_t *cfg)
     jitter_init(&rtc->jitter, cfg->jitter_depth_ms);
     if (cfg->audio_codec != NANORTC_CODEC_NONE) {
         rtc->sdp.has_audio = true;
-        rtc->sdp.audio_pt = 111; /* Opus standard dynamic PT */
+        /* RFC 3551 static PT for G.711, dynamic 111 for Opus */
+        if (cfg->audio_codec == NANORTC_CODEC_PCMU)
+            rtc->sdp.audio_pt = 0;
+        else if (cfg->audio_codec == NANORTC_CODEC_PCMA)
+            rtc->sdp.audio_pt = 8;
+        else
+            rtc->sdp.audio_pt = 111;
         rtc->sdp.audio_sample_rate = cfg->audio_sample_rate;
         rtc->sdp.audio_channels = cfg->audio_channels;
         rtc->sdp.audio_direction = cfg->audio_direction;
@@ -415,6 +421,13 @@ int nanortc_accept_answer(nanortc_t *rtc, const char *answer)
     if (rc != NANORTC_OK) {
         return rc;
     }
+
+#if NANORTC_FEATURE_AUDIO
+    /* Offerer adopts the PT selected by the answerer (RFC 3264 §6.1) */
+    if (rtc->sdp.has_audio) {
+        rtc->sdp.audio_pt = rtc->sdp.remote_audio_pt;
+    }
+#endif
 
     rtc_apply_remote_sdp(rtc);
 

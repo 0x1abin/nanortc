@@ -149,31 +149,14 @@ static void parse_rtpmap(nano_sdp_t *sdp, int current_mline, const char *line, s
     }
 
     if (current_mline == SDP_MLINE_AUDIO) {
-        /* Only update fields for the preferred PT (first in m= line) */
-        if ((uint8_t)pt != sdp->audio_pt) {
+        /* Only parse the rtpmap for the remote's preferred PT */
+        if ((uint8_t)pt != sdp->remote_audio_pt) {
             return;
         }
-
-        p = next + 1; /* skip space */
-
-        /* Skip codec name, find '/' */
-        while (p < end && *p != '/') {
-            p++;
-        }
-        if (p >= end) {
-            return;
-        }
-        p++; /* skip '/' */
-
-        /* Parse sample rate */
-        sdp->audio_sample_rate = parse_u32(p, end, &next);
-        p = next;
-
-        /* Parse channels (optional) */
-        if (p < end && *p == '/') {
-            p++;
-            sdp->audio_channels = (uint8_t)parse_u32(p, end, NULL);
-        }
+        /* audio_sample_rate / audio_channels are set by nanortc_init()
+         * from the local config and must not be overwritten here.
+         * nanortc supports a single codec per session, so no need to
+         * discover the remote codec's parameters. */
     } else if (current_mline == SDP_MLINE_VIDEO) {
         /* Check if this PT maps to H264 — store for cross-validation with fmtp.
          * Format: a=rtpmap:<pt> H264/90000 */
@@ -213,7 +196,10 @@ static uint8_t parse_mline_first_pt(const char *line, size_t line_len, size_t sk
 
 static void parse_audio_mline(nano_sdp_t *sdp, const char *line, size_t line_len)
 {
-    sdp->audio_pt = parse_mline_first_pt(line, line_len, 8); /* skip "m=audio " */
+    /* Store in remote_audio_pt — used by parse_rtpmap() as filter.
+     * audio_pt (local PT) is set by nanortc_init() and must not be overwritten
+     * when parsing a remote offer (RFC 3264 §6.1). */
+    sdp->remote_audio_pt = parse_mline_first_pt(line, line_len, 8); /* skip "m=audio " */
 }
 
 /* parse_video_mline intentionally omitted: Chrome lists VP8 first in m=video,
@@ -562,8 +548,10 @@ static bool sdp_append_audio_mline(nano_sdp_t *sdp, char *buf, size_t buf_len, s
         return false;
     {
         const char *codec_str = " opus/48000/2";
-        if (sdp->audio_sample_rate == 8000 && sdp->audio_channels <= 1) {
+        if (sdp->audio_pt == 0) {
             codec_str = " PCMU/8000";
+        } else if (sdp->audio_pt == 8) {
+            codec_str = " PCMA/8000";
         }
         if (!sdp_append(buf, buf_len, pos, codec_str))
             return false;
@@ -576,7 +564,9 @@ static bool sdp_append_audio_mline(nano_sdp_t *sdp, char *buf, size_t buf_len, s
             return false;
         if (!sdp_append_u16(buf, buf_len, pos, (uint16_t)sdp->audio_pt))
             return false;
-        if (!sdp_append(buf, buf_len, pos, " minptime=10;useinbandfec=1;stereo=1\r\n"))
+        if (!sdp_append(buf, buf_len, pos,
+                        sdp->audio_channels >= 2 ? " minptime=10;useinbandfec=1;stereo=1\r\n"
+                                                 : " minptime=10;useinbandfec=1;stereo=0\r\n"))
             return false;
         if (!sdp_append(buf, buf_len, pos, "a=ptime:20\r\n"))
             return false;
@@ -657,11 +647,11 @@ int sdp_generate_answer(nano_sdp_t *sdp, char *buf, size_t buf_len, size_t *out_
     if (!sdp_append(buf, buf_len, &pos, "t=0 0\r\n"))
         goto overflow;
 
-        /* BUNDLE group: list all active MIDs.
-         * We build the m-line table dynamically based on what's active.
-         * The answer must preserve the offer's m-line order (RFC 8829 §5.3.1).
-         * For offer generation, we use the parsed MID indices; for fresh offers,
-         * MIDs are assigned sequentially (dc=0, audio=1, video=2 by default). */
+    /* BUNDLE group: list all active MIDs.
+     * We build the m-line table dynamically based on what's active.
+     * The answer must preserve the offer's m-line order (RFC 8829 §5.3.1).
+     * For offer generation, we use the parsed MID indices; for fresh offers,
+     * MIDs are assigned sequentially (dc=0, audio=1, video=2 by default). */
 #if NANORTC_HAVE_MEDIA_TRANSPORT
     {
         /* Build m-line table ordered by MID index.

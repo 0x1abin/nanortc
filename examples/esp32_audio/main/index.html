@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>nanortc ESP32 Audio</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: monospace; max-width: 720px; margin: 2em auto;
+         padding: 0 1em; }
+  h1 { font-size: 1.2em; margin-bottom: 0.5em; }
+  .row { margin: 0.5em 0; display: flex; gap: 0.5em; align-items: center; }
+  label { min-width: 60px; }
+  button { padding: 4px 12px; cursor: pointer; }
+  #log { border: 1px solid #ccc; padding: 8px; height: 300px; overflow-y: auto;
+         white-space: pre-wrap; font-size: 0.85em; background: #f8f8f8; }
+  .status { font-weight: bold; }
+  .ok { color: green; }
+  .err { color: red; }
+  .info { color: #666; }
+</style>
+</head>
+<body>
+<h1>nanortc ESP32 Audio</h1>
+
+<div class="row">
+  <label>Status:</label>
+  <span id="status" class="status info">Not connected</span>
+  <button id="btnConnect" onclick="connect()">Connect</button>
+</div>
+
+<div id="log"></div>
+
+<script>
+let pc = null;
+let audioEl = null;
+
+function log(cls, msg) {
+  const el = document.getElementById('log');
+  const line = document.createElement('div');
+  line.className = cls;
+  line.textContent = '[' + new Date().toLocaleTimeString() + '] ' + msg;
+  el.appendChild(line);
+  el.scrollTop = el.scrollHeight;
+}
+
+function setStatus(cls, text) {
+  const el = document.getElementById('status');
+  el.className = 'status ' + cls;
+  el.textContent = text;
+}
+
+function waitIceGathering(pc, timeout) {
+  return new Promise((resolve) => {
+    if (pc.iceGatheringState === 'complete') {
+      resolve();
+      return;
+    }
+    const timer = setTimeout(resolve, timeout);
+    pc.onicegatheringstatechange = () => {
+      if (pc.iceGatheringState === 'complete') {
+        clearTimeout(timer);
+        resolve();
+      }
+    };
+  });
+}
+
+function cleanup() {
+  if (pc) { pc.close(); pc = null; }
+}
+
+async function connect() {
+  cleanup();
+  document.getElementById('btnConnect').disabled = true;
+  setStatus('info', 'Creating offer...');
+  log('info', 'Connecting...');
+
+  try {
+    pc = new RTCPeerConnection({ iceServers: [] });
+
+    pc.oniceconnectionstatechange = () => {
+      const s = pc.iceConnectionState;
+      log('info', 'ICE: ' + s);
+      if (s === 'connected' || s === 'completed') {
+        setStatus('ok', 'ICE connected');
+      } else if (s === 'failed' || s === 'disconnected') {
+        setStatus('err', 'Disconnected (' + s + ')');
+      }
+    };
+
+    /* Add audio transceiver (recvonly — we receive audio from ESP32) */
+    pc.addTransceiver('audio', { direction: 'recvonly' });
+
+    /* Create audio element in user-gesture context to satisfy autoplay policy */
+    if (!audioEl) {
+      audioEl = document.createElement('audio');
+      audioEl.autoplay = true;
+      audioEl.onplaying = () => log('ok', 'Audio playing');
+      audioEl.onerror = (e) => log('err', 'Audio error: ' + (e.target.error?.message || 'unknown'));
+      document.body.appendChild(audioEl);
+    }
+
+    pc.ontrack = (e) => {
+      audioEl.srcObject = e.streams[0] || new MediaStream([e.track]);
+      audioEl.play().catch(err => log('err', 'Play blocked: ' + err.message));
+      log('ok', 'Audio track received');
+      setStatus('ok', 'Playing audio');
+    };
+
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+
+    setStatus('info', 'Gathering ICE candidates...');
+    log('info', 'Gathering ICE candidates...');
+    await waitIceGathering(pc, 3000);
+
+    setStatus('info', 'Sending offer to ESP32...');
+    log('info', 'Sending offer (' + pc.localDescription.sdp.length + ' bytes)');
+    const resp = await fetch('/offer', {
+      method: 'POST',
+      body: pc.localDescription.sdp,
+    });
+
+    if (!resp.ok) {
+      throw new Error('Server error: ' + resp.status + ' ' + await resp.text());
+    }
+
+    const answerSdp = await resp.text();
+    log('info', 'Got answer (' + answerSdp.length + ' bytes)');
+    await pc.setRemoteDescription({ type: 'answer', sdp: answerSdp });
+    setStatus('info', 'Waiting for connection...');
+
+  } catch (e) {
+    setStatus('err', 'Error: ' + e.message);
+    log('err', 'Error: ' + e.message);
+  }
+  document.getElementById('btnConnect').disabled = false;
+}
+
+/* User must click Connect — no auto-connect (browser autoplay policy) */
+</script>
+</body>
+</html>
