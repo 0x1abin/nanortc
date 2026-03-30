@@ -15,15 +15,8 @@ CONFIG_LWIP_MAX_SOCKETS=8
 CONFIG_LWIP_SO_RCVTIMEO=y
 CONFIG_LWIP_SO_REUSE=y
 
-# Console output via USB Serial JTAG (ESP32-S3 native USB)
-CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
-
 # Task stack (nanortc_t is large, needs generous stack)
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
-
-# WiFi credentials
-CONFIG_EXAMPLE_WIFI_SSID="Bin"
-CONFIG_EXAMPLE_WIFI_PASSWORD="qwer6688"
 
 # nanortc features (DataChannel only for this example)
 CONFIG_NANORTC_FEATURE_DATACHANNEL=y

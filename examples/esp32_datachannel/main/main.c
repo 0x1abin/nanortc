@@ -1,9 +1,9 @@
 /*
- * nanortc ESP32 DataChannel example
+ * nanortc ESP32 DataChannel example — Self-hosted Web UI
  *
- * Connects to WiFi, discovers the signaling server via UDP broadcast,
- * then acts as a WebRTC answerer. Echoes all DataChannel messages
- * back to the remote peer (browser or Linux offerer).
+ * The ESP32 hosts a web page at http://<ip>/. The browser connects,
+ * sends an SDP offer via POST /offer, and receives an answer.
+ * DataChannel messages are echoed back.
  *
  * Build: cd examples/esp32_datachannel && idf.py build
  * Flash: idf.py flash monitor
@@ -23,13 +23,12 @@
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "nvs_flash.h"
+#include "esp_http_server.h"
 #include <lwip/sockets.h>
 
 #include "nanortc.h"
 #include "nanortc_crypto.h"
 #include "run_loop.h"
-#include "http_signaling.h"
-#include "udp_discovery.h"
 
 static const char *TAG = "nanortc_dc";
 
@@ -41,6 +40,11 @@ static EventGroupHandle_t s_wifi_event_group;
 /* nanortc state — static because nanortc_t is large */
 static nanortc_t s_rtc;
 static nano_run_loop_t s_loop;
+static char s_local_ip[16];
+
+/* Embedded HTML file (linked by EMBED_TXTFILES in CMakeLists.txt) */
+extern const uint8_t index_html_start[] asm("_binary_index_html_start");
+extern const uint8_t index_html_end[] asm("_binary_index_html_end");
 
 /* ----------------------------------------------------------------
  * WiFi event handler
@@ -123,7 +127,6 @@ static int get_sta_ip(esp_netif_t *netif, char *ip_out, size_t ip_out_len)
     if (esp_netif_get_ip_info(netif, &ip_info) != ESP_OK) {
         return -1;
     }
-    /* esp_ip4addr_ntoa is provided by ESP-IDF (lwIP wrapper) */
     esp_ip4addr_ntoa(&ip_info.ip, ip_out, (int)ip_out_len);
     return 0;
 }
@@ -179,90 +182,145 @@ static void on_event(nanortc_t *rtc, const nanortc_event_t *evt,
 }
 
 /* ----------------------------------------------------------------
- * Signaling: answerer mode
+ * HTTP handlers
  * ---------------------------------------------------------------- */
-static int do_answer_signaling(http_sig_t *sig, nanortc_t *rtc)
-{
-    char type[32];
-    char payload[HTTP_SIG_BUF_SIZE];
 
-    ESP_LOGI(TAG, "Waiting for SDP offer...");
-    for (;;) {
-        int rc = http_sig_recv(sig, type, sizeof(type),
-                               payload, sizeof(payload), 2000);
-        if (rc == -2) continue; /* timeout, retry */
-        if (rc < 0) {
-            ESP_LOGE(TAG, "Signaling error waiting for offer");
-            return -1;
-        }
-        if (memcmp(type, "offer", 6) == 0) break;
-        ESP_LOGW(TAG, "Ignoring '%s' (waiting for offer)", type);
+/* GET / — serve index.html */
+static esp_err_t http_get_root(httpd_req_t *req)
+{
+    size_t html_len = (size_t)(index_html_end - index_html_start);
+    httpd_resp_set_type(req, "text/html; charset=utf-8");
+    httpd_resp_send(req, (const char *)index_html_start, (ssize_t)html_len);
+    return ESP_OK;
+}
+
+/* POST /offer — receive SDP offer, return SDP answer */
+static esp_err_t http_post_offer(httpd_req_t *req)
+{
+    /* Read offer body */
+    int content_len = req->content_len;
+    if (content_len <= 0 || content_len > 8192) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad offer size");
+        return ESP_FAIL;
     }
 
-    size_t offer_len = strlen(payload); /* NANORTC_SAFE: API boundary */
-    ESP_LOGI(TAG, "Got SDP offer (%u bytes)", (unsigned)offer_len);
+    char *offer = malloc((size_t)content_len + 1);
+    if (!offer) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM");
+        return ESP_FAIL;
+    }
 
-    char answer[HTTP_SIG_BUF_SIZE];
-    size_t answer_len = 0;
-    int rc = nanortc_accept_offer(rtc, payload, answer, sizeof(answer),
-                                  &answer_len);
+    int received = httpd_req_recv(req, offer, (size_t)content_len);
+    if (received <= 0) {
+        free(offer);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Read failed");
+        return ESP_FAIL;
+    }
+    offer[received] = '\0';
+
+    ESP_LOGI(TAG, "Got SDP offer (%d bytes)", received);
+
+    /* Re-initialize nanortc for new session (handles browser refresh) */
+    nano_run_loop_destroy(&s_loop);
+    nanortc_destroy(&s_rtc);
+
+    nanortc_config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.crypto = nanortc_crypto_mbedtls();
+    cfg.role = NANORTC_ROLE_CONTROLLED;
+
+    int rc = nanortc_init(&s_rtc, &cfg);
     if (rc != NANORTC_OK) {
-        ESP_LOGE(TAG, "nanortc_accept_offer failed: %d", rc);
-        return rc;
+        ESP_LOGE(TAG, "nanortc_init failed: %d", rc);
+        free(offer);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Init fail");
+        return ESP_FAIL;
     }
-    ESP_LOGI(TAG, "Generated SDP answer (%u bytes)", (unsigned)answer_len);
 
-    rc = http_sig_send(sig, "answer", answer, "sdp");
+    rc = nano_run_loop_init(&s_loop, &s_rtc, NULL, CONFIG_EXAMPLE_UDP_PORT);
     if (rc < 0) {
-        ESP_LOGE(TAG, "Failed to send SDP answer");
-        return -1;
+        ESP_LOGE(TAG, "Failed to bind UDP port");
+        free(offer);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Bind fail");
+        return ESP_FAIL;
     }
-    ESP_LOGI(TAG, "Sent SDP answer");
-    return 0;
+    nanortc_add_local_candidate(&s_rtc, s_local_ip, CONFIG_EXAMPLE_UDP_PORT);
+    nano_run_loop_set_event_cb(&s_loop, on_event, NULL);
+    s_loop.max_poll_ms = 5;
+    s_loop.running = 1;
+
+    /* Generate SDP answer (heap-allocated to avoid httpd stack overflow) */
+    char *answer = malloc(8192);
+    if (!answer) {
+        free(offer);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM");
+        return ESP_FAIL;
+    }
+    size_t answer_len = 0;
+    rc = nanortc_accept_offer(&s_rtc, offer, answer, 8192, &answer_len);
+    free(offer);
+
+    if (rc != NANORTC_OK) {
+        ESP_LOGE(TAG, "nanortc_accept_offer failed: %d (%s)", rc,
+                 nanortc_err_to_name(rc));
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            nanortc_err_to_name(rc));
+        free(answer);
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG, "SDP answer generated (%u bytes)", (unsigned)answer_len);
+    httpd_resp_set_type(req, "text/plain");
+    httpd_resp_send(req, answer, (ssize_t)answer_len);
+    free(answer);
+    return ESP_OK;
 }
 
 /* ----------------------------------------------------------------
- * Trickle ICE: poll signaling for remote candidates
+ * HTTP server setup
  * ---------------------------------------------------------------- */
-static uint32_t s_last_poll_ms;
-
-static void poll_trickle_ice(http_sig_t *sig, nanortc_t *rtc)
+static httpd_handle_t start_http_server(void)
 {
-    uint32_t now = nano_get_millis();
-    if (now - s_last_poll_ms < 500) return;
-    s_last_poll_ms = now;
+    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+    config.max_uri_handlers = 4;
+    config.max_open_sockets = 2;
+    config.stack_size = 8192;
 
-    char type[32];
-    char payload[HTTP_SIG_BUF_SIZE];
+    httpd_handle_t server = NULL;
+    if (httpd_start(&server, &config) != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to start HTTP server");
+        return NULL;
+    }
 
-    int rc = http_sig_recv(sig, type, sizeof(type),
-                           payload, sizeof(payload), 0);
-    if (rc == 0) {
-        if (memcmp(type, "candidate", 10) == 0 && payload[0] != '\0') {
-            ESP_LOGI(TAG, "Trickle ICE candidate received");
-            nanortc_add_remote_candidate(rtc, payload);
-        } else if (memcmp(type, "candidate", 10) == 0) {
-            ESP_LOGI(TAG, "End-of-candidates");
+    httpd_uri_t uri_root = {
+        .uri = "/", .method = HTTP_GET, .handler = http_get_root,
+    };
+    httpd_uri_t uri_offer = {
+        .uri = "/offer", .method = HTTP_POST, .handler = http_post_offer,
+    };
+
+    httpd_register_uri_handler(server, &uri_root);
+    httpd_register_uri_handler(server, &uri_offer);
+
+    ESP_LOGI(TAG, "HTTP server started on port %d", config.server_port);
+    return server;
+}
+
+/* ----------------------------------------------------------------
+ * WebRTC event loop task
+ * ---------------------------------------------------------------- */
+static void webrtc_task(void *arg)
+{
+    (void)arg;
+    ESP_LOGI(TAG, "WebRTC task started");
+
+    for (;;) {
+        if (s_loop.running) {
+            nano_run_loop_step(&s_loop);
+        } else {
+            vTaskDelay(pdMS_TO_TICKS(50));
         }
     }
-}
-
-/* ----------------------------------------------------------------
- * Discover signaling server or fall back to Kconfig defaults
- * ---------------------------------------------------------------- */
-static void resolve_signaling(char *host, size_t host_len, uint16_t *port)
-{
-    if (udp_discover_signaling(CONFIG_EXAMPLE_DISCOVERY_PORT,
-                               host, host_len, port, 3) == 0) {
-        return;
-    }
-    ESP_LOGW(TAG, "Discovery failed, using fallback %s:%d",
-             CONFIG_EXAMPLE_SIGNALING_HOST, CONFIG_EXAMPLE_SIGNALING_PORT);
-    size_t hlen = strlen(CONFIG_EXAMPLE_SIGNALING_HOST); /* NANORTC_SAFE: API boundary */
-    if (hlen >= host_len) hlen = host_len - 1;
-    memcpy(host, CONFIG_EXAMPLE_SIGNALING_HOST, hlen);
-    host[hlen] = '\0';
-    *port = CONFIG_EXAMPLE_SIGNALING_PORT;
 }
 
 /* ----------------------------------------------------------------
@@ -286,78 +344,24 @@ void app_main(void)
     /* 3. WiFi connect */
     esp_netif_t *netif = wifi_init_sta();
 
-    char sta_ip[16];
-    if (get_sta_ip(netif, sta_ip, sizeof(sta_ip)) < 0) {
+    if (get_sta_ip(netif, s_local_ip, sizeof(s_local_ip)) < 0) {
         ESP_LOGE(TAG, "Failed to get station IP");
         return;
     }
-    ESP_LOGI(TAG, "Station IP: %s", sta_ip);
+    ESP_LOGI(TAG, "Station IP: %s", s_local_ip);
 
-    /* 4. Discover + join signaling server (retry loop) */
-    char sig_host[64];
-    uint16_t sig_port = CONFIG_EXAMPLE_SIGNALING_PORT;
-    http_sig_t sig;
-    int rc;
+    /* 4. Init run loop state (not started until POST /offer) */
+    memset(&s_loop, 0, sizeof(s_loop));
+    s_loop.fd = -1;
 
-    for (int attempt = 0; attempt < 10; attempt++) {
-        if (attempt > 0) {
-            ESP_LOGI(TAG, "Retrying signaling (%d/10)...", attempt + 1);
-            vTaskDelay(pdMS_TO_TICKS(3000));
-        }
-        resolve_signaling(sig_host, sizeof(sig_host), &sig_port);
-        rc = http_sig_join(&sig, sig_host, sig_port);
-        if (rc == 0) break;
-        ESP_LOGW(TAG, "Failed to join %s:%u", sig_host, sig_port);
-    }
-    if (rc < 0) {
-        ESP_LOGE(TAG, "Could not join signaling server after retries");
+    /* 5. Start HTTP server */
+    if (!start_http_server()) {
+        ESP_LOGE(TAG, "Failed to start HTTP server");
         return;
     }
 
-    /* 6. Init nanortc (answerer / CONTROLLED) */
-    nanortc_config_t cfg;
-    memset(&cfg, 0, sizeof(cfg));
-    cfg.crypto = nanortc_crypto_mbedtls();
-    cfg.role = NANORTC_ROLE_CONTROLLED;
+    /* 6. Start WebRTC event loop task */
+    xTaskCreatePinnedToCore(webrtc_task, "webrtc", 8192, NULL, 5, NULL, 0);
 
-    rc = nanortc_init(&s_rtc, &cfg);
-    if (rc != NANORTC_OK) {
-        ESP_LOGE(TAG, "nanortc_init failed: %d", rc);
-        http_sig_leave(&sig);
-        return;
-    }
-
-    /* 7. Bind UDP socket, register station IP as candidate */
-    rc = nano_run_loop_init(&s_loop, &s_rtc, NULL, CONFIG_EXAMPLE_UDP_PORT);
-    if (rc < 0) {
-        ESP_LOGE(TAG, "Failed to bind UDP port %d", CONFIG_EXAMPLE_UDP_PORT);
-        http_sig_leave(&sig);
-        nanortc_destroy(&s_rtc);
-        return;
-    }
-    nanortc_add_local_candidate(&s_rtc, sta_ip, CONFIG_EXAMPLE_UDP_PORT);
-    nano_run_loop_set_event_cb(&s_loop, on_event, NULL);
-
-    ESP_LOGI(TAG, "nanortc ESP32 DC (answerer, udp=%s:%d, sig=%s:%u)",
-             sta_ip, CONFIG_EXAMPLE_UDP_PORT, sig_host, sig_port);
-
-    /* 8. SDP exchange (answerer: wait for offer → send answer) */
-    rc = do_answer_signaling(&sig, &s_rtc);
-    if (rc != 0) {
-        goto cleanup;
-    }
-
-    /* 9. Event loop with trickle ICE polling */
-    ESP_LOGI(TAG, "Entering event loop...");
-    s_loop.running = 1;
-    while (s_loop.running) {
-        nano_run_loop_step(&s_loop);
-        poll_trickle_ice(&sig, &s_rtc);
-    }
-
-cleanup:
-    http_sig_leave(&sig);
-    nano_run_loop_destroy(&s_loop);
-    nanortc_destroy(&s_rtc);
-    ESP_LOGI(TAG, "Done.");
+    ESP_LOGI(TAG, "Open http://%s/ in your browser", s_local_ip);
 }

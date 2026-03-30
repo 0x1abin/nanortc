@@ -12,31 +12,11 @@ menu "ESP32 DataChannel Example"
         help
             WiFi password (WPA2).
 
-    config EXAMPLE_SIGNALING_HOST
-        string "Fallback signaling server IP"
-        default "192.168.1.100"
-        help
-            IP address of the signaling server, used when UDP discovery fails.
-
-    config EXAMPLE_SIGNALING_PORT
-        int "Signaling server HTTP port"
-        default 8765
-        range 1 65535
-        help
-            HTTP port of the signaling relay server.
-
     config EXAMPLE_UDP_PORT
         int "Local UDP port for WebRTC"
         default 9999
         range 1024 65535
         help
             UDP port for STUN/DTLS/SCTP traffic.
-
-    config EXAMPLE_DISCOVERY_PORT
-        int "UDP discovery port"
-        default 19730
-        range 1024 65535
-        help
-            UDP port used for broadcast discovery of the signaling server.
 
 endmenu
