@@ -261,6 +261,7 @@ int sdp_parse(nano_sdp_t *sdp, const char *sdp_str, size_t len)
 #if NANORTC_HAVE_MEDIA_TRANSPORT
         if (line_starts_with(line, line_len, "m=application ")) {
             current_mline = SDP_MLINE_APPLICATION;
+            sdp->has_datachannel = true;
             sdp->dc_mid = sdp->mid_count;
             sdp->mid_count++;
             if (first_mline_type == SDP_MLINE_NONE) {
@@ -674,9 +675,11 @@ int sdp_generate_answer(nano_sdp_t *sdp, char *buf, size_t buf_len, size_t *out_
         /* If parsed from offer, use parsed MIDs; otherwise assign sequentially */
         if (sdp->mid_count > 0) {
             /* Use parsed order: sort by MID index */
-            mlines[n_mlines].type = SDP_MLINE_APPLICATION;
-            mlines[n_mlines].mid = sdp->dc_mid;
-            n_mlines++;
+            if (sdp->has_datachannel) {
+                mlines[n_mlines].type = SDP_MLINE_APPLICATION;
+                mlines[n_mlines].mid = sdp->dc_mid;
+                n_mlines++;
+            }
             if (sdp->has_audio) {
                 mlines[n_mlines].type = SDP_MLINE_AUDIO;
                 mlines[n_mlines].mid = sdp->audio_mid;
