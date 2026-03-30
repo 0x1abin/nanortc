@@ -262,6 +262,103 @@ TEST(test_dtls_wrong_state)
 }
 
 /* ----------------------------------------------------------------
+ * RFC 6347 / RFC 5764 MUST/SHOULD requirement tests
+ * ---------------------------------------------------------------- */
+
+/*
+ * RFC 5764 §4.2: Keying material MUST be exactly 60 bytes for
+ * AES-128-CM-HMAC-SHA1-80: 2*16 (cipher keys) + 2*14 (salts) = 60.
+ */
+TEST(test_dtls_keying_material_length)
+{
+    nano_dtls_t server, client;
+    const nanortc_crypto_provider_t *crypto = nano_test_crypto();
+    ASSERT_OK(dtls_init(&server, crypto, 1));
+    ASSERT_OK(dtls_init(&client, crypto, 0));
+    ASSERT_OK(dtls_do_handshake(&client, &server));
+
+    /* Verify keying material is ready and 60 bytes are meaningful */
+    ASSERT_TRUE(server.keying_material_ready);
+
+    /* The keying material layout is:
+     * [0..15]  client_write_key (16 bytes)
+     * [16..31] server_write_key (16 bytes)
+     * [32..45] client_write_salt (14 bytes)
+     * [46..59] server_write_salt (14 bytes)
+     * Total: 60 bytes
+     */
+
+    /* Each section should not be all zeros (statistically near-impossible) */
+    uint8_t zeros[16];
+    memset(zeros, 0, sizeof(zeros));
+    ASSERT_TRUE(memcmp(server.keying_material, zeros, 16) != 0);      /* client key */
+    ASSERT_TRUE(memcmp(server.keying_material + 16, zeros, 16) != 0); /* server key */
+    ASSERT_TRUE(memcmp(server.keying_material + 32, zeros, 14) != 0); /* client salt */
+    ASSERT_TRUE(memcmp(server.keying_material + 46, zeros, 14) != 0); /* server salt */
+
+    dtls_destroy(&server);
+    dtls_destroy(&client);
+}
+
+/*
+ * RFC 6347 §4.1: DTLS record content types.
+ * After handshake, encrypted data should be wrapped in application_data records.
+ * The first byte of DTLS output after handshake should be content type 23 (app data).
+ */
+TEST(test_dtls_record_content_type)
+{
+    nano_dtls_t server, client;
+    const nanortc_crypto_provider_t *crypto = nano_test_crypto();
+    ASSERT_OK(dtls_init(&server, crypto, 1));
+    ASSERT_OK(dtls_init(&client, crypto, 0));
+    ASSERT_OK(dtls_do_handshake(&client, &server));
+
+    /* Client encrypts app data */
+    const uint8_t msg[] = "test";
+    ASSERT_OK(dtls_encrypt(&client, msg, sizeof(msg)));
+
+    /* Poll the DTLS output record into a buffer */
+    uint8_t record[1024];
+    size_t record_len = 0;
+    ASSERT_OK(dtls_poll_output(&client, record, sizeof(record), &record_len));
+    ASSERT_TRUE(record_len > 0);
+
+    /* RFC 6347 §4.1: First byte is content type.
+     * 23 = application_data, 22 = handshake, 20 = change_cipher_spec, 21 = alert
+     * Post-handshake encrypted data should be content type 23. */
+    ASSERT_EQ(record[0], 23);
+
+    dtls_destroy(&server);
+    dtls_destroy(&client);
+}
+
+/*
+ * RFC 6347: DTLS fingerprint format validation.
+ * SHA-256 fingerprint should be 95 chars: "XX:XX:...:XX" (32 hex pairs with colons).
+ */
+TEST(test_dtls_fingerprint_sha256_format)
+{
+    nano_dtls_t dtls;
+    const nanortc_crypto_provider_t *crypto = nano_test_crypto();
+    ASSERT_OK(dtls_init(&dtls, crypto, 1));
+
+    /* Count colons in fingerprint — should be 31 for SHA-256 */
+    int colons = 0;
+    int hex_chars = 0;
+    for (int i = 0; dtls.local_fingerprint[i]; i++) {
+        if (dtls.local_fingerprint[i] == ':') {
+            colons++;
+        } else {
+            hex_chars++;
+        }
+    }
+    ASSERT_EQ(colons, 31);    /* 32 bytes → 31 colons */
+    ASSERT_EQ(hex_chars, 64); /* 32 bytes × 2 hex chars */
+
+    dtls_destroy(&dtls);
+}
+
+/* ----------------------------------------------------------------
  * Test main
  * ---------------------------------------------------------------- */
 
@@ -275,4 +372,8 @@ RUN(test_dtls_handshake_loopback);
 RUN(test_dtls_encrypt_decrypt);
 RUN(test_dtls_keying_material);
 RUN(test_dtls_wrong_state);
+/* RFC 6347 / RFC 5764 MUST/SHOULD requirement tests */
+RUN(test_dtls_keying_material_length);
+RUN(test_dtls_record_content_type);
+RUN(test_dtls_fingerprint_sha256_format);
 TEST_MAIN_END

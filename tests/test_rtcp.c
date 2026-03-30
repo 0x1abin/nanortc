@@ -22,15 +22,15 @@ TEST(test_rtcp_sr_basic)
 
     uint8_t buf[64];
     size_t out_len = 0;
-    ASSERT_OK(rtcp_generate_sr(&rtcp, 0xAABBCCDD, 0x11223344, 0x55667788,
-                                buf, sizeof(buf), &out_len));
+    ASSERT_OK(
+        rtcp_generate_sr(&rtcp, 0xAABBCCDD, 0x11223344, 0x55667788, buf, sizeof(buf), &out_len));
     ASSERT_EQ(out_len, RTCP_SR_SIZE); /* 28 bytes */
 
     /* Verify RTCP header */
-    ASSERT_EQ((buf[0] >> 6) & 0x03, 2);   /* V=2 */
-    ASSERT_EQ(buf[0] & 0x1F, 0);          /* RC=0 */
-    ASSERT_EQ(buf[1], RTCP_SR);           /* PT=200 */
-    ASSERT_EQ(nanortc_read_u16be(buf + 2), 6);    /* length=6 (words) */
+    ASSERT_EQ((buf[0] >> 6) & 0x03, 2);                 /* V=2 */
+    ASSERT_EQ(buf[0] & 0x1F, 0);                        /* RC=0 */
+    ASSERT_EQ(buf[1], RTCP_SR);                         /* PT=200 */
+    ASSERT_EQ(nanortc_read_u16be(buf + 2), 6);          /* length=6 (words) */
     ASSERT_EQ(nanortc_read_u32be(buf + 4), 0x12345678); /* SSRC */
 
     /* Verify sender info */
@@ -82,15 +82,15 @@ TEST(test_rtcp_rr_basic)
     ASSERT_EQ(out_len, RTCP_RR_SIZE); /* 32 bytes */
 
     /* Verify RTCP header */
-    ASSERT_EQ((buf[0] >> 6) & 0x03, 2);   /* V=2 */
-    ASSERT_EQ(buf[0] & 0x1F, 1);          /* RC=1 */
-    ASSERT_EQ(buf[1], RTCP_RR);           /* PT=201 */
-    ASSERT_EQ(nanortc_read_u16be(buf + 2), 7);    /* length=7 */
+    ASSERT_EQ((buf[0] >> 6) & 0x03, 2);                 /* V=2 */
+    ASSERT_EQ(buf[0] & 0x1F, 1);                        /* RC=1 */
+    ASSERT_EQ(buf[1], RTCP_RR);                         /* PT=201 */
+    ASSERT_EQ(nanortc_read_u16be(buf + 2), 7);          /* length=7 */
     ASSERT_EQ(nanortc_read_u32be(buf + 4), 0xAABBCCDD); /* Reporter SSRC */
 
     /* Report block */
     ASSERT_EQ(nanortc_read_u32be(buf + 8), 0x12345678); /* Reported SSRC */
-    ASSERT_TRUE(buf[12] > 0); /* Fraction lost > 0 */
+    ASSERT_TRUE(buf[12] > 0);                           /* Fraction lost > 0 */
     /* Cumulative lost = 5 */
     uint32_t clost = ((uint32_t)buf[13] << 16) | ((uint32_t)buf[14] << 8) | buf[15];
     ASSERT_EQ(clost, 5);
@@ -138,10 +138,10 @@ TEST(test_rtcp_nack_basic)
     ASSERT_EQ(out_len, RTCP_NACK_SIZE); /* 16 bytes */
 
     /* Header */
-    ASSERT_EQ((buf[0] >> 6) & 0x03, 2);    /* V=2 */
-    ASSERT_EQ(buf[0] & 0x1F, 1);           /* FMT=1 (Generic NACK) */
-    ASSERT_EQ(buf[1], RTCP_RTPFB);         /* PT=205 */
-    ASSERT_EQ(nanortc_read_u16be(buf + 2), 3);     /* length=3 */
+    ASSERT_EQ((buf[0] >> 6) & 0x03, 2);                 /* V=2 */
+    ASSERT_EQ(buf[0] & 0x1F, 1);                        /* FMT=1 (Generic NACK) */
+    ASSERT_EQ(buf[1], RTCP_RTPFB);                      /* PT=205 */
+    ASSERT_EQ(nanortc_read_u16be(buf + 2), 3);          /* length=3 */
     ASSERT_EQ(nanortc_read_u32be(buf + 4), 0xAAAAAAAA); /* Sender SSRC */
 
     /* Media SSRC */
@@ -258,10 +258,10 @@ TEST(test_rtcp_pli_basic)
     ASSERT_EQ(out_len, RTCP_PLI_SIZE); /* 12 bytes */
 
     /* Header: V=2, P=0, FMT=1, PT=206 (PSFB), length=2 */
-    ASSERT_EQ((buf[0] >> 6) & 0x03, 2);    /* V=2 */
-    ASSERT_EQ(buf[0] & 0x1F, 1);           /* FMT=1 (PLI) */
-    ASSERT_EQ(buf[1], RTCP_PSFB);          /* PT=206 */
-    ASSERT_EQ(nanortc_read_u16be(buf + 2), 2);     /* length=2 words */
+    ASSERT_EQ((buf[0] >> 6) & 0x03, 2);                 /* V=2 */
+    ASSERT_EQ(buf[0] & 0x1F, 1);                        /* FMT=1 (PLI) */
+    ASSERT_EQ(buf[1], RTCP_PSFB);                       /* PT=206 */
+    ASSERT_EQ(nanortc_read_u16be(buf + 2), 2);          /* length=2 words */
     ASSERT_EQ(nanortc_read_u32be(buf + 4), 0xAAAAAAAA); /* Sender SSRC */
     ASSERT_EQ(nanortc_read_u32be(buf + 8), 0xBBBBBBBB); /* Media SSRC */
 }
@@ -295,6 +295,173 @@ TEST(test_rtcp_pli_parse_roundtrip)
 }
 
 /* ================================================================
+ * RFC 3550 MUST/SHOULD requirement tests
+ * ================================================================ */
+
+/*
+ * RFC 3550 §6.4.1: SR header verification — version, padding, RC, PT fields.
+ * Independent byte-level verification of generated SR packet structure.
+ */
+TEST(test_rtcp_sr_header_fields)
+{
+    nano_rtcp_t rtcp;
+    rtcp_init(&rtcp, 0xABCDEF01);
+    rtcp.packets_sent = 200;
+    rtcp.octets_sent = 32000;
+
+    uint8_t buf[64];
+    size_t out_len = 0;
+    ASSERT_OK(rtcp_generate_sr(&rtcp, 0x12345678, 0x9ABCDEF0, 160000, buf, sizeof(buf), &out_len));
+    ASSERT_EQ(out_len, RTCP_SR_SIZE); /* 28 bytes */
+
+    /* RFC 3550 §6.4.1: Byte 0 = V(2)|P(1)|RC(5) */
+    ASSERT_EQ((buf[0] >> 6) & 0x03, 2); /* V=2 MUST */
+    ASSERT_EQ((buf[0] >> 5) & 0x01, 0); /* P=0 (no padding) */
+    ASSERT_EQ(buf[0] & 0x1F, 0);        /* RC=0 (no report blocks in basic SR) */
+
+    /* PT=200 (SR) */
+    ASSERT_EQ(buf[1], RTCP_SR);
+
+    /* Length field: (28/4 - 1) = 6 */
+    ASSERT_EQ(nanortc_read_u16be(buf + 2), 6);
+
+    /* SSRC of sender */
+    ASSERT_EQ(nanortc_read_u32be(buf + 4), 0xABCDEF01u);
+
+    /* NTP timestamp */
+    ASSERT_EQ(nanortc_read_u32be(buf + 8), 0x12345678u);  /* NTP seconds */
+    ASSERT_EQ(nanortc_read_u32be(buf + 12), 0x9ABCDEF0u); /* NTP fraction */
+
+    /* RTP timestamp */
+    ASSERT_EQ(nanortc_read_u32be(buf + 16), 160000u);
+
+    /* Sender packet count and octet count */
+    ASSERT_EQ(nanortc_read_u32be(buf + 20), 200u);
+    ASSERT_EQ(nanortc_read_u32be(buf + 24), 32000u);
+}
+
+/*
+ * RFC 3550 §6.4.1: Extended highest sequence number in RR report block.
+ * The "extended highest sequence number" is cycles(16) << 16 | max_seq(16).
+ * With our implementation, max_seq maps directly (no cycle tracking yet).
+ */
+TEST(test_rtcp_rr_extended_seq_field)
+{
+    nano_rtcp_t rtcp;
+    rtcp_init(&rtcp, 0x11111111);
+    rtcp.packets_received = 50;
+    rtcp.packets_lost = 0;
+    rtcp.max_seq = 0xFFFF; /* maximum 16-bit seq */
+
+    uint8_t buf[64];
+    size_t out_len = 0;
+    ASSERT_OK(rtcp_generate_rr(&rtcp, 0x22222222, buf, sizeof(buf), &out_len));
+
+    /* Report block extended highest seq is at offset 16 in RR packet */
+    uint32_t ext_seq = nanortc_read_u32be(buf + 16);
+    /* Should contain at least the max_seq value */
+    ASSERT_TRUE((ext_seq & 0xFFFF) == 0xFFFF);
+}
+
+/*
+ * RFC 4585 §6.2.1: NACK with bitmask for multiple lost packets.
+ * PID=100, BLP=0x0005 → lost packets: 100, 101, 103 (bit 0 and bit 2 set).
+ *
+ * Build NACK manually to test parser's BLP interpretation.
+ */
+TEST(test_rtcp_nack_bitmask_vector)
+{
+    /* Hand-craft NACK packet with PID=100 and BLP=0x0005 */
+    static const uint8_t nack_pkt[] = {
+        /* V=2, P=0, FMT=1, PT=205 (RTPFB) */
+        0x81,
+        0xCD,
+        /* Length = 3 (in 32-bit words minus 1) */
+        0x00,
+        0x03,
+        /* Sender SSRC = 0x11111111 */
+        0x11,
+        0x11,
+        0x11,
+        0x11,
+        /* Media SSRC = 0x22222222 */
+        0x22,
+        0x22,
+        0x22,
+        0x22,
+        /* FCI: PID=100, BLP=0x0005 */
+        0x00,
+        0x64,
+        0x00,
+        0x05,
+    };
+
+    nano_rtcp_info_t info;
+    ASSERT_OK(rtcp_parse(nack_pkt, sizeof(nack_pkt), &info));
+    ASSERT_EQ(info.type, RTCP_RTPFB);
+    ASSERT_EQ(info.ssrc, 0x11111111u);
+    ASSERT_EQ(info.nack_pid, 100);
+    ASSERT_EQ(info.nack_blp, 0x0005);
+    /* BLP 0x0005 = bits 0 and 2 → lost packets: PID+1=101, PID+3=103 */
+}
+
+/*
+ * RFC 3550 §6.4.1: SR parse — independent byte-level vector.
+ * Verify we can parse an SR packet we didn't generate.
+ */
+TEST(test_rtcp_sr_independent_vector)
+{
+    static const uint8_t sr_pkt[] = {
+        /* V=2, P=0, RC=0, PT=200 (SR) */
+        0x80,
+        0xC8,
+        /* Length=6 */
+        0x00,
+        0x06,
+        /* Sender SSRC = 0xCAFEBABE */
+        0xCA,
+        0xFE,
+        0xBA,
+        0xBE,
+        /* NTP seconds = 1000 (0x000003E8) */
+        0x00,
+        0x00,
+        0x03,
+        0xE8,
+        /* NTP fraction = 0 */
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        /* RTP timestamp = 48000 */
+        0x00,
+        0x00,
+        0xBB,
+        0x80,
+        /* Sender packet count = 42 */
+        0x00,
+        0x00,
+        0x00,
+        0x2A,
+        /* Sender octet count = 8400 */
+        0x00,
+        0x00,
+        0x20,
+        0xD0,
+    };
+
+    nano_rtcp_info_t info;
+    ASSERT_OK(rtcp_parse(sr_pkt, sizeof(sr_pkt), &info));
+    ASSERT_EQ(info.type, RTCP_SR);
+    ASSERT_EQ(info.ssrc, 0xCAFEBABEu);
+    ASSERT_EQ(info.ntp_sec, 1000u);
+    ASSERT_EQ(info.ntp_frac, 0u);
+    ASSERT_EQ(info.rtp_ts, 48000u);
+    ASSERT_EQ(info.sr_packets, 42u);
+    ASSERT_EQ(info.sr_octets, 8400u);
+}
+
+/* ================================================================
  * Test runner
  * ================================================================ */
 
@@ -318,4 +485,9 @@ RUN(test_rtcp_pli_basic);
 RUN(test_rtcp_pli_buffer_too_small);
 RUN(test_rtcp_pli_null_params);
 RUN(test_rtcp_pli_parse_roundtrip);
+/* RFC 3550 MUST/SHOULD requirement tests */
+RUN(test_rtcp_sr_header_fields);
+RUN(test_rtcp_rr_extended_seq_field);
+RUN(test_rtcp_nack_bitmask_vector);
+RUN(test_rtcp_sr_independent_vector);
 TEST_MAIN_END

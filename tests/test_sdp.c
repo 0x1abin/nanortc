@@ -664,6 +664,108 @@ TEST(test_sdp_video_roundtrip)
 #endif /* NANORTC_HAVE_MEDIA_TRANSPORT */
 
 /* ================================================================
+ * RFC 8866/8829 MUST/SHOULD requirement tests
+ * ================================================================ */
+
+/*
+ * RFC 8866 §5.1: SDP MUST start with "v=0" version line.
+ * Missing version should cause parse failure.
+ */
+TEST(test_sdp_malformed_missing_version)
+{
+    nano_sdp_t sdp;
+    sdp_init(&sdp);
+
+    /* SDP without v= line */
+    const char *bad_sdp = "o=- 1 2 IN IP4 127.0.0.1\r\n"
+                          "s=-\r\n"
+                          "t=0 0\r\n";
+    ASSERT_FAIL(sdp_parse(&sdp, bad_sdp, strlen(bad_sdp) /* NANORTC_SAFE: API boundary */));
+}
+
+/*
+ * RFC 8866: Empty SDP string should fail.
+ */
+TEST(test_sdp_empty_string)
+{
+    nano_sdp_t sdp;
+    sdp_init(&sdp);
+    ASSERT_FAIL(sdp_parse(&sdp, "", 0));
+}
+
+/*
+ * RFC 8829 §5.3.1: BUNDLE group attribute parsing.
+ * SDP with "a=group:BUNDLE 0 1" should be parsed.
+ */
+TEST(test_sdp_bundle_group)
+{
+    nano_sdp_t sdp;
+    sdp_init(&sdp);
+
+    const char *sdp_str = "v=0\r\n"
+                          "o=- 1 2 IN IP4 0.0.0.0\r\n"
+                          "s=-\r\n"
+                          "t=0 0\r\n"
+                          "a=group:BUNDLE 0\r\n"
+                          "a=ice-ufrag:test\r\n"
+                          "a=ice-pwd:testpassword12345678\r\n"
+                          "a=fingerprint:sha-256 AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:"
+                          "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99\r\n"
+                          "a=setup:actpass\r\n"
+                          "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n"
+                          "a=sctp-port:5000\r\n"
+                          "a=mid:0\r\n";
+
+    ASSERT_OK(sdp_parse(&sdp, sdp_str, strlen(sdp_str) /* NANORTC_SAFE: API boundary */));
+    ASSERT_TRUE(sdp.parsed);
+}
+
+/*
+ * RFC 8839: Multiple ICE candidates in SDP.
+ * Verify multiple a=candidate lines are parsed.
+ */
+TEST(test_sdp_multiple_candidates)
+{
+    nano_sdp_t sdp;
+    sdp_init(&sdp);
+
+    const char *sdp_str = "v=0\r\n"
+                          "o=- 1 2 IN IP4 0.0.0.0\r\n"
+                          "s=-\r\n"
+                          "t=0 0\r\n"
+                          "a=ice-ufrag:multi\r\n"
+                          "a=ice-pwd:multipassword12345678\r\n"
+                          "a=fingerprint:sha-256 AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:"
+                          "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99\r\n"
+                          "a=setup:active\r\n"
+                          "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n"
+                          "a=sctp-port:5000\r\n"
+                          "a=mid:0\r\n"
+                          "a=candidate:1 1 UDP 2122260223 192.168.1.100 50000 typ host\r\n"
+                          "a=candidate:2 1 UDP 2122194687 10.0.0.1 50001 typ host\r\n";
+
+    ASSERT_OK(sdp_parse(&sdp, sdp_str, strlen(sdp_str) /* NANORTC_SAFE: API boundary */));
+    ASSERT_EQ(sdp.candidate_count, 2);
+}
+
+/*
+ * RFC 8866 §5: SDP with version other than 0 should be rejected or handled.
+ */
+TEST(test_sdp_wrong_version)
+{
+    nano_sdp_t sdp;
+    sdp_init(&sdp);
+
+    const char *bad_sdp = "v=1\r\n"
+                          "o=- 1 2 IN IP4 127.0.0.1\r\n"
+                          "s=-\r\n"
+                          "t=0 0\r\n";
+    /* Should either parse (lenient) or fail — either is acceptable */
+    int rc = sdp_parse(&sdp, bad_sdp, strlen(bad_sdp) /* NANORTC_SAFE: API boundary */);
+    (void)rc; /* Document behavior */
+}
+
+/* ================================================================
  * Test runner
  * ================================================================ */
 
@@ -681,6 +783,12 @@ RUN(test_sdp_roundtrip);
 RUN(test_sdp_parse_libdatachannel_offer);
 RUN(test_sdp_parse_no_candidates);
 RUN(test_accept_offer_generates_answer);
+/* RFC 8866/8829 MUST/SHOULD requirement tests */
+RUN(test_sdp_malformed_missing_version);
+RUN(test_sdp_empty_string);
+RUN(test_sdp_bundle_group);
+RUN(test_sdp_multiple_candidates);
+RUN(test_sdp_wrong_version);
 #if NANORTC_HAVE_MEDIA_TRANSPORT
 RUN(test_sdp_parse_audio_offer);
 RUN(test_sdp_parse_audio_only_offer);

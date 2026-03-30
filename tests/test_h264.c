@@ -94,8 +94,8 @@ TEST(test_h264_pack_fua_basic)
 
     /* First fragment: S bit set */
     ASSERT_EQ(c.frags[0][0] & H264_NAL_TYPE_MASK, H264_NAL_FUA); /* FU indicator type=28 */
-    ASSERT_TRUE(c.frags[0][1] & H264_FUA_S_BIT);   /* Start bit */
-    ASSERT_FALSE(c.frags[0][1] & H264_FUA_E_BIT);  /* No end bit */
+    ASSERT_TRUE(c.frags[0][1] & H264_FUA_S_BIT);                 /* Start bit */
+    ASSERT_FALSE(c.frags[0][1] & H264_FUA_E_BIT);                /* No end bit */
     ASSERT_EQ(c.markers[0], 0);
 
     /* Middle fragments: no S/E bits */
@@ -137,8 +137,8 @@ TEST(test_h264_pack_fua_str0m_vector)
 {
     /* Test vector from str0m: packetize 16-byte NAL with MTU=5.
      * Expected output matches str0m's test_h264_payload large_payload_packetized. */
-    uint8_t nalu[] = {0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06,
-                      0x07, 0x08, 0x09, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15};
+    uint8_t nalu[] = {0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+                      0x08, 0x09, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15};
 
     pkt_collector_t c;
     memset(&c, 0, sizeof(c));
@@ -153,10 +153,8 @@ TEST(test_h264_pack_fua_str0m_vector)
      * [0x1c, 0x00, 0x10, 0x11, 0x12]
      * [0x1c, 0x40, 0x13, 0x14, 0x15]  ← E=1 */
     uint8_t expected[5][5] = {
-        {0x1c, 0x80, 0x01, 0x02, 0x03},
-        {0x1c, 0x00, 0x04, 0x05, 0x06},
-        {0x1c, 0x00, 0x07, 0x08, 0x09},
-        {0x1c, 0x00, 0x10, 0x11, 0x12},
+        {0x1c, 0x80, 0x01, 0x02, 0x03}, {0x1c, 0x00, 0x04, 0x05, 0x06},
+        {0x1c, 0x00, 0x07, 0x08, 0x09}, {0x1c, 0x00, 0x10, 0x11, 0x12},
         {0x1c, 0x40, 0x13, 0x14, 0x15},
     };
     for (int i = 0; i < 5; i++) {
@@ -234,10 +232,8 @@ TEST(test_h264_depkt_fua_str0m_vector)
 {
     /* Depacketize str0m's FU-A test vectors → expect original NAL */
     uint8_t frags[5][5] = {
-        {0x1c, 0x80, 0x01, 0x02, 0x03},
-        {0x1c, 0x00, 0x04, 0x05, 0x06},
-        {0x1c, 0x00, 0x07, 0x08, 0x09},
-        {0x1c, 0x00, 0x10, 0x11, 0x12},
+        {0x1c, 0x80, 0x01, 0x02, 0x03}, {0x1c, 0x00, 0x04, 0x05, 0x06},
+        {0x1c, 0x00, 0x07, 0x08, 0x09}, {0x1c, 0x00, 0x10, 0x11, 0x12},
         {0x1c, 0x40, 0x13, 0x14, 0x15},
     };
 
@@ -258,8 +254,8 @@ TEST(test_h264_depkt_fua_str0m_vector)
      * NRI from FU indicator 0x1c = 0x00 (NRI=0)
      * Type from FU header = 0x00 (type=0, from first fragment S bit)
      * NAL header = 0x00 | 0x00 = 0x00 */
-    uint8_t expected[] = {0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06,
-                          0x07, 0x08, 0x09, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15};
+    uint8_t expected[] = {0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+                          0x08, 0x09, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15};
     ASSERT_TRUE(out != NULL);
     ASSERT_EQ(out_len, sizeof(expected));
     ASSERT_MEM_EQ(out, expected, sizeof(expected));
@@ -272,11 +268,9 @@ TEST(test_h264_depkt_stapa)
         0x78,                               /* STAP-A header (type=24, NRI=3) */
         0x00, 0x0f,                         /* NALU 1 length = 15 */
         0x67, 0x42, 0xc0, 0x1f, 0x1a, 0x32, /* NALU 1 data (SPS, type=7) */
-        0x35, 0x01, 0x40, 0x7a, 0x40, 0x3c,
-        0x22, 0x11, 0xa8,
-        0x00, 0x05,                         /* NALU 2 length = 5 */
-        0x68, 0x1a, 0x34, 0xe3, 0xc8,      /* NALU 2 data (PPS, type=8) */
-        0x00,                               /* trailing padding (ignored) */
+        0x35, 0x01, 0x40, 0x7a, 0x40, 0x3c, 0x22, 0x11, 0xa8, 0x00, 0x05, /* NALU 2 length = 5 */
+        0x68, 0x1a, 0x34, 0xe3, 0xc8, /* NALU 2 data (PPS, type=8) */
+        0x00,                         /* trailing padding (ignored) */
     };
 
     nano_h264_depkt_t d;
@@ -358,9 +352,10 @@ TEST(test_h264_keyframe_fua_start_idr)
 {
     /* FU-A start fragment with IDR type */
     uint8_t fua[] = {
-        0x7C,  /* FU indicator: NRI=3, type=28 (FU-A) */
-        0x85,  /* FU header: S=1, type=5 (IDR) */
-        0x00, 0x00,
+        0x7C, /* FU indicator: NRI=3, type=28 (FU-A) */
+        0x85, /* FU header: S=1, type=5 (IDR) */
+        0x00,
+        0x00,
     };
     ASSERT_TRUE(h264_is_keyframe(fua, sizeof(fua)));
 }
@@ -368,9 +363,10 @@ TEST(test_h264_keyframe_fua_start_idr)
 TEST(test_h264_keyframe_fua_start_non_idr)
 {
     uint8_t fua[] = {
-        0x7C,  /* FU indicator: type=28 */
-        0x81,  /* FU header: S=1, type=1 (non-IDR) */
-        0x00, 0x00,
+        0x7C, /* FU indicator: type=28 */
+        0x81, /* FU header: S=1, type=1 (non-IDR) */
+        0x00,
+        0x00,
     };
     ASSERT_FALSE(h264_is_keyframe(fua, sizeof(fua)));
 }
@@ -379,9 +375,10 @@ TEST(test_h264_keyframe_fua_continuation)
 {
     /* FU-A continuation (S=0) — should NOT detect as keyframe */
     uint8_t fua[] = {
-        0x7C,  /* FU indicator: type=28 */
-        0x05,  /* FU header: S=0, type=5 (IDR but no start bit) */
-        0x00, 0x00,
+        0x7C, /* FU indicator: type=28 */
+        0x05, /* FU header: S=0, type=5 (IDR but no start bit) */
+        0x00,
+        0x00,
     };
     ASSERT_FALSE(h264_is_keyframe(fua, sizeof(fua)));
 }
@@ -422,6 +419,75 @@ TEST(test_h264_depkt_fua_no_start)
 }
 
 /* ================================================================
+ * RFC 6184 edge case tests
+ * ================================================================ */
+
+/*
+ * RFC 6184 §5.8: FU-A fragmentation — NAL exactly MTU+1 bytes.
+ * Should produce exactly 2 fragments.
+ */
+TEST(test_h264_pack_fua_exact_mtu_plus_one)
+{
+    /* MTU=10, NAL=11 bytes: 1 byte NAL header + 10 bytes body
+     * FU-A splits: first frag gets header(2) + some body, second frag gets rest */
+    uint8_t nalu[11];
+    memset(nalu, 0xCC, sizeof(nalu));
+    nalu[0] = 0x65; /* IDR, NRI=3 */
+
+    pkt_collector_t c;
+    memset(&c, 0, sizeof(c));
+
+    ASSERT_OK(h264_packetize(nalu, sizeof(nalu), 10, collect_cb, &c));
+    ASSERT_EQ(c.count, 2);
+
+    /* First fragment: S=1, E=0 */
+    ASSERT_EQ(c.frags[0][1] & 0x80, 0x80); /* Start bit */
+    ASSERT_EQ(c.frags[0][1] & 0x40, 0x00); /* No End bit */
+    ASSERT_EQ(c.markers[0], 0);            /* Not last */
+
+    /* Second fragment: S=0, E=1 */
+    ASSERT_EQ(c.frags[1][1] & 0x80, 0x00); /* No Start bit */
+    ASSERT_EQ(c.frags[1][1] & 0x40, 0x40); /* End bit */
+    ASSERT_EQ(c.markers[1], 1);            /* Last fragment */
+}
+
+/*
+ * RFC 6184 §1.3: Forbidden bit (F=1) in NAL header.
+ * A NAL with F=1 (bit 7 set) indicates a syntax violation.
+ * The packetizer should still handle it (pass-through).
+ */
+TEST(test_h264_forbidden_bit_passthrough)
+{
+    /* NAL header with F=1: 0x80 | type=5 (IDR) = 0x85 */
+    uint8_t nalu[] = {0x85, 0x01, 0x02};
+
+    pkt_collector_t c;
+    memset(&c, 0, sizeof(c));
+
+    /* Packetizer should not reject NALs with forbidden bit — it's informational */
+    ASSERT_OK(h264_packetize(nalu, sizeof(nalu), 1200, collect_cb, &c));
+    ASSERT_EQ(c.count, 1);
+    /* Forbidden bit should be preserved */
+    ASSERT_TRUE(c.frags[0][0] & 0x80);
+}
+
+/*
+ * RFC 6184: Keyframe detection on various edge cases.
+ * Empty payload should not be detected as keyframe.
+ * Single byte payload = just NAL header, should work.
+ */
+TEST(test_h264_keyframe_single_byte)
+{
+    /* Just NAL header for IDR (type 5): 0x65 */
+    uint8_t idr_nal[] = {0x65};
+    ASSERT_TRUE(h264_is_keyframe(idr_nal, 1));
+
+    /* Non-IDR (type 1): 0x41 */
+    uint8_t non_idr_nal[] = {0x41};
+    ASSERT_FALSE(h264_is_keyframe(non_idr_nal, 1));
+}
+
+/* ================================================================
  * Test runner
  * ================================================================ */
 
@@ -453,4 +519,8 @@ RUN(test_h264_keyframe_fua_too_short);
 /* Edge cases */
 RUN(test_h264_pack_two_byte_nal);
 RUN(test_h264_depkt_fua_no_start);
+/* RFC 6184 edge case tests */
+RUN(test_h264_pack_fua_exact_mtu_plus_one);
+RUN(test_h264_forbidden_bit_passthrough);
+RUN(test_h264_keyframe_single_byte);
 TEST_MAIN_END
