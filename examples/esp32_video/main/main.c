@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_system.h"
@@ -52,8 +53,20 @@ static int s_connected;
 /* Video state */
 static nano_media_source_t s_video_src;
 static int s_video_ready;
+static int s_psram_mode;
 static uint32_t s_video_epoch_ms;
 static uint32_t s_video_frame_count;
+
+/* PSRAM preloaded frame index (used when PSRAM available) */
+typedef struct {
+    uint32_t offset;
+    uint32_t len;
+} frame_entry_t;
+
+#define MAX_VIDEO_FRAMES 1500
+static uint8_t *s_frame_data;
+static frame_entry_t s_frames[MAX_VIDEO_FRAMES];
+static int s_frame_total;
 
 /* Embedded HTML file */
 extern const uint8_t index_html_start[] asm("_binary_index_html_start");
@@ -97,6 +110,61 @@ static int sd_card_mount(void)
 }
 
 /* ----------------------------------------------------------------
+ * Try to preload all H.264 frames into PSRAM (returns -1 if no PSRAM)
+ * ---------------------------------------------------------------- */
+static int preload_frames(const char *dir)
+{
+    char path[300];
+    uint32_t total_size = 0;
+    int count = 0;
+
+    for (int i = 1; i <= MAX_VIDEO_FRAMES; i++) {
+        snprintf(path, sizeof(path), "%s/frame-%04d.h264", dir, i);
+        FILE *f = fopen(path, "rb");
+        if (!f)
+            break;
+        fseek(f, 0, SEEK_END);
+        long sz = ftell(f);
+        fclose(f);
+        if (sz <= 0)
+            break;
+        total_size += (uint32_t)sz;
+        count++;
+    }
+    if (count == 0)
+        return -1;
+
+    ESP_LOGI(TAG, "Trying PSRAM preload: %d frames, %lu KB...", count,
+             (unsigned long)(total_size / 1024));
+
+    s_frame_data = heap_caps_malloc(total_size, MALLOC_CAP_SPIRAM);
+    if (!s_frame_data) {
+        ESP_LOGW(TAG, "PSRAM not available (%lu bytes)", (unsigned long)total_size);
+        return -1;
+    }
+
+    uint32_t offset = 0;
+    for (int i = 0; i < count; i++) {
+        snprintf(path, sizeof(path), "%s/frame-%04d.h264", dir, i + 1);
+        FILE *f = fopen(path, "rb");
+        if (!f)
+            break;
+        fseek(f, 0, SEEK_END);
+        long sz = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        size_t nread = fread(s_frame_data + offset, 1, (size_t)sz, f);
+        fclose(f);
+        s_frames[i].offset = offset;
+        s_frames[i].len = (uint32_t)nread;
+        offset += (uint32_t)nread;
+    }
+    s_frame_total = count;
+    ESP_LOGI(TAG, "PSRAM preload OK: %d frames, %lu KB", count,
+             (unsigned long)(offset / 1024));
+    return 0;
+}
+
+/* ----------------------------------------------------------------
  * Get station IP
  * ---------------------------------------------------------------- */
 static int get_sta_ip(char *ip_out, size_t ip_out_len)
@@ -129,13 +197,22 @@ static void video_send_tick(uint32_t now)
     }
 
     while (s_video_frame_count < target_frames) {
-        static uint8_t frame_buf[NANORTC_MEDIA_MAX_FRAME_SIZE];
-        size_t frame_len = 0;
-        uint32_t ts_ms = 0;
+        const uint8_t *frame_buf;
+        size_t frame_len;
+        static uint8_t sd_buf[NANORTC_MEDIA_MAX_FRAME_SIZE];
 
-        if (nano_media_source_next_frame(&s_video_src, frame_buf, sizeof(frame_buf),
-                                          &frame_len, &ts_ms) != 0) {
-            break;
+        if (s_psram_mode) {
+            int idx = (int)(s_video_frame_count % (uint32_t)s_frame_total);
+            frame_buf = s_frame_data + s_frames[idx].offset;
+            frame_len = s_frames[idx].len;
+        } else {
+            uint32_t ts_ms = 0;
+            frame_len = 0;
+            if (nano_media_source_next_frame(&s_video_src, sd_buf,
+                                              sizeof(sd_buf), &frame_len,
+                                              &ts_ms) != 0)
+                break;
+            frame_buf = sd_buf;
         }
 
         /* RTP timestamp: 90kHz clock */
@@ -183,8 +260,9 @@ static void on_event(nanortc_t *rtc, const nanortc_event_t *evt, void *userdata)
         break;
 
     case NANORTC_EVENT_KEYFRAME_REQUEST:
-        ESP_LOGI(TAG, "Keyframe requested — resetting to IDR");
-        nano_media_source_reset(&s_video_src);
+        ESP_LOGI(TAG, "Keyframe requested — resetting to frame 0");
+        if (!s_psram_mode)
+            nano_media_source_reset(&s_video_src);
         s_video_epoch_ms = 0;
         s_video_frame_count = 0;
         break;
@@ -377,33 +455,36 @@ void app_main(void)
     memset(&s_loop, 0, sizeof(s_loop));
     s_loop.fd = -1;
 
-    /* 4. Start HTTP server (before SD so the page is reachable for diagnostics) */
+    /* 4. Start HTTP server */
     if (!start_http_server()) {
         ESP_LOGE(TAG, "Failed to start HTTP server");
         return;
     }
 
-    /* 5. Mount SD card */
+    /* 5. Start WebRTC task early (before SD mount which may block for seconds).
+     * The task idles until http_post_offer sets s_loop.running = 1. */
+    xTaskCreatePinnedToCore(webrtc_task, "webrtc", 32768, NULL, 5, NULL, 0);
+
+    /* 6. Mount SD card, try PSRAM preload, fallback to per-frame I/O */
     if (sd_card_mount() != 0) {
         ESP_LOGE(TAG, "SD card mount failed — video will not work");
     } else {
-        /* 6. Init video source from SD card */
         char h264_path[128];
         snprintf(h264_path, sizeof(h264_path), "%s/%s", SD_MOUNT_POINT,
                  CONFIG_EXAMPLE_H264_DIR);
 
-        if (nano_media_source_init(&s_video_src, NANORTC_MEDIA_H264,
-                                    h264_path) != 0) {
-            ESP_LOGE(TAG, "Cannot open H.264 frames in %s", h264_path);
-        } else {
+        if (preload_frames(h264_path) == 0) {
+            s_psram_mode = 1;
             s_video_ready = 1;
-            ESP_LOGI(TAG, "Video source: %s (%d frames)", h264_path,
+        } else if (nano_media_source_init(&s_video_src, NANORTC_MEDIA_H264,
+                                           h264_path) == 0) {
+            s_video_ready = 1;
+            ESP_LOGI(TAG, "SD I/O mode: %s (%d frames)", h264_path,
                      s_video_src.frame_count);
+        } else {
+            ESP_LOGE(TAG, "Cannot open H.264 frames in %s", h264_path);
         }
     }
-
-    /* 7. Start WebRTC event loop task */
-    xTaskCreatePinnedToCore(webrtc_task, "webrtc", 32768, NULL, 5, NULL, 0);
 
     ESP_LOGI(TAG, "Open http://%s/ in your browser", s_local_ip);
 }
