@@ -59,6 +59,7 @@ typedef struct nano_sdp {
     /* Audio m-line fields (parsed from remote / configured locally) */
     bool has_audio;
     uint8_t audio_pt;           /* Payload type number (e.g. 111 for Opus) */
+    uint8_t remote_audio_pt;    /* First PT from remote m=audio line (rtpmap filter) */
     uint32_t audio_sample_rate; /* e.g. 48000 */
     uint8_t audio_channels;     /* e.g. 2 for stereo */
     nanortc_direction_t audio_direction;

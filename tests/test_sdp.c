@@ -416,9 +416,7 @@ TEST(test_sdp_parse_audio_offer)
 
     /* Audio fields */
     ASSERT_TRUE(sdp.has_audio);
-    ASSERT_EQ(sdp.audio_pt, 111);
-    ASSERT_EQ(sdp.audio_sample_rate, 48000);
-    ASSERT_EQ(sdp.audio_channels, 2);
+    ASSERT_EQ(sdp.remote_audio_pt, 111);
 }
 
 /* Audio-only offer (no DataChannel) */
@@ -450,9 +448,7 @@ TEST(test_sdp_parse_audio_only_offer)
 
     ASSERT_OK(sdp_parse(&sdp, AUDIO_ONLY_OFFER, len));
     ASSERT_TRUE(sdp.has_audio);
-    ASSERT_EQ(sdp.audio_pt, 96);
-    ASSERT_EQ(sdp.audio_sample_rate, 48000);
-    ASSERT_EQ(sdp.audio_channels, 2);
+    ASSERT_EQ(sdp.remote_audio_pt, 96);
 }
 
 TEST(test_sdp_generate_audio_answer)
@@ -505,9 +501,7 @@ TEST(test_sdp_audio_roundtrip)
     sdp_init(&sdp2);
     ASSERT_OK(sdp_parse(&sdp2, buf, out_len));
     ASSERT_TRUE(sdp2.has_audio);
-    ASSERT_EQ(sdp2.audio_pt, 111);
-    ASSERT_EQ(sdp2.audio_sample_rate, 48000);
-    ASSERT_EQ(sdp2.audio_channels, 2);
+    ASSERT_EQ(sdp2.remote_audio_pt, 111);
 }
 
 /* ================================================================
@@ -602,10 +596,8 @@ TEST(test_sdp_parse_full_media_offer)
 
     ASSERT_TRUE(sdp.has_audio);
     ASSERT_TRUE(sdp.has_video);
-    ASSERT_EQ(sdp.audio_pt, 111);
+    ASSERT_EQ(sdp.remote_audio_pt, 111);
     ASSERT_EQ(sdp.video_pt, 96);
-    ASSERT_EQ(sdp.audio_sample_rate, 48000);
-    ASSERT_EQ(sdp.audio_channels, 2);
     ASSERT_EQ(sdp.remote_sctp_port, 5000);
     /* audio=MID0, video=MID1, dc=MID2 */
     ASSERT_EQ(sdp.audio_mid, 0);

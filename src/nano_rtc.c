@@ -422,6 +422,13 @@ int nanortc_accept_answer(nanortc_t *rtc, const char *answer)
         return rc;
     }
 
+#if NANORTC_FEATURE_AUDIO
+    /* Offerer adopts the PT selected by the answerer (RFC 3264 §6.1) */
+    if (rtc->sdp.has_audio) {
+        rtc->sdp.audio_pt = rtc->sdp.remote_audio_pt;
+    }
+#endif
+
     rtc_apply_remote_sdp(rtc);
 
     /* Determine DTLS role from answer's setup attribute.

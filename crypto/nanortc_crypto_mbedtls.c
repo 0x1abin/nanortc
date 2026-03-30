@@ -575,6 +575,19 @@ static nanortc_crypto_dtls_ctx_t *mbed_dtls_ctx_new(int is_server)
      * security benefit when ICE has already validated connectivity. */
     mbedtls_ssl_conf_dtls_cookies(&ctx->conf, NULL, NULL, NULL);
 
+#if defined(MBEDTLS_SSL_DTLS_SRTP)
+    /* RFC 5764: negotiate SRTP protection profile via DTLS use_srtp extension.
+     * Required for Chrome/Firefox to recognise SRTP packets on the same
+     * UDP port as DTLS. */
+    {
+        static const mbedtls_ssl_srtp_profile srtp_profiles[] = {
+            MBEDTLS_TLS_SRTP_AES128_CM_HMAC_SHA1_80,
+            MBEDTLS_TLS_SRTP_UNSET,
+        };
+        mbedtls_ssl_conf_dtls_srtp_protection_profiles(&ctx->conf, srtp_profiles);
+    }
+#endif
+
     /* Register key export callback (mbedtls 2.x: on conf before ssl_setup) */
 #ifndef NANORTC_MBEDTLS_3
     mbedtls_ssl_conf_export_keys_ext_cb(&ctx->conf, mbed_key_export_cb, ctx);

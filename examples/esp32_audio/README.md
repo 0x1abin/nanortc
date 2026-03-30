@@ -24,7 +24,7 @@ idf.py flash monitor
 ### 3. Open in Browser
 
 Navigate to `http://<esp32-ip>/` (the IP is printed on the serial console).
-The page auto-connects and plays the sine wave tone.
+Click **Connect** to start the WebRTC session and hear the sine wave tone.
 
 ## Codec Selection
 
@@ -37,6 +37,11 @@ Select via `idf.py menuconfig` → "ESP32 Audio Example" → "Audio codec":
 | Opus | 48 kHz | stereo | ~variable |
 
 All codecs use `espressif/esp_audio_codec` (unified encoder API). PCMU is the default.
+
+## Requirements
+
+- **ESP-IDF v5.4+** with `CONFIG_MBEDTLS_SSL_DTLS_SRTP=y` (set in `sdkconfig.defaults`)
+- The DTLS-SRTP extension (RFC 5764) is required for Chrome/Firefox to accept SRTP media packets
 
 ## Architecture
 
