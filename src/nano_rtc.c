@@ -798,6 +798,9 @@ int nanortc_handle_receive(nanortc_t *rtc, uint32_t now_ms, const uint8_t *data,
                                rtc->sctp.delivered_ppid == DCEP_PPID_BINARY_EMPTY) {
                         etype = NANORTC_EVENT_DATACHANNEL_DATA;
                     } else if (rtc->sctp.delivered_ppid == DCEP_PPID_CONTROL) {
+                        if (!rtc->datachannel.last_was_open) {
+                            goto skip_dc_event;
+                        }
                         etype = NANORTC_EVENT_DATACHANNEL_OPEN;
                     } else {
                         etype = NANORTC_EVENT_DATACHANNEL_DATA; /* fallback */
@@ -823,6 +826,7 @@ int nanortc_handle_receive(nanortc_t *rtc, uint32_t now_ms, const uint8_t *data,
                         }
                         rtc_enqueue_output(rtc, &devt2);
                     }
+                skip_dc_event:;
                 }
 
                 /* Drain SCTP output (SACK, handshake) through DTLS */

@@ -92,6 +92,7 @@ typedef struct nano_dc {
     uint16_t out_len;
     uint16_t out_stream;
     bool has_output;
+    bool last_was_open; /* true when dc_handle_message opened a NEW channel */
 } nano_dc_t;
 
 /* ----------------------------------------------------------------

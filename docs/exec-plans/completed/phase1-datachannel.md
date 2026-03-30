@@ -207,6 +207,7 @@ SCTP is the most complex module (~2500 lines). May need multiple sessions.
 **Implemented:**
 - DCEP codec (RFC 8832): DATA_CHANNEL_OPEN/ACK parse and encode
 - DataChannel FSM: CLOSED → OPENING → OPEN → CLOSING
+- Idempotent DCEP OPEN: retransmitted OPENs re-ACK without allocating duplicate channel or emitting duplicate event
 - Bidirectional string/binary message routing via SCTP PPID dispatch
 - SDP parser: handles Chrome, Firefox, Safari offer formats
 - SDP generator: creates valid WebRTC answer with DataChannel m-line

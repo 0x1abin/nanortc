@@ -14,6 +14,7 @@ Track known debt, prioritize by impact, pay down continuously.
 | ~~TD-005~~ | ~~Build~~ | ~~No `Kconfig` for ESP-IDF menuconfig~~ | ~~Low~~ | ~~Phase 1 Week 4~~ | ~~Resolved~~ |
 | ~~TD-006~~ | ~~Examples~~ | ~~`run_loop_linux.c` and `signaling_stdin.c` untested with real network~~ | ~~Medium~~ | ~~Phase 1~~ | ~~Partially resolved~~ |
 | ~~TD-007~~ | ~~Interop~~ | ~~SDP parser does not fully parse libdatachannel's SDP offer format~~ | ~~High~~ | ~~Phase 1~~ | ~~Resolved~~ |
+| ~~TD-009~~ | ~~DataChannel~~ | ~~DCEP OPEN retransmit not deduplicated — each retransmit allocates new channel and re-emits open event~~ | ~~Medium~~ | ~~Phase 1~~ | ~~Resolved~~ |
 
 ## Resolved Debt
 
@@ -24,6 +25,7 @@ Track known debt, prioritize by impact, pay down continuously.
 | TD-006 | 2026-03-27 | `run_loop_linux.c` validated via interop tests (nanortc peer wrapper uses it with real localhost UDP). `signaling_stdin.c` still untested — deferred to browser integration test. |
 | TD-005 | 2026-03-29 | `Kconfig.projbuild` in `esp32_datachannel` example; `nanortc_config.h` maps `CONFIG_NANORTC_*` → `NANORTC_*` via Kconfig |
 | TD-007 | 2026-03-27 | SDP parser fixed — ICE candidate parsing + `a=sendrecv` for libdatachannel compat (commit `4b5f7bb`). Audio m-line support added in Phase 2 Session 2. |
+| TD-009 | 2026-03-30 | Idempotent DCEP OPEN handling — `dc_find_channel()` dedup before alloc, `last_was_open` flag gates event emission in `nano_rtc.c`. Re-ACKs retransmitted OPENs without duplicate channel or event. |
 
 ## Principles
 

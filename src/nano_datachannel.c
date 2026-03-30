@@ -139,6 +139,17 @@ int dc_handle_message(nano_dc_t *dc, uint16_t stream_id, uint32_t ppid, const ui
                 return rc;
             }
 
+            dc->last_was_open = false;
+
+            /* Idempotent: if channel already exists, just re-ACK */
+            nano_dc_channel_t *existing = dc_find_channel(dc, stream_id);
+            if (existing) {
+                dc->out_len = (uint16_t)dcep_encode_ack(dc->out_buf);
+                dc->out_stream = stream_id;
+                dc->has_output = true;
+                return NANORTC_OK;
+            }
+
             /* Allocate channel */
             nano_dc_channel_t *ch = dc_alloc_channel(dc, stream_id);
             if (!ch) {
@@ -162,6 +173,7 @@ int dc_handle_message(nano_dc_t *dc, uint16_t stream_id, uint32_t ppid, const ui
             dc->out_len = (uint16_t)dcep_encode_ack(dc->out_buf);
             dc->out_stream = stream_id;
             dc->has_output = true;
+            dc->last_was_open = true;
 
             NANORTC_LOGI("DC", "channel opened by peer");
             return NANORTC_OK;

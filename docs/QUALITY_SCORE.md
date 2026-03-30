@@ -24,7 +24,7 @@ Per-module quality grades for NanoRTC. Updated as implementation progresses.
 | ICE | `nano_ice.c` | **B** | 17 tests (§7.1.1, §7.2.1, §7.3, §8, credentials) | Dual-role FSM, controlled + controlling, pacing, nomination |
 | DTLS | `nano_dtls.c` | **B** | 9 tests (handshake loopback, encrypt/decrypt, keying material, fingerprint) | Sans I/O BIO adapter, ECDSA P-256 self-signed cert, RFC 5764 key export |
 | SCTP-Lite | `nano_sctp.c` | **B-** | 27 tests (codec, CRC, handshake, data exchange, SACK, FORWARD-TSN, output queue) | Full codec + 4-way handshake FSM + send queue + SACK + retransmit + heartbeat + ring output queue. Missing: gap tracking, RECONFIG, SHUTDOWN-ACK. |
-| DataChannel | `nano_datachannel.c` | **B-** | DCEP codec + FSM tested via SCTP e2e | DCEP OPEN/ACK codec, channel management, bidirectional FSM. Missing: partial reliability, RECONFIG. |
+| DataChannel | `nano_datachannel.c` | **B** | DCEP codec + FSM tested via SCTP e2e | DCEP OPEN/ACK codec, channel management, bidirectional FSM. Idempotent OPEN handling (re-ACK on retransmit, no duplicate events). Missing: partial reliability, RECONFIG. |
 | SDP | `nano_sdp.c` | **B** | 14 tests (Chrome/Firefox/Safari offers, generator, roundtrip, accept_offer, video PT, direction) | Parser + generator with helper functions. Chrome/Firefox/Safari SDP compat. Audio m-line with Opus/ptime:20. Video m-line: H264 PT via rtpmap+fmtp cross-validation (packetization-mode=1). M-line ordering matches offer (RFC 8829). Direction complement (RFC 3264 §6). |
 | CRC-32c | `nano_crc32c.c` | **B** | test vector verified | 100% — Castagnoli polynomial for SCTP checksums |
 | CRC-32 | `nano_crc32.c` | **B** | test vector verified | 100% — ISO HDLC polynomial for STUN FINGERPRINT |
