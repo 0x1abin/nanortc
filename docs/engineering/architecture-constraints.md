@@ -46,9 +46,9 @@ clang-format --dry-run --Werror src/*.c src/*.h include/*.h crypto/*.h crypto/*.
 
 ## 5. Public Symbol Naming
 
-All exported symbols must use allowed module prefixes (`nano_`, `nanortc_`, `stun_`, `ice_`, `dtls_`, `sctp_`, `dc_`, `sdp_`, `rtp_`, `rtcp_`, `srtp_`, `jitter_`, `bwe_`, `h264_`, `media_`, `addr_`, etc.):
+All exported symbols must use allowed module prefixes (`nano_`, `nanortc_`, `stun_`, `ice_`, `dtls_`, `nsctp_`, `sctp_`, `dc_`, `sdp_`, `rtp_`, `rtcp_`, `srtp_`, `jitter_`, `bwe_`, `h264_`, `media_`, `ssrc_map_`, `addr_`, `track_`):
 ```bash
-ALLOWED='nano_|nanortc_|stun_|ice_|dtls_|nsctp_|sctp_|dc_|sdp_|rtp_|rtcp_|srtp_|jitter_|bwe_|h264_|media_|ssrc_map_|addr_'
+ALLOWED='nano_|nanortc_|stun_|ice_|dtls_|nsctp_|sctp_|dc_|sdp_|rtp_|rtcp_|srtp_|jitter_|bwe_|h264_|media_|ssrc_map_|addr_|track_'
 nm -g libnanortc.a | grep ' T ' | awk '{print $3}' | grep -v '^_' | grep -vE "^($ALLOWED)"
 # Must return empty
 ```

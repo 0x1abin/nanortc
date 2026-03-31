@@ -199,7 +199,8 @@ int dc_handle_message(nano_dc_t *dc, uint16_t stream_id, uint32_t ppid, const ui
     return NANORTC_OK;
 }
 
-int dc_open(nano_dc_t *dc, uint16_t stream_id, const char *label)
+int dc_open(nano_dc_t *dc, uint16_t stream_id, const char *label, bool ordered,
+            uint16_t max_retransmits)
 {
     if (!dc || !label) {
         return NANORTC_ERR_INVALID_PARAM;
@@ -210,9 +211,20 @@ int dc_open(nano_dc_t *dc, uint16_t stream_id, const char *label)
         return NANORTC_ERR_BUFFER_TOO_SMALL;
     }
 
+    /* Determine DCEP channel type (RFC 8832 §5) */
+    uint8_t ctype;
+    uint32_t reliability = 0;
+    if (max_retransmits == 0) {
+        ctype = ordered ? DCEP_CHANNEL_RELIABLE : DCEP_CHANNEL_RELIABLE_UNORDERED;
+    } else {
+        ctype = ordered ? DCEP_CHANNEL_REXMIT : DCEP_CHANNEL_REXMIT_UNORDERED;
+        reliability = max_retransmits;
+    }
+
     ch->state = NANORTC_DC_STATE_OPENING;
-    ch->channel_type = DCEP_CHANNEL_RELIABLE;
-    ch->ordered = true;
+    ch->channel_type = ctype;
+    ch->ordered = ordered;
+    ch->max_retransmits = max_retransmits;
 
     uint16_t label_len = 0;
     while (label[label_len] && label_len < sizeof(ch->label) - 1) {
@@ -222,8 +234,8 @@ int dc_open(nano_dc_t *dc, uint16_t stream_id, const char *label)
     ch->label[label_len] = '\0';
 
     /* Encode DCEP OPEN */
-    dc->out_len = (uint16_t)dcep_encode_open(dc->out_buf, DCEP_CHANNEL_RELIABLE, 0, 0, label,
-                                             label_len, NULL, 0);
+    dc->out_len =
+        (uint16_t)dcep_encode_open(dc->out_buf, ctype, 0, reliability, label, label_len, NULL, 0);
     dc->out_stream = stream_id;
     dc->has_output = true;
 

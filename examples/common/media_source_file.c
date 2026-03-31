@@ -50,7 +50,7 @@ static int read_file(const char *path, uint8_t *buf, size_t buf_len, size_t *out
 }
 
 int nano_media_source_init(nano_media_source_t *src,
-                           nano_media_type_t type,
+                           nanortc_track_type_t type,
                            const char *sample_dir)
 {
     if (!src || !sample_dir) {

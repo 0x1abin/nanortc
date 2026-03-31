@@ -251,27 +251,50 @@ typedef enum {
 
 /** @brief Application event types delivered via NANORTC_OUTPUT_EVENT. */
 typedef enum {
-    NANORTC_EV_CONNECTED = 0,             /**< ICE+DTLS(+SCTP) fully established. */
-    NANORTC_EV_DISCONNECTED = 1,          /**< Connection lost or closed. */
-    NANORTC_EV_ICE_STATE_CHANGE = 2,      /**< ICE state transition. */
-    NANORTC_EV_MEDIA_ADDED = 3,           /**< Remote added new media track. */
-    NANORTC_EV_MEDIA_CHANGED = 4,         /**< Media direction changed. */
-    NANORTC_EV_MEDIA_DATA = 5,            /**< Received media frame (audio or video). */
-    NANORTC_EV_KEYFRAME_REQUEST = 6,      /**< Remote requests keyframe (PLI/FIR). */
-    NANORTC_EV_CHANNEL_OPEN = 7,          /**< DataChannel opened (DCEP complete). */
-    NANORTC_EV_CHANNEL_DATA = 8,          /**< DataChannel data received. */
-    NANORTC_EV_CHANNEL_CLOSE = 9,         /**< DataChannel closed. */
-    NANORTC_EV_CHANNEL_BUFFERED_LOW = 10, /**< Send buffer drained below threshold. */
+    NANORTC_EV_CONNECTED = 0,                 /**< ICE+DTLS(+SCTP) fully established. */
+    NANORTC_EV_DISCONNECTED = 1,              /**< Connection lost or closed. */
+    NANORTC_EV_ICE_STATE_CHANGE = 2,          /**< ICE state transition. */
+    NANORTC_EV_MEDIA_ADDED = 3,               /**< Remote added new media track. */
+    NANORTC_EV_MEDIA_CHANGED = 4,             /**< Media direction changed. */
+    NANORTC_EV_MEDIA_DATA = 5,                /**< Received media frame (audio or video). */
+    NANORTC_EV_KEYFRAME_REQUEST = 6,          /**< Remote requests keyframe (PLI/FIR). */
+    NANORTC_EV_DATACHANNEL_OPEN = 7,          /**< DataChannel opened (DCEP complete). */
+    NANORTC_EV_DATACHANNEL_DATA = 8,          /**< DataChannel data received. */
+    NANORTC_EV_DATACHANNEL_CLOSE = 9,         /**< DataChannel closed. */
+    NANORTC_EV_DATACHANNEL_BUFFERED_LOW = 10, /**< Send buffer drained below threshold. */
 } nanortc_event_type_t;
+
+/* Forward declarations needed by event data structures */
+typedef struct nanortc nanortc_t;
+
+/** @brief Media writer handle. Obtain via nanortc_get_writer() or NANORTC_EV_CONNECTED. */
+typedef struct {
+    nanortc_t *rtc;        /**< Parent RTC state (do not modify). */
+    uint8_t mid;           /**< Track MID. */
+    uint8_t kind;          /**< 0 = audio, 1 = video (matches nanortc_track_kind_t). */
+    uint32_t rtp_ts;       /**< Current RTP timestamp (auto-advanced by send_audio/send_video). */
+    uint32_t clock_rate;   /**< RTP clock: audio=sample_rate, video=90000. */
+    uint32_t frame_dur_ms; /**< Frame interval ms (0 = no auto-advance). */
+} nanortc_writer_t;
 
 /* ----------------------------------------------------------------
  * Per-event data structures (str0m-inspired typed events)
  * ---------------------------------------------------------------- */
 
+/** @brief Data for NANORTC_EV_CONNECTED: connection fully established. */
+typedef struct {
+#if NANORTC_HAVE_MEDIA_TRANSPORT
+    nanortc_writer_t writers[NANORTC_MAX_MEDIA_TRACKS]; /**< Pre-filled writer handles. */
+    uint8_t writer_count;                               /**< Number of valid writers. */
+#else
+    uint8_t _pad; /**< Placeholder when media transport is disabled. */
+#endif
+} nanortc_ev_connected_t;
+
 /** @brief Data for NANORTC_EV_MEDIA_ADDED: remote added a new media track. */
 typedef struct {
-    uint8_t mid;                   /**< Media ID (track index). */
-    uint8_t kind;                  /**< nano_media_kind_t: NANO_MEDIA_AUDIO or NANO_MEDIA_VIDEO. */
+    uint8_t mid;  /**< Media ID (track index). */
+    uint8_t kind; /**< nanortc_track_kind_t: NANORTC_TRACK_AUDIO or NANORTC_TRACK_VIDEO. */
     nanortc_direction_t direction; /**< Negotiated local direction for this track. */
 } nanortc_ev_media_added_t;
 
@@ -298,24 +321,24 @@ typedef struct {
     uint8_t mid; /**< Video track MID that needs a keyframe. */
 } nanortc_ev_keyframe_request_t;
 
-/** @brief Data for NANORTC_EV_CHANNEL_OPEN. */
+/** @brief Data for NANORTC_EV_DATACHANNEL_OPEN. */
 typedef struct {
     uint16_t id;       /**< SCTP stream ID. */
     const char *label; /**< Channel label (valid until next poll). */
-} nanortc_ev_channel_open_t;
+} nanortc_ev_datachannel_open_t;
 
-/** @brief Data for NANORTC_EV_CHANNEL_DATA. */
+/** @brief Data for NANORTC_EV_DATACHANNEL_DATA. */
 typedef struct {
     uint16_t id;         /**< SCTP stream ID. */
     const uint8_t *data; /**< Payload pointer (valid until next poll). */
     size_t len;          /**< Payload length in bytes. */
     bool binary;         /**< true = binary, false = UTF-8 string. */
-} nanortc_ev_channel_data_t;
+} nanortc_ev_datachannel_data_t;
 
-/** @brief Data for NANORTC_EV_CHANNEL_CLOSE / NANORTC_EV_CHANNEL_BUFFERED_LOW. */
+/** @brief Data for NANORTC_EV_DATACHANNEL_CLOSE / NANORTC_EV_DATACHANNEL_BUFFERED_LOW. */
 typedef struct {
     uint16_t id; /**< SCTP stream ID. */
-} nanortc_ev_channel_id_t;
+} nanortc_ev_datachannel_id_t;
 
 /* ----------------------------------------------------------------
  * Event structure (tagged union)
@@ -330,14 +353,16 @@ typedef struct {
 typedef struct nanortc_event {
     nanortc_event_type_t type; /**< Event type discriminator. */
     union {
+        nanortc_ev_connected_t connected;               /**< EV_CONNECTED */
         nanortc_ev_media_added_t media_added;           /**< EV_MEDIA_ADDED */
         nanortc_ev_media_changed_t media_changed;       /**< EV_MEDIA_CHANGED */
         nanortc_ev_media_data_t media_data;             /**< EV_MEDIA_DATA */
         nanortc_ev_keyframe_request_t keyframe_request; /**< EV_KEYFRAME_REQUEST */
-        nanortc_ev_channel_open_t channel_open;         /**< EV_CHANNEL_OPEN */
-        nanortc_ev_channel_data_t channel_data;         /**< EV_CHANNEL_DATA */
-        nanortc_ev_channel_id_t channel_id; /**< EV_CHANNEL_CLOSE, EV_CHANNEL_BUFFERED_LOW */
-        uint16_t ice_state;                 /**< EV_ICE_STATE_CHANGE */
+        nanortc_ev_datachannel_open_t datachannel_open; /**< EV_DATACHANNEL_OPEN */
+        nanortc_ev_datachannel_data_t datachannel_data; /**< EV_DATACHANNEL_DATA */
+        nanortc_ev_datachannel_id_t
+            datachannel_id; /**< EV_DATACHANNEL_CLOSE, EV_DATACHANNEL_BUFFERED_LOW */
+        uint16_t ice_state; /**< EV_ICE_STATE_CHANGE */
     };
 } nanortc_event_t;
 
@@ -472,11 +497,11 @@ struct nanortc {
 
 #if NANORTC_HAVE_MEDIA_TRANSPORT
     /** Media tracks (str0m-inspired: indexed by MID). */
-    nano_media_t media[NANORTC_MAX_MEDIA_TRACKS];
+    nanortc_track_t media[NANORTC_MAX_MEDIA_TRACKS];
     uint8_t media_count; /**< Number of allocated media track slots. */
 
     /** SSRC → MID lookup table for RTP receive-path demuxing. */
-    nano_ssrc_entry_t ssrc_map[NANORTC_MAX_SSRC_MAP];
+    nanortc_ssrc_entry_t ssrc_map[NANORTC_MAX_SSRC_MAP];
 
     /** Shared SRTP session (keys shared across all tracks in BUNDLE). */
     nano_srtp_t srtp;
@@ -507,23 +532,18 @@ struct nanortc {
     nanortc_addr_t remote_addr;
 };
 
-typedef struct nanortc nanortc_t;
-
 /* ----------------------------------------------------------------
  * Handle types (str0m-inspired Writer / Channel pattern)
  * ---------------------------------------------------------------- */
 
-/** @brief Media writer handle. Obtain via nanortc_writer(). */
-typedef struct {
-    nanortc_t *rtc; /**< Parent RTC state (do not modify). */
-    uint8_t mid;    /**< Track MID. */
-} nano_writer_t;
+/* nanortc_writer_t is defined above (before event structs, needed by
+ * nanortc_ev_connected_t). */
 
-/** @brief DataChannel handle. Obtain via nanortc_channel(). */
+/** @brief DataChannel handle. Obtain via nanortc_get_datachannel(). */
 typedef struct {
     nanortc_t *rtc; /**< Parent RTC state (do not modify). */
     uint16_t id;    /**< SCTP stream ID. */
-} nano_channel_t;
+} nanortc_datachannel_t;
 
 /* ----------------------------------------------------------------
  * Lifecycle API
@@ -655,12 +675,13 @@ NANORTC_API int nanortc_handle_input(nanortc_t *rtc, uint32_t now_ms, const uint
 
 #if NANORTC_FEATURE_DATACHANNEL
 
-/** @brief DataChannel configuration for nanortc_add_channel_ex(). */
-typedef struct nanortc_datachannel_config {
-    const char *label;        /**< Channel label (NUL-terminated, required). */
-    bool ordered;             /**< Ordered delivery (default: true). */
+/** @brief Optional DataChannel parameters for nanortc_create_datachannel().
+ *  Pass NULL for defaults (reliable, ordered). Zero-initialized struct also gives defaults. */
+typedef struct nanortc_datachannel_options {
+    const char *protocol;     /**< Sub-protocol (NUL-terminated, NULL = none). */
+    bool unordered;           /**< Set true for unordered delivery (default: false = ordered). */
     uint16_t max_retransmits; /**< Max retransmit count (0 = reliable). */
-} nanortc_datachannel_config_t;
+} nanortc_datachannel_options_t;
 
 #endif
 
@@ -675,20 +696,38 @@ typedef struct nanortc_datachannel_config {
 #define NANORTC_VIDEO_FLAG_MARKER   0x02 /**< Last NAL in access unit (sets RTP marker bit). */
 
 /**
- * @brief Add a media track (audio or video) to the SDP session.
+ * @brief Add an audio track to the SDP session.
  *
- * Call before nanortc_create_offer() or nanortc_accept_offer(). Each call
- * adds one SDP m-line. Returns the MID (media ID) which is the track handle.
+ * Call before nanortc_create_offer() or nanortc_accept_offer().
+ * Returns the MID (media ID) which is the track handle.
  *
  * @param rtc         Initialized RTC state.
- * @param kind        NANO_MEDIA_AUDIO or NANO_MEDIA_VIDEO.
  * @param direction   Send/receive direction for this track.
- * @param codec       Codec to negotiate (NANORTC_CODEC_OPUS, etc.).
- * @param sample_rate Audio sample rate in Hz (e.g. 48000), 0 for video.
- * @param channels    Audio channels (1 or 2), 0 for video.
+ * @param codec       Codec to negotiate (e.g. NANORTC_CODEC_OPUS).
+ * @param sample_rate Sample rate in Hz (e.g. 48000 for Opus).
+ * @param channels    Audio channels (1 = mono, 2 = stereo).
  * @return MID (>= 0) on success, negative error code on failure.
  */
-NANORTC_API int nanortc_add_media(nanortc_t *rtc, nano_media_kind_t kind,
+NANORTC_API int nanortc_add_audio_track(nanortc_t *rtc, nanortc_direction_t direction,
+                                        nanortc_codec_t codec, uint32_t sample_rate,
+                                        uint8_t channels);
+
+/**
+ * @brief Add a video track to the SDP session.
+ *
+ * Call before nanortc_create_offer() or nanortc_accept_offer().
+ * Returns the MID (media ID) which is the track handle.
+ *
+ * @param rtc       Initialized RTC state.
+ * @param direction Send/receive direction for this track.
+ * @param codec     Codec to negotiate (e.g. NANORTC_CODEC_H264).
+ * @return MID (>= 0) on success, negative error code on failure.
+ */
+NANORTC_API int nanortc_add_video_track(nanortc_t *rtc, nanortc_direction_t direction,
+                                        nanortc_codec_t codec);
+
+/** @brief Generic add media track. Prefer nanortc_add_audio_track() / nanortc_add_video_track(). */
+NANORTC_API int nanortc_add_track(nanortc_t *rtc, nanortc_track_kind_t kind,
                                   nanortc_direction_t direction, nanortc_codec_t codec,
                                   uint32_t sample_rate, uint8_t channels);
 
@@ -696,7 +735,7 @@ NANORTC_API int nanortc_add_media(nanortc_t *rtc, nano_media_kind_t kind,
  * @brief Change direction of an existing media track.
  *
  * @param rtc  Initialized RTC state.
- * @param mid  Track MID returned by nanortc_add_media().
+ * @param mid  Track MID returned by nanortc_add_audio_track() / nanortc_add_video_track().
  * @param dir  New direction.
  */
 NANORTC_API void nanortc_set_direction(nanortc_t *rtc, uint8_t mid, nanortc_direction_t dir);
@@ -709,7 +748,7 @@ NANORTC_API void nanortc_set_direction(nanortc_t *rtc, uint8_t mid, nanortc_dire
  * @return Pointer to internal media state, or NULL if MID is invalid.
  *         Valid until next SDP negotiation or destroy.
  */
-NANORTC_API const nano_media_t *nanortc_media(const nanortc_t *rtc, uint8_t mid);
+NANORTC_API const nanortc_track_t *nanortc_get_track(const nanortc_t *rtc, uint8_t mid);
 
 /**
  * @brief Obtain a writer handle for sending media on a track.
@@ -723,7 +762,7 @@ NANORTC_API const nano_media_t *nanortc_media(const nanortc_t *rtc, uint8_t mid)
  * @retval NANORTC_ERR_INVALID_PARAM  Track not found.
  * @retval NANORTC_ERR_STATE          Direction is recvonly/inactive, or not connected.
  */
-NANORTC_API int nanortc_writer(nanortc_t *rtc, uint8_t mid, nano_writer_t *w);
+NANORTC_API int nanortc_get_writer(nanortc_t *rtc, uint8_t mid, nanortc_writer_t *w);
 
 /**
  * @brief Send media data through a writer handle.
@@ -731,14 +770,14 @@ NANORTC_API int nanortc_writer(nanortc_t *rtc, uint8_t mid, nano_writer_t *w);
  * For audio: @p data is an encoded frame, @p flags is 0.
  * For video: @p data is a raw H.264 NAL unit, @p flags is NANORTC_VIDEO_FLAG_*.
  *
- * @param w          Writer handle from nanortc_writer().
+ * @param w          Writer handle from nanortc_get_writer().
  * @param timestamp  RTP timestamp.
  * @param data       Encoded payload.
  * @param len        Payload length in bytes.
  * @param flags      Video flags (0 for audio).
  * @return NANORTC_OK on success.
  */
-NANORTC_API int nanortc_writer_write(nano_writer_t *w, uint32_t timestamp, const void *data,
+NANORTC_API int nanortc_writer_write(nanortc_writer_t *w, uint32_t timestamp, const void *data,
                                      size_t len, int flags);
 
 /**
@@ -747,7 +786,102 @@ NANORTC_API int nanortc_writer_write(nano_writer_t *w, uint32_t timestamp, const
  * @param w  Writer handle for a video track.
  * @return NANORTC_OK on success.
  */
-NANORTC_API int nanortc_writer_request_keyframe(nano_writer_t *w);
+NANORTC_API int nanortc_writer_request_keyframe(nanortc_writer_t *w);
+
+/**
+ * @brief Set the frame duration for automatic RTP timestamp advance.
+ *
+ * Call once after obtaining a writer handle. Used by nanortc_writer_send_audio()
+ * and nanortc_writer_send_video() to auto-increment @c rtp_ts.
+ *
+ * @param w         Writer handle.
+ * @param frame_ms  Frame interval in milliseconds (e.g. 20 for audio, 33 for 30fps video).
+ *                  0 disables auto-advance (caller manages rtp_ts manually).
+ */
+static inline void nanortc_writer_set_frame_duration(nanortc_writer_t *w, uint32_t frame_ms)
+{
+    if (w) {
+        w->frame_dur_ms = frame_ms;
+    }
+}
+
+/**
+ * @brief Send an encoded audio frame (convenience wrapper).
+ *
+ * Calls nanortc_writer_write() with flags=0 and auto-advances rtp_ts
+ * by clock_rate * frame_dur_ms / 1000 (default: clock_rate / 50 for 20ms).
+ *
+ * @param w     Writer handle (audio track).
+ * @param data  Encoded audio payload (e.g. Opus frame).
+ * @param len   Payload length in bytes.
+ * @return NANORTC_OK on success.
+ */
+NANORTC_API int nanortc_writer_send_audio(nanortc_writer_t *w, const void *data, size_t len);
+
+#if NANORTC_FEATURE_VIDEO
+/**
+ * @brief Send a video frame (convenience wrapper).
+ *
+ * For H.264: pass an Annex-B access unit. Internally splits NAL units,
+ * detects IDR keyframes, sets marker bits, and packetizes via FU-A.
+ * Auto-advances rtp_ts by clock_rate * frame_dur_ms / 1000.
+ *
+ * @param w     Writer handle (video track).
+ * @param data  Video frame (Annex-B for H.264).
+ * @param len   Frame length in bytes.
+ * @return NANORTC_OK on success.
+ */
+NANORTC_API int nanortc_writer_send_video(nanortc_writer_t *w, const void *data, size_t len);
+#endif /* NANORTC_FEATURE_VIDEO */
+
+/* ----------------------------------------------------------------
+ * Flat convenience API (no writer handle needed)
+ * ---------------------------------------------------------------- */
+
+/**
+ * @brief Set the frame duration for a media track.
+ *
+ * Controls the automatic RTP timestamp advance used by nanortc_send_audio()
+ * and nanortc_send_video(). Call once after nanortc_add_track().
+ *
+ * @param rtc       Initialized RTC state.
+ * @param mid       Track MID.
+ * @param frame_ms  Frame interval in ms (e.g. 20 for audio, 33 for 30fps, 40 for 25fps).
+ *                  0 = use default (20ms for audio; no auto-advance for video).
+ */
+NANORTC_API void nanortc_set_frame_duration(nanortc_t *rtc, uint8_t mid, uint32_t frame_ms);
+
+/**
+ * @brief Send an encoded audio frame on a track (no writer handle needed).
+ *
+ * RTP timestamp is auto-managed internally. Frame duration defaults to 20ms
+ * (override with nanortc_set_frame_duration()).
+ *
+ * @param rtc   Initialized RTC state (must be connected).
+ * @param mid   Audio track MID.
+ * @param data  Encoded audio payload (e.g. Opus frame).
+ * @param len   Payload length in bytes.
+ * @return NANORTC_OK on success.
+ */
+NANORTC_API int nanortc_send_audio(nanortc_t *rtc, uint8_t mid, const void *data, size_t len);
+
+#if NANORTC_FEATURE_VIDEO
+/**
+ * @brief Send a video frame on a track (no writer handle needed).
+ *
+ * Codec is auto-detected from the track's negotiated codec. For H.264,
+ * pass an Annex-B access unit; NAL splitting, IDR detection, and marker
+ * bits are handled internally. RTP timestamp is auto-managed.
+ * Set frame duration first with nanortc_set_frame_duration() (e.g. 40 for 25fps).
+ *
+ * @param rtc   Initialized RTC state (must be connected).
+ * @param mid   Video track MID.
+ * @param data  Video frame (Annex-B for H.264).
+ * @param len   Frame length in bytes.
+ * @return NANORTC_OK on success.
+ */
+NANORTC_API int nanortc_send_video(nanortc_t *rtc, uint8_t mid, const void *data, size_t len);
+#endif /* NANORTC_FEATURE_VIDEO */
 
 #endif /* NANORTC_HAVE_MEDIA_TRANSPORT */
 
@@ -758,22 +892,18 @@ NANORTC_API int nanortc_writer_request_keyframe(nano_writer_t *w);
 #if NANORTC_FEATURE_DATACHANNEL
 
 /**
- * @brief Register a DataChannel in the SDP session (before offer/answer).
+ * @brief Create a DataChannel (register in SDP session).
  *
- * @param rtc    Initialized RTC state.
- * @param label  Channel label (NUL-terminated).
+ * Call before nanortc_create_offer(). Pass NULL for @p options to get
+ * reliable, ordered delivery (the common default).
+ *
+ * @param rtc      Initialized RTC state.
+ * @param label    Channel label (NUL-terminated, required).
+ * @param options  Optional parameters (NULL = reliable, ordered).
  * @return Stream ID (>= 0) on success, negative error on failure.
  */
-NANORTC_API int nanortc_add_channel(nanortc_t *rtc, const char *label);
-
-/**
- * @brief Register a DataChannel with custom configuration.
- *
- * @param rtc  Initialized RTC state.
- * @param cfg  Channel configuration.
- * @return Stream ID (>= 0) on success, negative error on failure.
- */
-NANORTC_API int nanortc_add_channel_ex(nanortc_t *rtc, const nanortc_datachannel_config_t *cfg);
+NANORTC_API int nanortc_create_datachannel(nanortc_t *rtc, const char *label,
+                                           const nanortc_datachannel_options_t *options);
 
 /**
  * @brief Obtain a channel handle for DataChannel I/O.
@@ -784,26 +914,26 @@ NANORTC_API int nanortc_add_channel_ex(nanortc_t *rtc, const nanortc_datachannel
  * @return NANORTC_OK on success.
  * @retval NANORTC_ERR_INVALID_PARAM  Unknown or closed channel.
  */
-NANORTC_API int nanortc_channel(nanortc_t *rtc, uint16_t id, nano_channel_t *ch);
+NANORTC_API int nanortc_get_datachannel(nanortc_t *rtc, uint16_t id, nanortc_datachannel_t *ch);
 
 /**
  * @brief Send binary data on a DataChannel.
  *
- * @param ch    Channel handle from nanortc_channel().
+ * @param ch    Channel handle from nanortc_get_datachannel().
  * @param data  Payload to send.
  * @param len   Payload length in bytes.
  * @return NANORTC_OK on success.
  */
-NANORTC_API int nanortc_channel_send(nano_channel_t *ch, const void *data, size_t len);
+NANORTC_API int nanortc_datachannel_send(nanortc_datachannel_t *ch, const void *data, size_t len);
 
 /**
  * @brief Send a UTF-8 string on a DataChannel.
  *
- * @param ch   Channel handle from nanortc_channel().
+ * @param ch   Channel handle from nanortc_get_datachannel().
  * @param str  NUL-terminated UTF-8 string.
  * @return NANORTC_OK on success.
  */
-NANORTC_API int nanortc_channel_send_string(nano_channel_t *ch, const char *str);
+NANORTC_API int nanortc_datachannel_send_string(nanortc_datachannel_t *ch, const char *str);
 
 /**
  * @brief Close a DataChannel.
@@ -811,7 +941,7 @@ NANORTC_API int nanortc_channel_send_string(nano_channel_t *ch, const char *str)
  * @param ch  Channel handle.
  * @return NANORTC_OK on success.
  */
-NANORTC_API int nanortc_channel_close(nano_channel_t *ch);
+NANORTC_API int nanortc_datachannel_close(nanortc_datachannel_t *ch);
 
 /**
  * @brief Get the label of a DataChannel.
@@ -819,7 +949,7 @@ NANORTC_API int nanortc_channel_close(nano_channel_t *ch);
  * @param ch  Channel handle.
  * @return Label string, or NULL if invalid. Valid until nanortc_destroy().
  */
-NANORTC_API const char *nanortc_channel_label(nano_channel_t *ch);
+NANORTC_API const char *nanortc_datachannel_get_label(nanortc_datachannel_t *ch);
 
 #endif /* NANORTC_FEATURE_DATACHANNEL */
 

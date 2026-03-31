@@ -58,22 +58,22 @@ static void on_event(nanortc_t *rtc, const nanortc_event_t *evt, void *userdata)
         ESP_LOGI(TAG, "Connected");
         break;
 
-    case NANORTC_EV_CHANNEL_OPEN:
-        ESP_LOGI(TAG, "DataChannel open (id=%d)", evt->channel_open.id);
+    case NANORTC_EV_DATACHANNEL_OPEN:
+        ESP_LOGI(TAG, "DataChannel open (id=%d)", evt->datachannel_open.id);
         break;
 
-    case NANORTC_EV_CHANNEL_DATA:
-        if (evt->channel_data.binary) {
-            ESP_LOGI(TAG, "DC data (%u bytes), echoing back", (unsigned)evt->channel_data.len);
-            nanortc_channel_send(&evt->channel_data, evt->channel_data.data, evt->channel_data.len);
+    case NANORTC_EV_DATACHANNEL_DATA:
+        if (evt->datachannel_data.binary) {
+            ESP_LOGI(TAG, "DC data (%u bytes), echoing back", (unsigned)evt->datachannel_data.len);
+            nanortc_datachannel_send(&evt->datachannel_data, evt->datachannel_data.data, evt->datachannel_data.len);
         } else {
-            ESP_LOGI(TAG, "DC string: %.*s", (int)evt->channel_data.len,
-                     (char *)evt->channel_data.data);
-            nanortc_channel_send_string(&evt->channel_data, (const char *)evt->channel_data.data);
+            ESP_LOGI(TAG, "DC string: %.*s", (int)evt->datachannel_data.len,
+                     (char *)evt->datachannel_data.data);
+            nanortc_datachannel_send_string(&evt->datachannel_data, (const char *)evt->datachannel_data.data);
         }
         break;
 
-    case NANORTC_EV_CHANNEL_CLOSE:
+    case NANORTC_EV_DATACHANNEL_CLOSE:
         ESP_LOGI(TAG, "DataChannel closed");
         break;
 

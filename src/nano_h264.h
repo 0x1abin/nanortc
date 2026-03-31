@@ -121,4 +121,17 @@ int h264_depkt_push(nano_h264_depkt_t *d, const uint8_t *payload, size_t len, in
  */
 int h264_is_keyframe(const uint8_t *rtp_payload, size_t len);
 
+/**
+ * Find next NAL unit in an Annex-B bitstream.
+ * Scans for 00 00 01 or 00 00 00 01 start codes.
+ *
+ * @param data    Annex-B buffer.
+ * @param len     Buffer length.
+ * @param offset  [in/out] Search offset; updated past the found NAL.
+ * @param nal_len [out] Length of found NAL (excluding start code).
+ * @return Pointer to NAL data (after start code), or NULL if no more NALs.
+ */
+const uint8_t *h264_annex_b_find_nal(const uint8_t *data, size_t len, size_t *offset,
+                                     size_t *nal_len);
+
 #endif /* NANORTC_H264_H_ */

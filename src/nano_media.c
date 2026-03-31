@@ -8,8 +8,9 @@
 #include "nanortc.h"
 #include <string.h>
 
-int media_init(nano_media_t *m, uint8_t mid, nano_media_kind_t kind, nanortc_direction_t direction,
-               uint8_t codec, uint32_t sample_rate, uint8_t channels, uint32_t jitter_depth_ms)
+int track_init(nanortc_track_t *m, uint8_t mid, nanortc_track_kind_t kind,
+               nanortc_direction_t direction, uint8_t codec, uint32_t sample_rate, uint8_t channels,
+               uint32_t jitter_depth_ms)
 {
     if (!m) {
         return NANORTC_ERR_INVALID_PARAM;
@@ -28,14 +29,14 @@ int media_init(nano_media_t *m, uint8_t mid, nano_media_kind_t kind, nanortc_dir
     rtcp_init(&m->rtcp, 0);
 
 #if NANORTC_FEATURE_AUDIO
-    if (kind == NANO_MEDIA_AUDIO) {
+    if (kind == NANORTC_TRACK_AUDIO) {
         jitter_init(&m->track.audio.jitter, jitter_depth_ms);
         m->track.audio.jitter_depth_ms = jitter_depth_ms;
     }
 #endif
 
 #if NANORTC_FEATURE_VIDEO
-    if (kind == NANO_MEDIA_VIDEO) {
+    if (kind == NANORTC_TRACK_VIDEO) {
         h264_depkt_init(&m->track.video.h264_depkt);
     }
 #endif
@@ -44,7 +45,7 @@ int media_init(nano_media_t *m, uint8_t mid, nano_media_kind_t kind, nanortc_dir
     return NANORTC_OK;
 }
 
-nano_media_t *media_find_by_mid(nano_media_t *media, uint8_t media_count, uint8_t mid)
+nanortc_track_t *track_find_by_mid(nanortc_track_t *media, uint8_t media_count, uint8_t mid)
 {
     if (!media) {
         return NULL;
@@ -57,7 +58,7 @@ nano_media_t *media_find_by_mid(nano_media_t *media, uint8_t media_count, uint8_
     return NULL;
 }
 
-int ssrc_map_register(nano_ssrc_entry_t *map, uint8_t map_size, uint32_t ssrc, uint8_t mid)
+int ssrc_map_register(nanortc_ssrc_entry_t *map, uint8_t map_size, uint32_t ssrc, uint8_t mid)
 {
     if (!map) {
         return NANORTC_ERR_INVALID_PARAM;
@@ -84,7 +85,7 @@ int ssrc_map_register(nano_ssrc_entry_t *map, uint8_t map_size, uint32_t ssrc, u
     return NANORTC_ERR_BUFFER_TOO_SMALL;
 }
 
-int ssrc_map_lookup(const nano_ssrc_entry_t *map, uint8_t map_size, uint32_t ssrc)
+int ssrc_map_lookup(const nanortc_ssrc_entry_t *map, uint8_t map_size, uint32_t ssrc)
 {
     if (!map) {
         return -1;
