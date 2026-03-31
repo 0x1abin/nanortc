@@ -329,6 +329,8 @@ int main(int argc, char *argv[])
                                                     NANORTC_CODEC_H264);
         if (app_ctx.video_mid < 0)
             fprintf(stderr, "nanortc_add_video_track failed: %d\n", app_ctx.video_mid);
+        else
+            nanortc_set_frame_duration(&rtc, (uint8_t)app_ctx.video_mid, 40); /* 25fps */
     }
 #endif
 
@@ -436,14 +438,8 @@ int main(int argc, char *argv[])
                 uint32_t ts_ms = 0;
                 if (nano_media_source_next_frame(&audio_src, frame_buf, sizeof(frame_buf),
                                                  &frame_len, &ts_ms) == 0) {
-                    uint32_t audio_ts_rtp = audio_frame_count * 960;
-                    int arc = nanortc_writer_write(&app_ctx.audio_writer, audio_ts_rtp, frame_buf,
-                                                   frame_len, 0);
-                    if (arc == NANORTC_OK) {
-                        audio_frame_count++;
-                    } else if (arc != NANORTC_ERR_STATE) {
-                        fprintf(stderr, "[audio] send error: %d\n", arc);
-                    }
+                    nanortc_send_audio(&rtc, (uint8_t)app_ctx.audio_mid, frame_buf, frame_len);
+                    audio_frame_count++;
                 }
             }
         }
@@ -465,27 +461,7 @@ int main(int argc, char *argv[])
                 uint32_t ts_ms = 0;
                 if (nano_media_source_next_frame(&video_src, frame_buf, sizeof(frame_buf),
                                                  &frame_len, &ts_ms) == 0) {
-                    /* RTP timestamp: 90kHz clock, 3600 ticks per frame at 25fps */
-                    uint32_t video_ts_rtp = video_frame_count * 3600;
-
-                    /* Split Annex-B into individual NALUs */
-                    size_t offset = 0;
-                    size_t nal_len = 0;
-                    const uint8_t *nal;
-                    while ((nal = annex_b_find_nal(frame_buf, frame_len, &offset, &nal_len)) !=
-                           NULL) {
-                        int flags = 0;
-                        if ((nal[0] & 0x1F) == 5) /* IDR slice */
-                            flags |= NANORTC_VIDEO_FLAG_KEYFRAME;
-                        /* Peek: is this the last NAL in the frame? */
-                        size_t peek_off = offset;
-                        size_t peek_len = 0;
-                        if (annex_b_find_nal(frame_buf, frame_len, &peek_off, &peek_len) == NULL) {
-                            flags |= NANORTC_VIDEO_FLAG_MARKER;
-                        }
-                        nanortc_writer_write(&app_ctx.video_writer, video_ts_rtp, nal, nal_len,
-                                             flags);
-                    }
+                    nanortc_send_video(&rtc, (uint8_t)app_ctx.video_mid, frame_buf, frame_len);
                     video_frame_count++;
                 }
             }
