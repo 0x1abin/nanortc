@@ -325,7 +325,7 @@ typedef struct {
  * @brief Application event delivered through nanortc_poll_output().
  *
  * Pointer fields are valid only until the next call to
- * nanortc_poll_output() or nanortc_handle_receive(). Copy if needed.
+ * nanortc_poll_output() or nanortc_handle_input(). Copy if needed.
  */
 typedef struct nanortc_event {
     nanortc_event_type_t type; /**< Event type discriminator. */
@@ -631,28 +631,23 @@ NANORTC_API int nanortc_add_remote_candidate(nanortc_t *rtc, const char *candida
 NANORTC_API int nanortc_poll_output(nanortc_t *rtc, nanortc_output_t *out);
 
 /**
- * @brief Feed an incoming UDP packet into the state machine.
+ * @brief Feed input into the state machine (unified entry point).
+ *
+ * Handles both incoming UDP packets and timer advancement in a single call.
+ * Always processes pending timers (ICE checks, SCTP retransmits). If @p data
+ * is non-NULL, also demuxes and processes the incoming packet (RFC 7983).
+ *
+ * Call with data=NULL, len=0, src=NULL for a pure timeout (no packet).
  *
  * @param rtc     Initialized RTC state.
  * @param now_ms  Current monotonic time in milliseconds.
- * @param data    Packet payload.
- * @param len     Payload length in bytes.
- * @param src     Source address of the packet.
+ * @param data    Packet payload, or NULL for timeout-only.
+ * @param len     Payload length in bytes (0 if data is NULL).
+ * @param src     Source address of the packet, or NULL for timeout-only.
  * @return NANORTC_OK on success.
  */
-NANORTC_API int nanortc_handle_receive(nanortc_t *rtc, uint32_t now_ms, const uint8_t *data,
-                                       size_t len, const nanortc_addr_t *src);
-
-/**
- * @brief Advance timers in the state machine.
- *
- * Call when the timeout requested by NANORTC_OUTPUT_TIMEOUT expires.
- *
- * @param rtc     Initialized RTC state.
- * @param now_ms  Current monotonic time in milliseconds.
- * @return NANORTC_OK on success.
- */
-NANORTC_API int nanortc_handle_timeout(nanortc_t *rtc, uint32_t now_ms);
+NANORTC_API int nanortc_handle_input(nanortc_t *rtc, uint32_t now_ms, const uint8_t *data,
+                                     size_t len, const nanortc_addr_t *src);
 
 /* ----------------------------------------------------------------
  * DataChannel types

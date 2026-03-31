@@ -680,17 +680,12 @@ static void rtc_pump_sctp_through_dtls(nanortc_t *rtc, const nanortc_addr_t *des
 #endif /* NANORTC_FEATURE_DATACHANNEL */
 
 /* ----------------------------------------------------------------
- * nanortc_handle_receive — RFC 7983 demux
+ * rtc_process_receive — RFC 7983 demux
  * ---------------------------------------------------------------- */
 
-int nanortc_handle_receive(nanortc_t *rtc, uint32_t now_ms, const uint8_t *data, size_t len,
-                           const nanortc_addr_t *src)
+static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
+                               const nanortc_addr_t *src)
 {
-    if (!rtc || !data || len == 0 || !src) {
-        return NANORTC_ERR_INVALID_PARAM;
-    }
-
-    rtc->now_ms = now_ms;
     uint8_t first = data[0];
 
     /* RFC 7983 §3: demultiplexing by first byte */
@@ -1053,17 +1048,11 @@ int nanortc_handle_receive(nanortc_t *rtc, uint32_t now_ms, const uint8_t *data,
 }
 
 /* ----------------------------------------------------------------
- * nanortc_handle_timeout — timer-driven state transitions
+ * Timer processing (extracted from former nanortc_handle_timeout)
  * ---------------------------------------------------------------- */
 
-int nanortc_handle_timeout(nanortc_t *rtc, uint32_t now_ms)
+static int rtc_process_timers(nanortc_t *rtc, uint32_t now_ms)
 {
-    if (!rtc) {
-        return NANORTC_ERR_INVALID_PARAM;
-    }
-
-    rtc->now_ms = now_ms;
-
     /* ICE: generate connectivity checks (controlling role) */
     if (rtc->ice.is_controlling && rtc->ice.state != NANORTC_ICE_STATE_CONNECTED &&
         rtc->ice.state != NANORTC_ICE_STATE_FAILED) {
@@ -1099,8 +1088,8 @@ int nanortc_handle_timeout(nanortc_t *rtc, uint32_t now_ms)
             rtc_emit_event_full(rtc, &isce);
         }
 
-        /* Schedule next timeout */
-        if (rtc->ice.state == NANORTC_ICE_STATE_CHECKING) {
+        /* Schedule next timeout (only when a check was actually sent) */
+        if (out_len > 0 && rtc->ice.state == NANORTC_ICE_STATE_CHECKING) {
             nanortc_output_t tout;
             memset(&tout, 0, sizeof(tout));
             tout.type = NANORTC_OUTPUT_TIMEOUT;
@@ -1128,6 +1117,33 @@ int nanortc_handle_timeout(nanortc_t *rtc, uint32_t now_ms)
         rtc_pump_sctp_through_dtls(rtc, &rtc->remote_addr);
     }
 #endif
+
+    return NANORTC_OK;
+}
+
+/* ----------------------------------------------------------------
+ * nanortc_handle_input — unified input entry point
+ * ---------------------------------------------------------------- */
+
+int nanortc_handle_input(nanortc_t *rtc, uint32_t now_ms, const uint8_t *data, size_t len,
+                         const nanortc_addr_t *src)
+{
+    if (!rtc) {
+        return NANORTC_ERR_INVALID_PARAM;
+    }
+
+    rtc->now_ms = now_ms;
+
+    /* Always process timers (ICE checks, SCTP retransmits) */
+    int trc = rtc_process_timers(rtc, now_ms);
+    if (trc != NANORTC_OK) {
+        return trc;
+    }
+
+    /* If packet data provided, process the incoming UDP packet */
+    if (data && len > 0 && src) {
+        return rtc_process_receive(rtc, data, len, src);
+    }
 
     return NANORTC_OK;
 }

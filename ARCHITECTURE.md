@@ -100,7 +100,7 @@ Six CI-tested combinations: DATA, AUDIO, MEDIA, AUDIO_ONLY, MEDIA_ONLY, CORE_ONL
 ### Inbound (UDP → application event)
 
 ```
-nanortc_handle_receive(rtc, now_ms, data, len, src)
+nanortc_handle_input(rtc, now_ms, data, len, src)
   │
   ├── byte[0] ∈ [0x00-0x03] → nano_stun → nano_ice
   │                                          ├── (controlled) respond with Binding Response

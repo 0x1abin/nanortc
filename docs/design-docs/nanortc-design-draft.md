@@ -121,10 +121,9 @@ int  nanortc_add_remote_candidate(nanortc_t *rtc,
 
 // ---- 事件循环（Sans I/O 核心）----
 int  nanortc_poll_output(nanortc_t *rtc, nanortc_output_t *out);
-int  nanortc_handle_receive(nanortc_t *rtc, uint32_t now_ms,
+int  nanortc_handle_input(nanortc_t *rtc, uint32_t now_ms,
                          const uint8_t *data, size_t len,
                          const nanortc_addr_t *src);
-int  nanortc_handle_timeout(nanortc_t *rtc, uint32_t now_ms);
 
 // ---- DataChannel (Channel handle pattern) ----
 #if NANORTC_FEATURE_DATACHANNEL
@@ -313,7 +312,7 @@ void nano_sdp_generate(nano_sdp_t *sdp, char *buf, size_t len) {
 
 ### 3.1 数据流
 
-所有数据通过 `nanortc_handle_receive()` 进入、通过 `nanortc_poll_output()` 输出，
+所有数据通过 `nanortc_handle_input()` 进入、通过 `nanortc_poll_output()` 输出，
 均为字节缓冲区。内部根据 UDP 包首字节进行解复用（RFC 7983）：
 
 ```
@@ -604,7 +603,7 @@ nanortc_config_t cfg = {
 |------|--------------|
 | 创建/绑定 UDP socket | 通过 lwIP BSD socket API 调用 `socket()` + `bind()` |
 | 发送 UDP 包 | 使用 `NANORTC_OUTPUT_TRANSMIT` 中的数据调用 `sendto()` |
-| 接收 UDP 包 | 调用 `recvfrom()` 然后传给 `nanortc_handle_receive()` |
+| 接收 UDP 包 | 调用 `recvfrom()` 然后传给 `nanortc_handle_input()` |
 | 事件循环 / task | 单个 FreeRTOS task 中运行 `select()` 循环 |
 | 时间源 | 向 handle 函数传入单调毫秒值 |
 | 信令（SDP 交换） | MQTT / WebSocket / HTTP — 用户自选 |
@@ -730,10 +729,10 @@ void nanortc_task(void *arg) {
             int n = recvfrom(fd, buf, sizeof(buf), 0,
                             (struct sockaddr *)&src.sa, &slen);
             if (n > 0) {
-                nanortc_handle_receive(&rtc, now, buf, n, &src);
+                nanortc_handle_input(&rtc, now, buf, n, &src);
             }
         } else {
-            nanortc_handle_timeout(&rtc, now);
+            nanortc_handle_input(&rtc, now, NULL, 0, NULL);
         }
     }
 }
@@ -913,12 +912,12 @@ void test_sctp_handshake(void) {
 
     // 客户端生成 INIT
     nanortc_output_t out;
-    nanortc_handle_timeout(&client, 0);
+    nanortc_handle_input(&client, 0, NULL, 0, NULL);
     nanortc_poll_output(&client, &out);
     assert(out.type == NANORTC_OUTPUT_TRANSMIT);
 
     // 将 INIT 送给服务端
-    nanortc_handle_receive(&server, 0, out.data, out.len, &fake_addr);
+    nanortc_handle_input(&server, 0, out.data, out.len, &fake_addr);
 
     // 服务端生成 INIT-ACK
     nanortc_poll_output(&server, &out);

@@ -54,7 +54,7 @@ static int e2e_relay(nanortc_t *from, nanortc_t *to, uint32_t now_ms)
             src.addr[3] = 1;
             src.port = 9999;
 
-            int rc = nanortc_handle_receive(to, now_ms, out.transmit.data, out.transmit.len, &src);
+            int rc = nanortc_handle_input(to, now_ms, out.transmit.data, out.transmit.len, &src);
             (void)rc;
             relayed++;
         }
@@ -128,7 +128,7 @@ TEST(test_e2e_stubs_not_implemented)
         &rtc, "candidate:0 1 UDP 2122260223 192.168.1.100 50000 typ host"));
     ASSERT_OK(nanortc_add_remote_candidate(&rtc, "192.168.1.200 60000"));
 
-    /* nanortc_handle_receive and nanortc_handle_timeout are now implemented */
+    /* nanortc_handle_input and nanortc_handle_input are now implemented */
 
     uint8_t data[] = {0x00, 0x01, 0x00, 0x00};
 
@@ -250,29 +250,29 @@ TEST(test_e2e_demux_byte_ranges)
 
     /* STUN range: 0x00-0x03 (malformed — no valid STUN, returns parse error) */
     uint8_t stun_pkt[20] = {0x00, 0x01, 0x00, 0x00};
-    int rc = nanortc_handle_receive(&rtc, 0, stun_pkt, sizeof(stun_pkt), &addr);
+    int rc = nanortc_handle_input(&rtc, 0, stun_pkt, sizeof(stun_pkt), &addr);
     ASSERT_TRUE(rc < 0); /* parse error expected for malformed STUN */
 
     /* DTLS range: 0x14-0x40 — rejected before ICE connects */
     uint8_t dtls_pkt[20] = {0x14, 0xFE, 0xFD};
-    ASSERT_EQ(nanortc_handle_receive(&rtc, 0, dtls_pkt, sizeof(dtls_pkt), &addr),
+    ASSERT_EQ(nanortc_handle_input(&rtc, 0, dtls_pkt, sizeof(dtls_pkt), &addr),
               NANORTC_ERR_STATE);
 
     /* SRTP range: 0x80-0xBF — silently consumed (no decode path yet) */
     uint8_t srtp_pkt[20] = {0x80, 0x60};
 #if NANORTC_HAVE_MEDIA_TRANSPORT
-    ASSERT_EQ(nanortc_handle_receive(&rtc, 0, srtp_pkt, sizeof(srtp_pkt), &addr),
+    ASSERT_EQ(nanortc_handle_input(&rtc, 0, srtp_pkt, sizeof(srtp_pkt), &addr),
               NANORTC_OK); /* pre-DTLS media silently dropped */
 #else
-    ASSERT_EQ(nanortc_handle_receive(&rtc, 0, srtp_pkt, sizeof(srtp_pkt), &addr), NANORTC_OK);
+    ASSERT_EQ(nanortc_handle_input(&rtc, 0, srtp_pkt, sizeof(srtp_pkt), &addr), NANORTC_OK);
 #endif
 
-    /* Edge cases: null data returns INVALID_PARAM */
-    ASSERT_EQ(nanortc_handle_receive(&rtc, 0, NULL, 0, &addr), NANORTC_ERR_INVALID_PARAM);
+    /* Edge cases: null data = timeout-only (valid in unified API) */
+    ASSERT_EQ(nanortc_handle_input(&rtc, 0, NULL, 0, NULL), NANORTC_OK);
 
     /* Unknown byte range */
     uint8_t one = 0xFF;
-    ASSERT_EQ(nanortc_handle_receive(&rtc, 0, &one, 1, &addr), NANORTC_ERR_PROTOCOL);
+    ASSERT_EQ(nanortc_handle_input(&rtc, 0, &one, 1, &addr), NANORTC_ERR_PROTOCOL);
 
     nanortc_destroy(&rtc);
 }
@@ -327,7 +327,7 @@ TEST(test_e2e_ice_loopback)
 
     /* Step 1: offerer generates STUN Binding Request via timeout */
     uint32_t now_ms = 100;
-    ASSERT_OK(nanortc_handle_timeout(&offerer, now_ms));
+    ASSERT_OK(nanortc_handle_input(&offerer, now_ms, NULL, 0, NULL));
     ASSERT_EQ(offerer.ice.state, NANORTC_ICE_STATE_CHECKING);
 
     /* Step 2: relay offerer's STUN request to answerer */
@@ -362,7 +362,7 @@ TEST(test_e2e_ice_loopback)
     offerer_addr.addr[3] = 1;
     offerer_addr.port = 9999;
 
-    ASSERT_OK(nanortc_handle_receive(&answerer, now_ms, saved_req, saved_req_len, &offerer_addr));
+    ASSERT_OK(nanortc_handle_input(&answerer, now_ms, saved_req, saved_req_len, &offerer_addr));
 
     /* Answerer: ICE connected → DTLS handshaking (server waits for ClientHello) */
     ASSERT_EQ(answerer.ice.state, NANORTC_ICE_STATE_CONNECTED);
@@ -395,7 +395,7 @@ TEST(test_e2e_ice_loopback)
     answerer_addr.addr[3] = 2;
     answerer_addr.port = 5000;
 
-    ASSERT_OK(nanortc_handle_receive(&offerer, now_ms, saved_resp, saved_resp_len, &answerer_addr));
+    ASSERT_OK(nanortc_handle_input(&offerer, now_ms, saved_resp, saved_resp_len, &answerer_addr));
 
     /* Offerer: ICE connected → DTLS handshaking (client sends ClientHello) */
     ASSERT_EQ(offerer.ice.state, NANORTC_ICE_STATE_CONNECTED);
@@ -471,7 +471,7 @@ TEST(test_e2e_ice_dtls_loopback)
 
     /* Step 1: ICE handshake */
     uint32_t now_ms = 100;
-    ASSERT_OK(nanortc_handle_timeout(&offerer, now_ms));
+    ASSERT_OK(nanortc_handle_input(&offerer, now_ms, NULL, 0, NULL));
 
     /* Pump ICE + DTLS: relay packets until both DTLS_CONNECTED */
     int connected = 0;
@@ -684,7 +684,7 @@ TEST(test_e2e_full_sdp_to_dtls)
 
     /* Kick off ICE on the controlling side */
     uint32_t now_ms = 100;
-    ASSERT_OK(nanortc_handle_timeout(&offerer, now_ms));
+    ASSERT_OK(nanortc_handle_input(&offerer, now_ms, NULL, 0, NULL));
 
     /* Pump ICE + DTLS: relay packets between the two instances */
     int connected = 0;
@@ -896,7 +896,7 @@ TEST(test_e2e_ice_multi_candidate)
 
     /* First timeout: should send check to candidate 0 */
     uint32_t now_ms = 100;
-    ASSERT_OK(nanortc_handle_timeout(&rtc, now_ms));
+    ASSERT_OK(nanortc_handle_input(&rtc, now_ms, NULL, 0, NULL));
 
     nanortc_output_t out;
     ASSERT_OK(nanortc_poll_output(&rtc, &out));
@@ -910,7 +910,7 @@ TEST(test_e2e_ice_multi_candidate)
 
     /* Second timeout: should advance to candidate 1 */
     now_ms += rtc.ice.check_interval_ms + 1;
-    ASSERT_OK(nanortc_handle_timeout(&rtc, now_ms));
+    ASSERT_OK(nanortc_handle_input(&rtc, now_ms, NULL, 0, NULL));
 
     ASSERT_OK(nanortc_poll_output(&rtc, &out));
     ASSERT_EQ(out.type, NANORTC_OUTPUT_TRANSMIT);
@@ -952,8 +952,8 @@ static int e2e_full_connect(nanortc_t *offerer, nanortc_t *answerer)
     /* Pump until both reach CONNECTED (SCTP established) */
     for (int round = 0; round < 200; round++) {
         /* Trigger timeouts to drive ICE checks and SCTP retransmits */
-        nanortc_handle_timeout(offerer, now_ms);
-        nanortc_handle_timeout(answerer, now_ms);
+        nanortc_handle_input(offerer, now_ms, NULL, 0, NULL);
+        nanortc_handle_input(answerer, now_ms, NULL, 0, NULL);
 
         /* Relay packets between the two instances */
         e2e_pump(offerer, answerer, now_ms, 20);
@@ -1078,8 +1078,8 @@ TEST(test_e2e_full_lifecycle)
     uint32_t now_ms = 100;
     int dtls_reached = 0;
     for (int round = 0; round < 100; round++) {
-        nanortc_handle_timeout(&offerer, now_ms);
-        nanortc_handle_timeout(&answerer, now_ms);
+        nanortc_handle_input(&offerer, now_ms, NULL, 0, NULL);
+        nanortc_handle_input(&answerer, now_ms, NULL, 0, NULL);
         e2e_pump(&offerer, &answerer, now_ms, 20);
 
         if (offerer.state >= NANORTC_STATE_DTLS_CONNECTED) {
@@ -1127,7 +1127,7 @@ TEST(test_e2e_ice_connection_timeout)
     /* Drive timeouts without feeding any responses */
     uint32_t now_ms = 100;
     for (int i = 0; i < NANORTC_ICE_MAX_CHECKS + 5; i++) {
-        nanortc_handle_timeout(&rtc, now_ms);
+        nanortc_handle_input(&rtc, now_ms, NULL, 0, NULL);
         /* Drain outputs (STUN checks, state changes) without delivering them */
         nanortc_output_t out;
         while (nanortc_poll_output(&rtc, &out) == NANORTC_OK) {

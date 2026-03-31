@@ -133,8 +133,8 @@ for (;;) {
     }
 
     // Wait for network data or timeout, then:
-    nanortc_handle_receive(&rtc, now_ms, buf, len, &src);
-    nanortc_handle_timeout(&rtc, now_ms);
+    nanortc_handle_input(&rtc, now_ms, buf, len, &src);   // got data
+    nanortc_handle_input(&rtc, now_ms, NULL, 0, NULL);     // timeout only
 }
 done:
 nanortc_disconnect(&rtc);
