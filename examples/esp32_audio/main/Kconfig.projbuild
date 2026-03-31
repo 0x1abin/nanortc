@@ -18,11 +18,11 @@ menu "ESP32 Audio Example"
             bool "G.711 mu-law / PCMU (8kHz mono)"
     endchoice
 
-    config EXAMPLE_SINE_FREQ_HZ
-        int "Sine wave frequency (Hz)"
-        default 440
-        range 100 4000
+    config EXAMPLE_MUSIC_BPM
+        int "Music tempo (BPM)"
+        default 120
+        range 60 200
         help
-            Frequency of the generated sine wave tone.
+            Tempo of the generated melody in beats per minute.
 
 endmenu

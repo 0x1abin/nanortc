@@ -1,10 +1,11 @@
 /*
- * nanortc ESP32 Audio example — Sine wave audio sender
+ * nanortc ESP32 Audio example — Algorithmic music sender
  *
  * The ESP32 hosts a web page at http://<ip>/. The browser connects,
  * sends an SDP offer via POST /offer, and receives an answer.
- * ESP32 generates a sine wave tone, encodes it (PCMU/PCMA/Opus),
- * and streams it to the browser via WebRTC audio.
+ * ESP32 generates a three-voice melody (Twinkle, Twinkle, Little Star),
+ * encodes it (PCMU/PCMA/Opus), and streams it to the browser via
+ * WebRTC audio.
  *
  * Build: cd examples/esp32_audio && idf.py build
  * Flash: idf.py flash monitor
@@ -14,7 +15,6 @@
 
 #include <stdio.h>
 #include <string.h>
-#include <math.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -30,6 +30,8 @@
 #include "nanortc.h"
 #include "nanortc_crypto.h"
 #include "run_loop.h"
+
+#include "music_gen.h"
 
 #include "esp_audio_enc.h"
 #include "esp_audio_enc_default.h"
@@ -67,8 +69,6 @@ static const char *TAG = "nanortc_audio";
 #define CODEC_NAME        "G.711 mu-law 8kHz"
 #endif
 
-#define SINE_FREQ_HZ CONFIG_EXAMPLE_SINE_FREQ_HZ
-
 /* nanortc state — static because nanortc_t is large */
 static nanortc_t s_rtc;
 static nano_run_loop_t s_loop;
@@ -79,7 +79,6 @@ static int s_connected;
 static uint32_t s_audio_epoch_ms;
 static uint32_t s_audio_frame_count;
 static uint32_t s_audio_rtp_ts;
-static float s_sine_phase;
 
 /* Audio encoder (esp_audio_codec unified API) */
 static esp_audio_enc_handle_t s_encoder;
@@ -91,25 +90,11 @@ static void encoder_init(void);
 extern const uint8_t index_html_start[] asm("_binary_index_html_start");
 extern const uint8_t index_html_end[] asm("_binary_index_html_end");
 
-/* ----------------------------------------------------------------
- * Sine wave generator
- * ---------------------------------------------------------------- */
-static void sine_generate(int16_t *pcm, size_t samples, int sample_rate,
-                          int channels, int freq_hz, float *phase)
-{
-    float phase_inc = 2.0f * (float)M_PI * (float)freq_hz / (float)sample_rate;
-
-    for (size_t i = 0; i < samples; i++) {
-        int16_t val = (int16_t)(sinf(*phase) * 16000.0f);
-        for (int ch = 0; ch < channels; ch++) {
-            pcm[i * channels + ch] = val;
-        }
-        *phase += phase_inc;
-        if (*phase >= 2.0f * (float)M_PI) {
-            *phase -= 2.0f * (float)M_PI;
-        }
-    }
-}
+/* BPM for startup log */
+#ifndef CONFIG_EXAMPLE_MUSIC_BPM
+#define CONFIG_EXAMPLE_MUSIC_BPM 120
+#endif
+#define MUSIC_BPM CONFIG_EXAMPLE_MUSIC_BPM
 
 /* ----------------------------------------------------------------
  * Audio encode + send
@@ -127,10 +112,10 @@ static void audio_send_tick(uint32_t now)
     }
 
     while (s_audio_frame_count < target_frames) {
-        /* 1. Generate sine wave PCM */
+        /* 1. Generate music PCM */
         static int16_t pcm_buf[SAMPLES_PER_FRAME * AUDIO_CHANNELS];
-        sine_generate(pcm_buf, SAMPLES_PER_FRAME, AUDIO_SAMPLE_RATE,
-                      AUDIO_CHANNELS, SINE_FREQ_HZ, &s_sine_phase);
+        music_generate(pcm_buf, SAMPLES_PER_FRAME, AUDIO_SAMPLE_RATE,
+                       AUDIO_CHANNELS);
 
         /* 2. Encode (unified esp_audio_codec API) */
         static uint8_t encoded[1024];
@@ -176,7 +161,7 @@ static void on_event(nanortc_t *rtc, const nanortc_event_t *evt,
         s_audio_epoch_ms = 0;
         s_audio_frame_count = 0;
         s_audio_rtp_ts = 0;
-        s_sine_phase = 0.0f;
+        music_reset();
         encoder_init();
         break;
 
@@ -403,8 +388,8 @@ static void webrtc_task(void *arg)
  * ---------------------------------------------------------------- */
 void app_main(void)
 {
-    ESP_LOGI(TAG, "nanortc ESP32 Audio example — %s, %d Hz sine",
-             CODEC_NAME, SINE_FREQ_HZ);
+    ESP_LOGI(TAG, "nanortc ESP32 Audio example — %s, %d BPM music",
+             CODEC_NAME, MUSIC_BPM);
 
     /* 1. NVS init (required for WiFi) */
     esp_err_t ret = nvs_flash_init();
@@ -422,7 +407,11 @@ void app_main(void)
     /* 3. Connect (WiFi or Ethernet via menuconfig) */
     ESP_ERROR_CHECK(example_connect());
 
-    esp_netif_t *netif = get_example_netif_from_desc("sta");
+    esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    if (!netif) {
+        ESP_LOGE(TAG, "Failed to get WiFi STA interface");
+        return;
+    }
     esp_netif_ip_info_t ip_info;
     ESP_ERROR_CHECK(esp_netif_get_ip_info(netif, &ip_info));
     esp_ip4addr_ntoa(&ip_info.ip, s_local_ip, sizeof(s_local_ip));

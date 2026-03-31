@@ -1,7 +1,8 @@
 # ESP32 Audio Example
 
-ESP32 WebRTC audio sender demo using nanortc. The ESP32 generates a sine wave
-tone, encodes it (PCMU/PCMA/Opus), and streams it to the browser via WebRTC.
+ESP32 WebRTC audio sender demo using nanortc. The ESP32 algorithmically
+generates a three-voice melody (Twinkle, Twinkle, Little Star), encodes it
+(PCMU/PCMA/Opus), and streams it to the browser via WebRTC.
 Zero external dependencies — no signaling server needed.
 
 ## Quick Start
@@ -24,7 +25,7 @@ idf.py flash monitor
 ### 3. Open in Browser
 
 Navigate to `http://<esp32-ip>/` (the IP is printed on the serial console).
-Click **Connect** to start the WebRTC session and hear the sine wave tone.
+Click **Connect** to start the WebRTC session and hear the melody.
 
 ## Codec Selection
 
@@ -56,7 +57,7 @@ Browser                          ESP32
   │                                │
   │  ═══ WebRTC (STUN/DTLS/RTP) ══│  Direct UDP on LAN
   │                                │
-  │  ←──── Audio (sine wave) ────  │  20ms frames, sendonly
+  │  ←──── Audio (music) ─────────  │  20ms frames, sendonly
 ```
 
 ## Configuration
@@ -69,12 +70,12 @@ All settings are in `Kconfig.projbuild` and accessible via `idf.py menuconfig`:
 | `EXAMPLE_WIFI_PASSWORD` | `mypassword` | WiFi password |
 | `EXAMPLE_UDP_PORT` | `9999` | Local UDP port for WebRTC |
 | `EXAMPLE_AUDIO_CODEC` | `PCMU` | Audio codec (PCMU/PCMA/Opus) |
-| `EXAMPLE_SINE_FREQ_HZ` | `440` | Sine wave frequency |
+| `EXAMPLE_MUSIC_BPM` | `120` | Music tempo (BPM) |
 
 ## Expected Serial Output
 
 ```
-I (xxx) nanortc_audio: nanortc ESP32 Audio example — G.711 mu-law 8kHz, 440 Hz sine
+I (xxx) nanortc_audio: nanortc ESP32 Audio example — G.711 mu-law 8kHz, 120 BPM music
 I (xxx) nanortc_audio: WiFi connected
 I (xxx) nanortc_audio: Station IP: 192.168.1.xxx
 I (xxx) nanortc_audio: HTTP server started on port 80
