@@ -1,17 +1,5 @@
 menu "ESP32 DataChannel Example"
 
-    config EXAMPLE_WIFI_SSID
-        string "WiFi SSID"
-        default "myssid"
-        help
-            WiFi network name to connect to.
-
-    config EXAMPLE_WIFI_PASSWORD
-        string "WiFi Password"
-        default "mypassword"
-        help
-            WiFi password (WPA2).
-
     config EXAMPLE_UDP_PORT
         int "Local UDP port for WebRTC"
         default 9999

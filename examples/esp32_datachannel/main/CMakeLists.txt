@@ -5,7 +5,7 @@ idf_component_register(
     INCLUDE_DIRS
         "."
         "${CMAKE_CURRENT_SOURCE_DIR}/../../common"
-    REQUIRES nanortc esp_wifi esp_netif nvs_flash esp_timer esp_http_server
+    REQUIRES nanortc esp_netif nvs_flash esp_timer esp_http_server protocol_examples_common
     EMBED_TXTFILES
         "index.html"
 )

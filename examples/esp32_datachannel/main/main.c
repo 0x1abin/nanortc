@@ -16,14 +16,13 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "freertos/event_groups.h"
 #include "esp_system.h"
-#include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "nvs_flash.h"
 #include "esp_http_server.h"
+#include "protocol_examples_common.h"
 #include <lwip/sockets.h>
 
 #include "nanortc.h"
@@ -31,11 +30,6 @@
 #include "run_loop.h"
 
 static const char *TAG = "nanortc_dc";
-
-/* WiFi connection event group */
-static EventGroupHandle_t s_wifi_event_group;
-#define WIFI_CONNECTED_BIT BIT0
-#define WIFI_FAIL_BIT      BIT1
 
 /* nanortc state — static because nanortc_t is large */
 static nanortc_t s_rtc;
@@ -45,86 +39,6 @@ static char s_local_ip[16];
 /* Embedded HTML file (linked by EMBED_TXTFILES in CMakeLists.txt) */
 extern const uint8_t index_html_start[] asm("_binary_index_html_start");
 extern const uint8_t index_html_end[] asm("_binary_index_html_end");
-
-/* ----------------------------------------------------------------
- * WiFi event handler
- * ---------------------------------------------------------------- */
-static int s_retry_count;
-#define WIFI_MAX_RETRY 10
-
-static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id,
-                               void *event_data)
-{
-    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
-        esp_wifi_connect();
-    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        if (s_retry_count < WIFI_MAX_RETRY) {
-            esp_wifi_connect();
-            s_retry_count++;
-            ESP_LOGI(TAG, "Retry WiFi connection (%d/%d)", s_retry_count, WIFI_MAX_RETRY);
-        } else {
-            xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
-        }
-    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
-        ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
-        ESP_LOGI(TAG, "Got IP: " IPSTR, IP2STR(&event->ip_info.ip));
-        s_retry_count = 0;
-        xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
-    }
-}
-
-static esp_netif_t *wifi_init_sta(void)
-{
-    s_wifi_event_group = xEventGroupCreate();
-
-    esp_netif_t *netif = esp_netif_create_default_wifi_sta();
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-
-    esp_event_handler_instance_t inst_any_id;
-    esp_event_handler_instance_t inst_got_ip;
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
-                                                        &wifi_event_handler, NULL, &inst_any_id));
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
-                                                        &wifi_event_handler, NULL, &inst_got_ip));
-
-    wifi_config_t wifi_config = {
-        .sta =
-            {
-                .ssid = CONFIG_EXAMPLE_WIFI_SSID,
-                .password = CONFIG_EXAMPLE_WIFI_PASSWORD,
-            },
-    };
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
-    ESP_ERROR_CHECK(esp_wifi_start());
-
-    ESP_LOGI(TAG, "Connecting to %s ...", CONFIG_EXAMPLE_WIFI_SSID);
-
-    EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
-                                           pdFALSE, pdFALSE, portMAX_DELAY);
-
-    if (bits & WIFI_CONNECTED_BIT) {
-        ESP_LOGI(TAG, "WiFi connected");
-    } else {
-        ESP_LOGE(TAG, "WiFi connection failed");
-    }
-
-    return netif;
-}
-
-/* ----------------------------------------------------------------
- * Get station IP as string
- * ---------------------------------------------------------------- */
-static int get_sta_ip(esp_netif_t *netif, char *ip_out, size_t ip_out_len)
-{
-    esp_netif_ip_info_t ip_info;
-    if (esp_netif_get_ip_info(netif, &ip_info) != ESP_OK) {
-        return -1;
-    }
-    esp_ip4addr_ntoa(&ip_info.ip, ip_out, (int)ip_out_len);
-    return 0;
-}
 
 /* ----------------------------------------------------------------
  * nanortc event callback
@@ -334,13 +248,17 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
-    /* 3. WiFi connect */
-    esp_netif_t *netif = wifi_init_sta();
+    /* 3. Connect (WiFi or Ethernet via menuconfig) */
+    ESP_ERROR_CHECK(example_connect());
 
-    if (get_sta_ip(netif, s_local_ip, sizeof(s_local_ip)) < 0) {
-        ESP_LOGE(TAG, "Failed to get station IP");
+    esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    if (!netif) {
+        ESP_LOGE(TAG, "Failed to get WiFi STA interface");
         return;
     }
+    esp_netif_ip_info_t ip_info;
+    ESP_ERROR_CHECK(esp_netif_get_ip_info(netif, &ip_info));
+    esp_ip4addr_ntoa(&ip_info.ip, s_local_ip, sizeof(s_local_ip));
     ESP_LOGI(TAG, "Station IP: %s", s_local_ip);
 
     /* 4. Init run loop state (not started until POST /offer) */
