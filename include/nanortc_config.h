@@ -210,7 +210,7 @@
  * Media track limits
  * ---------------------------------------------------------------- */
 
-/** @brief Maximum number of media tracks (audio + video combined). Default: 4. */
+/** @brief Maximum number of media tracks (audio + video combined). Default: 2. */
 #ifndef NANORTC_MAX_MEDIA_TRACKS
 #define NANORTC_MAX_MEDIA_TRACKS 2
 #endif

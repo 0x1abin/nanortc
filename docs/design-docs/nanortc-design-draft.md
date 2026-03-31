@@ -161,7 +161,7 @@ void nanortc_disconnect(nanortc_t *rtc);
 typedef enum {
     NANORTC_OUTPUT_TRANSMIT,   // 需要通过 UDP socket 发送的数据
     NANORTC_OUTPUT_EVENT,      // 应用层事件
-    NANORTC_OUTPUT_TIMEOUT,    // 下次需要调用 handle_timeout 的时间
+    NANORTC_OUTPUT_TIMEOUT,    // 下次需要调用 handle_input 的时间
 } nanortc_output_type_t;
 
 typedef enum {
@@ -698,8 +698,8 @@ void nanortc_task(void *arg) {
         while (nanortc_poll_output(&rtc, &out)) {
             switch (out.type) {
             case NANORTC_OUTPUT_TRANSMIT:
-                sendto(fd, out.data, out.len, 0,
-                       (struct sockaddr *)&out.dest, sizeof(out.dest));
+                sendto(fd, out.transmit.data, out.transmit.len, 0,
+                       (struct sockaddr *)&out.transmit.dest, sizeof(out.transmit.dest));
                 break;
 
             case NANORTC_OUTPUT_EVENT:
@@ -917,7 +917,7 @@ void test_sctp_handshake(void) {
     assert(out.type == NANORTC_OUTPUT_TRANSMIT);
 
     // 将 INIT 送给服务端
-    nanortc_handle_input(&server, 0, out.data, out.len, &fake_addr);
+    nanortc_handle_input(&server, 0, out.transmit.data, out.transmit.len, &fake_addr);
 
     // 服务端生成 INIT-ACK
     nanortc_poll_output(&server, &out);

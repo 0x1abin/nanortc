@@ -158,7 +158,7 @@ SCTP is the most complex module (~2500 lines). May need multiple sessions.
 - Application data encrypt/decrypt (post-handshake DTLS records)
 - SRTP keying material export (RFC 5764 "EXTRACTOR-dtls_srtp" label, 60 bytes)
 - FSM integration: ICE_CONNECTED → dtls_init + dtls_start → DTLS_HANDSHAKING → DTLS_CONNECTED
-- DTLS demux in nanortc_handle_receive (RFC 7983 byte range 0x14-0x3F)
+- DTLS demux in nanortc_handle_input (RFC 7983 byte range 0x14-0x3F)
 
 **Tests (79 total across 5 suites, 10 new):**
 - DTLS init/destroy for server and client roles
