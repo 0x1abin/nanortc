@@ -30,14 +30,6 @@ static nanortc_config_t e2e_default_config(void)
     cfg.role = NANORTC_ROLE_CONTROLLED;
 #if NANORTC_FEATURE_AUDIO
     cfg.jitter_depth_ms = 100;
-    cfg.audio_codec = NANORTC_CODEC_OPUS;
-    cfg.audio_sample_rate = 48000;
-    cfg.audio_channels = 1;
-    cfg.audio_direction = NANORTC_DIR_SENDRECV;
-#endif
-#if NANORTC_FEATURE_VIDEO
-    cfg.video_codec = NANORTC_CODEC_H264;
-    cfg.video_direction = NANORTC_DIR_SENDRECV;
 #endif
     return cfg;
 }
@@ -146,15 +138,26 @@ TEST(test_e2e_stubs_not_implemented)
     ASSERT_EQ(nanortc_send_datachannel_string(&rtc, 0, "hello"), NANORTC_ERR_STATE);
 #endif
 
-#if NANORTC_FEATURE_AUDIO
-    /* nanortc_send_audio is now implemented; returns ERR_STATE when not connected */
-    ASSERT_EQ(nanortc_send_audio(&rtc, 0, data, sizeof(data)), NANORTC_ERR_STATE);
+#if NANORTC_HAVE_MEDIA_TRANSPORT
+    /* nanortc_send_media returns ERR_STATE when not connected */
+    {
+        int mid = nanortc_add_media(&rtc, NANO_MEDIA_AUDIO, NANORTC_DIR_SENDRECV,
+                                    NANORTC_CODEC_OPUS, 48000, 2);
+        ASSERT(mid >= 0);
+        ASSERT_EQ(nanortc_send_media(&rtc, (uint8_t)mid, 0, data, sizeof(data), 0),
+                  NANORTC_ERR_STATE);
+    }
 #endif
 
 #if NANORTC_FEATURE_VIDEO
-    /* nanortc_send_video is now implemented; returns ERR_STATE when not connected */
-    ASSERT_EQ(nanortc_send_video(&rtc, 0, data, sizeof(data), 1), NANORTC_ERR_STATE);
-    ASSERT_EQ(nanortc_request_keyframe(&rtc), NANORTC_ERR_STATE);
+    {
+        int vmid = nanortc_add_media(&rtc, NANO_MEDIA_VIDEO, NANORTC_DIR_SENDRECV,
+                                     NANORTC_CODEC_H264, 0, 0);
+        ASSERT(vmid >= 0);
+        ASSERT_EQ(nanortc_send_media(&rtc, (uint8_t)vmid, 0, data, sizeof(data), 1),
+                  NANORTC_ERR_STATE);
+        ASSERT_EQ(nanortc_request_keyframe(&rtc, (uint8_t)vmid), NANORTC_ERR_STATE);
+    }
 #endif
 
     nanortc_destroy(&rtc);
@@ -540,6 +543,12 @@ TEST(test_e2e_create_offer_content)
     cfg.role = NANORTC_ROLE_CONTROLLING;
     ASSERT_OK(nanortc_init(&rtc, &cfg));
 
+#if NANORTC_HAVE_MEDIA_TRANSPORT && !NANORTC_FEATURE_DATACHANNEL
+    /* Without DC, add a media track so the offer has at least one m-line */
+    ASSERT(nanortc_add_media(&rtc, NANO_MEDIA_AUDIO, NANORTC_DIR_SENDRECV, NANORTC_CODEC_OPUS,
+                             48000, 2) >= 0);
+#endif
+
     char offer[4096];
     size_t offer_len = 0;
     ASSERT_OK(nanortc_create_offer(&rtc, offer, sizeof(offer), &offer_len));
@@ -575,6 +584,12 @@ TEST(test_e2e_offer_answer_roundtrip)
 
     /* Add local candidate on answerer so it appears in the answer SDP */
     ASSERT_OK(nanortc_add_local_candidate(&answerer, "192.168.1.2", 5000));
+
+#if NANORTC_HAVE_MEDIA_TRANSPORT && !NANORTC_FEATURE_DATACHANNEL
+    /* Without DC, add a media track so the offer has at least one m-line */
+    ASSERT(nanortc_add_media(&offerer, NANO_MEDIA_AUDIO, NANORTC_DIR_SENDRECV, NANORTC_CODEC_OPUS,
+                             48000, 2) >= 0);
+#endif
 
     /* Offerer creates offer */
     char offer[4096];
@@ -623,6 +638,12 @@ TEST(test_e2e_full_sdp_to_dtls)
 
     /* Add local candidate on answerer so it appears in answer SDP */
     ASSERT_OK(nanortc_add_local_candidate(&answerer, "192.168.1.2", 5000));
+
+#if NANORTC_HAVE_MEDIA_TRANSPORT && !NANORTC_FEATURE_DATACHANNEL
+    /* Without DC, add a media track so the offer has at least one m-line */
+    ASSERT(nanortc_add_media(&offerer, NANO_MEDIA_AUDIO, NANORTC_DIR_SENDRECV, NANORTC_CODEC_OPUS,
+                             48000, 2) >= 0);
+#endif
 
     /* --- SDP negotiation --- */
     char offer[4096];

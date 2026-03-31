@@ -126,47 +126,6 @@ static void extract_value(const char *line, size_t line_len, const char *prefix,
 
 #if NANORTC_HAVE_MEDIA_TRANSPORT
 
-/* m-line type tracking for multi m-line SDP */
-#define SDP_MLINE_NONE        0
-#define SDP_MLINE_APPLICATION 1
-#define SDP_MLINE_AUDIO       2
-#define SDP_MLINE_VIDEO       3
-
-/**
- * Parse a=rtpmap:<pt> <codec>/<rate>[/<channels>]
- * Example: a=rtpmap:111 opus/48000/2
- */
-static void parse_rtpmap(nano_sdp_t *sdp, int current_mline, const char *line, size_t line_len)
-{
-    const char *p = line + 9; /* skip "a=rtpmap:" (9 chars) */
-    const char *end = line + line_len;
-
-    /* Parse payload type */
-    const char *next;
-    uint32_t pt = parse_u32(p, end, &next);
-    if (next == p || next >= end || *next != ' ') {
-        return;
-    }
-
-    if (current_mline == SDP_MLINE_AUDIO) {
-        /* Only parse the rtpmap for the remote's preferred PT */
-        if ((uint8_t)pt != sdp->remote_audio_pt) {
-            return;
-        }
-        /* audio_sample_rate / audio_channels are set by nanortc_init()
-         * from the local config and must not be overwritten here.
-         * nanortc supports a single codec per session, so no need to
-         * discover the remote codec's parameters. */
-    } else if (current_mline == SDP_MLINE_VIDEO) {
-        /* Check if this PT maps to H264 — store for cross-validation with fmtp.
-         * Format: a=rtpmap:<pt> H264/90000 */
-        p = next + 1; /* skip space after PT */
-        if (p + 4 <= end && memcmp(p, "H264", 4) == 0) {
-            sdp->video_h264_rtpmap_pt = (uint8_t)pt;
-        }
-    }
-}
-
 /**
  * Parse m=<type> line and extract first payload type (field 4).
  * Format: m=<type> <port> <proto> <pt> [<pt2> ...]
@@ -194,17 +153,34 @@ static uint8_t parse_mline_first_pt(const char *line, size_t line_len, size_t sk
     return 0;
 }
 
-static void parse_audio_mline(nano_sdp_t *sdp, const char *line, size_t line_len)
+/**
+ * Parse a=rtpmap:<pt> <codec>/<rate>[/<channels>]
+ * Applies to the current m-line entry.
+ */
+static void parse_rtpmap(nano_sdp_mline_t *ml, const char *line, size_t line_len)
 {
-    /* Store in remote_audio_pt — used by parse_rtpmap() as filter.
-     * audio_pt (local PT) is set by nanortc_init() and must not be overwritten
-     * when parsing a remote offer (RFC 3264 §6.1). */
-    sdp->remote_audio_pt = parse_mline_first_pt(line, line_len, 8); /* skip "m=audio " */
-}
+    const char *p = line + 9; /* skip "a=rtpmap:" (9 chars) */
+    const char *end = line + line_len;
 
-/* parse_video_mline intentionally omitted: Chrome lists VP8 first in m=video,
- * so m-line first PT is unreliable for H264. PT is selected from a=fmtp
- * with packetization-mode=1 cross-validated against a=rtpmap H264. */
+    const char *next;
+    uint32_t pt = parse_u32(p, end, &next);
+    if (next == p || next >= end || *next != ' ') {
+        return;
+    }
+
+    if (ml->kind == SDP_MLINE_AUDIO) {
+        /* Only parse the rtpmap for the remote's preferred PT */
+        if ((uint8_t)pt != ml->remote_pt) {
+            return;
+        }
+    } else if (ml->kind == SDP_MLINE_VIDEO) {
+        /* Check if this PT maps to H264 */
+        p = next + 1;
+        if (p + 4 <= end && memcmp(p, "H264", 4) == 0) {
+            ml->video_h264_rtpmap_pt = (uint8_t)pt;
+        }
+    }
+}
 
 #endif /* NANORTC_HAVE_MEDIA_TRANSPORT */
 
@@ -225,10 +201,13 @@ int sdp_parse(nano_sdp_t *sdp, const char *sdp_str, size_t len)
         return NANORTC_ERR_INVALID_PARAM;
     }
 
+    /* Reset m-line tracking — parser assigns MIDs from position in SDP */
+    sdp->mid_count = 0;
+    sdp->has_datachannel = false;
 #if NANORTC_HAVE_MEDIA_TRANSPORT
-    int current_mline = SDP_MLINE_NONE;
-    int first_mline_type = SDP_MLINE_NONE; /* track which m-line appears first */
-    bool video_h264_pt_found = false;      /* true once we find H264 with mode=1 */
+    sdp->mline_count = 0;
+    /* Index into sdp->mlines[] for current m-line, -1 if not a media m-line */
+    int current_mline_idx = -1;
 #endif
 
     size_t pos = 0;
@@ -237,58 +216,54 @@ int sdp_parse(nano_sdp_t *sdp, const char *sdp_str, size_t len)
         const char *line = sdp_str + pos;
         size_t line_len = eol - pos;
 
-        /*
-         * Unified line dispatch: m-lines first, then attributes.
-         * WebRTC BUNDLE: ICE/DTLS attributes are shared across m-lines,
-         * so we parse them regardless of current_mline context.
-         * Media-specific attributes (a=rtpmap) use current_mline context.
-         */
-
 #if NANORTC_HAVE_MEDIA_TRANSPORT
         if (line_starts_with(line, line_len, "m=application ")) {
-            current_mline = SDP_MLINE_APPLICATION;
+            current_mline_idx = -1;
             sdp->has_datachannel = true;
             sdp->dc_mid = sdp->mid_count;
             sdp->mid_count++;
-            if (first_mline_type == SDP_MLINE_NONE) {
-                first_mline_type = SDP_MLINE_APPLICATION;
-            }
         } else if (line_starts_with(line, line_len, "m=audio ")) {
-            current_mline = SDP_MLINE_AUDIO;
-            sdp->has_audio = true;
-            sdp->audio_mid = sdp->mid_count;
-            sdp->mid_count++;
-            if (first_mline_type == SDP_MLINE_NONE) {
-                first_mline_type = SDP_MLINE_AUDIO;
+            if (sdp->mline_count < NANORTC_MAX_MEDIA_TRACKS) {
+                nano_sdp_mline_t *ml = &sdp->mlines[sdp->mline_count];
+                memset(ml, 0, sizeof(*ml));
+                ml->kind = SDP_MLINE_AUDIO;
+                ml->mid = sdp->mid_count;
+                ml->active = true;
+                ml->remote_pt = parse_mline_first_pt(line, line_len, 8);
+                current_mline_idx = (int)sdp->mline_count;
+                sdp->mline_count++;
+            } else {
+                current_mline_idx = -1;
             }
-            sdp->audio_before_datachannel = (first_mline_type == SDP_MLINE_AUDIO);
-            parse_audio_mline(sdp, line, line_len);
+            sdp->mid_count++;
         } else if (line_starts_with(line, line_len, "m=video ")) {
-            current_mline = SDP_MLINE_VIDEO;
-            sdp->has_video = true;
-            sdp->video_mid = sdp->mid_count;
-            sdp->mid_count++;
-            if (first_mline_type == SDP_MLINE_NONE) {
-                first_mline_type = SDP_MLINE_VIDEO;
+            if (sdp->mline_count < NANORTC_MAX_MEDIA_TRACKS) {
+                nano_sdp_mline_t *ml = &sdp->mlines[sdp->mline_count];
+                memset(ml, 0, sizeof(*ml));
+                ml->kind = SDP_MLINE_VIDEO;
+                ml->mid = sdp->mid_count;
+                ml->active = true;
+                ml->remote_pt = parse_mline_first_pt(line, line_len, 8);
+                current_mline_idx = (int)sdp->mline_count;
+                sdp->mline_count++;
+            } else {
+                current_mline_idx = -1;
             }
-            sdp->video_before_datachannel = !sdp->has_audio || sdp->audio_before_datachannel;
-            sdp->video_before_audio = !sdp->has_audio;
-        } else if (line_len >= 2 && line[0] == 'm' && line[1] == '=') {
-            current_mline = SDP_MLINE_NONE;
             sdp->mid_count++;
-        } else if ((current_mline == SDP_MLINE_AUDIO || current_mline == SDP_MLINE_VIDEO) &&
-                   line_starts_with(line, line_len, "a=rtpmap:")) {
-            parse_rtpmap(sdp, current_mline, line, line_len);
-        } else if (current_mline == SDP_MLINE_VIDEO &&
+        } else if (line_len >= 2 && line[0] == 'm' && line[1] == '=') {
+            current_mline_idx = -1;
+            sdp->mid_count++;
+        } else if (current_mline_idx >= 0 && line_starts_with(line, line_len, "a=rtpmap:")) {
+            parse_rtpmap(&sdp->mlines[current_mline_idx], line, line_len);
+        } else if (current_mline_idx >= 0 &&
+                   sdp->mlines[current_mline_idx].kind == SDP_MLINE_VIDEO &&
                    line_starts_with(line, line_len, "a=fmtp:")) {
-            /* Parse video fmtp for packetization-mode=1 (RFC 6184 §8.1).
-             * Format: a=fmtp:<pt> key=val;key=val...
-             * Cross-validate: PT must also be H264 per rtpmap. */
-            const char *fp = line + 7; /* skip "a=fmtp:" */
+            nano_sdp_mline_t *ml = &sdp->mlines[current_mline_idx];
+            /* Parse video fmtp for packetization-mode=1 (RFC 6184 §8.1) */
+            const char *fp = line + 7;
             const char *fend = line + line_len;
             const char *fnext;
             uint32_t fmtp_pt = parse_u32(fp, fend, &fnext);
-            /* Search for "packetization-mode=1" substring */
             bool has_mode1 = false;
             const char *search = fnext;
             size_t remain = (size_t)(fend - search);
@@ -300,21 +275,15 @@ int sdp_parse(nano_sdp_t *sdp, const char *sdp_str, size_t len)
                 search++;
                 remain--;
             }
-            if (has_mode1 && !video_h264_pt_found) {
-                /* Accept if rtpmap confirmed H264, or if rtpmap not yet seen
-                 * (SDP line ordering is not guaranteed). */
-                if (sdp->video_h264_rtpmap_pt == 0 ||
-                    sdp->video_h264_rtpmap_pt == (uint8_t)fmtp_pt) {
-                    sdp->video_pt = (uint8_t)fmtp_pt;
-                    video_h264_pt_found = true;
+            if (has_mode1 && ml->pt == 0) {
+                if (ml->video_h264_rtpmap_pt == 0 || ml->video_h264_rtpmap_pt == (uint8_t)fmtp_pt) {
+                    ml->pt = (uint8_t)fmtp_pt;
                 }
             }
-        } else if ((current_mline == SDP_MLINE_AUDIO || current_mline == SDP_MLINE_VIDEO) &&
-                   (line_starts_with(line, line_len, "a=sendrecv") ||
-                    line_starts_with(line, line_len, "a=sendonly") ||
-                    line_starts_with(line, line_len, "a=recvonly") ||
-                    line_starts_with(line, line_len, "a=inactive"))) {
-            /* Parse direction attribute per media m-line (RFC 3264 §6) */
+        } else if (current_mline_idx >= 0 && (line_starts_with(line, line_len, "a=sendrecv") ||
+                                              line_starts_with(line, line_len, "a=sendonly") ||
+                                              line_starts_with(line, line_len, "a=recvonly") ||
+                                              line_starts_with(line, line_len, "a=inactive"))) {
             nanortc_direction_t dir = NANORTC_DIR_SENDRECV;
             if (line_starts_with(line, line_len, "a=sendonly")) {
                 dir = NANORTC_DIR_SENDONLY;
@@ -323,11 +292,7 @@ int sdp_parse(nano_sdp_t *sdp, const char *sdp_str, size_t len)
             } else if (line_starts_with(line, line_len, "a=inactive")) {
                 dir = NANORTC_DIR_INACTIVE;
             }
-            if (current_mline == SDP_MLINE_AUDIO) {
-                sdp->remote_audio_direction = dir;
-            } else {
-                sdp->remote_video_direction = dir;
-            }
+            sdp->mlines[current_mline_idx].remote_direction = dir;
         } else
 #endif /* NANORTC_HAVE_MEDIA_TRANSPORT */
             if (line_starts_with(line, line_len, "a=ice-ufrag:")) {
@@ -353,15 +318,11 @@ int sdp_parse(nano_sdp_t *sdp, const char *sdp_str, size_t len)
                     sdp->remote_setup = NANORTC_SDP_SETUP_ACTPASS;
                 }
             } else if (line_starts_with(line, line_len, "a=candidate:")) {
-                /* Parse ICE candidate (RFC 8839 §5.1):
-                 * a=candidate:<foundation> <component> <transport> <priority> <addr> <port> ...
-                 * Fields are 1-indexed after prefix. We need field 5 (addr) and field 6 (port). */
                 if (sdp->candidate_count < NANORTC_SDP_MAX_CANDIDATES) {
-                    const char *p = line + 12; /* skip "a=candidate:" */
+                    const char *p = line + 12;
                     const char *line_end = line + line_len;
                     int field = 1;
 
-                    /* Skip to field 5 (addr) */
                     while (p < line_end && field < 5) {
                         if (*p == ' ') {
                             field++;
@@ -372,17 +333,14 @@ int sdp_parse(nano_sdp_t *sdp, const char *sdp_str, size_t len)
                         }
                     }
 
-                    /* Extract addr */
                     const char *addr_start = p;
                     while (p < line_end && *p != ' ')
                         p++;
                     size_t addr_len = (size_t)(p - addr_start);
 
-                    /* Skip to port field */
                     while (p < line_end && *p == ' ')
                         p++;
 
-                    /* Parse port */
                     uint16_t cand_port = (uint16_t)parse_u32(p, line_end, NULL);
 
                     if (addr_len > 0 && addr_len < NANORTC_IPV6_STR_SIZE && cand_port > 0) {
@@ -395,6 +353,16 @@ int sdp_parse(nano_sdp_t *sdp, const char *sdp_str, size_t len)
                     }
                 }
             }
+#if !NANORTC_HAVE_MEDIA_TRANSPORT
+            /* When media transport is disabled, DC m-lines still need tracking */
+            else if (line_starts_with(line, line_len, "m=application ")) {
+                sdp->has_datachannel = true;
+                sdp->dc_mid = sdp->mid_count;
+                sdp->mid_count++;
+            } else if (line_len >= 2 && line[0] == 'm' && line[1] == '=') {
+                sdp->mid_count++;
+            }
+#endif
 
         pos = eol;
     }
@@ -517,13 +485,13 @@ static bool sdp_append_direction(char *buf, size_t buf_len, size_t *pos, nanortc
     return sdp_append(buf, buf_len, pos, dir_str);
 }
 
-/** Append audio m-line block. */
-static bool sdp_append_audio_mline(nano_sdp_t *sdp, char *buf, size_t buf_len, size_t *pos,
-                                   const char *mid)
+/** Append audio m-line block. Reads PT/direction/sample_rate from the mline entry. */
+static bool sdp_append_audio_mline(nano_sdp_t *sdp, nano_sdp_mline_t *ml, char *buf, size_t buf_len,
+                                   size_t *pos, const char *mid)
 {
     if (!sdp_append(buf, buf_len, pos, "m=audio 9 UDP/TLS/RTP/SAVPF "))
         return false;
-    if (!sdp_append_u16(buf, buf_len, pos, (uint16_t)sdp->audio_pt))
+    if (!sdp_append_u16(buf, buf_len, pos, (uint16_t)ml->pt))
         return false;
     if (!sdp_append(buf, buf_len, pos, "\r\n"))
         return false;
@@ -535,7 +503,7 @@ static bool sdp_append_audio_mline(nano_sdp_t *sdp, char *buf, size_t buf_len, s
         return false;
     if (!sdp_append(buf, buf_len, pos, "\r\n"))
         return false;
-    if (!sdp_append_direction(buf, buf_len, pos, sdp->audio_direction))
+    if (!sdp_append_direction(buf, buf_len, pos, ml->direction))
         return false;
     if (!sdp_append_transport_attrs(sdp, buf, buf_len, pos))
         return false;
@@ -544,13 +512,13 @@ static bool sdp_append_audio_mline(nano_sdp_t *sdp, char *buf, size_t buf_len, s
     /* a=rtpmap */
     if (!sdp_append(buf, buf_len, pos, "a=rtpmap:"))
         return false;
-    if (!sdp_append_u16(buf, buf_len, pos, (uint16_t)sdp->audio_pt))
+    if (!sdp_append_u16(buf, buf_len, pos, (uint16_t)ml->pt))
         return false;
     {
         const char *codec_str = " opus/48000/2";
-        if (sdp->audio_pt == 0) {
+        if (ml->pt == 0) {
             codec_str = " PCMU/8000";
-        } else if (sdp->audio_pt == 8) {
+        } else if (ml->pt == 8) {
             codec_str = " PCMA/8000";
         }
         if (!sdp_append(buf, buf_len, pos, codec_str))
@@ -559,14 +527,14 @@ static bool sdp_append_audio_mline(nano_sdp_t *sdp, char *buf, size_t buf_len, s
     if (!sdp_append(buf, buf_len, pos, "\r\n"))
         return false;
     /* a=fmtp (Opus decoder hints, RFC 7587 §6.1) */
-    if (sdp->audio_sample_rate == 48000) {
+    if (ml->sample_rate == 48000) {
         if (!sdp_append(buf, buf_len, pos, "a=fmtp:"))
             return false;
-        if (!sdp_append_u16(buf, buf_len, pos, (uint16_t)sdp->audio_pt))
+        if (!sdp_append_u16(buf, buf_len, pos, (uint16_t)ml->pt))
             return false;
         if (!sdp_append(buf, buf_len, pos,
-                        sdp->audio_channels >= 2 ? " minptime=10;useinbandfec=1;stereo=1\r\n"
-                                                 : " minptime=10;useinbandfec=1;stereo=0\r\n"))
+                        ml->channels >= 2 ? " minptime=10;useinbandfec=1;stereo=1\r\n"
+                                          : " minptime=10;useinbandfec=1;stereo=0\r\n"))
             return false;
         if (!sdp_append(buf, buf_len, pos, "a=ptime:20\r\n"))
             return false;
@@ -575,12 +543,12 @@ static bool sdp_append_audio_mline(nano_sdp_t *sdp, char *buf, size_t buf_len, s
 }
 
 /** Append video m-line block (H.264, RFC 6184 §8.1). */
-static bool sdp_append_video_mline(nano_sdp_t *sdp, char *buf, size_t buf_len, size_t *pos,
-                                   const char *mid)
+static bool sdp_append_video_mline(nano_sdp_t *sdp, nano_sdp_mline_t *ml, char *buf, size_t buf_len,
+                                   size_t *pos, const char *mid)
 {
     if (!sdp_append(buf, buf_len, pos, "m=video 9 UDP/TLS/RTP/SAVPF "))
         return false;
-    if (!sdp_append_u16(buf, buf_len, pos, (uint16_t)sdp->video_pt))
+    if (!sdp_append_u16(buf, buf_len, pos, (uint16_t)ml->pt))
         return false;
     if (!sdp_append(buf, buf_len, pos, "\r\n"))
         return false;
@@ -592,32 +560,28 @@ static bool sdp_append_video_mline(nano_sdp_t *sdp, char *buf, size_t buf_len, s
         return false;
     if (!sdp_append(buf, buf_len, pos, "\r\n"))
         return false;
-    if (!sdp_append_direction(buf, buf_len, pos, sdp->video_direction))
+    if (!sdp_append_direction(buf, buf_len, pos, ml->direction))
         return false;
     if (!sdp_append_transport_attrs(sdp, buf, buf_len, pos))
         return false;
     if (!sdp_append(buf, buf_len, pos, "a=rtcp-mux\r\n"))
         return false;
-    /* a=rtpmap (RFC 6184 §8.1) */
     if (!sdp_append(buf, buf_len, pos, "a=rtpmap:"))
         return false;
-    if (!sdp_append_u16(buf, buf_len, pos, (uint16_t)sdp->video_pt))
+    if (!sdp_append_u16(buf, buf_len, pos, (uint16_t)ml->pt))
         return false;
     if (!sdp_append(buf, buf_len, pos, " H264/90000\r\n"))
         return false;
-    /* a=fmtp: Constrained Baseline Profile Level 3.1 (RFC 7742 §6.2)
-     * packetization-mode=1 enables FU-A fragmentation. */
     if (!sdp_append(buf, buf_len, pos, "a=fmtp:"))
         return false;
-    if (!sdp_append_u16(buf, buf_len, pos, (uint16_t)sdp->video_pt))
+    if (!sdp_append_u16(buf, buf_len, pos, (uint16_t)ml->pt))
         return false;
     if (!sdp_append(buf, buf_len, pos,
                     " level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f\r\n"))
         return false;
-    /* RTCP feedback: PLI for keyframe requests (RFC 4585) */
     if (!sdp_append(buf, buf_len, pos, "a=rtcp-fb:"))
         return false;
-    if (!sdp_append_u16(buf, buf_len, pos, (uint16_t)sdp->video_pt))
+    if (!sdp_append_u16(buf, buf_len, pos, (uint16_t)ml->pt))
         return false;
     if (!sdp_append(buf, buf_len, pos, " nack pli\r\n"))
         return false;
@@ -647,98 +611,87 @@ int sdp_generate_answer(nano_sdp_t *sdp, char *buf, size_t buf_len, size_t *out_
     if (!sdp_append(buf, buf_len, &pos, "t=0 0\r\n"))
         goto overflow;
 
-    /* BUNDLE group: list all active MIDs.
-     * We build the m-line table dynamically based on what's active.
-     * The answer must preserve the offer's m-line order (RFC 8829 §5.3.1).
-     * For offer generation, we use the parsed MID indices; for fresh offers,
-     * MIDs are assigned sequentially (dc=0, audio=1, video=2 by default). */
 #if NANORTC_HAVE_MEDIA_TRANSPORT
     {
-        /* Build m-line table ordered by MID index.
-         * Each entry: type + MID string. Max 3 m-lines (DC + audio + video). */
+        /* Build m-line table: media mlines + optional DC, sorted by MID.
+         * Max entries = NANORTC_MAX_MEDIA_TRACKS + 1 (for DC). */
         struct {
-            int type;    /* SDP_MLINE_APPLICATION, SDP_MLINE_AUDIO, SDP_MLINE_VIDEO */
-            uint8_t mid; /* MID index */
-        } mlines[3];
-        uint8_t n_mlines = 0;
+            int type; /* SDP_MLINE_APPLICATION, SDP_MLINE_AUDIO, SDP_MLINE_VIDEO */
+            uint8_t mid;
+            uint8_t ml_idx; /* index into sdp->mlines[] (only for media) */
+        } entries[NANORTC_MAX_MEDIA_TRACKS + 1];
+        uint8_t n_entries = 0;
 
-        /* If parsed from offer, use parsed MIDs; otherwise assign sequentially */
-        if (sdp->mid_count > 0) {
-            /* Use parsed order: sort by MID index */
-            if (sdp->has_datachannel) {
-                mlines[n_mlines].type = SDP_MLINE_APPLICATION;
-                mlines[n_mlines].mid = sdp->dc_mid;
-                n_mlines++;
+        /* For answer (parsed offer with mid_count > 0) or fresh offer */
+        for (uint8_t i = 0; i < sdp->mline_count; i++) {
+            if (sdp->mlines[i].active) {
+                entries[n_entries].type = sdp->mlines[i].kind;
+                entries[n_entries].mid = sdp->mlines[i].mid;
+                entries[n_entries].ml_idx = i;
+                n_entries++;
             }
-            if (sdp->has_audio) {
-                mlines[n_mlines].type = SDP_MLINE_AUDIO;
-                mlines[n_mlines].mid = sdp->audio_mid;
-                n_mlines++;
-            }
-            if (sdp->has_video) {
-                mlines[n_mlines].type = SDP_MLINE_VIDEO;
-                mlines[n_mlines].mid = sdp->video_mid;
-                n_mlines++;
-            }
-            /* Simple bubble sort by MID (at most 3 elements) */
-            for (int i = 0; i < n_mlines - 1; i++) {
-                for (int j = i + 1; j < n_mlines; j++) {
-                    if (mlines[j].mid < mlines[i].mid) {
-                        int tmp_type = mlines[i].type;
-                        uint8_t tmp_mid = mlines[i].mid;
-                        mlines[i].type = mlines[j].type;
-                        mlines[i].mid = mlines[j].mid;
-                        mlines[j].type = tmp_type;
-                        mlines[j].mid = tmp_mid;
-                    }
+        }
+        if (sdp->has_datachannel) {
+            entries[n_entries].type = SDP_MLINE_APPLICATION;
+            entries[n_entries].mid = sdp->dc_mid;
+            entries[n_entries].ml_idx = 0; /* unused for DC */
+            n_entries++;
+        }
+
+        /* Simple bubble sort by MID (at most MAX_MEDIA_TRACKS+1 elements) */
+        for (int i = 0; i < n_entries - 1; i++) {
+            for (int j = i + 1; j < n_entries; j++) {
+                if (entries[j].mid < entries[i].mid) {
+                    int tmp_type = entries[i].type;
+                    uint8_t tmp_mid = entries[i].mid;
+                    uint8_t tmp_idx = entries[i].ml_idx;
+                    entries[i].type = entries[j].type;
+                    entries[i].mid = entries[j].mid;
+                    entries[i].ml_idx = entries[j].ml_idx;
+                    entries[j].type = tmp_type;
+                    entries[j].mid = tmp_mid;
+                    entries[j].ml_idx = tmp_idx;
                 }
-            }
-        } else {
-            /* Fresh offer: DC=0, audio=1, video=2 */
-            uint8_t next_mid = 0;
-            mlines[n_mlines].type = SDP_MLINE_APPLICATION;
-            mlines[n_mlines].mid = next_mid++;
-            n_mlines++;
-            if (sdp->has_audio) {
-                mlines[n_mlines].type = SDP_MLINE_AUDIO;
-                mlines[n_mlines].mid = next_mid++;
-                n_mlines++;
-            }
-            if (sdp->has_video) {
-                mlines[n_mlines].type = SDP_MLINE_VIDEO;
-                mlines[n_mlines].mid = next_mid++;
-                n_mlines++;
             }
         }
 
         /* Write BUNDLE group line */
         if (!sdp_append(buf, buf_len, &pos, "a=group:BUNDLE"))
             goto overflow;
-        for (int i = 0; i < n_mlines; i++) {
+        for (int i = 0; i < n_entries; i++) {
             if (!sdp_append(buf, buf_len, &pos, " "))
                 goto overflow;
-            if (!sdp_append_u16(buf, buf_len, &pos, mlines[i].mid))
+            if (!sdp_append_u16(buf, buf_len, &pos, entries[i].mid))
                 goto overflow;
         }
         if (!sdp_append(buf, buf_len, &pos, "\r\n"))
             goto overflow;
 
         /* Write m-lines in order. ICE candidate on first m-line (BUNDLE anchor). */
-        char mid_str[4]; /* "0", "1", "2" ... */
-        for (int i = 0; i < n_mlines; i++) {
-            mid_str[0] = '0' + mlines[i].mid;
-            mid_str[1] = '\0';
-            switch (mlines[i].type) {
+        char mid_str[4];
+        for (int i = 0; i < n_entries; i++) {
+            /* Convert MID to string (supports MID 0-99) */
+            if (entries[i].mid < 10) {
+                mid_str[0] = '0' + entries[i].mid;
+                mid_str[1] = '\0';
+            } else {
+                mid_str[0] = '0' + (entries[i].mid / 10);
+                mid_str[1] = '0' + (entries[i].mid % 10);
+                mid_str[2] = '\0';
+            }
+            switch (entries[i].type) {
             case SDP_MLINE_APPLICATION:
                 if (!sdp_append_datachannel_mline(sdp, buf, buf_len, &pos, mid_str))
                     goto overflow;
                 break;
             case SDP_MLINE_AUDIO:
-                if (!sdp_append_audio_mline(sdp, buf, buf_len, &pos, mid_str))
+                if (!sdp_append_audio_mline(sdp, &sdp->mlines[entries[i].ml_idx], buf, buf_len,
+                                            &pos, mid_str))
                     goto overflow;
                 break;
             case SDP_MLINE_VIDEO:
-                if (!sdp_append_video_mline(sdp, buf, buf_len, &pos, mid_str))
+                if (!sdp_append_video_mline(sdp, &sdp->mlines[entries[i].ml_idx], buf, buf_len,
+                                            &pos, mid_str))
                     goto overflow;
                 break;
             }
@@ -765,3 +718,46 @@ overflow:
     NANORTC_LOGE("SDP", "buffer overflow generating answer");
     return NANORTC_ERR_BUFFER_TOO_SMALL;
 }
+
+#if NANORTC_HAVE_MEDIA_TRANSPORT
+
+nano_sdp_mline_t *sdp_find_mline(nano_sdp_t *sdp, uint8_t mid)
+{
+    if (!sdp) {
+        return NULL;
+    }
+    for (uint8_t i = 0; i < sdp->mline_count; i++) {
+        if (sdp->mlines[i].active && sdp->mlines[i].mid == mid) {
+            return &sdp->mlines[i];
+        }
+    }
+    return NULL;
+}
+
+int sdp_add_mline(nano_sdp_t *sdp, uint8_t kind, uint8_t codec, uint8_t pt, uint32_t sample_rate,
+                  uint8_t channels, nanortc_direction_t direction)
+{
+    if (!sdp) {
+        return NANORTC_ERR_INVALID_PARAM;
+    }
+    if (sdp->mline_count >= NANORTC_MAX_MEDIA_TRACKS) {
+        return NANORTC_ERR_BUFFER_TOO_SMALL;
+    }
+
+    nano_sdp_mline_t *ml = &sdp->mlines[sdp->mline_count];
+    memset(ml, 0, sizeof(*ml));
+    ml->kind = kind;
+    ml->mid = sdp->mid_count;
+    ml->pt = pt;
+    ml->codec = codec;
+    ml->sample_rate = sample_rate;
+    ml->channels = channels;
+    ml->direction = direction;
+    ml->active = true;
+
+    sdp->mid_count++;
+    sdp->mline_count++;
+    return (int)ml->mid;
+}
+
+#endif /* NANORTC_HAVE_MEDIA_TRANSPORT */

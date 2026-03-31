@@ -314,8 +314,19 @@ TEST(test_srtp_roc_rollover)
     }
     /* After 5 packets: 0xFFFD, 0xFFFE, 0xFFFF, 0x0000, 0x0001 → seq wraps to 2 */
     ASSERT_EQ(rtp.seq, 2);
-    /* Sender ROC should have incremented after seq wrapped past 0xFFFF */
-    ASSERT_EQ(sender.send_roc, 1u);
+    /* Sender ROC should have incremented after seq wrapped past 0xFFFF.
+     * With per-SSRC ROC tracking, look up the SSRC state entry. */
+    {
+        int found = 0;
+        for (int si = 0; si < NANORTC_MAX_SSRC_MAP; si++) {
+            if (sender.ssrc_states[si].active && sender.ssrc_states[si].ssrc == 0xABCD) {
+                ASSERT_EQ(sender.ssrc_states[si].roc, 1u);
+                found = 1;
+                break;
+            }
+        }
+        ASSERT_TRUE(found);
+    }
 }
 
 /*

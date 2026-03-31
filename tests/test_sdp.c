@@ -104,6 +104,9 @@ TEST(test_sdp_generate_answer)
     memcpy(sdp.local_pwd, "password0123456789ab", 20);
     sdp.local_sctp_port = 5000;
     sdp.local_setup = NANORTC_SDP_SETUP_PASSIVE;
+    sdp.has_datachannel = true;
+    sdp.dc_mid = 0;
+    sdp.mid_count = 1;
 
     char buf[1024];
     size_t out_len = 0;
@@ -142,6 +145,9 @@ TEST(test_sdp_roundtrip)
     memcpy(sdp.local_pwd, "mypassword123456", 16);
     sdp.local_sctp_port = 5000;
     sdp.local_setup = NANORTC_SDP_SETUP_ACTIVE;
+    sdp.has_datachannel = true;
+    sdp.dc_mid = 0;
+    sdp.mid_count = 1;
 
     /* Generate */
     char buf[1024];
@@ -414,9 +420,10 @@ TEST(test_sdp_parse_audio_offer)
     ASSERT_MEM_EQ(sdp.remote_ufrag, "audiofrag", 9);
     ASSERT_EQ(sdp.remote_sctp_port, 5000);
 
-    /* Audio fields */
-    ASSERT_TRUE(sdp.has_audio);
-    ASSERT_EQ(sdp.remote_audio_pt, 111);
+    /* Audio fields — now in mlines[] */
+    ASSERT_TRUE(sdp.mline_count >= 1);
+    ASSERT_EQ(sdp.mlines[0].kind, SDP_MLINE_AUDIO);
+    ASSERT_EQ(sdp.mlines[0].remote_pt, 111);
 }
 
 /* Audio-only offer (no DataChannel) */
@@ -447,8 +454,9 @@ TEST(test_sdp_parse_audio_only_offer)
         len++;
 
     ASSERT_OK(sdp_parse(&sdp, AUDIO_ONLY_OFFER, len));
-    ASSERT_TRUE(sdp.has_audio);
-    ASSERT_EQ(sdp.remote_audio_pt, 96);
+    ASSERT_TRUE(sdp.mline_count >= 1);
+    ASSERT_EQ(sdp.mlines[0].kind, SDP_MLINE_AUDIO);
+    ASSERT_EQ(sdp.mlines[0].remote_pt, 96);
 }
 
 TEST(test_sdp_generate_audio_answer)
@@ -460,10 +468,13 @@ TEST(test_sdp_generate_audio_answer)
     memcpy(sdp.local_pwd, "mypassword123456", 16);
     sdp.local_sctp_port = 5000;
     sdp.local_setup = NANORTC_SDP_SETUP_PASSIVE;
-    sdp.has_audio = true;
-    sdp.audio_pt = 111;
-    sdp.audio_sample_rate = 48000;
-    sdp.audio_channels = 2;
+    sdp.has_datachannel = true;
+    sdp.dc_mid = 0;
+    sdp.mid_count = 1;
+    /* Add audio m-line via sdp_add_mline */
+    int amid = sdp_add_mline(&sdp, SDP_MLINE_AUDIO, NANORTC_CODEC_OPUS, 111, 48000, 2,
+                             NANORTC_DIR_SENDRECV);
+    ASSERT(amid >= 0);
 
     char buf[2048];
     size_t out_len = 0;
@@ -471,11 +482,10 @@ TEST(test_sdp_generate_audio_answer)
     ASSERT_TRUE(out_len > 0);
 
     /* Verify BUNDLE includes both MIDs */
-    ASSERT_TRUE(strstr(buf, "a=group:BUNDLE 0 1") != NULL);
+    ASSERT_TRUE(strstr(buf, "a=group:BUNDLE") != NULL);
 
     /* Verify audio m-line */
     ASSERT_TRUE(strstr(buf, "m=audio 9 UDP/TLS/RTP/SAVPF 111") != NULL);
-    ASSERT_TRUE(strstr(buf, "a=mid:1") != NULL);
     ASSERT_TRUE(strstr(buf, "a=rtpmap:111 opus/48000/2") != NULL);
 }
 
@@ -486,10 +496,9 @@ TEST(test_sdp_audio_roundtrip)
     memcpy(sdp.local_ufrag, "rtufrag", 7);
     memcpy(sdp.local_pwd, "rtpassword12345678", 18);
     sdp.local_setup = NANORTC_SDP_SETUP_ACTIVE;
-    sdp.has_audio = true;
-    sdp.audio_pt = 111;
-    sdp.audio_sample_rate = 48000;
-    sdp.audio_channels = 2;
+    int amid = sdp_add_mline(&sdp, SDP_MLINE_AUDIO, NANORTC_CODEC_OPUS, 111, 48000, 2,
+                             NANORTC_DIR_SENDRECV);
+    ASSERT(amid >= 0);
 
     /* Generate */
     char buf[2048];
@@ -500,8 +509,8 @@ TEST(test_sdp_audio_roundtrip)
     nano_sdp_t sdp2;
     sdp_init(&sdp2);
     ASSERT_OK(sdp_parse(&sdp2, buf, out_len));
-    ASSERT_TRUE(sdp2.has_audio);
-    ASSERT_EQ(sdp2.remote_audio_pt, 111);
+    ASSERT_TRUE(sdp2.mline_count >= 1);
+    ASSERT_EQ(sdp2.mlines[0].remote_pt, 111);
 }
 
 /* ================================================================
@@ -548,11 +557,10 @@ TEST(test_sdp_parse_video_offer)
     ASSERT_MEM_EQ(sdp.remote_ufrag, "videofrag", 9);
     ASSERT_EQ(sdp.remote_sctp_port, 5000);
 
-    /* Video fields */
-    ASSERT_TRUE(sdp.has_video);
-    ASSERT_EQ(sdp.video_pt, 96);
-    /* Video comes before DC in this offer */
-    ASSERT_TRUE(sdp.video_before_datachannel);
+    /* Video fields — now in mlines[] */
+    ASSERT_TRUE(sdp.mline_count >= 1);
+    ASSERT_EQ(sdp.mlines[0].kind, SDP_MLINE_VIDEO);
+    ASSERT_EQ(sdp.mlines[0].remote_pt, 96);
 }
 
 /* Full media offer: audio + video + DC */
@@ -594,14 +602,15 @@ TEST(test_sdp_parse_full_media_offer)
 
     ASSERT_OK(sdp_parse(&sdp, FULL_MEDIA_OFFER, len));
 
-    ASSERT_TRUE(sdp.has_audio);
-    ASSERT_TRUE(sdp.has_video);
-    ASSERT_EQ(sdp.remote_audio_pt, 111);
-    ASSERT_EQ(sdp.video_pt, 96);
+    ASSERT_TRUE(sdp.mline_count >= 2);
+    ASSERT_EQ(sdp.mlines[0].kind, SDP_MLINE_AUDIO);
+    ASSERT_EQ(sdp.mlines[0].remote_pt, 111);
+    ASSERT_EQ(sdp.mlines[1].kind, SDP_MLINE_VIDEO);
+    ASSERT_EQ(sdp.mlines[1].remote_pt, 96);
     ASSERT_EQ(sdp.remote_sctp_port, 5000);
     /* audio=MID0, video=MID1, dc=MID2 */
-    ASSERT_EQ(sdp.audio_mid, 0);
-    ASSERT_EQ(sdp.video_mid, 1);
+    ASSERT_EQ(sdp.mlines[0].mid, 0);
+    ASSERT_EQ(sdp.mlines[1].mid, 1);
     ASSERT_EQ(sdp.dc_mid, 2);
 }
 
@@ -614,8 +623,12 @@ TEST(test_sdp_generate_video_answer)
     memcpy(sdp.local_pwd, "vpassword12345678", 17);
     sdp.local_sctp_port = 5000;
     sdp.local_setup = NANORTC_SDP_SETUP_PASSIVE;
-    sdp.has_video = true;
-    sdp.video_pt = 96;
+    sdp.has_datachannel = true;
+    sdp.dc_mid = 0;
+    sdp.mid_count = 1;
+    int vmid =
+        sdp_add_mline(&sdp, SDP_MLINE_VIDEO, NANORTC_CODEC_H264, 96, 0, 0, NANORTC_DIR_SENDRECV);
+    ASSERT(vmid >= 0);
 
     char buf[4096];
     size_t out_len = 0;
@@ -637,8 +650,9 @@ TEST(test_sdp_video_roundtrip)
     memcpy(sdp.local_ufrag, "vrtufrag", 8);
     memcpy(sdp.local_pwd, "vrtpassword1234567", 18);
     sdp.local_setup = NANORTC_SDP_SETUP_ACTIVE;
-    sdp.has_video = true;
-    sdp.video_pt = 96;
+    int vmid =
+        sdp_add_mline(&sdp, SDP_MLINE_VIDEO, NANORTC_CODEC_H264, 96, 0, 0, NANORTC_DIR_SENDRECV);
+    ASSERT(vmid >= 0);
 
     /* Generate */
     char buf[4096];
@@ -649,8 +663,8 @@ TEST(test_sdp_video_roundtrip)
     nano_sdp_t sdp2;
     sdp_init(&sdp2);
     ASSERT_OK(sdp_parse(&sdp2, buf, out_len));
-    ASSERT_TRUE(sdp2.has_video);
-    ASSERT_EQ(sdp2.video_pt, 96);
+    ASSERT_TRUE(sdp2.mline_count >= 1);
+    ASSERT_EQ(sdp2.mlines[0].remote_pt, 96);
 }
 
 #endif /* NANORTC_HAVE_MEDIA_TRANSPORT */

@@ -207,6 +207,20 @@
 #endif
 
 /* ----------------------------------------------------------------
+ * Media track limits
+ * ---------------------------------------------------------------- */
+
+/** @brief Maximum number of media tracks (audio + video combined). Default: 4. */
+#ifndef NANORTC_MAX_MEDIA_TRACKS
+#define NANORTC_MAX_MEDIA_TRACKS 4
+#endif
+
+/** @brief Maximum SSRC map entries for RTP demuxing. Default: 2 * MAX_MEDIA_TRACKS. */
+#ifndef NANORTC_MAX_SSRC_MAP
+#define NANORTC_MAX_SSRC_MAP (NANORTC_MAX_MEDIA_TRACKS * 2)
+#endif
+
+/* ----------------------------------------------------------------
  * DataChannel limits
  * ---------------------------------------------------------------- */
 
@@ -510,6 +524,14 @@ typedef enum {
 
 #if NANORTC_SDP_MIN_BUF_SIZE < 128
 #error "NANORTC_SDP_MIN_BUF_SIZE must be at least 128"
+#endif
+
+#if NANORTC_MAX_MEDIA_TRACKS < 1
+#error "NANORTC_MAX_MEDIA_TRACKS must be at least 1"
+#endif
+
+#if NANORTC_MAX_SSRC_MAP < NANORTC_MAX_MEDIA_TRACKS
+#error "NANORTC_MAX_SSRC_MAP must be at least NANORTC_MAX_MEDIA_TRACKS"
 #endif
 
 #endif /* NANORTC_CONFIG_H_ */

@@ -8,6 +8,8 @@
 #ifndef NANORTC_SRTP_H_
 #define NANORTC_SRTP_H_
 
+#include "nanortc_config.h"
+#include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>
 
@@ -23,8 +25,21 @@ typedef struct nanortc_crypto_provider nanortc_crypto_provider_t;
 #define NANORTC_SRTP_SALT_SIZE     14 /* Session salt */
 #define NANORTC_SRTP_AUTH_TAG_SIZE 10 /* HMAC-SHA1-80 tag */
 
+/**
+ * @brief Per-SSRC ROC/seq state for SRTP replay protection (RFC 3711 §3.3).
+ *
+ * In BUNDLE, all tracks share session keys, but each SSRC has its own
+ * rollover counter and sequence tracking.
+ */
+typedef struct nano_srtp_ssrc_state {
+    uint32_t ssrc;
+    uint32_t roc;
+    uint16_t seq_max;
+    bool active;
+} nano_srtp_ssrc_state_t;
+
 typedef struct nano_srtp {
-    /* RTP session keys */
+    /* RTP session keys (shared across all tracks in BUNDLE) */
     uint8_t send_key[NANORTC_SRTP_KEY_SIZE];
     uint8_t send_auth_key[NANORTC_SRTP_AUTH_KEY_SIZE];
     uint8_t send_salt[NANORTC_SRTP_SALT_SIZE];
@@ -40,11 +55,8 @@ typedef struct nano_srtp {
     uint8_t recv_rtcp_auth_key[NANORTC_SRTP_AUTH_KEY_SIZE];
     uint8_t recv_rtcp_salt[NANORTC_SRTP_SALT_SIZE];
 
-    /* State */
-    uint32_t send_roc;         /* Send rollover counter */
-    uint32_t recv_roc;         /* Receive rollover counter */
-    uint16_t send_seq;         /* Highest sent sequence number */
-    uint16_t recv_seq_max;     /* Highest received sequence number */
+    /* Per-SSRC ROC/seq state (replaces single send_roc/recv_roc) */
+    nano_srtp_ssrc_state_t ssrc_states[NANORTC_MAX_SSRC_MAP];
     uint32_t srtcp_send_index; /* SRTCP index counter */
 
     /* References */

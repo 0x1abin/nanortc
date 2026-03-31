@@ -18,12 +18,15 @@
 #endif
 
 #if NANORTC_HAVE_MEDIA_TRANSPORT
+#include "nano_media.h"
 #include "nano_rtp.h"
+#include "nano_rtcp.h"
 #include "nano_srtp.h"
 #endif
 
 #if NANORTC_FEATURE_VIDEO
 #include "nano_h264.h"
+#include "nano_bwe.h"
 #endif
 
 #include <string.h>
@@ -198,44 +201,14 @@ int nanortc_init(nanortc_t *rtc, const nanortc_config_t *cfg)
     }
 
 #if NANORTC_HAVE_MEDIA_TRANSPORT
-    rtp_init(&rtc->rtp, 0, 0);
-    rtcp_init(&rtc->rtcp, 0);
+    /* Media tracks start empty — user adds them via nanortc_add_media() */
+    rtc->media_count = 0;
+    memset(rtc->ssrc_map, 0, sizeof(rtc->ssrc_map));
     srtp_init(&rtc->srtp, cfg->crypto, 0);
-#endif
-
-#if NANORTC_FEATURE_AUDIO
-    jitter_init(&rtc->jitter, cfg->jitter_depth_ms);
-    if (cfg->audio_codec != NANORTC_CODEC_NONE) {
-        rtc->sdp.has_audio = true;
-        /* RFC 3551 static PT for G.711, dynamic 111 for Opus */
-        if (cfg->audio_codec == NANORTC_CODEC_PCMU)
-            rtc->sdp.audio_pt = 0;
-        else if (cfg->audio_codec == NANORTC_CODEC_PCMA)
-            rtc->sdp.audio_pt = 8;
-        else
-            rtc->sdp.audio_pt = 111;
-        rtc->sdp.audio_sample_rate = cfg->audio_sample_rate;
-        rtc->sdp.audio_channels = cfg->audio_channels;
-        rtc->sdp.audio_direction = cfg->audio_direction;
-    }
 #endif
 
 #if NANORTC_FEATURE_VIDEO
     bwe_init(&rtc->bwe);
-    h264_depkt_init(&rtc->h264_depkt);
-    if (cfg->video_codec != NANORTC_CODEC_NONE) {
-        /* Generate a random SSRC for video (different from audio) */
-        uint32_t video_ssrc = 0;
-        if (cfg->crypto) {
-            uint8_t r[4];
-            cfg->crypto->random_bytes(r, 4);
-            video_ssrc = (uint32_t)r[0] << 24 | (uint32_t)r[1] << 16 | (uint32_t)r[2] << 8 | r[3];
-        }
-        rtp_init(&rtc->video_rtp, video_ssrc, NANORTC_VIDEO_DEFAULT_PT);
-        rtc->sdp.has_video = true;
-        rtc->sdp.video_pt = NANORTC_VIDEO_DEFAULT_PT;
-        rtc->sdp.video_direction = cfg->video_direction;
-    }
 #endif
 
     return NANORTC_OK;
@@ -271,22 +244,55 @@ static nanortc_direction_t direction_complement(nanortc_direction_t remote)
 #endif
 
 /* Apply negotiated media parameters from parsed SDP to subsystem state.
- * Called from both accept_offer (answerer) and accept_answer (offerer). */
+ * Called from both accept_offer (answerer) and accept_answer (offerer).
+ *
+ * For each SDP m-line, find or create the matching media[] entry and
+ * apply negotiated direction and PT. */
 static void rtc_apply_negotiated_media(nanortc_t *rtc)
 {
 #if NANORTC_HAVE_MEDIA_TRANSPORT
-    if (rtc->sdp.has_audio) {
-        rtc->sdp.audio_direction = direction_complement(rtc->sdp.remote_audio_direction);
-    }
-    if (rtc->sdp.has_video) {
-        rtc->sdp.video_direction = direction_complement(rtc->sdp.remote_video_direction);
-    }
-#endif
+    for (uint8_t i = 0; i < rtc->sdp.mline_count; i++) {
+        nano_sdp_mline_t *ml = &rtc->sdp.mlines[i];
+        if (!ml->active)
+            continue;
 
-#if NANORTC_FEATURE_VIDEO
-    /* Update video RTP payload type to match negotiated PT */
-    if (rtc->sdp.has_video && rtc->sdp.video_pt != 0) {
-        rtc->video_rtp.payload_type = rtc->sdp.video_pt;
+        nano_media_t *m = media_find_by_mid(rtc->media, rtc->media_count, ml->mid);
+        if (!m) {
+            /* Remote-initiated track (answerer path): auto-create media entry */
+            if (rtc->media_count >= NANORTC_MAX_MEDIA_TRACKS)
+                continue;
+            nano_media_kind_t kind =
+                (ml->kind == SDP_MLINE_AUDIO) ? NANO_MEDIA_AUDIO : NANO_MEDIA_VIDEO;
+            uint8_t mid = ml->mid;
+            /* Ensure media_count covers this MID */
+            if (mid >= rtc->media_count) {
+                /* Zero-init any gap slots */
+                for (uint8_t g = rtc->media_count; g < mid; g++) {
+                    memset(&rtc->media[g], 0, sizeof(nano_media_t));
+                }
+                rtc->media_count = mid + 1;
+            }
+            nanortc_direction_t local_dir = direction_complement(ml->remote_direction);
+            uint32_t jitter_ms = 0;
+#if NANORTC_FEATURE_AUDIO
+            jitter_ms = rtc->config.jitter_depth_ms;
+#endif
+            media_init(&rtc->media[mid], mid, kind, local_dir, ml->codec, ml->sample_rate,
+                       ml->channels, jitter_ms);
+            m = &rtc->media[mid];
+        }
+
+        /* Apply negotiated direction (answerer computes complement) */
+        if (ml->remote_direction != NANORTC_DIR_SENDRECV || m->direction == NANORTC_DIR_SENDRECV) {
+            m->direction = direction_complement(ml->remote_direction);
+        }
+        ml->direction = m->direction;
+
+        /* Apply negotiated PT */
+        if (ml->remote_pt != 0) {
+            m->rtp.payload_type = ml->remote_pt;
+            ml->pt = ml->remote_pt;
+        }
     }
 #endif
     (void)rtc;
@@ -378,6 +384,15 @@ int nanortc_create_offer(nanortc_t *rtc, char *offer_buf, size_t offer_buf_len, 
     /* Offerer is DTLS active, setup=actpass in SDP (RFC 8842) */
     rtc->sdp.local_setup = NANORTC_SDP_SETUP_ACTPASS;
 
+#if NANORTC_FEATURE_DATACHANNEL
+    /* Ensure DataChannel m-line is registered for the offer SDP */
+    if (!rtc->sdp.has_datachannel) {
+        rtc->sdp.has_datachannel = true;
+        rtc->sdp.dc_mid = rtc->sdp.mid_count;
+        rtc->sdp.mid_count++;
+    }
+#endif
+
     /* Early DTLS init — need certificate fingerprint for SDP.
      * Role is tentative (client); accept_answer() finalizes via dtls_set_role. */
     if (rtc->config.crypto && !rtc->dtls.crypto_ctx) {
@@ -421,13 +436,6 @@ int nanortc_accept_answer(nanortc_t *rtc, const char *answer)
     if (rc != NANORTC_OK) {
         return rc;
     }
-
-#if NANORTC_FEATURE_AUDIO
-    /* Offerer adopts the PT selected by the answerer (RFC 3264 §6.1) */
-    if (rtc->sdp.has_audio) {
-        rtc->sdp.audio_pt = rtc->sdp.remote_audio_pt;
-    }
-#endif
 
     rtc_apply_remote_sdp(rtc);
 
@@ -747,17 +755,31 @@ int nanortc_handle_receive(nanortc_t *rtc, uint32_t now_ms, const uint8_t *data,
                 int is_client = !rtc->dtls.is_server;
                 srtp_init(&rtc->srtp, rtc->config.crypto, is_client);
                 srtp_derive_keys(&rtc->srtp, rtc->dtls.keying_material, NANORTC_DTLS_KEYING_SIZE);
-                /* Random SSRC + negotiated PT (RFC 3550 §5.1) */
-                uint32_t ssrc = 0;
-                uint16_t init_seq = 0;
-                if (rtc->config.crypto) {
-                    uint8_t rnd[6];
-                    rtc->config.crypto->random_bytes(rnd, 6);
-                    ssrc = nanortc_read_u32be(rnd);
-                    init_seq = nanortc_read_u16be(rnd + 4);
+
+                /* Generate random SSRC + init_seq for each active track,
+                 * register in ssrc_map for receive-path demuxing. */
+                for (uint8_t ti = 0; ti < rtc->media_count; ti++) {
+                    nano_media_t *m = &rtc->media[ti];
+                    if (!m->active)
+                        continue;
+                    uint32_t ssrc = 0;
+                    uint16_t init_seq = 0;
+                    if (rtc->config.crypto) {
+                        uint8_t rnd[6];
+                        rtc->config.crypto->random_bytes(rnd, 6);
+                        ssrc = nanortc_read_u32be(rnd);
+                        init_seq = nanortc_read_u16be(rnd + 4);
+                    }
+                    /* Find negotiated PT from SDP mline */
+                    uint8_t pt = m->rtp.payload_type;
+                    nano_sdp_mline_t *ml = sdp_find_mline(&rtc->sdp, m->mid);
+                    if (ml && ml->pt != 0)
+                        pt = ml->pt;
+                    rtp_init(&m->rtp, ssrc, pt);
+                    m->rtp.seq = init_seq;
+                    m->rtcp.ssrc = ssrc;
+                    ssrc_map_register(rtc->ssrc_map, NANORTC_MAX_SSRC_MAP, ssrc, m->mid);
                 }
-                rtp_init(&rtc->rtp, ssrc, rtc->sdp.has_audio ? rtc->sdp.audio_pt : 0);
-                rtc->rtp.seq = init_seq; /* RFC 3550: random initial seq */
                 NANORTC_LOGI("RTC", "SRTP keys derived, RTP ready");
             }
 #endif
@@ -865,9 +887,161 @@ int nanortc_handle_receive(nanortc_t *rtc, uint32_t now_ms, const uint8_t *data,
         return NANORTC_OK;
 
     } else if (first >= 128 && first <= 191) {
-        /* RTP/RTCP [0x80-0xBF] — silently consumed.
-         * Full receive-path decoding (PLI, NACK, audio/video) deferred. */
+        /* RTP/RTCP [0x80-0xBF] — RFC 7983 §3 */
+#if NANORTC_HAVE_MEDIA_TRANSPORT
+        if (!rtc->srtp.ready) {
+            return NANORTC_OK; /* SRTP not ready yet, discard */
+        }
+
+        /* Distinguish RTP vs RTCP by payload type field (byte 1, bits 0-6).
+         * RTCP PT range: 72-76 (old) and 200-211 (standard).
+         * RFC 5761 §4: RTP PT < 72 or > 76, RTCP PT ∈ {200..211}. */
+        if (len < 2) {
+            return NANORTC_ERR_PARSE;
+        }
+        uint8_t pt_field = data[1] & 0x7F;
+
+        if (pt_field >= 200 - 128 && pt_field <= 211 - 128) {
+            /* RTCP packet — parse and handle PLI/NACK/SR */
+            /* Copy to scratch for unprotect (in-place) */
+            if (len > sizeof(rtc->stun_buf)) {
+                return NANORTC_ERR_BUFFER_TOO_SMALL;
+            }
+            /* TODO: SRTCP unprotect when full SRTCP support is added */
+            nano_rtcp_info_t info;
+            memset(&info, 0, sizeof(info));
+            int rrc = rtcp_parse(data, len, &info);
+            if (rrc == NANORTC_OK && info.type == RTCP_PSFB) {
+                /* PLI — find video track by SSRC and emit keyframe request event */
+                int mid = ssrc_map_lookup(rtc->ssrc_map, NANORTC_MAX_SSRC_MAP, info.ssrc);
+                if (mid >= 0) {
+                    nanortc_output_t kfevt;
+                    memset(&kfevt, 0, sizeof(kfevt));
+                    kfevt.type = NANORTC_OUTPUT_EVENT;
+                    kfevt.event.type = NANORTC_EVENT_KEYFRAME_REQUEST;
+                    kfevt.event.mid = (uint8_t)mid;
+                    rtc_enqueue_output(rtc, &kfevt);
+                }
+            }
+            return NANORTC_OK;
+        }
+
+        /* RTP packet — demux by SSRC → MID */
+        /* Make a mutable copy for SRTP unprotect (in-place) */
+        if (len > NANORTC_MEDIA_BUF_SIZE) {
+            return NANORTC_ERR_BUFFER_TOO_SMALL;
+        }
+
+        /* Use stun_buf as scratch for RTP unprotect (not used simultaneously) */
+        uint8_t *pkt = rtc->stun_buf;
+        if (len > sizeof(rtc->stun_buf)) {
+            return NANORTC_ERR_BUFFER_TOO_SMALL;
+        }
+        memcpy(pkt, data, len);
+        size_t pkt_len = len;
+
+        /* SRTP unprotect */
+        size_t plain_len = 0;
+        int src_rc = srtp_unprotect(&rtc->srtp, pkt, pkt_len, &plain_len);
+        if (src_rc != NANORTC_OK) {
+            return NANORTC_OK; /* Silently discard bad SRTP packets */
+        }
+
+        /* Parse RTP header */
+        uint8_t rtp_pt = 0;
+        uint16_t rtp_seq = 0;
+        uint32_t rtp_ts = 0;
+        uint32_t rtp_ssrc = 0;
+        const uint8_t *payload = NULL;
+        size_t payload_len = 0;
+        int rrc = rtp_unpack(pkt, plain_len, &rtp_pt, &rtp_seq, &rtp_ts, &rtp_ssrc, &payload,
+                             &payload_len);
+        if (rrc != NANORTC_OK) {
+            return NANORTC_OK; /* Malformed RTP, discard */
+        }
+
+        /* SSRC → MID lookup */
+        int mid = ssrc_map_lookup(rtc->ssrc_map, NANORTC_MAX_SSRC_MAP, rtp_ssrc);
+        if (mid < 0) {
+            /* First-time SSRC discovery: try PT-based matching */
+            for (uint8_t ti = 0; ti < rtc->media_count; ti++) {
+                nano_media_t *mc = &rtc->media[ti];
+                if (!mc->active)
+                    continue;
+                nano_sdp_mline_t *ml = sdp_find_mline(&rtc->sdp, mc->mid);
+                if (ml && ml->remote_pt == rtp_pt) {
+                    ssrc_map_register(rtc->ssrc_map, NANORTC_MAX_SSRC_MAP, rtp_ssrc, mc->mid);
+                    mc->rtcp.remote_ssrc = rtp_ssrc;
+                    mid = (int)mc->mid;
+                    break;
+                }
+            }
+        }
+        if (mid < 0) {
+            return NANORTC_OK; /* Unknown SSRC/PT, discard */
+        }
+
+        nano_media_t *m = media_find_by_mid(rtc->media, rtc->media_count, (uint8_t)mid);
+        if (!m) {
+            return NANORTC_OK;
+        }
+
+        /* Update RTCP receiver stats */
+        m->rtcp.packets_received++;
+        if (rtp_seq > m->rtcp.max_seq || m->rtcp.packets_received == 1) {
+            m->rtcp.max_seq = rtp_seq;
+        }
+        if (m->rtcp.remote_ssrc == 0) {
+            m->rtcp.remote_ssrc = rtp_ssrc;
+        }
+
+        /* Route to audio or video processing */
+        if (m->kind == NANO_MEDIA_AUDIO) {
+#if NANORTC_FEATURE_AUDIO
+            /* Push into jitter buffer, then try to pop completed frame */
+            jitter_push(&m->jitter, rtp_seq, rtp_ts, payload, payload_len, rtc->now_ms);
+            size_t pop_len = 0;
+            uint32_t pop_ts = 0;
+            while (jitter_pop(&m->jitter, rtc->now_ms, m->media_buf, sizeof(m->media_buf), &pop_len,
+                              &pop_ts) == NANORTC_OK) {
+                nanortc_output_t aevt;
+                memset(&aevt, 0, sizeof(aevt));
+                aevt.type = NANORTC_OUTPUT_EVENT;
+                aevt.event.type = NANORTC_EVENT_AUDIO_DATA;
+                aevt.event.mid = m->mid;
+                aevt.event.data = m->media_buf;
+                aevt.event.len = pop_len;
+                aevt.event.timestamp = pop_ts;
+                rtc_enqueue_output(rtc, &aevt);
+            }
+#endif
+        } else {
+#if NANORTC_FEATURE_VIDEO
+            /* H.264 depacketization */
+            uint8_t rtp_marker = (pkt[1] >> 7) & 1;
+            const uint8_t *nalu_out = NULL;
+            size_t nalu_len = 0;
+            int drc = h264_depkt_push(&m->h264_depkt, payload, payload_len, rtp_marker, &nalu_out,
+                                      &nalu_len);
+            if (drc == NANORTC_OK && nalu_out && nalu_len > 0) {
+                nanortc_output_t vevt;
+                memset(&vevt, 0, sizeof(vevt));
+                vevt.type = NANORTC_OUTPUT_EVENT;
+                vevt.event.type = NANORTC_EVENT_VIDEO_DATA;
+                vevt.event.mid = m->mid;
+                vevt.event.data = nalu_out;
+                vevt.event.len = nalu_len;
+                vevt.event.timestamp = rtp_ts;
+                vevt.event.is_keyframe = h264_is_keyframe(payload, payload_len) ? true : false;
+                rtc_enqueue_output(rtc, &vevt);
+            }
+#endif
+        }
         return NANORTC_OK;
+#else
+        /* No media transport compiled — silently discard */
+        return NANORTC_OK;
+#endif /* NANORTC_HAVE_MEDIA_TRANSPORT */
     }
 
     return NANORTC_ERR_PROTOCOL; /* Unknown packet type */
@@ -1128,79 +1302,123 @@ int nanortc_close(nanortc_t *rtc)
     return NANORTC_OK;
 }
 
-#if NANORTC_FEATURE_AUDIO
-int nanortc_send_audio(nanortc_t *rtc, uint32_t timestamp, const void *data, size_t len)
+#if NANORTC_HAVE_MEDIA_TRANSPORT
+
+int nanortc_add_media(nanortc_t *rtc, nano_media_kind_t kind, nanortc_direction_t direction,
+                      nanortc_codec_t codec, uint32_t sample_rate, uint8_t channels)
 {
-    if (!rtc || !data || len == 0) {
+    if (!rtc) {
         return NANORTC_ERR_INVALID_PARAM;
     }
-    if (rtc->state < NANORTC_STATE_DTLS_CONNECTED) {
-        return NANORTC_ERR_STATE;
-    }
-    if (!rtc->srtp.ready) {
-        return NANORTC_ERR_STATE;
+    if (rtc->media_count >= NANORTC_MAX_MEDIA_TRACKS) {
+        return NANORTC_ERR_BUFFER_TOO_SMALL;
     }
 
-    /* RTP pack into media_buf */
+    /* Determine PT for SDP */
+    uint8_t pt = 0;
+    uint8_t sdp_kind = SDP_MLINE_AUDIO;
+    if (kind == NANO_MEDIA_AUDIO) {
+        if (codec == NANORTC_CODEC_PCMU)
+            pt = 0;
+        else if (codec == NANORTC_CODEC_PCMA)
+            pt = 8;
+        else
+            pt = 111; /* Opus dynamic PT */
+        sdp_kind = SDP_MLINE_AUDIO;
+    } else {
+        pt = NANORTC_VIDEO_DEFAULT_PT;
+        sdp_kind = SDP_MLINE_VIDEO;
+    }
+
+    /* Add SDP m-line (returns MID) */
+    int mid =
+        sdp_add_mline(&rtc->sdp, sdp_kind, (uint8_t)codec, pt, sample_rate, channels, direction);
+    if (mid < 0) {
+        return mid;
+    }
+
+    /* Initialize media track at the MID index */
+    uint8_t midx = (uint8_t)mid;
+    if (midx >= rtc->media_count) {
+        /* Zero-init any gap slots */
+        for (uint8_t g = rtc->media_count; g < midx; g++) {
+            memset(&rtc->media[g], 0, sizeof(nano_media_t));
+        }
+        rtc->media_count = midx + 1;
+    }
+
+    uint32_t jitter_ms = 0;
+#if NANORTC_FEATURE_AUDIO
+    jitter_ms = rtc->config.jitter_depth_ms;
+#endif
+    int rc = media_init(&rtc->media[midx], midx, kind, direction, (uint8_t)codec, sample_rate,
+                        channels, jitter_ms);
+    if (rc != NANORTC_OK) {
+        return rc;
+    }
+
+    NANORTC_LOGI("RTC", "media track added");
+    return mid;
+}
+
+/* Send audio: RTP pack → SRTP protect → enqueue */
+static int rtc_send_audio(nanortc_t *rtc, nano_media_t *m, uint32_t timestamp, const uint8_t *data,
+                          size_t len)
+{
     size_t rtp_len = 0;
-    int rc = rtp_pack(&rtc->rtp, timestamp, (const uint8_t *)data, len, rtc->media_buf,
-                      sizeof(rtc->media_buf), &rtp_len);
-    if (rc != NANORTC_OK) {
+    int rc = rtp_pack(&m->rtp, timestamp, data, len, m->media_buf, sizeof(m->media_buf), &rtp_len);
+    if (rc != NANORTC_OK)
         return rc;
-    }
 
-    /* SRTP protect (in-place, appends 10B auth tag) */
     size_t srtp_len = 0;
-    rc = srtp_protect(&rtc->srtp, rtc->media_buf, rtp_len, &srtp_len);
-    if (rc != NANORTC_OK) {
+    rc = srtp_protect(&rtc->srtp, m->media_buf, rtp_len, &srtp_len);
+    if (rc != NANORTC_OK)
         return rc;
-    }
 
-    /* Enqueue for transmission */
+    m->rtcp.packets_sent++;
+    m->rtcp.octets_sent += (uint32_t)len;
+
     nanortc_output_t out;
     memset(&out, 0, sizeof(out));
     out.type = NANORTC_OUTPUT_TRANSMIT;
-    out.transmit.data = rtc->media_buf;
+    out.transmit.data = m->media_buf;
     out.transmit.len = srtp_len;
     out.transmit.dest = rtc->remote_addr;
     return rtc_enqueue_output(rtc, &out);
 }
-#endif
 
 #if NANORTC_FEATURE_VIDEO
-
 /* Context for h264_packetize callback → RTP pack + SRTP protect + enqueue */
 typedef struct {
     nanortc_t *rtc;
+    nano_media_t *media;
     uint32_t timestamp;
     int last_rc;
-    int is_last_nal; /* true if this is the last NAL in the access unit */
+    int is_last_nal;
 } video_send_ctx_t;
 
 static int video_send_fragment_cb(const uint8_t *payload, size_t len, int marker, void *userdata)
 {
     video_send_ctx_t *ctx = (video_send_ctx_t *)userdata;
     nanortc_t *rtc = ctx->rtc;
+    nano_media_t *m = ctx->media;
 
-    /* RFC 6184 §5.1: marker bit set on last packet of access unit.
-     * Only set marker on last fragment of the last NAL in the frame. */
-    rtc->video_rtp.marker = (uint8_t)((marker && ctx->is_last_nal) ? 1 : 0);
+    /* RFC 6184 §5.1: marker bit on last packet of access unit */
+    m->rtp.marker = (uint8_t)((marker && ctx->is_last_nal) ? 1 : 0);
 
     /* Select a packet buffer from the ring so multiple fragments don't clobber
-     * each other before the run loop dispatches them (Sans I/O). */
+     * each other before dispatch (Sans I/O). */
     uint8_t slot = rtc->out_tail & (NANORTC_OUT_QUEUE_SIZE - 1);
     uint8_t *pkt_buf = rtc->pkt_ring[slot];
 
-    /* RTP pack */
     size_t rtp_len = 0;
-    int rc = rtp_pack(&rtc->video_rtp, ctx->timestamp, payload, len, pkt_buf,
-                      NANORTC_MEDIA_BUF_SIZE, &rtp_len);
+    int rc =
+        rtp_pack(&m->rtp, ctx->timestamp, payload, len, pkt_buf, NANORTC_MEDIA_BUF_SIZE, &rtp_len);
     if (rc != NANORTC_OK) {
         ctx->last_rc = rc;
         return rc;
     }
 
-    /* SRTP protect (in-place, appends 10B auth tag) */
     size_t srtp_len = 0;
     rc = srtp_protect(&rtc->srtp, pkt_buf, rtp_len, &srtp_len);
     if (rc != NANORTC_OK) {
@@ -1208,11 +1426,9 @@ static int video_send_fragment_cb(const uint8_t *payload, size_t len, int marker
         return rc;
     }
 
-    /* Update RTCP stats */
-    rtc->rtcp.packets_sent++;
-    rtc->rtcp.octets_sent += (uint32_t)len;
+    m->rtcp.packets_sent++;
+    m->rtcp.octets_sent += (uint32_t)len;
 
-    /* Enqueue for transmission — each slot has its own buffer */
     nanortc_output_t out;
     memset(&out, 0, sizeof(out));
     out.type = NANORTC_OUTPUT_TRANSMIT;
@@ -1223,7 +1439,25 @@ static int video_send_fragment_cb(const uint8_t *payload, size_t len, int marker
     return ctx->last_rc;
 }
 
-int nanortc_send_video(nanortc_t *rtc, uint32_t timestamp, const void *data, size_t len, int flags)
+static int rtc_send_video(nanortc_t *rtc, nano_media_t *m, uint32_t timestamp, const uint8_t *data,
+                          size_t len, int flags)
+{
+    video_send_ctx_t ctx;
+    ctx.rtc = rtc;
+    ctx.media = m;
+    ctx.timestamp = timestamp;
+    ctx.last_rc = NANORTC_OK;
+    ctx.is_last_nal = (flags & NANORTC_VIDEO_FLAG_MARKER) ? 1 : 0;
+
+    int rc = h264_packetize(data, len, NANORTC_VIDEO_MTU, video_send_fragment_cb, &ctx);
+    if (rc != NANORTC_OK)
+        return rc;
+    return ctx.last_rc;
+}
+#endif /* NANORTC_FEATURE_VIDEO */
+
+int nanortc_send_media(nanortc_t *rtc, uint8_t mid, uint32_t timestamp, const void *data,
+                       size_t len, int flags)
 {
     if (!rtc || !data || len == 0) {
         return NANORTC_ERR_INVALID_PARAM;
@@ -1235,21 +1469,27 @@ int nanortc_send_video(nanortc_t *rtc, uint32_t timestamp, const void *data, siz
         return NANORTC_ERR_STATE;
     }
 
-    video_send_ctx_t ctx;
-    ctx.rtc = rtc;
-    ctx.timestamp = timestamp;
-    ctx.last_rc = NANORTC_OK;
-    ctx.is_last_nal = (flags & NANORTC_VIDEO_FLAG_MARKER) ? 1 : 0;
-
-    int rc =
-        h264_packetize((const uint8_t *)data, len, NANORTC_VIDEO_MTU, video_send_fragment_cb, &ctx);
-    if (rc != NANORTC_OK) {
-        return rc;
+    nano_media_t *m = media_find_by_mid(rtc->media, rtc->media_count, mid);
+    if (!m) {
+        return NANORTC_ERR_INVALID_PARAM;
     }
-    return ctx.last_rc;
+    /* Validate direction allows sending */
+    if (m->direction == NANORTC_DIR_RECVONLY || m->direction == NANORTC_DIR_INACTIVE) {
+        return NANORTC_ERR_STATE;
+    }
+
+    if (m->kind == NANO_MEDIA_AUDIO) {
+        return rtc_send_audio(rtc, m, timestamp, (const uint8_t *)data, len);
+    }
+#if NANORTC_FEATURE_VIDEO
+    if (m->kind == NANO_MEDIA_VIDEO) {
+        return rtc_send_video(rtc, m, timestamp, (const uint8_t *)data, len, flags);
+    }
+#endif
+    return NANORTC_ERR_INVALID_PARAM;
 }
 
-int nanortc_request_keyframe(nanortc_t *rtc)
+int nanortc_request_keyframe(nanortc_t *rtc, uint8_t mid)
 {
     if (!rtc) {
         return NANORTC_ERR_INVALID_PARAM;
@@ -1261,18 +1501,22 @@ int nanortc_request_keyframe(nanortc_t *rtc)
         return NANORTC_ERR_STATE;
     }
 
+    nano_media_t *m = media_find_by_mid(rtc->media, rtc->media_count, mid);
+    if (!m || m->kind != NANO_MEDIA_VIDEO) {
+        return NANORTC_ERR_INVALID_PARAM;
+    }
+
     /* Generate PLI (RFC 4585 §6.3.1) */
     uint8_t pli_buf[RTCP_PLI_SIZE + NANORTC_SRTP_AUTH_TAG_SIZE + 4];
     size_t pli_len = 0;
-    int rc = rtcp_generate_pli(rtc->rtcp.ssrc, rtc->rtcp.remote_ssrc, pli_buf, sizeof(pli_buf),
-                               &pli_len);
+    int rc =
+        rtcp_generate_pli(m->rtcp.ssrc, m->rtcp.remote_ssrc, pli_buf, sizeof(pli_buf), &pli_len);
     if (rc != NANORTC_OK) {
         return rc;
     }
 
-    /* TODO: SRTCP protect (requires srtcp_protect, deferred to full RTCP integration) */
+    /* TODO: SRTCP protect (deferred to full RTCP integration) */
 
-    /* Enqueue for transmission */
     nanortc_output_t out;
     memset(&out, 0, sizeof(out));
     out.type = NANORTC_OUTPUT_TRANSMIT;
@@ -1281,7 +1525,8 @@ int nanortc_request_keyframe(nanortc_t *rtc)
     out.transmit.dest = rtc->remote_addr;
     return rtc_enqueue_output(rtc, &out);
 }
-#endif
+
+#endif /* NANORTC_HAVE_MEDIA_TRANSPORT */
 
 const char *nanortc_err_to_name(int err)
 {

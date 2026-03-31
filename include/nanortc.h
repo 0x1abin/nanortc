@@ -288,6 +288,7 @@ typedef enum {
 typedef struct nanortc_event {
     nanortc_event_type_t type; /**< Event type discriminator. */
     uint16_t stream_id;        /**< DataChannel stream ID (DC events only). */
+    uint8_t mid;               /**< Media track MID (media events only). */
     const uint8_t *data;       /**< Payload pointer (valid until next poll). */
     size_t len;                /**< Payload length in bytes. */
     const char *label;         /**< Channel label (DATACHANNEL_OPEN only, else NULL). */
@@ -356,16 +357,7 @@ typedef struct nanortc_config {
     uint32_t sctp_recv_buf_size; /**< SCTP receive buffer size (0 = default). */
 
 #if NANORTC_FEATURE_AUDIO
-    nanortc_codec_t audio_codec;         /**< Audio codec to negotiate. */
-    uint32_t audio_sample_rate;          /**< Sample rate in Hz (e.g. 48000). */
-    uint8_t audio_channels;              /**< Number of audio channels. */
-    nanortc_direction_t audio_direction; /**< Audio direction attribute. */
-    uint32_t jitter_depth_ms;            /**< Jitter buffer depth in ms. */
-#endif
-
-#if NANORTC_FEATURE_VIDEO
-    nanortc_codec_t video_codec;         /**< Video codec to negotiate. */
-    nanortc_direction_t video_direction; /**< Video direction attribute. */
+    uint32_t jitter_depth_ms; /**< Jitter buffer depth in ms (default for new audio tracks). */
 #endif
 } nanortc_config_t;
 
@@ -382,18 +374,12 @@ typedef struct nanortc_config {
 #endif
 
 #if NANORTC_HAVE_MEDIA_TRANSPORT
-#include "nano_rtp.h"
-#include "nano_rtcp.h"
+#include "nano_media.h"
 #include "nano_srtp.h"
-#endif
-
-#if NANORTC_FEATURE_AUDIO
-#include "nano_jitter.h"
 #endif
 
 #if NANORTC_FEATURE_VIDEO
 #include "nano_bwe.h"
-#include "nano_h264.h"
 #endif
 
 /* ----------------------------------------------------------------
@@ -438,25 +424,23 @@ struct nanortc {
 #endif
 
 #if NANORTC_HAVE_MEDIA_TRANSPORT
-    nano_rtp_t rtp;
-    nano_rtcp_t rtcp;
+    /** Media tracks (str0m-inspired: indexed by MID). */
+    nano_media_t media[NANORTC_MAX_MEDIA_TRACKS];
+    uint8_t media_count; /**< Number of allocated media track slots. */
+
+    /** SSRC → MID lookup table for RTP receive-path demuxing. */
+    nano_ssrc_entry_t ssrc_map[NANORTC_MAX_SSRC_MAP];
+
+    /** Shared SRTP session (keys shared across all tracks in BUNDLE). */
     nano_srtp_t srtp;
-    uint8_t media_buf[NANORTC_MEDIA_BUF_SIZE]; /* RTP pack + SRTP protect scratch (single-pkt) */
 #endif
 
 #if NANORTC_FEATURE_VIDEO
-    /* Packet ring: each output queue slot gets its own buffer so video FU-A
-     * fragments don't clobber each other before dispatch_outputs sends them. */
+    /** Packet ring: each output queue slot gets its own buffer so video FU-A
+     *  fragments don't clobber each other before dispatch_outputs sends them. */
     uint8_t pkt_ring[NANORTC_OUT_QUEUE_SIZE][NANORTC_MEDIA_BUF_SIZE];
-#endif
 
-#if NANORTC_FEATURE_AUDIO
-    nano_jitter_t jitter;
-#endif
-
-#if NANORTC_FEATURE_VIDEO
-    nano_rtp_t video_rtp;         /* Independent SSRC, PT=96, 90kHz clock */
-    nano_h264_depkt_t h264_depkt; /* FU-A reassembly buffer */
+    /** Shared bandwidth estimator (session-wide, not per-track). */
     nano_bwe_t bwe;
 #endif
 
@@ -690,53 +674,62 @@ NANORTC_API int nanortc_get_datachannel_label(nanortc_t *rtc, uint16_t stream_id
 #endif
 
 /* ----------------------------------------------------------------
- * Media API
+ * Media API (multi-track, str0m-inspired)
  * ---------------------------------------------------------------- */
 
-#if NANORTC_FEATURE_AUDIO
-/**
- * @brief Send an audio frame.
- *
- * @param rtc        Initialized RTC state.
- * @param timestamp  RTP timestamp for this frame.
- * @param data       Encoded audio payload.
- * @param len        Payload length in bytes.
- * @return NANORTC_OK on success.
- */
-NANORTC_API int nanortc_send_audio(nanortc_t *rtc, uint32_t timestamp, const void *data,
-                                   size_t len);
-#endif
+#if NANORTC_HAVE_MEDIA_TRANSPORT
 
-#if NANORTC_FEATURE_VIDEO
-
-/** Flags for nanortc_send_video(). */
+/** Flags for nanortc_send_media() when sending video. */
 #define NANORTC_VIDEO_FLAG_KEYFRAME 0x01 /**< This NAL is part of a keyframe (IDR). */
 #define NANORTC_VIDEO_FLAG_MARKER   0x02 /**< Last NAL in access unit (sets RTP marker bit). */
 
 /**
- * @brief Send a single H.264 NAL unit as video.
+ * @brief Add a media track (audio or video).
  *
- * Call once per NAL. All NALs in the same access unit (frame) share the same
- * timestamp. Set NANORTC_VIDEO_FLAG_MARKER on the last NAL of the frame.
+ * Call before nanortc_create_offer() / nanortc_accept_offer(). Each call adds
+ * one SDP m-line. Returns the MID (media ID) which is the track handle for
+ * all subsequent operations.
  *
- * @param rtc          Initialized RTC state.
- * @param timestamp    RTP timestamp (90kHz clock).
- * @param data         Raw NAL unit (no start codes).
- * @param len          NAL length in bytes.
- * @param flags        Bitwise OR of NANORTC_VIDEO_FLAG_*.
- * @return NANORTC_OK on success.
+ * @param rtc         Initialized RTC state.
+ * @param kind        NANO_MEDIA_AUDIO or NANO_MEDIA_VIDEO.
+ * @param direction   Send/receive direction for this track.
+ * @param codec       Codec to negotiate (NANORTC_CODEC_OPUS, etc.).
+ * @param sample_rate Audio sample rate in Hz (e.g. 48000), 0 for video.
+ * @param channels    Audio channels (1 or 2), 0 for video.
+ * @return MID (>= 0) on success, negative error code on failure.
  */
-NANORTC_API int nanortc_send_video(nanortc_t *rtc, uint32_t timestamp, const void *data, size_t len,
-                                   int flags);
+NANORTC_API int nanortc_add_media(nanortc_t *rtc, nano_media_kind_t kind,
+                                  nanortc_direction_t direction, nanortc_codec_t codec,
+                                  uint32_t sample_rate, uint8_t channels);
 
 /**
- * @brief Request a keyframe from the remote video sender (RTCP FIR/PLI).
+ * @brief Send media data on a specific track.
  *
- * @param rtc  Initialized RTC state.
+ * For audio tracks: @p data is an encoded audio frame, @p flags is ignored.
+ * For video tracks: @p data is a raw H.264 NAL unit (no start codes),
+ * @p flags is a bitwise OR of NANORTC_VIDEO_FLAG_*.
+ *
+ * @param rtc        Initialized RTC state.
+ * @param mid        Track MID returned by nanortc_add_media().
+ * @param timestamp  RTP timestamp.
+ * @param data       Encoded payload.
+ * @param len        Payload length in bytes.
+ * @param flags      Video flags (0 for audio).
  * @return NANORTC_OK on success.
  */
-NANORTC_API int nanortc_request_keyframe(nanortc_t *rtc);
-#endif
+NANORTC_API int nanortc_send_media(nanortc_t *rtc, uint8_t mid, uint32_t timestamp,
+                                   const void *data, size_t len, int flags);
+
+/**
+ * @brief Request a keyframe from the remote video sender (RTCP PLI).
+ *
+ * @param rtc  Initialized RTC state.
+ * @param mid  Video track MID.
+ * @return NANORTC_OK on success.
+ */
+NANORTC_API int nanortc_request_keyframe(nanortc_t *rtc, uint8_t mid);
+
+#endif /* NANORTC_HAVE_MEDIA_TRANSPORT */
 
 /* ----------------------------------------------------------------
  * Connection state API

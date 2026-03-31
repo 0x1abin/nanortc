@@ -28,6 +28,7 @@ if(DEFINED ENV{IDF_PATH})
             src/nano_rtp.c
             src/nano_rtcp.c
             src/nano_srtp.c
+            src/nano_media.c
         )
     endif()
     if(CONFIG_NANORTC_FEATURE_AUDIO)
@@ -94,6 +95,7 @@ if(NANORTC_FEATURE_AUDIO OR NANORTC_FEATURE_VIDEO)
         src/nano_rtp.c
         src/nano_rtcp.c
         src/nano_srtp.c
+        src/nano_media.c
     )
 endif()
 

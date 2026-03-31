@@ -222,6 +222,50 @@ static void srtp_compute_iv(uint8_t iv[16], const uint8_t salt[NANORTC_SRTP_SALT
     }
 }
 
+/*
+ * Find or create per-SSRC state entry.
+ * In BUNDLE, session keys are shared but ROC/seq tracking is per-SSRC.
+ */
+static nano_srtp_ssrc_state_t *srtp_get_ssrc_state(nano_srtp_t *srtp, uint32_t ssrc)
+{
+    /* Look for existing entry */
+    for (int i = 0; i < NANORTC_MAX_SSRC_MAP; i++) {
+        if (srtp->ssrc_states[i].active && srtp->ssrc_states[i].ssrc == ssrc) {
+            return &srtp->ssrc_states[i];
+        }
+    }
+    /* Allocate new entry */
+    for (int i = 0; i < NANORTC_MAX_SSRC_MAP; i++) {
+        if (!srtp->ssrc_states[i].active) {
+            srtp->ssrc_states[i].ssrc = ssrc;
+            srtp->ssrc_states[i].roc = 0;
+            srtp->ssrc_states[i].seq_max = 0;
+            srtp->ssrc_states[i].active = true;
+            return &srtp->ssrc_states[i];
+        }
+    }
+    return NULL; /* table full */
+}
+
+/* Parse RTP header length accounting for CSRC and extensions. */
+static int srtp_parse_hdr_len(const uint8_t *packet, size_t len, size_t *hdr_len_out)
+{
+    uint8_t cc = packet[0] & 0x0F;
+    size_t hdr_len = RTP_HEADER_SIZE + (size_t)cc * 4;
+    if (packet[0] & 0x10) { /* X bit: extension header */
+        if (len < hdr_len + 4) {
+            return NANORTC_ERR_PARSE;
+        }
+        uint16_t ext_words = nanortc_read_u16be(packet + hdr_len + 2);
+        hdr_len += 4 + (size_t)ext_words * 4;
+    }
+    if (len < hdr_len) {
+        return NANORTC_ERR_PARSE;
+    }
+    *hdr_len_out = hdr_len;
+    return NANORTC_OK;
+}
+
 int srtp_protect(nano_srtp_t *srtp, uint8_t *packet, size_t len, size_t *out_len)
 {
     if (!srtp || !packet || !out_len || !srtp->ready) {
@@ -235,22 +279,20 @@ int srtp_protect(nano_srtp_t *srtp, uint8_t *packet, size_t len, size_t *out_len
     uint16_t seq = nanortc_read_u16be(packet + 2);
     uint32_t ssrc = nanortc_read_u32be(packet + 8);
 
-    /* Determine actual header length (CSRC + extensions) */
-    uint8_t cc = packet[0] & 0x0F;
-    size_t hdr_len = RTP_HEADER_SIZE + (size_t)cc * 4;
-    if (packet[0] & 0x10) { /* X bit: extension header */
-        if (len < hdr_len + 4) {
-            return NANORTC_ERR_PARSE;
-        }
-        uint16_t ext_words = nanortc_read_u16be(packet + hdr_len + 2);
-        hdr_len += 4 + (size_t)ext_words * 4;
+    size_t hdr_len = 0;
+    int hrc = srtp_parse_hdr_len(packet, len, &hdr_len);
+    if (hrc != NANORTC_OK) {
+        return hrc;
     }
-    if (len < hdr_len) {
-        return NANORTC_ERR_PARSE;
+
+    /* Per-SSRC ROC tracking (RFC 3711 §3.3) */
+    nano_srtp_ssrc_state_t *ss = srtp_get_ssrc_state(srtp, ssrc);
+    if (!ss) {
+        return NANORTC_ERR_BUFFER_TOO_SMALL;
     }
 
     /* RFC 3711 section 3.3.1: packet index = ROC * 65536 + SEQ */
-    uint64_t index = ((uint64_t)srtp->send_roc << 16) | seq;
+    uint64_t index = ((uint64_t)ss->roc << 16) | seq;
 
     /* Encrypt payload in-place (header remains in the clear) */
     size_t payload_len = len - hdr_len;
@@ -265,37 +307,25 @@ int srtp_protect(nano_srtp_t *srtp, uint8_t *packet, size_t len, size_t *out_len
         }
     }
 
-    /* RFC 3711 section 4.2: authentication tag
-     * HMAC-SHA1(auth_key, header || encrypted_payload || ROC) truncated to 80 bits.
-     *
-     * We need to HMAC: [packet (len bytes)] [ROC (4 bytes)]
-     * Since our hmac_sha1_80 takes a single contiguous buffer, we'll
-     * need to use the full HMAC-SHA1 and truncate manually. */
+    /* RFC 3711 section 4.2: authentication tag */
     {
         uint8_t roc_be[4];
-        roc_be[0] = (uint8_t)(srtp->send_roc >> 24);
-        roc_be[1] = (uint8_t)(srtp->send_roc >> 16);
-        roc_be[2] = (uint8_t)(srtp->send_roc >> 8);
-        roc_be[3] = (uint8_t)(srtp->send_roc);
+        roc_be[0] = (uint8_t)(ss->roc >> 24);
+        roc_be[1] = (uint8_t)(ss->roc >> 16);
+        roc_be[2] = (uint8_t)(ss->roc >> 8);
+        roc_be[3] = (uint8_t)(ss->roc);
 
-        /* Two-part HMAC: first the packet, then ROC.
-         * Use full HMAC-SHA1 with concatenated input.
-         * We need a scratch buffer for packet + ROC. To avoid allocation,
-         * append ROC after the packet data (caller must have room for +14 bytes). */
         memcpy(packet + len, roc_be, 4);
 
-        /* Compute HMAC-SHA1-80 over [packet || ROC] */
         srtp->crypto->hmac_sha1_80(srtp->send_auth_key, NANORTC_SRTP_AUTH_KEY_SIZE, packet, len + 4,
                                    packet + len);
-        /* Auth tag now at packet + len, ROC was overwritten by the tag (first 10 bytes).
-         * The tag is 10 bytes, placed right after the original packet data. */
     }
 
-    /* Update ROC on sequence wrap */
+    /* Update per-SSRC ROC on sequence wrap */
     if (seq == 0xFFFF) {
-        srtp->send_roc++;
+        ss->roc++;
     }
-    srtp->send_seq = seq;
+    ss->seq_max = seq;
 
     *out_len = len + NANORTC_SRTP_AUTH_TAG_SIZE;
     return NANORTC_OK;
@@ -314,31 +344,28 @@ int srtp_unprotect(nano_srtp_t *srtp, uint8_t *packet, size_t len, size_t *out_l
     uint16_t seq = nanortc_read_u16be(packet + 2);
     uint32_t ssrc = nanortc_read_u32be(packet + 8);
 
-    /* Determine header length */
-    uint8_t cc = packet[0] & 0x0F;
-    size_t hdr_len = RTP_HEADER_SIZE + (size_t)cc * 4;
-    if (packet[0] & 0x10) {
-        if (len < hdr_len + 4 + NANORTC_SRTP_AUTH_TAG_SIZE) {
-            return NANORTC_ERR_PARSE;
-        }
-        uint16_t ext_words = nanortc_read_u16be(packet + hdr_len + 2);
-        hdr_len += 4 + (size_t)ext_words * 4;
+    size_t hdr_len = 0;
+    /* Account for auth tag in length check */
+    size_t srtp_len = len - NANORTC_SRTP_AUTH_TAG_SIZE;
+    int hrc = srtp_parse_hdr_len(packet, srtp_len, &hdr_len);
+    if (hrc != NANORTC_OK) {
+        return hrc;
     }
 
-    size_t srtp_len = len - NANORTC_SRTP_AUTH_TAG_SIZE; /* original RTP packet length */
-    if (srtp_len < hdr_len) {
-        return NANORTC_ERR_PARSE;
+    /* Per-SSRC ROC tracking */
+    nano_srtp_ssrc_state_t *ss = srtp_get_ssrc_state(srtp, ssrc);
+    if (!ss) {
+        return NANORTC_ERR_BUFFER_TOO_SMALL;
     }
 
     /* Estimate packet index (RFC 3711 section 3.3.1)
      * Simple ROC estimation with 16-bit window */
-    uint32_t est_roc = srtp->recv_roc;
-    if (srtp->recv_seq_max != 0 || srtp->recv_roc != 0) {
-        /* If seq rolled over (new seq much smaller than max) */
-        if ((int16_t)(seq - srtp->recv_seq_max) < -0x4000) {
-            est_roc = srtp->recv_roc + 1;
-        } else if ((int16_t)(seq - srtp->recv_seq_max) > 0x4000 && srtp->recv_roc > 0) {
-            est_roc = srtp->recv_roc - 1;
+    uint32_t est_roc = ss->roc;
+    if (ss->seq_max != 0 || ss->roc != 0) {
+        if ((int16_t)(seq - ss->seq_max) < -0x4000) {
+            est_roc = ss->roc + 1;
+        } else if ((int16_t)(seq - ss->seq_max) > 0x4000 && ss->roc > 0) {
+            est_roc = ss->roc - 1;
         }
     }
     uint64_t index = ((uint64_t)est_roc << 16) | seq;
@@ -351,18 +378,15 @@ int srtp_unprotect(nano_srtp_t *srtp, uint8_t *packet, size_t len, size_t *out_l
         roc_be[2] = (uint8_t)(est_roc >> 8);
         roc_be[3] = (uint8_t)(est_roc);
 
-        /* Save the received tag, then write ROC temporarily after the SRTP payload */
         uint8_t recv_tag[NANORTC_SRTP_AUTH_TAG_SIZE];
         memcpy(recv_tag, packet + srtp_len, NANORTC_SRTP_AUTH_TAG_SIZE);
 
-        /* Temporarily place ROC after encrypted payload for HMAC computation */
         memcpy(packet + srtp_len, roc_be, 4);
 
         uint8_t computed_tag[NANORTC_SRTP_AUTH_TAG_SIZE];
         srtp->crypto->hmac_sha1_80(srtp->recv_auth_key, NANORTC_SRTP_AUTH_KEY_SIZE, packet,
                                    srtp_len + 4, computed_tag);
 
-        /* Restore the original tag (for debugging) and verify */
         memcpy(packet + srtp_len, recv_tag, NANORTC_SRTP_AUTH_TAG_SIZE);
 
         /* Constant-time comparison */
@@ -388,11 +412,10 @@ int srtp_unprotect(nano_srtp_t *srtp, uint8_t *packet, size_t len, size_t *out_l
         }
     }
 
-    /* Update ROC and seq tracking */
-    if (est_roc > srtp->recv_roc ||
-        (est_roc == srtp->recv_roc && (int16_t)(seq - srtp->recv_seq_max) > 0)) {
-        srtp->recv_roc = est_roc;
-        srtp->recv_seq_max = seq;
+    /* Update per-SSRC ROC and seq tracking */
+    if (est_roc > ss->roc || (est_roc == ss->roc && (int16_t)(seq - ss->seq_max) > 0)) {
+        ss->roc = est_roc;
+        ss->seq_max = seq;
     }
 
     *out_len = srtp_len;
