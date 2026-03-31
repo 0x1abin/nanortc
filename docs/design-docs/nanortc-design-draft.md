@@ -129,11 +129,11 @@ int  nanortc_handle_input(nanortc_t *rtc, uint32_t now_ms,
 #if NANORTC_FEATURE_DATACHANNEL
 int  nanortc_create_datachannel(nanortc_t *rtc, const char *label,
                                const nanortc_datachannel_options_t *options);
-int  nanortc_get_datachannel(nanortc_t *rtc, uint16_t id, nano_channel_t *ch);
-int  nanortc_datachannel_send(nano_channel_t *ch, const void *data, size_t len);
-int  nanortc_datachannel_send_string(nano_channel_t *ch, const char *str);
-int  nanortc_datachannel_close(nano_channel_t *ch);
-const char *nanortc_datachannel_get_label(nano_channel_t *ch);
+int  nanortc_get_datachannel(nanortc_t *rtc, uint16_t id, nanortc_datachannel_t *ch);
+int  nanortc_datachannel_send(nanortc_datachannel_t *ch, const void *data, size_t len);
+int  nanortc_datachannel_send_string(nanortc_datachannel_t *ch, const char *str);
+int  nanortc_datachannel_close(nanortc_datachannel_t *ch);
+const char *nanortc_datachannel_get_label(nanortc_datachannel_t *ch);
 #endif
 
 // ---- 媒体 (Writer handle pattern) ----
@@ -143,10 +143,10 @@ int  nanortc_add_track(nanortc_t *rtc, nanortc_track_kind_t kind,
                        uint32_t sample_rate, uint8_t channels);
 void nanortc_set_direction(nanortc_t *rtc, uint8_t mid, nanortc_direction_t dir);
 const nanortc_track_t *nanortc_get_track(const nanortc_t *rtc, uint8_t mid);
-int  nanortc_writer(nanortc_t *rtc, uint8_t mid, nano_writer_t *w);
-int  nanortc_writer_write(nano_writer_t *w, uint32_t timestamp,
+int  nanortc_get_writer(nanortc_t *rtc, uint8_t mid, nanortc_writer_t *w);
+int  nanortc_writer_write(nanortc_writer_t *w, uint32_t timestamp,
                           const void *data, size_t len, int flags);
-int  nanortc_writer_request_keyframe(nano_writer_t *w);
+int  nanortc_writer_request_keyframe(nanortc_writer_t *w);
 #endif
 
 // ---- 连接状态 ----

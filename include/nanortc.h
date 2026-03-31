@@ -267,7 +267,7 @@ typedef enum {
 /* Forward declarations needed by event data structures */
 typedef struct nanortc nanortc_t;
 
-/** @brief Media writer handle. Obtain via nanortc_writer() or NANORTC_EV_CONNECTED. */
+/** @brief Media writer handle. Obtain via nanortc_get_writer() or NANORTC_EV_CONNECTED. */
 typedef struct {
     nanortc_t *rtc;        /**< Parent RTC state (do not modify). */
     uint8_t mid;           /**< Track MID. */
@@ -762,7 +762,7 @@ NANORTC_API const nanortc_track_t *nanortc_get_track(const nanortc_t *rtc, uint8
  * @retval NANORTC_ERR_INVALID_PARAM  Track not found.
  * @retval NANORTC_ERR_STATE          Direction is recvonly/inactive, or not connected.
  */
-NANORTC_API int nanortc_writer(nanortc_t *rtc, uint8_t mid, nanortc_writer_t *w);
+NANORTC_API int nanortc_get_writer(nanortc_t *rtc, uint8_t mid, nanortc_writer_t *w);
 
 /**
  * @brief Send media data through a writer handle.
@@ -770,7 +770,7 @@ NANORTC_API int nanortc_writer(nanortc_t *rtc, uint8_t mid, nanortc_writer_t *w)
  * For audio: @p data is an encoded frame, @p flags is 0.
  * For video: @p data is a raw H.264 NAL unit, @p flags is NANORTC_VIDEO_FLAG_*.
  *
- * @param w          Writer handle from nanortc_writer().
+ * @param w          Writer handle from nanortc_get_writer().
  * @param timestamp  RTP timestamp.
  * @param data       Encoded payload.
  * @param len        Payload length in bytes.

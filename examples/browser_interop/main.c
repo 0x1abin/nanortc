@@ -31,8 +31,6 @@
 typedef struct {
     int offer_mode;
     int media_connected; /* DTLS+SRTP ready for media */
-    nanortc_writer_t audio_writer;
-    nanortc_writer_t video_writer;
     int audio_mid;
     int video_mid;
 } app_ctx_t;
@@ -61,15 +59,6 @@ static void on_event(nanortc_t *rtc, const nanortc_event_t *evt, void *userdata)
     case NANORTC_EV_CONNECTED:
         fprintf(stderr, "[event] Connected\n");
         ctx->media_connected = 1;
-        /* Obtain writer handles for media tracks */
-        if (ctx->audio_mid >= 0) {
-            if (nanortc_writer(rtc, (uint8_t)ctx->audio_mid, &ctx->audio_writer) != NANORTC_OK)
-                fprintf(stderr, "[event] Warning: failed to obtain audio writer\n");
-        }
-        if (ctx->video_mid >= 0) {
-            if (nanortc_writer(rtc, (uint8_t)ctx->video_mid, &ctx->video_writer) != NANORTC_OK)
-                fprintf(stderr, "[event] Warning: failed to obtain video writer\n");
-        }
         /* Offerer must create the DataChannel after connection is ready */
         if (ctx->offer_mode) {
             int drc = nanortc_create_datachannel(rtc, "test", NULL);
@@ -327,19 +316,19 @@ int main(int argc, char *argv[])
 
 #if NANORTC_FEATURE_AUDIO
     if (audio_dir) {
-        app_ctx.audio_mid = nanortc_add_track(&rtc, NANORTC_TRACK_AUDIO, NANORTC_DIR_SENDONLY,
-                                              NANORTC_CODEC_OPUS, 48000, 2);
+        app_ctx.audio_mid = nanortc_add_audio_track(&rtc, NANORTC_DIR_SENDONLY,
+                                                    NANORTC_CODEC_OPUS, 48000, 2);
         if (app_ctx.audio_mid < 0)
-            fprintf(stderr, "nanortc_add_track(audio) failed: %d\n", app_ctx.audio_mid);
+            fprintf(stderr, "nanortc_add_audio_track failed: %d\n", app_ctx.audio_mid);
     }
 #endif
 
 #if NANORTC_FEATURE_VIDEO
     if (video_dir) {
-        app_ctx.video_mid = nanortc_add_track(&rtc, NANORTC_TRACK_VIDEO, NANORTC_DIR_SENDONLY,
-                                              NANORTC_CODEC_H264, 90000, 0);
+        app_ctx.video_mid = nanortc_add_video_track(&rtc, NANORTC_DIR_SENDONLY,
+                                                    NANORTC_CODEC_H264);
         if (app_ctx.video_mid < 0)
-            fprintf(stderr, "nanortc_add_track(video) failed: %d\n", app_ctx.video_mid);
+            fprintf(stderr, "nanortc_add_video_track failed: %d\n", app_ctx.video_mid);
     }
 #endif
 

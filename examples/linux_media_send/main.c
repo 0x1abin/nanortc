@@ -28,8 +28,6 @@
 
 static nano_run_loop_t loop;
 static int connected = 0;
-static nanortc_writer_t audio_writer;
-static nanortc_writer_t video_writer;
 static int audio_mid = -1;
 static int video_mid = -1;
 
@@ -48,15 +46,6 @@ static void on_event(nanortc_t *rtc, const nanortc_event_t *evt, void *userdata)
     case NANORTC_EV_CONNECTED:
         fprintf(stderr, "[event] Connected — starting media\n");
         connected = 1;
-        /* Obtain writer handles for media tracks */
-        if (audio_mid >= 0) {
-            if (nanortc_writer(rtc, (uint8_t)audio_mid, &audio_writer) != NANORTC_OK)
-                fprintf(stderr, "[event] Warning: failed to obtain audio writer\n");
-        }
-        if (video_mid >= 0) {
-            if (nanortc_writer(rtc, (uint8_t)video_mid, &video_writer) != NANORTC_OK)
-                fprintf(stderr, "[event] Warning: failed to obtain video writer\n");
-        }
         break;
 
     case NANORTC_EV_DATACHANNEL_DATA:
@@ -173,10 +162,10 @@ int main(int argc, char *argv[])
 
 #if NANORTC_FEATURE_AUDIO
     if (has_audio) {
-        audio_mid = nanortc_add_track(&rtc, NANORTC_TRACK_AUDIO, NANORTC_DIR_SENDONLY,
-                                      NANORTC_CODEC_OPUS, 48000, 2);
+        audio_mid = nanortc_add_audio_track(&rtc, NANORTC_DIR_SENDONLY,
+                                            NANORTC_CODEC_OPUS, 48000, 2);
         if (audio_mid < 0) {
-            fprintf(stderr, "nanortc_add_track(audio) failed: %d\n", audio_mid);
+            fprintf(stderr, "nanortc_add_audio_track failed: %d\n", audio_mid);
             return 1;
         }
     }
@@ -184,12 +173,12 @@ int main(int argc, char *argv[])
 
 #if NANORTC_FEATURE_VIDEO
     if (has_video) {
-        video_mid = nanortc_add_track(&rtc, NANORTC_TRACK_VIDEO, NANORTC_DIR_SENDONLY,
-                                      NANORTC_CODEC_H264, 90000, 0);
+        video_mid = nanortc_add_video_track(&rtc, NANORTC_DIR_SENDONLY, NANORTC_CODEC_H264);
         if (video_mid < 0) {
-            fprintf(stderr, "nanortc_add_track(video) failed: %d\n", video_mid);
+            fprintf(stderr, "nanortc_add_video_track failed: %d\n", video_mid);
             return 1;
         }
+        nanortc_set_frame_duration(&rtc, (uint8_t)video_mid, 40); /* 25fps */
     }
 #endif
 
@@ -261,25 +250,7 @@ int main(int argc, char *argv[])
                 uint32_t ts_ms = 0;
                 if (nano_media_source_next_frame(&video_src, frame_buf, sizeof(frame_buf),
                                                  &frame_len, &ts_ms) == 0) {
-                    /* RTP timestamp: 90kHz clock, 3600 ticks per frame at 25fps */
-                    uint32_t video_ts_rtp = video_frame_count * 3600;
-
-                    /* Split Annex-B into individual NALUs */
-                    size_t offset = 0;
-                    size_t nal_len = 0;
-                    const uint8_t *nal;
-                    while ((nal = annex_b_find_nal(frame_buf, frame_len, &offset, &nal_len)) !=
-                           NULL) {
-                        int flags = 0;
-                        if ((nal[0] & 0x1F) == 5)
-                            flags |= NANORTC_VIDEO_FLAG_KEYFRAME;
-                        size_t peek_off = offset;
-                        size_t peek_len = 0;
-                        if (annex_b_find_nal(frame_buf, frame_len, &peek_off, &peek_len) == NULL) {
-                            flags |= NANORTC_VIDEO_FLAG_MARKER;
-                        }
-                        nanortc_writer_write(&video_writer, video_ts_rtp, nal, nal_len, flags);
-                    }
+                    nanortc_send_video(&rtc, (uint8_t)video_mid, frame_buf, frame_len);
                     video_frame_count++;
                 }
             }
@@ -300,8 +271,7 @@ int main(int argc, char *argv[])
                 uint32_t ts_ms = 0;
                 if (nano_media_source_next_frame(&audio_src, frame_buf, sizeof(frame_buf),
                                                  &frame_len, &ts_ms) == 0) {
-                    uint32_t audio_ts_rtp = audio_frame_count * 960;
-                    nanortc_writer_write(&audio_writer, audio_ts_rtp, frame_buf, frame_len, 0);
+                    nanortc_send_audio(&rtc, (uint8_t)audio_mid, frame_buf, frame_len);
                     audio_frame_count++;
                 }
             }

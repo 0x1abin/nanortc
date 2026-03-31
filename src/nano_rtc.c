@@ -1569,7 +1569,7 @@ const nanortc_track_t *nanortc_get_track(const nanortc_t *rtc, uint8_t mid)
     return track_find_by_mid((nanortc_track_t *)rtc->media, rtc->media_count, mid);
 }
 
-int nanortc_writer(nanortc_t *rtc, uint8_t mid, nanortc_writer_t *w)
+int nanortc_get_writer(nanortc_t *rtc, uint8_t mid, nanortc_writer_t *w)
 {
     if (!rtc || !w) {
         return NANORTC_ERR_INVALID_PARAM;

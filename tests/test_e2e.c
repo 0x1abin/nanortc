@@ -146,13 +146,13 @@ TEST(test_e2e_stubs_not_implemented)
 #endif
 
 #if NANORTC_HAVE_MEDIA_TRANSPORT
-    /* nanortc_writer returns ERR_STATE when not connected */
+    /* nanortc_get_writer returns ERR_STATE when not connected */
     {
         int mid = nanortc_add_track(&rtc, NANORTC_TRACK_AUDIO, NANORTC_DIR_SENDRECV,
                                     NANORTC_CODEC_OPUS, 48000, 2);
         ASSERT(mid >= 0);
         nanortc_writer_t w;
-        ASSERT_EQ(nanortc_writer(&rtc, (uint8_t)mid, &w), NANORTC_ERR_STATE);
+        ASSERT_EQ(nanortc_get_writer(&rtc, (uint8_t)mid, &w), NANORTC_ERR_STATE);
     }
 #endif
 
@@ -162,7 +162,7 @@ TEST(test_e2e_stubs_not_implemented)
                                      NANORTC_CODEC_H264, 0, 0);
         ASSERT(vmid >= 0);
         nanortc_writer_t vw;
-        ASSERT_EQ(nanortc_writer(&rtc, (uint8_t)vmid, &vw), NANORTC_ERR_STATE);
+        ASSERT_EQ(nanortc_get_writer(&rtc, (uint8_t)vmid, &vw), NANORTC_ERR_STATE);
     }
 #endif
 
@@ -1217,7 +1217,7 @@ TEST(test_e2e_send_audio_before_connected)
 
     /* Writer handle also fails before connection */
     nanortc_writer_t w;
-    ASSERT_FAIL(nanortc_writer(&rtc, (uint8_t)mid, &w));
+    ASSERT_FAIL(nanortc_get_writer(&rtc, (uint8_t)mid, &w));
 
     nanortc_destroy(&rtc);
 }

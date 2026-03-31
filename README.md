@@ -121,7 +121,7 @@ for (;;) {
             break;
         case NANORTC_OUTPUT_EVENT:
             if (out.event.type == NANORTC_EV_DATACHANNEL_DATA && !out.event.datachannel_data.binary) {
-                nano_channel_t ch = {.rtc = &rtc, .id = out.event.datachannel_data.id};
+                nanortc_datachannel_t ch = {.rtc = &rtc, .id = out.event.datachannel_data.id};
                 nanortc_datachannel_send_string(&ch, (const char *)out.event.datachannel_data.data);
             } else if (out.event.type == NANORTC_EV_DISCONNECTED) {
                 goto done;
