@@ -126,7 +126,8 @@ int dc_handle_message(nano_dc_t *dc, uint16_t stream_id, uint32_t ppid, const ui
  * @param label     Channel label (null-terminated).
  * @return NANORTC_OK on success.
  */
-int dc_open(nano_dc_t *dc, uint16_t stream_id, const char *label);
+int dc_open(nano_dc_t *dc, uint16_t stream_id, const char *label, bool ordered,
+            uint16_t max_retransmits);
 
 /** Poll for outbound DCEP message. Caller sends via nsctp_send(PPID=50). */
 int dc_poll_output(nano_dc_t *dc, uint8_t *buf, size_t buf_len, size_t *out_len,

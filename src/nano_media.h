@@ -70,6 +70,10 @@ typedef struct nano_media {
     } track;
 #endif /* NANORTC_HAVE_MEDIA_TRANSPORT */
 
+    /* Convenience send state (used by nanortc_send_audio / nanortc_send_video) */
+    uint32_t send_rtp_ts;       /**< Auto-advancing RTP timestamp. */
+    uint32_t send_frame_dur_ms; /**< Frame interval ms (0 = default 20ms for audio). */
+
     /** Per-track scratch buffer for RTP packing + SRTP. */
     uint8_t media_buf[NANORTC_MEDIA_BUF_SIZE];
 } nano_media_t;

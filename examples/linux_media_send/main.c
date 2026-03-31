@@ -28,8 +28,8 @@
 
 static nano_run_loop_t loop;
 static int connected = 0;
-static nano_writer_t audio_writer;
-static nano_writer_t video_writer;
+static nanortc_writer_t audio_writer;
+static nanortc_writer_t video_writer;
 static int audio_mid = -1;
 static int video_mid = -1;
 
@@ -59,10 +59,10 @@ static void on_event(nanortc_t *rtc, const nanortc_event_t *evt, void *userdata)
         }
         break;
 
-    case NANORTC_EV_CHANNEL_DATA:
-        if (!evt->channel_data.binary) {
-            fprintf(stderr, "[event] DC: %.*s\n", (int)evt->channel_data.len,
-                    (char *)evt->channel_data.data);
+    case NANORTC_EV_DATACHANNEL_DATA:
+        if (!evt->datachannel_data.binary) {
+            fprintf(stderr, "[event] DC: %.*s\n", (int)evt->datachannel_data.len,
+                    (char *)evt->datachannel_data.data);
         }
         break;
 
@@ -173,10 +173,10 @@ int main(int argc, char *argv[])
 
 #if NANORTC_FEATURE_AUDIO
     if (has_audio) {
-        audio_mid = nanortc_add_media(&rtc, NANO_MEDIA_AUDIO, NANORTC_DIR_SENDONLY,
+        audio_mid = nanortc_add_track(&rtc, NANO_MEDIA_AUDIO, NANORTC_DIR_SENDONLY,
                                       NANORTC_CODEC_OPUS, 48000, 2);
         if (audio_mid < 0) {
-            fprintf(stderr, "nanortc_add_media(audio) failed: %d\n", audio_mid);
+            fprintf(stderr, "nanortc_add_track(audio) failed: %d\n", audio_mid);
             return 1;
         }
     }
@@ -184,10 +184,10 @@ int main(int argc, char *argv[])
 
 #if NANORTC_FEATURE_VIDEO
     if (has_video) {
-        video_mid = nanortc_add_media(&rtc, NANO_MEDIA_VIDEO, NANORTC_DIR_SENDONLY,
+        video_mid = nanortc_add_track(&rtc, NANO_MEDIA_VIDEO, NANORTC_DIR_SENDONLY,
                                       NANORTC_CODEC_H264, 90000, 0);
         if (video_mid < 0) {
-            fprintf(stderr, "nanortc_add_media(video) failed: %d\n", video_mid);
+            fprintf(stderr, "nanortc_add_track(video) failed: %d\n", video_mid);
             return 1;
         }
     }

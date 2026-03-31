@@ -74,8 +74,8 @@ static nanortc_t s_rtc;
 static nano_run_loop_t s_loop;
 static char s_local_ip[16];
 static int s_connected;
-static nano_writer_t s_audio_writer;
-static int s_audio_mid; /* MID returned by nanortc_add_media() */
+static nanortc_writer_t s_audio_writer;
+static int s_audio_mid; /* MID returned by nanortc_add_track() */
 
 /* Audio state */
 static uint32_t s_audio_epoch_ms;
@@ -248,10 +248,10 @@ static esp_err_t http_post_offer(httpd_req_t *req)
     }
 
     /* Add audio track via Writer handle pattern */
-    s_audio_mid = nanortc_add_media(&s_rtc, NANO_MEDIA_AUDIO, NANORTC_DIR_SENDONLY, AUDIO_CODEC,
+    s_audio_mid = nanortc_add_track(&s_rtc, NANO_MEDIA_AUDIO, NANORTC_DIR_SENDONLY, AUDIO_CODEC,
                                     AUDIO_SAMPLE_RATE, AUDIO_CHANNELS);
     if (s_audio_mid < 0) {
-        ESP_LOGE(TAG, "nanortc_add_media failed: %d", s_audio_mid);
+        ESP_LOGE(TAG, "nanortc_add_track failed: %d", s_audio_mid);
         free(offer);
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Media fail");
         return ESP_FAIL;

@@ -38,29 +38,29 @@ static void nanortc_on_event(nanortc_t *rtc, const nanortc_event_t *evt, void *u
         atomic_store(&peer->sctp_connected, 1);
         break;
 
-    case NANORTC_EV_CHANNEL_OPEN:
-        fprintf(stderr, "[nanortc] DataChannel open (stream=%d)\n", evt->channel_open.id);
+    case NANORTC_EV_DATACHANNEL_OPEN:
+        fprintf(stderr, "[nanortc] DataChannel open (stream=%d)\n", evt->datachannel_open.id);
         atomic_store(&peer->dc_open, 1);
         break;
 
-    case NANORTC_EV_CHANNEL_DATA:
-        if (evt->channel_data.binary) {
-            fprintf(stderr, "[nanortc] DC binary data (%zu bytes)\n", evt->channel_data.len);
+    case NANORTC_EV_DATACHANNEL_DATA:
+        if (evt->datachannel_data.binary) {
+            fprintf(stderr, "[nanortc] DC binary data (%zu bytes)\n", evt->datachannel_data.len);
             pthread_mutex_lock(&peer->msg_mutex);
-            if (evt->channel_data.len <= sizeof(peer->last_msg)) {
-                memcpy(peer->last_msg, evt->channel_data.data, evt->channel_data.len);
-                peer->last_msg_len = evt->channel_data.len;
+            if (evt->datachannel_data.len <= sizeof(peer->last_msg)) {
+                memcpy(peer->last_msg, evt->datachannel_data.data, evt->datachannel_data.len);
+                peer->last_msg_len = evt->datachannel_data.len;
                 peer->last_msg_is_string = 0;
             }
             pthread_mutex_unlock(&peer->msg_mutex);
         } else {
-            fprintf(stderr, "[nanortc] DC string: %.*s\n", (int)evt->channel_data.len,
-                    (const char *)evt->channel_data.data);
+            fprintf(stderr, "[nanortc] DC string: %.*s\n", (int)evt->datachannel_data.len,
+                    (const char *)evt->datachannel_data.data);
             pthread_mutex_lock(&peer->msg_mutex);
-            if (evt->channel_data.len < sizeof(peer->last_msg)) {
-                memcpy(peer->last_msg, evt->channel_data.data, evt->channel_data.len);
-                peer->last_msg[evt->channel_data.len] = '\0';
-                peer->last_msg_len = evt->channel_data.len;
+            if (evt->datachannel_data.len < sizeof(peer->last_msg)) {
+                memcpy(peer->last_msg, evt->datachannel_data.data, evt->datachannel_data.len);
+                peer->last_msg[evt->datachannel_data.len] = '\0';
+                peer->last_msg_len = evt->datachannel_data.len;
                 peer->last_msg_is_string = 1;
             }
             pthread_mutex_unlock(&peer->msg_mutex);
@@ -68,7 +68,7 @@ static void nanortc_on_event(nanortc_t *rtc, const nanortc_event_t *evt, void *u
         atomic_fetch_add(&peer->msg_count, 1);
         break;
 
-    case NANORTC_EV_CHANNEL_CLOSE:
+    case NANORTC_EV_DATACHANNEL_CLOSE:
         fprintf(stderr, "[nanortc] DataChannel closed\n");
         break;
 

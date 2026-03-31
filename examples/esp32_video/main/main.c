@@ -49,8 +49,8 @@ static nanortc_t s_rtc;
 static nano_run_loop_t s_loop;
 static char s_local_ip[16];
 static int s_connected;
-static nano_writer_t s_video_writer;
-static int s_video_mid; /* MID returned by nanortc_add_media() */
+static nanortc_writer_t s_video_writer;
+static int s_video_mid; /* MID returned by nanortc_add_track() */
 
 /* Video state */
 static nano_media_source_t s_video_src;
@@ -341,10 +341,10 @@ static esp_err_t http_post_offer(httpd_req_t *req)
     }
 
     /* Add video track via Writer handle pattern */
-    s_video_mid = nanortc_add_media(&s_rtc, NANO_MEDIA_VIDEO, NANORTC_DIR_SENDONLY,
+    s_video_mid = nanortc_add_track(&s_rtc, NANO_MEDIA_VIDEO, NANORTC_DIR_SENDONLY,
                                     NANORTC_CODEC_H264, 90000, 0);
     if (s_video_mid < 0) {
-        ESP_LOGE(TAG, "nanortc_add_media failed: %d", s_video_mid);
+        ESP_LOGE(TAG, "nanortc_add_track failed: %d", s_video_mid);
         free(offer);
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Media fail");
         return ESP_FAIL;

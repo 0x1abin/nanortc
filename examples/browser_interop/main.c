@@ -31,8 +31,8 @@
 typedef struct {
     int offer_mode;
     int media_connected; /* DTLS+SRTP ready for media */
-    nano_writer_t audio_writer;
-    nano_writer_t video_writer;
+    nanortc_writer_t audio_writer;
+    nanortc_writer_t video_writer;
     int audio_mid;
     int video_mid;
 } app_ctx_t;
@@ -72,10 +72,8 @@ static void on_event(nanortc_t *rtc, const nanortc_event_t *evt, void *userdata)
         }
         /* Offerer must create the DataChannel after connection is ready */
         if (ctx->offer_mode) {
-            nano_channel_t ch;
-            int drc = nanortc_add_channel_ex(
-                rtc, &(nanortc_channel_config_t){.label = "test", .ordered = true}, &ch);
-            if (drc == NANORTC_OK) {
+            int drc = nanortc_create_datachannel(rtc, "test", NULL);
+            if (drc >= 0) {
                 fprintf(stderr, "[event] Created DataChannel 'test'\n");
             } else {
                 fprintf(stderr, "[event] Failed to create DataChannel: %d\n", drc);
@@ -83,23 +81,23 @@ static void on_event(nanortc_t *rtc, const nanortc_event_t *evt, void *userdata)
         }
         break;
 
-    case NANORTC_EV_CHANNEL_OPEN:
-        fprintf(stderr, "[event] DataChannel open (id=%d)\n", evt->channel_open.id);
-        nanortc_channel_send_string(&evt->channel_open, "hello");
+    case NANORTC_EV_DATACHANNEL_OPEN:
+        fprintf(stderr, "[event] DataChannel open (id=%d)\n", evt->datachannel_open.id);
+        nanortc_datachannel_send_string(&evt->datachannel_open, "hello");
         break;
 
-    case NANORTC_EV_CHANNEL_DATA:
-        if (evt->channel_data.binary) {
-            fprintf(stderr, "[event] DC data (%zu bytes), echoing back\n", evt->channel_data.len);
-            nanortc_channel_send(&evt->channel_data, evt->channel_data.data, evt->channel_data.len);
+    case NANORTC_EV_DATACHANNEL_DATA:
+        if (evt->datachannel_data.binary) {
+            fprintf(stderr, "[event] DC data (%zu bytes), echoing back\n", evt->datachannel_data.len);
+            nanortc_datachannel_send(&evt->datachannel_data, evt->datachannel_data.data, evt->datachannel_data.len);
         } else {
-            fprintf(stderr, "[event] DC string: %.*s\n", (int)evt->channel_data.len,
-                    (char *)evt->channel_data.data);
-            nanortc_channel_send_string(&evt->channel_data, (const char *)evt->channel_data.data);
+            fprintf(stderr, "[event] DC string: %.*s\n", (int)evt->datachannel_data.len,
+                    (char *)evt->datachannel_data.data);
+            nanortc_datachannel_send_string(&evt->datachannel_data, (const char *)evt->datachannel_data.data);
         }
         break;
 
-    case NANORTC_EV_CHANNEL_CLOSE:
+    case NANORTC_EV_DATACHANNEL_CLOSE:
         fprintf(stderr, "[event] DataChannel closed\n");
         break;
 
@@ -329,19 +327,19 @@ int main(int argc, char *argv[])
 
 #if NANORTC_FEATURE_AUDIO
     if (audio_dir) {
-        app_ctx.audio_mid = nanortc_add_media(&rtc, NANO_MEDIA_AUDIO, NANORTC_DIR_SENDONLY,
+        app_ctx.audio_mid = nanortc_add_track(&rtc, NANO_MEDIA_AUDIO, NANORTC_DIR_SENDONLY,
                                               NANORTC_CODEC_OPUS, 48000, 2);
         if (app_ctx.audio_mid < 0)
-            fprintf(stderr, "nanortc_add_media(audio) failed: %d\n", app_ctx.audio_mid);
+            fprintf(stderr, "nanortc_add_track(audio) failed: %d\n", app_ctx.audio_mid);
     }
 #endif
 
 #if NANORTC_FEATURE_VIDEO
     if (video_dir) {
-        app_ctx.video_mid = nanortc_add_media(&rtc, NANO_MEDIA_VIDEO, NANORTC_DIR_SENDONLY,
+        app_ctx.video_mid = nanortc_add_track(&rtc, NANO_MEDIA_VIDEO, NANORTC_DIR_SENDONLY,
                                               NANORTC_CODEC_H264, 90000, 0);
         if (app_ctx.video_mid < 0)
-            fprintf(stderr, "nanortc_add_media(video) failed: %d\n", app_ctx.video_mid);
+            fprintf(stderr, "nanortc_add_track(video) failed: %d\n", app_ctx.video_mid);
     }
 #endif
 
