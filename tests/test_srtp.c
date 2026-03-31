@@ -60,8 +60,8 @@ TEST(test_srtp_key_derivation_rfc3711_b3)
     memset(km + 46, 0xBB, 14);                /* server_salt (don't care) */
 
     nano_srtp_t srtp;
-    srtp_init(&srtp, crypto, 1); /* is_client=1 → send uses client keys */
-    ASSERT_OK(srtp_derive_keys(&srtp, km, sizeof(km)));
+    nano_srtp_init(&srtp, crypto, 1); /* is_client=1 → send uses client keys */
+    ASSERT_OK(nano_srtp_derive_keys(&srtp, km, sizeof(km)));
 
     /* Verify send (client) session keys match RFC test vectors */
     ASSERT_MEM_EQ(srtp.send_key, rfc3711_session_key, 16);
@@ -86,11 +86,11 @@ TEST(test_srtp_key_direction)
     memset(km + 46, 0x55, 14);                /* server_salt */
 
     nano_srtp_t client, server;
-    srtp_init(&client, crypto, 1); /* DTLS client */
-    srtp_init(&server, crypto, 0); /* DTLS server */
+    nano_srtp_init(&client, crypto, 1); /* DTLS client */
+    nano_srtp_init(&server, crypto, 0); /* DTLS server */
 
-    ASSERT_OK(srtp_derive_keys(&client, km, sizeof(km)));
-    ASSERT_OK(srtp_derive_keys(&server, km, sizeof(km)));
+    ASSERT_OK(nano_srtp_derive_keys(&client, km, sizeof(km)));
+    ASSERT_OK(nano_srtp_derive_keys(&server, km, sizeof(km)));
 
     /* Client send keys = server recv keys */
     ASSERT_MEM_EQ(client.send_key, server.recv_key, 16);
@@ -115,11 +115,11 @@ TEST(test_srtp_protect_unprotect_roundtrip)
     crypto->random_bytes(km, sizeof(km));
 
     nano_srtp_t sender, receiver;
-    srtp_init(&sender, crypto, 1);   /* DTLS client sends */
-    srtp_init(&receiver, crypto, 0); /* DTLS server receives */
+    nano_srtp_init(&sender, crypto, 1);   /* DTLS client sends */
+    nano_srtp_init(&receiver, crypto, 0); /* DTLS server receives */
 
-    ASSERT_OK(srtp_derive_keys(&sender, km, sizeof(km)));
-    ASSERT_OK(srtp_derive_keys(&receiver, km, sizeof(km)));
+    ASSERT_OK(nano_srtp_derive_keys(&sender, km, sizeof(km)));
+    ASSERT_OK(nano_srtp_derive_keys(&receiver, km, sizeof(km)));
 
     /* Build an RTP packet */
     nano_rtp_t rtp;
@@ -138,7 +138,7 @@ TEST(test_srtp_protect_unprotect_roundtrip)
 
     /* Protect (encrypt + authenticate) */
     size_t srtp_len;
-    ASSERT_OK(srtp_protect(&sender, buf, pkt_len, &srtp_len));
+    ASSERT_OK(nano_srtp_protect(&sender, buf, pkt_len, &srtp_len));
     ASSERT_EQ(srtp_len, pkt_len + 10); /* +10 auth tag */
 
     /* Encrypted payload should differ from original */
@@ -146,7 +146,7 @@ TEST(test_srtp_protect_unprotect_roundtrip)
 
     /* Unprotect (verify + decrypt) */
     size_t rtp_len;
-    ASSERT_OK(srtp_unprotect(&receiver, buf, srtp_len, &rtp_len));
+    ASSERT_OK(nano_srtp_unprotect(&receiver, buf, srtp_len, &rtp_len));
     ASSERT_EQ(rtp_len, original_len);
 
     /* Decrypted packet should match original */
@@ -164,10 +164,10 @@ TEST(test_srtp_tamper_detection)
     crypto->random_bytes(km, sizeof(km));
 
     nano_srtp_t sender, receiver;
-    srtp_init(&sender, crypto, 1);
-    srtp_init(&receiver, crypto, 0);
-    ASSERT_OK(srtp_derive_keys(&sender, km, sizeof(km)));
-    ASSERT_OK(srtp_derive_keys(&receiver, km, sizeof(km)));
+    nano_srtp_init(&sender, crypto, 1);
+    nano_srtp_init(&receiver, crypto, 0);
+    ASSERT_OK(nano_srtp_derive_keys(&sender, km, sizeof(km)));
+    ASSERT_OK(nano_srtp_derive_keys(&receiver, km, sizeof(km)));
 
     nano_rtp_t rtp;
     rtp_init(&rtp, 1, 96);
@@ -175,13 +175,13 @@ TEST(test_srtp_tamper_detection)
     uint8_t buf[256];
     size_t pkt_len, srtp_len, out_len;
     ASSERT_OK(rtp_pack(&rtp, 0, (const uint8_t *)"test", 4, buf, sizeof(buf), &pkt_len));
-    ASSERT_OK(srtp_protect(&sender, buf, pkt_len, &srtp_len));
+    ASSERT_OK(nano_srtp_protect(&sender, buf, pkt_len, &srtp_len));
 
     /* Tamper with encrypted payload */
     buf[12] ^= 0xFF;
 
     /* Unprotect should fail due to auth mismatch */
-    ASSERT_EQ(srtp_unprotect(&receiver, buf, srtp_len, &out_len), NANORTC_ERR_CRYPTO);
+    ASSERT_EQ(nano_srtp_unprotect(&receiver, buf, srtp_len, &out_len), NANORTC_ERR_CRYPTO);
 }
 
 /*
@@ -195,10 +195,10 @@ TEST(test_srtp_multiple_packets)
     crypto->random_bytes(km, sizeof(km));
 
     nano_srtp_t sender, receiver;
-    srtp_init(&sender, crypto, 1);
-    srtp_init(&receiver, crypto, 0);
-    ASSERT_OK(srtp_derive_keys(&sender, km, sizeof(km)));
-    ASSERT_OK(srtp_derive_keys(&receiver, km, sizeof(km)));
+    nano_srtp_init(&sender, crypto, 1);
+    nano_srtp_init(&receiver, crypto, 0);
+    ASSERT_OK(nano_srtp_derive_keys(&sender, km, sizeof(km)));
+    ASSERT_OK(nano_srtp_derive_keys(&receiver, km, sizeof(km)));
 
     nano_rtp_t rtp;
     rtp_init(&rtp, 0x42, 111);
@@ -210,8 +210,8 @@ TEST(test_srtp_multiple_packets)
         size_t pkt_len, srtp_len, rtp_len;
 
         ASSERT_OK(rtp_pack(&rtp, (uint32_t)(i * 960), payload, 4, buf, sizeof(buf), &pkt_len));
-        ASSERT_OK(srtp_protect(&sender, buf, pkt_len, &srtp_len));
-        ASSERT_OK(srtp_unprotect(&receiver, buf, srtp_len, &rtp_len));
+        ASSERT_OK(nano_srtp_protect(&sender, buf, pkt_len, &srtp_len));
+        ASSERT_OK(nano_srtp_unprotect(&receiver, buf, srtp_len, &rtp_len));
 
         /* Verify payload recovered */
         ASSERT_MEM_EQ(buf + 12, payload, 4);
@@ -293,8 +293,8 @@ TEST(test_srtp_roc_rollover)
     crypto->random_bytes(km, sizeof(km));
 
     nano_srtp_t sender;
-    srtp_init(&sender, crypto, 1);
-    ASSERT_OK(srtp_derive_keys(&sender, km, sizeof(km)));
+    nano_srtp_init(&sender, crypto, 1);
+    ASSERT_OK(nano_srtp_derive_keys(&sender, km, sizeof(km)));
 
     nano_rtp_t rtp;
     rtp_init(&rtp, 0xABCD, 111);
@@ -308,7 +308,7 @@ TEST(test_srtp_roc_rollover)
         size_t pkt_len, srtp_len;
 
         ASSERT_OK(rtp_pack(&rtp, (uint32_t)(i * 960), payload, 1, buf, sizeof(buf), &pkt_len));
-        ASSERT_OK(srtp_protect(&sender, buf, pkt_len, &srtp_len));
+        ASSERT_OK(nano_srtp_protect(&sender, buf, pkt_len, &srtp_len));
         /* Verify SRTP output is longer than input (auth tag added) */
         ASSERT_EQ(srtp_len, pkt_len + NANORTC_SRTP_AUTH_TAG_SIZE);
     }
@@ -342,15 +342,15 @@ TEST(test_srtp_keying_material_size)
     crypto->random_bytes(km, sizeof(km));
 
     nano_srtp_t srtp;
-    srtp_init(&srtp, crypto, 1);
+    nano_srtp_init(&srtp, crypto, 1);
 
     /* Exactly 60 bytes should succeed */
-    ASSERT_OK(srtp_derive_keys(&srtp, km, 60));
+    ASSERT_OK(nano_srtp_derive_keys(&srtp, km, 60));
 
     /* Less than 60 should fail */
     nano_srtp_t srtp2;
-    srtp_init(&srtp2, crypto, 1);
-    ASSERT_FAIL(srtp_derive_keys(&srtp2, km, 59));
+    nano_srtp_init(&srtp2, crypto, 1);
+    ASSERT_FAIL(nano_srtp_derive_keys(&srtp2, km, 59));
 }
 
 #endif /* NANORTC_HAVE_MEDIA_TRANSPORT */

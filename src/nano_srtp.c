@@ -66,7 +66,7 @@ static int srtp_kdf(const nanortc_crypto_provider_t *crypto,
     return NANORTC_OK;
 }
 
-int srtp_init(nano_srtp_t *srtp, const nanortc_crypto_provider_t *crypto, int is_client)
+int nano_srtp_init(nano_srtp_t *srtp, const nanortc_crypto_provider_t *crypto, int is_client)
 {
     if (!srtp) {
         return NANORTC_ERR_INVALID_PARAM;
@@ -77,7 +77,7 @@ int srtp_init(nano_srtp_t *srtp, const nanortc_crypto_provider_t *crypto, int is
     return NANORTC_OK;
 }
 
-int srtp_derive_keys(nano_srtp_t *srtp, const uint8_t *keying_material, size_t len)
+int nano_srtp_derive_keys(nano_srtp_t *srtp, const uint8_t *keying_material, size_t len)
 {
     if (!srtp || !keying_material || !srtp->crypto) {
         return NANORTC_ERR_INVALID_PARAM;
@@ -266,7 +266,7 @@ static int srtp_parse_hdr_len(const uint8_t *packet, size_t len, size_t *hdr_len
     return NANORTC_OK;
 }
 
-int srtp_protect(nano_srtp_t *srtp, uint8_t *packet, size_t len, size_t *out_len)
+int nano_srtp_protect(nano_srtp_t *srtp, uint8_t *packet, size_t len, size_t *out_len)
 {
     if (!srtp || !packet || !out_len || !srtp->ready) {
         return NANORTC_ERR_INVALID_PARAM;
@@ -331,7 +331,7 @@ int srtp_protect(nano_srtp_t *srtp, uint8_t *packet, size_t len, size_t *out_len
     return NANORTC_OK;
 }
 
-int srtp_unprotect(nano_srtp_t *srtp, uint8_t *packet, size_t len, size_t *out_len)
+int nano_srtp_unprotect(nano_srtp_t *srtp, uint8_t *packet, size_t len, size_t *out_len)
 {
     if (!srtp || !packet || !out_len || !srtp->ready) {
         return NANORTC_ERR_INVALID_PARAM;
