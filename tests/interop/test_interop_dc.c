@@ -35,10 +35,8 @@ static uint16_t alloc_port(void)
  *
  * On success, caller must call teardown() to clean up.
  */
-static int setup_connected_pair(interop_sig_pipe_t *pipe,
-                                interop_nanortc_peer_t *nano,
-                                interop_libdatachannel_peer_t *libdatachannel,
-                                const char *dc_label)
+static int setup_connected_pair(interop_sig_pipe_t *pipe, interop_nanortc_peer_t *nano,
+                                interop_libdatachannel_peer_t *libdatachannel, const char *dc_label)
 {
     uint16_t port = alloc_port();
 
@@ -65,8 +63,7 @@ static int setup_connected_pair(interop_sig_pipe_t *pipe,
     return 0;
 }
 
-static void teardown_pair(interop_sig_pipe_t *pipe,
-                          interop_nanortc_peer_t *nano,
+static void teardown_pair(interop_sig_pipe_t *pipe, interop_nanortc_peer_t *nano,
                           interop_libdatachannel_peer_t *libdatachannel)
 {
     interop_libdatachannel_stop(libdatachannel);
@@ -190,9 +187,12 @@ TEST(test_interop_dc_string_nanortc_to_libdatachannel)
     const char *msg = "hello libdatachannel";
     int initial_count = atomic_load(&libdatachannel.msg_count);
 
-    /* nanortc_send_datachannel_string is thread-safe for our purposes here
-     * because the run_loop is the only other accessor of rtc */
-    rc = nanortc_send_datachannel_string(&nano.rtc, 0, msg);
+    /* Channel handle for stream_id 0 (the DC opened by libdatachannel) */
+    nano_channel_t nano_ch;
+    nano_ch.rtc = &nano.rtc;
+    nano_ch.id = 0;
+
+    rc = nanortc_channel_send_string(&nano_ch, msg);
     ASSERT_OK(rc);
 
     /* Wait for libdatachannel to receive it */
@@ -282,7 +282,10 @@ TEST(test_interop_dc_binary_nanortc_to_libdatachannel)
     }
 
     int initial_count = atomic_load(&libdatachannel.msg_count);
-    rc = nanortc_send_datachannel(&nano.rtc, 0, payload, sizeof(payload));
+    nano_channel_t nano_ch;
+    nano_ch.rtc = &nano.rtc;
+    nano_ch.id = 0;
+    rc = nanortc_channel_send(&nano_ch, payload, sizeof(payload));
     ASSERT_OK(rc);
 
     /* Wait for libdatachannel to receive */
@@ -386,7 +389,10 @@ TEST(test_interop_dc_single_byte)
     /* nanortc -> libdatachannel: single byte 0xAB */
     uint8_t byte_nano = 0xAB;
     int initial_ldc = atomic_load(&libdatachannel.msg_count);
-    rc = nanortc_send_datachannel(&nano.rtc, 0, &byte_nano, 1);
+    nano_channel_t nano_ch;
+    nano_ch.rtc = &nano.rtc;
+    nano_ch.id = 0;
+    rc = nanortc_channel_send(&nano_ch, &byte_nano, 1);
     ASSERT_OK(rc);
 
     start = interop_get_millis();
@@ -481,7 +487,10 @@ TEST(test_interop_dc_bidirectional)
     const char *from_nano = "from-nano";
     const char *from_ldc = "from-libdc";
 
-    rc = nanortc_send_datachannel_string(&nano.rtc, 0, from_nano);
+    nano_channel_t nano_ch;
+    nano_ch.rtc = &nano.rtc;
+    nano_ch.id = 0;
+    rc = nanortc_channel_send_string(&nano_ch, from_nano);
     ASSERT_OK(rc);
     rc = interop_libdatachannel_send_string(&libdatachannel, from_ldc);
     ASSERT_TRUE(rc >= 0);
@@ -551,7 +560,10 @@ TEST(test_interop_dc_echo_roundtrip)
     /* Step 2: nanortc echoes back a reply */
     const char *reply = "echo-reply";
     int initial_ldc = atomic_load(&libdatachannel.msg_count);
-    rc = nanortc_send_datachannel_string(&nano.rtc, 0, reply);
+    nano_channel_t nano_ch;
+    nano_ch.rtc = &nano.rtc;
+    nano_ch.id = 0;
+    rc = nanortc_channel_send_string(&nano_ch, reply);
     ASSERT_OK(rc);
 
     start = interop_get_millis();
@@ -575,15 +587,15 @@ TEST(test_interop_dc_echo_roundtrip)
  * ---------------------------------------------------------------- */
 
 TEST_MAIN_BEGIN("interop-datachannel")
-    RUN(test_interop_handshake);
-    RUN(test_interop_dc_open);
-    RUN(test_interop_dc_string_libdatachannel_to_nanortc);
-    RUN(test_interop_dc_string_nanortc_to_libdatachannel);
-    RUN(test_interop_dc_binary);
-    RUN(test_interop_dc_binary_nanortc_to_libdatachannel);
-    RUN(test_interop_dc_large_binary);
-    RUN(test_interop_dc_single_byte);
-    RUN(test_interop_dc_sequential_messages);
-    RUN(test_interop_dc_bidirectional);
-    RUN(test_interop_dc_echo_roundtrip);
+RUN(test_interop_handshake);
+RUN(test_interop_dc_open);
+RUN(test_interop_dc_string_libdatachannel_to_nanortc);
+RUN(test_interop_dc_string_nanortc_to_libdatachannel);
+RUN(test_interop_dc_binary);
+RUN(test_interop_dc_binary_nanortc_to_libdatachannel);
+RUN(test_interop_dc_large_binary);
+RUN(test_interop_dc_single_byte);
+RUN(test_interop_dc_sequential_messages);
+RUN(test_interop_dc_bidirectional);
+RUN(test_interop_dc_echo_roundtrip);
 TEST_MAIN_END

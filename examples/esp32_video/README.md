@@ -71,7 +71,7 @@ Browser                          ESP32
   │                                │
   │         SD Card ──→ read frame │  frame-NNNN.h264
   │                    NAL split   │  annex_b_find_nal()
-  │                    RTP pack    │  nanortc_send_video()
+  │                    RTP pack    │  nanortc_writer_write()
 ```
 
 ## Configuration

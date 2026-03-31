@@ -133,19 +133,26 @@ TEST(test_e2e_stubs_not_implemented)
     uint8_t data[] = {0x00, 0x01, 0x00, 0x00};
 
 #if NANORTC_FEATURE_DATACHANNEL
-    /* nanortc_send_datachannel now returns NANORTC_ERR_STATE (not connected) */
-    ASSERT_EQ(nanortc_send_datachannel(&rtc, 0, data, sizeof(data)), NANORTC_ERR_STATE);
-    ASSERT_EQ(nanortc_send_datachannel_string(&rtc, 0, "hello"), NANORTC_ERR_STATE);
+    /* nanortc_channel_send returns ERR_STATE (not connected) via channel handle */
+    {
+        int sid = nanortc_add_channel(&rtc, "test");
+        ASSERT(sid >= 0);
+        nano_channel_t ch;
+        ch.rtc = &rtc;
+        ch.id = (uint16_t)sid;
+        ASSERT_EQ(nanortc_channel_send(&ch, data, sizeof(data)), NANORTC_ERR_STATE);
+        ASSERT_EQ(nanortc_channel_send_string(&ch, "hello"), NANORTC_ERR_STATE);
+    }
 #endif
 
 #if NANORTC_HAVE_MEDIA_TRANSPORT
-    /* nanortc_send_media returns ERR_STATE when not connected */
+    /* nanortc_writer returns ERR_STATE when not connected */
     {
         int mid = nanortc_add_media(&rtc, NANO_MEDIA_AUDIO, NANORTC_DIR_SENDRECV,
                                     NANORTC_CODEC_OPUS, 48000, 2);
         ASSERT(mid >= 0);
-        ASSERT_EQ(nanortc_send_media(&rtc, (uint8_t)mid, 0, data, sizeof(data), 0),
-                  NANORTC_ERR_STATE);
+        nano_writer_t w;
+        ASSERT_EQ(nanortc_writer(&rtc, (uint8_t)mid, &w), NANORTC_ERR_STATE);
     }
 #endif
 
@@ -154,9 +161,8 @@ TEST(test_e2e_stubs_not_implemented)
         int vmid = nanortc_add_media(&rtc, NANO_MEDIA_VIDEO, NANORTC_DIR_SENDRECV,
                                      NANORTC_CODEC_H264, 0, 0);
         ASSERT(vmid >= 0);
-        ASSERT_EQ(nanortc_send_media(&rtc, (uint8_t)vmid, 0, data, sizeof(data), 1),
-                  NANORTC_ERR_STATE);
-        ASSERT_EQ(nanortc_request_keyframe(&rtc, (uint8_t)vmid), NANORTC_ERR_STATE);
+        nano_writer_t vw;
+        ASSERT_EQ(nanortc_writer(&rtc, (uint8_t)vmid, &vw), NANORTC_ERR_STATE);
     }
 #endif
 
@@ -339,8 +345,8 @@ TEST(test_e2e_ice_loopback)
     nanortc_output_t ice_chg;
     ASSERT_OK(nanortc_poll_output(&offerer, &ice_chg));
     ASSERT_EQ(ice_chg.type, NANORTC_OUTPUT_EVENT);
-    ASSERT_EQ(ice_chg.event.type, NANORTC_EVENT_ICE_STATE_CHANGE);
-    ASSERT_EQ(ice_chg.event.stream_id, (uint16_t)NANORTC_ICE_STATE_CHECKING);
+    ASSERT_EQ(ice_chg.event.type, NANORTC_EV_ICE_STATE_CHANGE);
+    ASSERT_EQ(ice_chg.event.ice_state, (uint16_t)NANORTC_ICE_STATE_CHECKING);
 
     nanortc_output_t tout;
     ASSERT_OK(nanortc_poll_output(&offerer, &tout));
@@ -372,16 +378,12 @@ TEST(test_e2e_ice_loopback)
     size_t saved_resp_len = ans_out.transmit.len;
     memcpy(saved_resp, ans_out.transmit.data, saved_resp_len);
 
-    /* Check for ICE_CONNECTED + ICE_STATE_CHANGE events on answerer */
+    /* Check for ICE_STATE_CHANGE (CONNECTED) event on answerer */
     nanortc_output_t evt;
     ASSERT_OK(nanortc_poll_output(&answerer, &evt));
     ASSERT_EQ(evt.type, NANORTC_OUTPUT_EVENT);
-    ASSERT_EQ(evt.event.type, NANORTC_EVENT_ICE_CONNECTED);
-
-    nanortc_output_t ans_ice_chg;
-    ASSERT_OK(nanortc_poll_output(&answerer, &ans_ice_chg));
-    ASSERT_EQ(ans_ice_chg.type, NANORTC_OUTPUT_EVENT);
-    ASSERT_EQ(ans_ice_chg.event.type, NANORTC_EVENT_ICE_STATE_CHANGE);
+    ASSERT_EQ(evt.event.type, NANORTC_EV_ICE_STATE_CHANGE);
+    ASSERT_EQ(evt.event.ice_state, (uint16_t)NANORTC_ICE_STATE_CONNECTED);
 
     /* Feed response into offerer */
     nanortc_addr_t answerer_addr;
@@ -399,16 +401,12 @@ TEST(test_e2e_ice_loopback)
     ASSERT_EQ(offerer.ice.state, NANORTC_ICE_STATE_CONNECTED);
     ASSERT_EQ(offerer.state, NANORTC_STATE_DTLS_HANDSHAKING);
 
-    /* ICE_CONNECTED + ICE_STATE_CHANGE events should be queued for offerer */
+    /* ICE_STATE_CHANGE (CONNECTED) event should be queued for offerer */
     nanortc_output_t off_evt;
     ASSERT_OK(nanortc_poll_output(&offerer, &off_evt));
     ASSERT_EQ(off_evt.type, NANORTC_OUTPUT_EVENT);
-    ASSERT_EQ(off_evt.event.type, NANORTC_EVENT_ICE_CONNECTED);
-
-    nanortc_output_t off_ice_chg;
-    ASSERT_OK(nanortc_poll_output(&offerer, &off_ice_chg));
-    ASSERT_EQ(off_ice_chg.type, NANORTC_OUTPUT_EVENT);
-    ASSERT_EQ(off_ice_chg.event.type, NANORTC_EVENT_ICE_STATE_CHANGE);
+    ASSERT_EQ(off_evt.event.type, NANORTC_EV_ICE_STATE_CHANGE);
+    ASSERT_EQ(off_evt.event.ice_state, (uint16_t)NANORTC_ICE_STATE_CONNECTED);
 
     /* Offerer (client role) should have a ClientHello TRANSMIT output */
     nanortc_output_t ch_out;
@@ -543,7 +541,10 @@ TEST(test_e2e_create_offer_content)
     cfg.role = NANORTC_ROLE_CONTROLLING;
     ASSERT_OK(nanortc_init(&rtc, &cfg));
 
-#if NANORTC_HAVE_MEDIA_TRANSPORT && !NANORTC_FEATURE_DATACHANNEL
+#if NANORTC_FEATURE_DATACHANNEL
+    /* DC m-line must be explicitly registered via nanortc_add_channel() */
+    ASSERT(nanortc_add_channel(&rtc, "test") >= 0);
+#elif NANORTC_HAVE_MEDIA_TRANSPORT
     /* Without DC, add a media track so the offer has at least one m-line */
     ASSERT(nanortc_add_media(&rtc, NANO_MEDIA_AUDIO, NANORTC_DIR_SENDRECV, NANORTC_CODEC_OPUS,
                              48000, 2) >= 0);
@@ -585,7 +586,10 @@ TEST(test_e2e_offer_answer_roundtrip)
     /* Add local candidate on answerer so it appears in the answer SDP */
     ASSERT_OK(nanortc_add_local_candidate(&answerer, "192.168.1.2", 5000));
 
-#if NANORTC_HAVE_MEDIA_TRANSPORT && !NANORTC_FEATURE_DATACHANNEL
+#if NANORTC_FEATURE_DATACHANNEL
+    /* DC m-line must be explicitly registered */
+    ASSERT(nanortc_add_channel(&offerer, "test") >= 0);
+#elif NANORTC_HAVE_MEDIA_TRANSPORT
     /* Without DC, add a media track so the offer has at least one m-line */
     ASSERT(nanortc_add_media(&offerer, NANO_MEDIA_AUDIO, NANORTC_DIR_SENDRECV, NANORTC_CODEC_OPUS,
                              48000, 2) >= 0);
@@ -639,7 +643,10 @@ TEST(test_e2e_full_sdp_to_dtls)
     /* Add local candidate on answerer so it appears in answer SDP */
     ASSERT_OK(nanortc_add_local_candidate(&answerer, "192.168.1.2", 5000));
 
-#if NANORTC_HAVE_MEDIA_TRANSPORT && !NANORTC_FEATURE_DATACHANNEL
+#if NANORTC_FEATURE_DATACHANNEL
+    /* DC m-line must be explicitly registered */
+    ASSERT(nanortc_add_channel(&offerer, "test") >= 0);
+#elif NANORTC_HAVE_MEDIA_TRANSPORT
     /* Without DC, add a media track so the offer has at least one m-line */
     ASSERT(nanortc_add_media(&offerer, NANO_MEDIA_AUDIO, NANORTC_DIR_SENDRECV, NANORTC_CODEC_OPUS,
                              48000, 2) >= 0);
@@ -703,68 +710,58 @@ TEST(test_e2e_full_sdp_to_dtls)
     nanortc_destroy(&answerer);
 }
 
-TEST(test_e2e_get_state_transitions)
+TEST(test_e2e_state_queries)
 {
-    /* Use nanortc_get_state() API instead of direct .state access */
+    /* Use nanortc_is_alive() / nanortc_is_connected() API */
     nanortc_t rtc;
     nanortc_config_t cfg = e2e_default_config();
     ASSERT_OK(nanortc_init(&rtc, &cfg));
 
-    ASSERT_EQ(nanortc_get_state(&rtc), NANORTC_STATE_NEW);
-    ASSERT_EQ(nanortc_get_state(NULL), NANORTC_STATE_CLOSED);
+    ASSERT_TRUE(nanortc_is_alive(&rtc));
+    ASSERT_FALSE(nanortc_is_connected(&rtc));
+    ASSERT_FALSE(nanortc_is_alive(NULL));
+    ASSERT_FALSE(nanortc_is_connected(NULL));
 
     nanortc_destroy(&rtc);
-    ASSERT_EQ(nanortc_get_state(&rtc), NANORTC_STATE_CLOSED);
+    ASSERT_FALSE(nanortc_is_alive(&rtc));
 }
 
 #if NANORTC_FEATURE_DATACHANNEL
-TEST(test_e2e_create_datachannel_wrong_state)
+TEST(test_e2e_add_channel_invalid)
 {
-    /* Creating a DC in NEW state should fail */
+    /* nanortc_add_channel with NULL label should fail */
     nanortc_t rtc;
     nanortc_config_t cfg = e2e_default_config();
     ASSERT_OK(nanortc_init(&rtc, &cfg));
 
-    nanortc_datachannel_config_t dc_cfg;
-    memset(&dc_cfg, 0, sizeof(dc_cfg));
-    dc_cfg.label = "test";
-    dc_cfg.ordered = true;
-
-    uint16_t stream_id = 0;
-    ASSERT_EQ(nanortc_create_datachannel(&rtc, &dc_cfg, &stream_id), NANORTC_ERR_STATE);
+    ASSERT_EQ(nanortc_add_channel(&rtc, NULL), NANORTC_ERR_INVALID_PARAM);
+    ASSERT_EQ(nanortc_add_channel(NULL, "test"), NANORTC_ERR_INVALID_PARAM);
 
     nanortc_destroy(&rtc);
 }
 
-TEST(test_e2e_create_datachannel)
+TEST(test_e2e_add_channel)
 {
-    /* Force state to CONNECTED and create a DC */
+    /* nanortc_add_channel works in NEW state (SDP-phase registration) */
     nanortc_t rtc;
     nanortc_config_t cfg = e2e_default_config();
     ASSERT_OK(nanortc_init(&rtc, &cfg));
 
-    /* Fake connected state for unit testing */
-    rtc.state = NANORTC_STATE_CONNECTED;
-    rtc.dtls.is_server = 0; /* client → even stream IDs */
-
-    nanortc_datachannel_config_t dc_cfg;
-    memset(&dc_cfg, 0, sizeof(dc_cfg));
-    dc_cfg.label = "my-channel";
-    dc_cfg.ordered = true;
-
-    uint16_t stream_id = 0xFFFF;
-    ASSERT_OK(nanortc_create_datachannel(&rtc, &dc_cfg, &stream_id));
-    ASSERT_EQ(stream_id, 0); /* first even stream ID */
+    int sid = nanortc_add_channel(&rtc, "my-channel");
+    ASSERT_TRUE(sid >= 0);
 
     /* Verify channel exists in DC state */
     ASSERT_EQ(rtc.datachannel.channel_count, 1);
 
+    /* Verify DC m-line was registered in SDP */
+    ASSERT_TRUE(rtc.sdp.has_datachannel);
+
     nanortc_destroy(&rtc);
 }
 
-TEST(test_e2e_close_datachannel)
+TEST(test_e2e_channel_close)
 {
-    /* Create then close a DC, verify CLOSE event is emitted */
+    /* Create then close a DC via channel handle, verify CLOSE event */
     nanortc_t rtc;
     nanortc_config_t cfg = e2e_default_config();
     ASSERT_OK(nanortc_init(&rtc, &cfg));
@@ -772,78 +769,67 @@ TEST(test_e2e_close_datachannel)
     rtc.state = NANORTC_STATE_CONNECTED;
     rtc.dtls.is_server = 0;
 
-    nanortc_datachannel_config_t dc_cfg;
-    memset(&dc_cfg, 0, sizeof(dc_cfg));
-    dc_cfg.label = "closable";
-    dc_cfg.ordered = true;
-
-    uint16_t stream_id = 0;
-    ASSERT_OK(nanortc_create_datachannel(&rtc, &dc_cfg, &stream_id));
+    int sid = nanortc_add_channel(&rtc, "closable");
+    ASSERT_TRUE(sid >= 0);
 
     /* Drain any outputs from create */
     nanortc_output_t tmp;
     while (nanortc_poll_output(&rtc, &tmp) == NANORTC_OK) {
     }
 
-    /* Close the datachannel */
-    ASSERT_OK(nanortc_close_datachannel(&rtc, stream_id));
+    /* Close via channel handle */
+    nano_channel_t ch;
+    ASSERT_OK(nanortc_channel(&rtc, (uint16_t)sid, &ch));
+    ASSERT_OK(nanortc_channel_close(&ch));
 
-    /* Should emit DATACHANNEL_CLOSE event */
+    /* Should emit CHANNEL_CLOSE event */
     nanortc_output_t evt;
     ASSERT_OK(nanortc_poll_output(&rtc, &evt));
     ASSERT_EQ(evt.type, NANORTC_OUTPUT_EVENT);
-    ASSERT_EQ(evt.event.type, NANORTC_EVENT_DATACHANNEL_CLOSE);
-    ASSERT_EQ(evt.event.stream_id, stream_id);
+    ASSERT_EQ(evt.event.type, NANORTC_EV_CHANNEL_CLOSE);
+    ASSERT_EQ(evt.event.channel_id.id, (uint16_t)sid);
 
     nanortc_destroy(&rtc);
 }
 
-TEST(test_e2e_close_datachannel_invalid)
+TEST(test_e2e_channel_invalid)
 {
-    /* Closing a nonexistent stream_id should return ERR_INVALID_PARAM */
+    /* Getting a handle for nonexistent channel should fail */
     nanortc_t rtc;
     nanortc_config_t cfg = e2e_default_config();
     ASSERT_OK(nanortc_init(&rtc, &cfg));
 
     rtc.state = NANORTC_STATE_CONNECTED;
-    ASSERT_EQ(nanortc_close_datachannel(&rtc, 9999), NANORTC_ERR_INVALID_PARAM);
+    nano_channel_t ch;
+    ASSERT_EQ(nanortc_channel(&rtc, 9999, &ch), NANORTC_ERR_INVALID_PARAM);
 
     nanortc_destroy(&rtc);
 }
 
-TEST(test_e2e_get_datachannel_label)
+TEST(test_e2e_channel_label)
 {
-    /* Create a DC and verify label retrieval */
+    /* Create a DC and verify label retrieval via channel handle */
     nanortc_t rtc;
     nanortc_config_t cfg = e2e_default_config();
     ASSERT_OK(nanortc_init(&rtc, &cfg));
 
-    rtc.state = NANORTC_STATE_CONNECTED;
-    rtc.dtls.is_server = 0;
+    int sid = nanortc_add_channel(&rtc, "my-label");
+    ASSERT_TRUE(sid >= 0);
 
-    nanortc_datachannel_config_t dc_cfg;
-    memset(&dc_cfg, 0, sizeof(dc_cfg));
-    dc_cfg.label = "my-label";
-    dc_cfg.ordered = true;
-
-    uint16_t stream_id = 0;
-    ASSERT_OK(nanortc_create_datachannel(&rtc, &dc_cfg, &stream_id));
-
-    const char *label = NULL;
-    ASSERT_OK(nanortc_get_datachannel_label(&rtc, stream_id, &label));
+    nano_channel_t ch;
+    ch.rtc = &rtc;
+    ch.id = (uint16_t)sid;
+    const char *label = nanortc_channel_label(&ch);
     ASSERT_TRUE(label != NULL);
     ASSERT_TRUE(str_contains(label, "my-label"));
-
-    /* Invalid stream_id */
-    ASSERT_EQ(nanortc_get_datachannel_label(&rtc, 9999, &label), NANORTC_ERR_INVALID_PARAM);
 
     nanortc_destroy(&rtc);
 }
 #endif /* NANORTC_FEATURE_DATACHANNEL */
 
-TEST(test_e2e_graceful_close)
+TEST(test_e2e_graceful_disconnect)
 {
-    /* nanortc_close() on a DTLS_CONNECTED instance emits DISCONNECTED */
+    /* nanortc_disconnect() on a DTLS_CONNECTED instance emits DISCONNECTED */
     nanortc_t rtc;
     nanortc_config_t cfg = e2e_default_config();
     ASSERT_OK(nanortc_init(&rtc, &cfg));
@@ -851,14 +837,15 @@ TEST(test_e2e_graceful_close)
     /* Fake connected-enough state */
     rtc.state = NANORTC_STATE_DTLS_CONNECTED;
 
-    ASSERT_OK(nanortc_close(&rtc));
-    ASSERT_EQ(nanortc_get_state(&rtc), NANORTC_STATE_CLOSED);
+    nanortc_disconnect(&rtc);
+    ASSERT_FALSE(nanortc_is_alive(&rtc));
+    ASSERT_EQ(rtc.state, NANORTC_STATE_CLOSED);
 
     /* Should emit DISCONNECTED event */
     nanortc_output_t evt;
     int found_disconnect = 0;
     while (nanortc_poll_output(&rtc, &evt) == NANORTC_OK) {
-        if (evt.type == NANORTC_OUTPUT_EVENT && evt.event.type == NANORTC_EVENT_DISCONNECTED) {
+        if (evt.type == NANORTC_OUTPUT_EVENT && evt.event.type == NANORTC_EV_DISCONNECTED) {
             found_disconnect = 1;
         }
     }
@@ -867,14 +854,17 @@ TEST(test_e2e_graceful_close)
     nanortc_destroy(&rtc);
 }
 
-TEST(test_e2e_close_wrong_state)
+TEST(test_e2e_disconnect_new_state)
 {
-    /* nanortc_close() on NEW state should return ERR_STATE */
+    /* nanortc_disconnect() on NEW state is a no-op */
     nanortc_t rtc;
     nanortc_config_t cfg = e2e_default_config();
     ASSERT_OK(nanortc_init(&rtc, &cfg));
 
-    ASSERT_EQ(nanortc_close(&rtc), NANORTC_ERR_STATE);
+    nanortc_disconnect(&rtc);
+    /* Should remain in NEW state (no-op on NEW) */
+    ASSERT_EQ(rtc.state, NANORTC_STATE_NEW);
+    ASSERT_TRUE(nanortc_is_alive(&rtc));
 
     nanortc_destroy(&rtc);
 }
@@ -994,29 +984,29 @@ TEST(test_e2e_datachannel_send_recv)
     rtc.state = NANORTC_STATE_CONNECTED;
     rtc.dtls.is_server = 0;
 
-    /* Create a DataChannel */
-    nanortc_datachannel_config_t dc_cfg;
-    memset(&dc_cfg, 0, sizeof(dc_cfg));
-    dc_cfg.label = "chat";
-    dc_cfg.ordered = true;
-
-    uint16_t stream_id = 0;
-    ASSERT_OK(nanortc_create_datachannel(&rtc, &dc_cfg, &stream_id));
+    /* Create a DataChannel via new API */
+    int sid = nanortc_add_channel(&rtc, "chat");
+    ASSERT_TRUE(sid >= 0);
 
     /* Drain DCEP OPEN output */
     nanortc_output_t out;
     while (nanortc_poll_output(&rtc, &out) == NANORTC_OK) {
     }
 
+    /* Get channel handle */
+    nano_channel_t ch;
+    ch.rtc = &rtc;
+    ch.id = (uint16_t)sid;
+
     /* Send a message — should succeed even though SCTP path isn't live
      * (message goes into send queue) */
-    int rc = nanortc_send_datachannel_string(&rtc, stream_id, "Hello!");
+    int rc = nanortc_channel_send_string(&ch, "Hello!");
     /* Either succeeds (queued) or fails with WOULD_BLOCK/STATE — both valid */
     (void)rc;
 
     /* Send binary data */
     uint8_t binary[] = {0x01, 0x02, 0x03, 0x04};
-    rc = nanortc_send_datachannel(&rtc, stream_id, binary, sizeof(binary));
+    rc = nanortc_channel_send(&ch, binary, sizeof(binary));
     (void)rc;
 
     nanortc_destroy(&rtc);
@@ -1025,34 +1015,19 @@ TEST(test_e2e_datachannel_send_recv)
 /*
  * E2E: Create multiple DataChannels on the same connection.
  */
-TEST(test_e2e_multi_datachannel_create)
+TEST(test_e2e_multi_channel_create)
 {
     nanortc_t rtc;
     nanortc_config_t cfg = e2e_default_config();
     ASSERT_OK(nanortc_init(&rtc, &cfg));
 
-    /* Fake connected state */
-    rtc.state = NANORTC_STATE_CONNECTED;
-    rtc.dtls.is_server = 0;
-
-    /* Create multiple DataChannels */
-    nanortc_datachannel_config_t dc1_cfg, dc2_cfg, dc3_cfg;
-    memset(&dc1_cfg, 0, sizeof(dc1_cfg));
-    dc1_cfg.label = "channel-1";
-    dc1_cfg.ordered = true;
-
-    memset(&dc2_cfg, 0, sizeof(dc2_cfg));
-    dc2_cfg.label = "channel-2";
-    dc2_cfg.ordered = true;
-
-    memset(&dc3_cfg, 0, sizeof(dc3_cfg));
-    dc3_cfg.label = "channel-3";
-    dc3_cfg.ordered = false;
-
-    uint16_t id1, id2, id3;
-    ASSERT_OK(nanortc_create_datachannel(&rtc, &dc1_cfg, &id1));
-    ASSERT_OK(nanortc_create_datachannel(&rtc, &dc2_cfg, &id2));
-    ASSERT_OK(nanortc_create_datachannel(&rtc, &dc3_cfg, &id3));
+    /* Create multiple DataChannels (works in NEW state via SDP-phase API) */
+    int id1 = nanortc_add_channel(&rtc, "channel-1");
+    int id2 = nanortc_add_channel(&rtc, "channel-2");
+    int id3 = nanortc_add_channel(&rtc, "channel-3");
+    ASSERT_TRUE(id1 >= 0);
+    ASSERT_TRUE(id2 >= 0);
+    ASSERT_TRUE(id3 >= 0);
 
     /* Each should get a unique stream ID */
     ASSERT_NEQ(id1, id2);
@@ -1062,14 +1037,16 @@ TEST(test_e2e_multi_datachannel_create)
     /* All 3 should be tracked */
     ASSERT_EQ(rtc.datachannel.channel_count, 3);
 
-    /* Verify labels */
-    const char *label;
-    ASSERT_OK(nanortc_get_datachannel_label(&rtc, id1, &label));
-    ASSERT_TRUE(str_contains(label, "channel-1"));
-    ASSERT_OK(nanortc_get_datachannel_label(&rtc, id2, &label));
-    ASSERT_TRUE(str_contains(label, "channel-2"));
-    ASSERT_OK(nanortc_get_datachannel_label(&rtc, id3, &label));
-    ASSERT_TRUE(str_contains(label, "channel-3"));
+    /* Verify labels via channel handle */
+    nano_channel_t ch;
+    ch.rtc = &rtc;
+
+    ch.id = (uint16_t)id1;
+    ASSERT_TRUE(str_contains(nanortc_channel_label(&ch), "channel-1"));
+    ch.id = (uint16_t)id2;
+    ASSERT_TRUE(str_contains(nanortc_channel_label(&ch), "channel-2"));
+    ch.id = (uint16_t)id3;
+    ASSERT_TRUE(str_contains(nanortc_channel_label(&ch), "channel-3"));
 
     nanortc_destroy(&rtc);
 }
@@ -1113,8 +1090,8 @@ TEST(test_e2e_full_lifecycle)
     }
     ASSERT_TRUE(dtls_reached);
 
-    /* Close */
-    ASSERT_OK(nanortc_close(&offerer));
+    /* Disconnect */
+    nanortc_disconnect(&offerer);
     ASSERT_EQ(offerer.state, NANORTC_STATE_CLOSED);
 
     nanortc_destroy(&offerer);
@@ -1177,22 +1154,22 @@ RUN(test_e2e_ice_dtls_loopback);
 RUN(test_e2e_create_offer_content);
 RUN(test_e2e_offer_answer_roundtrip);
 RUN(test_e2e_full_sdp_to_dtls);
-RUN(test_e2e_get_state_transitions);
+RUN(test_e2e_state_queries);
 #if NANORTC_FEATURE_DATACHANNEL
-RUN(test_e2e_create_datachannel_wrong_state);
-RUN(test_e2e_create_datachannel);
-RUN(test_e2e_close_datachannel);
-RUN(test_e2e_close_datachannel_invalid);
-RUN(test_e2e_get_datachannel_label);
+RUN(test_e2e_add_channel_invalid);
+RUN(test_e2e_add_channel);
+RUN(test_e2e_channel_close);
+RUN(test_e2e_channel_invalid);
+RUN(test_e2e_channel_label);
 #endif
-RUN(test_e2e_graceful_close);
-RUN(test_e2e_close_wrong_state);
+RUN(test_e2e_graceful_disconnect);
+RUN(test_e2e_disconnect_new_state);
 RUN(test_e2e_ice_multi_candidate);
 RUN(test_e2e_accept_answer_state_guard);
 /* E2E DataChannel message exchange */
 #if NANORTC_FEATURE_DATACHANNEL
 RUN(test_e2e_datachannel_send_recv);
-RUN(test_e2e_multi_datachannel_create);
+RUN(test_e2e_multi_channel_create);
 #endif
 /* E2E connection lifecycle */
 RUN(test_e2e_full_lifecycle);

@@ -95,16 +95,15 @@ static int sd_card_mount(void)
     };
 
     sdmmc_card_t *card = NULL;
-    esp_err_t ret =
-        esp_vfs_fat_sdmmc_mount(SD_MOUNT_POINT, &host, &slot, &mount_cfg, &card);
+    esp_err_t ret = esp_vfs_fat_sdmmc_mount(SD_MOUNT_POINT, &host, &slot, &mount_cfg, &card);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "SD card mount failed: %s", esp_err_to_name(ret));
         return -1;
     }
 
     ESP_LOGI(TAG, "SD card mounted: %s (%lluMB)", card->cid.name,
-             (unsigned long long)(((uint64_t)card->csd.capacity) *
-                                  card->csd.sector_size / (1024 * 1024)));
+             (unsigned long long)(((uint64_t)card->csd.capacity) * card->csd.sector_size /
+                                  (1024 * 1024)));
 
     return 0;
 }
@@ -159,8 +158,7 @@ static int preload_frames(const char *dir)
         offset += (uint32_t)nread;
     }
     s_frame_total = count;
-    ESP_LOGI(TAG, "PSRAM preload OK: %d frames, %lu KB", count,
-             (unsigned long)(offset / 1024));
+    ESP_LOGI(TAG, "PSRAM preload OK: %d frames, %lu KB", count, (unsigned long)(offset / 1024));
     return 0;
 }
 
@@ -208,9 +206,8 @@ static void video_send_tick(uint32_t now)
         } else {
             uint32_t ts_ms = 0;
             frame_len = 0;
-            if (nano_media_source_next_frame(&s_video_src, sd_buf,
-                                              sizeof(sd_buf), &frame_len,
-                                              &ts_ms) != 0)
+            if (nano_media_source_next_frame(&s_video_src, sd_buf, sizeof(sd_buf), &frame_len,
+                                             &ts_ms) != 0)
                 break;
             frame_buf = sd_buf;
         }
@@ -222,8 +219,7 @@ static void video_send_tick(uint32_t now)
         size_t offset = 0;
         size_t nal_len = 0;
         const uint8_t *nal;
-        while ((nal = annex_b_find_nal(frame_buf, frame_len, &offset, &nal_len)) !=
-               NULL) {
+        while ((nal = annex_b_find_nal(frame_buf, frame_len, &offset, &nal_len)) != NULL) {
             int flags = 0;
             if ((nal[0] & 0x1F) == 5)
                 flags |= NANORTC_VIDEO_FLAG_KEYFRAME;
@@ -248,26 +244,29 @@ static void on_event(nanortc_t *rtc, const nanortc_event_t *evt, void *userdata)
     (void)userdata;
 
     switch (evt->type) {
-    case NANORTC_EVENT_ICE_CONNECTED:
-        ESP_LOGI(TAG, "ICE connected");
+    case NANORTC_EV_ICE_STATE_CHANGE:
+        if (evt->ice_state == NANORTC_ICE_STATE_CONNECTED) {
+            ESP_LOGI(TAG, "ICE connected");
+        }
         break;
 
-    case NANORTC_EVENT_DTLS_CONNECTED:
-        ESP_LOGI(TAG, "DTLS connected — starting video");
+    case NANORTC_EV_CONNECTED:
+        ESP_LOGI(TAG, "Connected — starting video");
         s_connected = 1;
         s_video_epoch_ms = 0;
         s_video_frame_count = 0;
         break;
 
-    case NANORTC_EVENT_KEYFRAME_REQUEST:
-        ESP_LOGI(TAG, "Keyframe requested — resetting to frame 0");
+    case NANORTC_EV_KEYFRAME_REQUEST:
+        ESP_LOGI(TAG, "Keyframe requested (mid=%d) — resetting to frame 0",
+                 evt->keyframe_request.mid);
         if (!s_psram_mode)
             nano_media_source_reset(&s_video_src);
         s_video_epoch_ms = 0;
         s_video_frame_count = 0;
         break;
 
-    case NANORTC_EVENT_DISCONNECTED:
+    case NANORTC_EV_DISCONNECTED:
         ESP_LOGI(TAG, "Disconnected");
         s_connected = 0;
         nano_run_loop_stop(&s_loop);
@@ -359,10 +358,8 @@ static esp_err_t http_post_offer(httpd_req_t *req)
     free(offer);
 
     if (rc != NANORTC_OK) {
-        ESP_LOGE(TAG, "nanortc_accept_offer failed: %d (%s)", rc,
-                 nanortc_err_to_name(rc));
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
-                            nanortc_err_to_name(rc));
+        ESP_LOGE(TAG, "nanortc_accept_offer failed: %d (%s)", rc, nanortc_err_name(rc));
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, nanortc_err_name(rc));
         free(answer);
         return ESP_FAIL;
     }
@@ -391,10 +388,14 @@ static httpd_handle_t start_http_server(void)
     }
 
     httpd_uri_t uri_root = {
-        .uri = "/", .method = HTTP_GET, .handler = http_get_root,
+        .uri = "/",
+        .method = HTTP_GET,
+        .handler = http_get_root,
     };
     httpd_uri_t uri_offer = {
-        .uri = "/offer", .method = HTTP_POST, .handler = http_post_offer,
+        .uri = "/offer",
+        .method = HTTP_POST,
+        .handler = http_post_offer,
     };
     httpd_register_uri_handler(server, &uri_root);
     httpd_register_uri_handler(server, &uri_offer);
@@ -433,8 +434,7 @@ void app_main(void)
 
     /* 1. NVS init (required for WiFi) */
     esp_err_t ret = nvs_flash_init();
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES ||
-        ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
         ret = nvs_flash_init();
     }
@@ -470,17 +470,14 @@ void app_main(void)
         ESP_LOGE(TAG, "SD card mount failed — video will not work");
     } else {
         char h264_path[128];
-        snprintf(h264_path, sizeof(h264_path), "%s/%s", SD_MOUNT_POINT,
-                 CONFIG_EXAMPLE_H264_DIR);
+        snprintf(h264_path, sizeof(h264_path), "%s/%s", SD_MOUNT_POINT, CONFIG_EXAMPLE_H264_DIR);
 
         if (preload_frames(h264_path) == 0) {
             s_psram_mode = 1;
             s_video_ready = 1;
-        } else if (nano_media_source_init(&s_video_src, NANORTC_MEDIA_H264,
-                                           h264_path) == 0) {
+        } else if (nano_media_source_init(&s_video_src, NANORTC_MEDIA_H264, h264_path) == 0) {
             s_video_ready = 1;
-            ESP_LOGI(TAG, "SD I/O mode: %s (%d frames)", h264_path,
-                     s_video_src.frame_count);
+            ESP_LOGI(TAG, "SD I/O mode: %s (%d frames)", h264_path, s_video_src.frame_count);
         } else {
             ESP_LOGE(TAG, "Cannot open H.264 frames in %s", h264_path);
         }

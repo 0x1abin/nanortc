@@ -52,18 +52,16 @@ extern const uint8_t index_html_end[] asm("_binary_index_html_end");
 static int s_retry_count;
 #define WIFI_MAX_RETRY 10
 
-static void wifi_event_handler(void *arg, esp_event_base_t event_base,
-                               int32_t event_id, void *event_data)
+static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id,
+                               void *event_data)
 {
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
         esp_wifi_connect();
-    } else if (event_base == WIFI_EVENT &&
-               event_id == WIFI_EVENT_STA_DISCONNECTED) {
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         if (s_retry_count < WIFI_MAX_RETRY) {
             esp_wifi_connect();
             s_retry_count++;
-            ESP_LOGI(TAG, "Retry WiFi connection (%d/%d)", s_retry_count,
-                     WIFI_MAX_RETRY);
+            ESP_LOGI(TAG, "Retry WiFi connection (%d/%d)", s_retry_count, WIFI_MAX_RETRY);
         } else {
             xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
         }
@@ -85,12 +83,10 @@ static esp_netif_t *wifi_init_sta(void)
 
     esp_event_handler_instance_t inst_any_id;
     esp_event_handler_instance_t inst_got_ip;
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(
-        WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL,
-        &inst_any_id));
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(
-        IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL,
-        &inst_got_ip));
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
+                                                        &wifi_event_handler, NULL, &inst_any_id));
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
+                                                        &wifi_event_handler, NULL, &inst_got_ip));
 
     wifi_config_t wifi_config = {
         .sta =
@@ -105,8 +101,7 @@ static esp_netif_t *wifi_init_sta(void)
 
     ESP_LOGI(TAG, "Connecting to %s ...", CONFIG_EXAMPLE_WIFI_SSID);
 
-    EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,
-                                           WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
+    EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
                                            pdFALSE, pdFALSE, portMAX_DELAY);
 
     if (bits & WIFI_CONNECTED_BIT) {
@@ -134,44 +129,41 @@ static int get_sta_ip(esp_netif_t *netif, char *ip_out, size_t ip_out_len)
 /* ----------------------------------------------------------------
  * nanortc event callback
  * ---------------------------------------------------------------- */
-static void on_event(nanortc_t *rtc, const nanortc_event_t *evt,
-                     void *userdata)
+static void on_event(nanortc_t *rtc, const nanortc_event_t *evt, void *userdata)
 {
     (void)userdata;
 
     switch (evt->type) {
-    case NANORTC_EVENT_ICE_CONNECTED:
-        ESP_LOGI(TAG, "ICE connected");
+    case NANORTC_EV_ICE_STATE_CHANGE:
+        if (evt->ice_state == NANORTC_ICE_STATE_CONNECTED) {
+            ESP_LOGI(TAG, "ICE connected");
+        }
         break;
 
-    case NANORTC_EVENT_DTLS_CONNECTED:
-        ESP_LOGI(TAG, "DTLS connected");
+    case NANORTC_EV_CONNECTED:
+        ESP_LOGI(TAG, "Connected");
         break;
 
-    case NANORTC_EVENT_SCTP_CONNECTED:
-        ESP_LOGI(TAG, "SCTP connected");
+    case NANORTC_EV_CHANNEL_OPEN:
+        ESP_LOGI(TAG, "DataChannel open (id=%d)", evt->channel_open.id);
         break;
 
-    case NANORTC_EVENT_DATACHANNEL_OPEN:
-        ESP_LOGI(TAG, "DataChannel open (stream=%d)", evt->stream_id);
+    case NANORTC_EV_CHANNEL_DATA:
+        if (evt->channel_data.binary) {
+            ESP_LOGI(TAG, "DC data (%u bytes), echoing back", (unsigned)evt->channel_data.len);
+            nanortc_channel_send(&evt->channel_data, evt->channel_data.data, evt->channel_data.len);
+        } else {
+            ESP_LOGI(TAG, "DC string: %.*s", (int)evt->channel_data.len,
+                     (char *)evt->channel_data.data);
+            nanortc_channel_send_string(&evt->channel_data, (const char *)evt->channel_data.data);
+        }
         break;
 
-    case NANORTC_EVENT_DATACHANNEL_DATA:
-        ESP_LOGI(TAG, "DC data (%u bytes), echoing back", (unsigned)evt->len);
-        nanortc_send_datachannel(rtc, evt->stream_id, evt->data, evt->len);
-        break;
-
-    case NANORTC_EVENT_DATACHANNEL_STRING:
-        ESP_LOGI(TAG, "DC string: %.*s", (int)evt->len, (char *)evt->data);
-        nanortc_send_datachannel_string(rtc, evt->stream_id,
-                                        (const char *)evt->data);
-        break;
-
-    case NANORTC_EVENT_DATACHANNEL_CLOSE:
+    case NANORTC_EV_CHANNEL_CLOSE:
         ESP_LOGI(TAG, "DataChannel closed");
         break;
 
-    case NANORTC_EVENT_DISCONNECTED:
+    case NANORTC_EV_DISCONNECTED:
         ESP_LOGI(TAG, "Disconnected");
         nano_run_loop_stop(&s_loop);
         break;
@@ -261,10 +253,8 @@ static esp_err_t http_post_offer(httpd_req_t *req)
     free(offer);
 
     if (rc != NANORTC_OK) {
-        ESP_LOGE(TAG, "nanortc_accept_offer failed: %d (%s)", rc,
-                 nanortc_err_to_name(rc));
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
-                            nanortc_err_to_name(rc));
+        ESP_LOGE(TAG, "nanortc_accept_offer failed: %d (%s)", rc, nanortc_err_name(rc));
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, nanortc_err_name(rc));
         free(answer);
         return ESP_FAIL;
     }
@@ -293,10 +283,14 @@ static httpd_handle_t start_http_server(void)
     }
 
     httpd_uri_t uri_root = {
-        .uri = "/", .method = HTTP_GET, .handler = http_get_root,
+        .uri = "/",
+        .method = HTTP_GET,
+        .handler = http_get_root,
     };
     httpd_uri_t uri_offer = {
-        .uri = "/offer", .method = HTTP_POST, .handler = http_post_offer,
+        .uri = "/offer",
+        .method = HTTP_POST,
+        .handler = http_post_offer,
     };
 
     httpd_register_uri_handler(server, &uri_root);
@@ -330,8 +324,7 @@ void app_main(void)
 {
     /* 1. NVS init (required for WiFi) */
     esp_err_t ret = nvs_flash_init();
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES ||
-        ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
         ret = nvs_flash_init();
     }

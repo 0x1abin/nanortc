@@ -19,65 +19,60 @@
  * Event callback (runs in nanortc thread)
  * ---------------------------------------------------------------- */
 
-static void nanortc_on_event(nanortc_t *rtc, const nanortc_event_t *evt,
-                             void *userdata)
+static void nanortc_on_event(nanortc_t *rtc, const nanortc_event_t *evt, void *userdata)
 {
     interop_nanortc_peer_t *peer = (interop_nanortc_peer_t *)userdata;
     (void)rtc;
 
     switch (evt->type) {
-    case NANORTC_EVENT_ICE_CONNECTED:
-        fprintf(stderr, "[nanortc] ICE connected\n");
-        atomic_store(&peer->ice_connected, 1);
+    case NANORTC_EV_ICE_STATE_CHANGE:
+        fprintf(stderr, "[nanortc] ICE state change (%d)\n", evt->ice_state);
+        if (evt->ice_state == NANORTC_ICE_STATE_CONNECTED) {
+            atomic_store(&peer->ice_connected, 1);
+        }
         break;
 
-    case NANORTC_EVENT_DTLS_CONNECTED:
-        fprintf(stderr, "[nanortc] DTLS connected\n");
+    case NANORTC_EV_CONNECTED:
+        fprintf(stderr, "[nanortc] Fully connected\n");
         atomic_store(&peer->dtls_connected, 1);
-        break;
-
-    case NANORTC_EVENT_SCTP_CONNECTED:
-        fprintf(stderr, "[nanortc] SCTP connected\n");
         atomic_store(&peer->sctp_connected, 1);
         break;
 
-    case NANORTC_EVENT_DATACHANNEL_OPEN:
-        fprintf(stderr, "[nanortc] DataChannel open (stream=%d)\n",
-                evt->stream_id);
+    case NANORTC_EV_CHANNEL_OPEN:
+        fprintf(stderr, "[nanortc] DataChannel open (stream=%d)\n", evt->channel_open.id);
         atomic_store(&peer->dc_open, 1);
         break;
 
-    case NANORTC_EVENT_DATACHANNEL_DATA:
-        fprintf(stderr, "[nanortc] DC binary data (%zu bytes)\n", evt->len);
-        pthread_mutex_lock(&peer->msg_mutex);
-        if (evt->len <= sizeof(peer->last_msg)) {
-            memcpy(peer->last_msg, evt->data, evt->len);
-            peer->last_msg_len = evt->len;
-            peer->last_msg_is_string = 0;
+    case NANORTC_EV_CHANNEL_DATA:
+        if (evt->channel_data.binary) {
+            fprintf(stderr, "[nanortc] DC binary data (%zu bytes)\n", evt->channel_data.len);
+            pthread_mutex_lock(&peer->msg_mutex);
+            if (evt->channel_data.len <= sizeof(peer->last_msg)) {
+                memcpy(peer->last_msg, evt->channel_data.data, evt->channel_data.len);
+                peer->last_msg_len = evt->channel_data.len;
+                peer->last_msg_is_string = 0;
+            }
+            pthread_mutex_unlock(&peer->msg_mutex);
+        } else {
+            fprintf(stderr, "[nanortc] DC string: %.*s\n", (int)evt->channel_data.len,
+                    (const char *)evt->channel_data.data);
+            pthread_mutex_lock(&peer->msg_mutex);
+            if (evt->channel_data.len < sizeof(peer->last_msg)) {
+                memcpy(peer->last_msg, evt->channel_data.data, evt->channel_data.len);
+                peer->last_msg[evt->channel_data.len] = '\0';
+                peer->last_msg_len = evt->channel_data.len;
+                peer->last_msg_is_string = 1;
+            }
+            pthread_mutex_unlock(&peer->msg_mutex);
         }
-        pthread_mutex_unlock(&peer->msg_mutex);
         atomic_fetch_add(&peer->msg_count, 1);
         break;
 
-    case NANORTC_EVENT_DATACHANNEL_STRING:
-        fprintf(stderr, "[nanortc] DC string: %.*s\n", (int)evt->len,
-                (const char *)evt->data);
-        pthread_mutex_lock(&peer->msg_mutex);
-        if (evt->len < sizeof(peer->last_msg)) {
-            memcpy(peer->last_msg, evt->data, evt->len);
-            peer->last_msg[evt->len] = '\0';
-            peer->last_msg_len = evt->len;
-            peer->last_msg_is_string = 1;
-        }
-        pthread_mutex_unlock(&peer->msg_mutex);
-        atomic_fetch_add(&peer->msg_count, 1);
-        break;
-
-    case NANORTC_EVENT_DATACHANNEL_CLOSE:
+    case NANORTC_EV_CHANNEL_CLOSE:
         fprintf(stderr, "[nanortc] DataChannel closed\n");
         break;
 
-    case NANORTC_EVENT_DISCONNECTED:
+    case NANORTC_EV_DISCONNECTED:
         fprintf(stderr, "[nanortc] Disconnected\n");
         nano_run_loop_stop(&peer->loop);
         break;
@@ -97,8 +92,7 @@ static int nanortc_do_signaling(interop_nanortc_peer_t *peer)
     uint8_t msg_type;
 
     /* Read SDP offer */
-    int len = interop_sig_recv(peer->sig_fd, &msg_type, buf, sizeof(buf) - 1,
-                               INTEROP_TIMEOUT_MS);
+    int len = interop_sig_recv(peer->sig_fd, &msg_type, buf, sizeof(buf) - 1, INTEROP_TIMEOUT_MS);
     if (len < 0 || msg_type != SIG_MSG_SDP_OFFER) {
         fprintf(stderr, "[nanortc] Failed to receive SDP offer\n");
         return -1;
@@ -114,8 +108,7 @@ static int nanortc_do_signaling(interop_nanortc_peer_t *peer)
         fprintf(stderr, "[nanortc] nanortc_accept_offer failed: %d\n", rc);
         return -1;
     }
-    rc = interop_sig_send(peer->sig_fd, SIG_MSG_SDP_ANSWER, answer,
-                          answer_len);
+    rc = interop_sig_send(peer->sig_fd, SIG_MSG_SDP_ANSWER, answer, answer_len);
     if (rc != 0) {
         fprintf(stderr, "[nanortc] Failed to send SDP answer\n");
         return -1;
@@ -124,8 +117,7 @@ static int nanortc_do_signaling(interop_nanortc_peer_t *peer)
 
     /* Exchange ICE candidates until DONE */
     for (;;) {
-        len = interop_sig_recv(peer->sig_fd, &msg_type, buf, sizeof(buf) - 1,
-                               INTEROP_TIMEOUT_MS);
+        len = interop_sig_recv(peer->sig_fd, &msg_type, buf, sizeof(buf) - 1, INTEROP_TIMEOUT_MS);
         if (len < 0) {
             fprintf(stderr, "[nanortc] Signaling recv error\n");
             return -1;
@@ -175,8 +167,7 @@ static void *nanortc_thread_fn(void *arg)
  * Public API
  * ---------------------------------------------------------------- */
 
-int interop_nanortc_start(interop_nanortc_peer_t *peer, int sig_fd,
-                          uint16_t port)
+int interop_nanortc_start(interop_nanortc_peer_t *peer, int sig_fd, uint16_t port)
 {
     if (!peer) {
         return -1;

@@ -126,25 +126,34 @@ int  nanortc_handle_receive(nanortc_t *rtc, uint32_t now_ms,
                          const nanortc_addr_t *src);
 int  nanortc_handle_timeout(nanortc_t *rtc, uint32_t now_ms);
 
-// ---- DataChannel ----
+// ---- DataChannel (Channel handle pattern) ----
 #if NANORTC_FEATURE_DATACHANNEL
-int  nanortc_send_datachannel(nanortc_t *rtc, uint16_t stream_id,
-                           const void *data, size_t len);
-int  nanortc_send_datachannel_string(nanortc_t *rtc, uint16_t stream_id,
-                                  const char *str);
+int  nanortc_add_channel(nanortc_t *rtc, const char *label);
+int  nanortc_add_channel_ex(nanortc_t *rtc, const nanortc_datachannel_config_t *cfg);
+int  nanortc_channel(nanortc_t *rtc, uint16_t id, nano_channel_t *ch);
+int  nanortc_channel_send(nano_channel_t *ch, const void *data, size_t len);
+int  nanortc_channel_send_string(nano_channel_t *ch, const char *str);
+int  nanortc_channel_close(nano_channel_t *ch);
+const char *nanortc_channel_label(nano_channel_t *ch);
 #endif
 
-// ---- 媒体 ----
-#if NANORTC_FEATURE_AUDIO
-int  nanortc_send_audio(nanortc_t *rtc, uint32_t timestamp,
-                     const void *data, size_t len);
+// ---- 媒体 (Writer handle pattern) ----
+#if NANORTC_HAVE_MEDIA_TRANSPORT
+int  nanortc_add_media(nanortc_t *rtc, nano_media_kind_t kind,
+                       nanortc_direction_t dir, nanortc_codec_t codec,
+                       uint32_t sample_rate, uint8_t channels);
+void nanortc_set_direction(nanortc_t *rtc, uint8_t mid, nanortc_direction_t dir);
+const nano_media_t *nanortc_media(const nanortc_t *rtc, uint8_t mid);
+int  nanortc_writer(nanortc_t *rtc, uint8_t mid, nano_writer_t *w);
+int  nanortc_writer_write(nano_writer_t *w, uint32_t timestamp,
+                          const void *data, size_t len, int flags);
+int  nanortc_writer_request_keyframe(nano_writer_t *w);
 #endif
 
-#if NANORTC_FEATURE_VIDEO
-int  nanortc_send_video(nanortc_t *rtc, uint32_t timestamp,
-                     const void *data, size_t len, int is_keyframe);
-int  nanortc_request_keyframe(nanortc_t *rtc);
-#endif
+// ---- 连接状态 ----
+bool nanortc_is_alive(const nanortc_t *rtc);
+bool nanortc_is_connected(const nanortc_t *rtc);
+void nanortc_disconnect(nanortc_t *rtc);
 ```
 
 ### 2.3 输出/事件类型
@@ -158,22 +167,37 @@ typedef enum {
 
 typedef enum {
     // 连接生命周期
-    NANORTC_EVENT_ICE_CONNECTED,
-    NANORTC_EVENT_DTLS_CONNECTED,
-    NANORTC_EVENT_SCTP_CONNECTED,
-    NANORTC_EVENT_DISCONNECTED,
+    NANORTC_EV_CONNECTED = 0,            // ICE+DTLS(+SCTP) 全部建立
+    NANORTC_EV_DISCONNECTED = 1,         // 连接断开
+    NANORTC_EV_ICE_STATE_CHANGE = 2,     // ICE 状态变化
+
+    // 媒体 (str0m-inspired typed events)
+    NANORTC_EV_MEDIA_ADDED = 3,          // 远端添加了新媒体轨道
+    NANORTC_EV_MEDIA_CHANGED = 4,        // 媒体方向变化
+    NANORTC_EV_MEDIA_DATA = 5,           // 收到媒体帧（音频或视频）
+    NANORTC_EV_KEYFRAME_REQUEST = 6,     // 远端请求关键帧
 
     // DataChannel
-    NANORTC_EVENT_DATACHANNEL_OPEN   = 4,
-    NANORTC_EVENT_DATACHANNEL_CLOSE  = 5,
-    NANORTC_EVENT_DATACHANNEL_DATA   = 6,
-    NANORTC_EVENT_DATACHANNEL_STRING = 7,
-
-    // 媒体（枚举值始终定义，代码在特性标志下编译）
-    NANORTC_EVENT_AUDIO_DATA         = 8,
-    NANORTC_EVENT_VIDEO_DATA         = 9,
-    NANORTC_EVENT_KEYFRAME_REQUEST   = 10,
+    NANORTC_EV_CHANNEL_OPEN = 7,         // DataChannel 打开
+    NANORTC_EV_CHANNEL_DATA = 8,         // DataChannel 数据（binary 标志区分二进制/字符串）
+    NANORTC_EV_CHANNEL_CLOSE = 9,        // DataChannel 关闭
+    NANORTC_EV_CHANNEL_BUFFERED_LOW = 10,// 发送缓冲区低于阈值
 } nanortc_event_type_t;
+
+// 事件结构体 (tagged union)
+typedef struct nanortc_event {
+    nanortc_event_type_t type;
+    union {
+        nanortc_ev_media_added_t     media_added;
+        nanortc_ev_media_changed_t   media_changed;
+        nanortc_ev_media_data_t      media_data;
+        nanortc_ev_keyframe_request_t keyframe_request;
+        nanortc_ev_channel_open_t    channel_open;
+        nanortc_ev_channel_data_t    channel_data;
+        nanortc_ev_channel_id_t      channel_id;
+        uint16_t                     ice_state;
+    };
+} nanortc_event_t;
 ```
 
 ### 2.4 内部模块结构
@@ -716,26 +740,31 @@ void nanortc_task(void *arg) {
 
 static void handle_event(nanortc_t *rtc, nanortc_event_t *evt) {
     switch (evt->type) {
-    case NANORTC_EVENT_DATACHANNEL_OPEN:
-        printf("DataChannel 已打开 (stream %d)\n", evt->stream_id);
+    case NANORTC_EV_CONNECTED:
+        printf("连接已建立\n");
         break;
-    case NANORTC_EVENT_DATACHANNEL_DATA:
-        process_data(evt->data, evt->len);  // 你的业务逻辑
+    case NANORTC_EV_CHANNEL_OPEN:
+        printf("DataChannel 已打开 (stream %d)\n", evt->channel_open.id);
         break;
-    case NANORTC_EVENT_DATACHANNEL_STRING:
-        printf("收到: %.*s\n", (int)evt->len, (char *)evt->data);
+    case NANORTC_EV_CHANNEL_DATA:
+        if (evt->channel_data.binary) {
+            process_data(evt->channel_data.data, evt->channel_data.len);
+        } else {
+            printf("收到: %.*s\n", (int)evt->channel_data.len,
+                   (char *)evt->channel_data.data);
+        }
         break;
 #if NANORTC_HAVE_MEDIA_TRANSPORT
-    case NANORTC_EVENT_AUDIO_DATA:
-        audio_play(evt->data, evt->len, evt->timestamp);
+    case NANORTC_EV_MEDIA_DATA:
+        if (evt->media_data.is_keyframe) { /* video keyframe */ }
+        media_process(evt->media_data.data, evt->media_data.len,
+                      evt->media_data.timestamp, evt->media_data.mid);
+        break;
+    case NANORTC_EV_KEYFRAME_REQUEST:
+        send_keyframe(evt->keyframe_request.mid);
         break;
 #endif
-#if NANORTC_FEATURE_VIDEO
-    case NANORTC_EVENT_VIDEO_DATA:
-        video_decode(evt->data, evt->len, evt->timestamp, evt->is_keyframe);
-        break;
-#endif
-    case NANORTC_EVENT_DISCONNECTED:
+    case NANORTC_EV_DISCONNECTED:
         printf("对端断开连接\n");
         break;
     default:

@@ -251,49 +251,94 @@ typedef enum {
 
 /** @brief Application event types delivered via NANORTC_OUTPUT_EVENT. */
 typedef enum {
-    /* Connection lifecycle */
-    NANORTC_EVENT_ICE_CONNECTED = 0,  /**< ICE connectivity check succeeded. */
-    NANORTC_EVENT_DTLS_CONNECTED = 1, /**< DTLS handshake completed. */
-    NANORTC_EVENT_SCTP_CONNECTED = 2, /**< SCTP association established. */
-    NANORTC_EVENT_DISCONNECTED = 3,   /**< Peer disconnected or timeout. */
-
-    /* DataChannel */
-    NANORTC_EVENT_DATACHANNEL_OPEN = 4,   /**< DataChannel opened (DCEP complete). */
-    NANORTC_EVENT_DATACHANNEL_CLOSE = 5,  /**< DataChannel closed. */
-    NANORTC_EVENT_DATACHANNEL_DATA = 6,   /**< Binary data received on DataChannel. */
-    NANORTC_EVENT_DATACHANNEL_STRING = 7, /**< UTF-8 string received on DataChannel. */
-
-    /* Audio */
-    NANORTC_EVENT_AUDIO_DATA = 8, /**< Decoded audio frame available. */
-
-    /* Video */
-    NANORTC_EVENT_VIDEO_DATA = 9,        /**< Decoded video frame available. */
-    NANORTC_EVENT_KEYFRAME_REQUEST = 10, /**< Remote peer requests a keyframe. */
-
-    /* Connection lifecycle (extended) */
-    NANORTC_EVENT_ICE_STATE_CHANGE = 11, /**< ICE state changed (stream_id = new state). */
-    NANORTC_EVENT_DATACHANNEL_BUFFERED_AMOUNT_LOW = 12, /**< Send buffer drained below threshold. */
+    NANORTC_EV_CONNECTED = 0,             /**< ICE+DTLS(+SCTP) fully established. */
+    NANORTC_EV_DISCONNECTED = 1,          /**< Connection lost or closed. */
+    NANORTC_EV_ICE_STATE_CHANGE = 2,      /**< ICE state transition. */
+    NANORTC_EV_MEDIA_ADDED = 3,           /**< Remote added new media track. */
+    NANORTC_EV_MEDIA_CHANGED = 4,         /**< Media direction changed. */
+    NANORTC_EV_MEDIA_DATA = 5,            /**< Received media frame (audio or video). */
+    NANORTC_EV_KEYFRAME_REQUEST = 6,      /**< Remote requests keyframe (PLI/FIR). */
+    NANORTC_EV_CHANNEL_OPEN = 7,          /**< DataChannel opened (DCEP complete). */
+    NANORTC_EV_CHANNEL_DATA = 8,          /**< DataChannel data received. */
+    NANORTC_EV_CHANNEL_CLOSE = 9,         /**< DataChannel closed. */
+    NANORTC_EV_CHANNEL_BUFFERED_LOW = 10, /**< Send buffer drained below threshold. */
 } nanortc_event_type_t;
 
 /* ----------------------------------------------------------------
- * Event structure
+ * Per-event data structures (str0m-inspired typed events)
+ * ---------------------------------------------------------------- */
+
+/** @brief Data for NANORTC_EV_MEDIA_ADDED: remote added a new media track. */
+typedef struct {
+    uint8_t mid;                   /**< Media ID (track index). */
+    uint8_t kind;                  /**< nano_media_kind_t: NANO_MEDIA_AUDIO or NANO_MEDIA_VIDEO. */
+    nanortc_direction_t direction; /**< Negotiated local direction for this track. */
+} nanortc_ev_media_added_t;
+
+/** @brief Data for NANORTC_EV_MEDIA_CHANGED: media direction changed. */
+typedef struct {
+    uint8_t mid;                       /**< Media ID. */
+    nanortc_direction_t old_direction; /**< Previous direction. */
+    nanortc_direction_t new_direction; /**< New direction. */
+} nanortc_ev_media_changed_t;
+
+/** @brief Data for NANORTC_EV_MEDIA_DATA: received media frame (audio or video). */
+typedef struct {
+    uint8_t mid;         /**< Media ID. */
+    uint8_t pt;          /**< RTP payload type. */
+    uint32_t timestamp;  /**< RTP timestamp. */
+    const uint8_t *data; /**< Depayloaded frame data. */
+    size_t len;          /**< Frame data length in bytes. */
+    bool contiguous;     /**< True if no gaps since previous frame. */
+    bool is_keyframe;    /**< True if video keyframe (always false for audio). */
+} nanortc_ev_media_data_t;
+
+/** @brief Data for NANORTC_EV_KEYFRAME_REQUEST. */
+typedef struct {
+    uint8_t mid; /**< Video track MID that needs a keyframe. */
+} nanortc_ev_keyframe_request_t;
+
+/** @brief Data for NANORTC_EV_CHANNEL_OPEN. */
+typedef struct {
+    uint16_t id;       /**< SCTP stream ID. */
+    const char *label; /**< Channel label (valid until next poll). */
+} nanortc_ev_channel_open_t;
+
+/** @brief Data for NANORTC_EV_CHANNEL_DATA. */
+typedef struct {
+    uint16_t id;         /**< SCTP stream ID. */
+    const uint8_t *data; /**< Payload pointer (valid until next poll). */
+    size_t len;          /**< Payload length in bytes. */
+    bool binary;         /**< true = binary, false = UTF-8 string. */
+} nanortc_ev_channel_data_t;
+
+/** @brief Data for NANORTC_EV_CHANNEL_CLOSE / NANORTC_EV_CHANNEL_BUFFERED_LOW. */
+typedef struct {
+    uint16_t id; /**< SCTP stream ID. */
+} nanortc_ev_channel_id_t;
+
+/* ----------------------------------------------------------------
+ * Event structure (tagged union)
  * ---------------------------------------------------------------- */
 
 /**
  * @brief Application event delivered through nanortc_poll_output().
  *
- * Pointer fields (@c data, @c label) are valid only until the next call
- * to nanortc_poll_output() or nanortc_handle_receive(). Copy if needed.
+ * Pointer fields are valid only until the next call to
+ * nanortc_poll_output() or nanortc_handle_receive(). Copy if needed.
  */
 typedef struct nanortc_event {
     nanortc_event_type_t type; /**< Event type discriminator. */
-    uint16_t stream_id;        /**< DataChannel stream ID (DC events only). */
-    uint8_t mid;               /**< Media track MID (media events only). */
-    const uint8_t *data;       /**< Payload pointer (valid until next poll). */
-    size_t len;                /**< Payload length in bytes. */
-    const char *label;         /**< Channel label (DATACHANNEL_OPEN only, else NULL). */
-    uint32_t timestamp;        /**< RTP timestamp (media events only). */
-    bool is_keyframe;          /**< True if video frame is a keyframe. */
+    union {
+        nanortc_ev_media_added_t media_added;           /**< EV_MEDIA_ADDED */
+        nanortc_ev_media_changed_t media_changed;       /**< EV_MEDIA_CHANGED */
+        nanortc_ev_media_data_t media_data;             /**< EV_MEDIA_DATA */
+        nanortc_ev_keyframe_request_t keyframe_request; /**< EV_KEYFRAME_REQUEST */
+        nanortc_ev_channel_open_t channel_open;         /**< EV_CHANNEL_OPEN */
+        nanortc_ev_channel_data_t channel_data;         /**< EV_CHANNEL_DATA */
+        nanortc_ev_channel_id_t channel_id; /**< EV_CHANNEL_CLOSE, EV_CHANNEL_BUFFERED_LOW */
+        uint16_t ice_state;                 /**< EV_ICE_STATE_CHANGE */
+    };
 } nanortc_event_t;
 
 /* ----------------------------------------------------------------
@@ -313,6 +358,8 @@ typedef struct nanortc_output {
         uint32_t timeout_ms;     /**< Valid when type == NANORTC_OUTPUT_TIMEOUT. */
     };
 } nanortc_output_t;
+
+/* Handle types are defined after nanortc_t (forward declaration needed) */
 
 /* nanortc_direction_t is defined in nanortc_config.h */
 
@@ -463,6 +510,22 @@ struct nanortc {
 typedef struct nanortc nanortc_t;
 
 /* ----------------------------------------------------------------
+ * Handle types (str0m-inspired Writer / Channel pattern)
+ * ---------------------------------------------------------------- */
+
+/** @brief Media writer handle. Obtain via nanortc_writer(). */
+typedef struct {
+    nanortc_t *rtc; /**< Parent RTC state (do not modify). */
+    uint8_t mid;    /**< Track MID. */
+} nano_writer_t;
+
+/** @brief DataChannel handle. Obtain via nanortc_channel(). */
+typedef struct {
+    nanortc_t *rtc; /**< Parent RTC state (do not modify). */
+    uint16_t id;    /**< SCTP stream ID. */
+} nano_channel_t;
+
+/* ----------------------------------------------------------------
  * Lifecycle API
  * ---------------------------------------------------------------- */
 
@@ -592,85 +655,18 @@ NANORTC_API int nanortc_handle_receive(nanortc_t *rtc, uint32_t now_ms, const ui
 NANORTC_API int nanortc_handle_timeout(nanortc_t *rtc, uint32_t now_ms);
 
 /* ----------------------------------------------------------------
- * DataChannel API
+ * DataChannel types
  * ---------------------------------------------------------------- */
 
 #if NANORTC_FEATURE_DATACHANNEL
 
-/** @brief DataChannel configuration for nanortc_create_datachannel(). */
+/** @brief DataChannel configuration for nanortc_add_channel_ex(). */
 typedef struct nanortc_datachannel_config {
     const char *label;        /**< Channel label (NUL-terminated, required). */
     bool ordered;             /**< Ordered delivery (default: true). */
     uint16_t max_retransmits; /**< Max retransmit count (0 = reliable). */
 } nanortc_datachannel_config_t;
 
-/**
- * @brief Create a DataChannel (offerer side).
- *
- * Sends a DCEP OPEN message. The channel enters OPENING state and
- * transitions to OPEN when the remote peer sends a DCEP ACK.
- *
- * @param rtc        Initialized RTC state (must be CONNECTED).
- * @param cfg        Channel configuration.
- * @param stream_id  Receives the allocated SCTP stream ID.
- * @return NANORTC_OK on success.
- * @retval NANORTC_ERR_STATE           Not connected.
- * @retval NANORTC_ERR_BUFFER_TOO_SMALL  Channel table full.
- */
-NANORTC_API int nanortc_create_datachannel(nanortc_t *rtc, const nanortc_datachannel_config_t *cfg,
-                                           uint16_t *stream_id);
-
-/**
- * @brief Close a single DataChannel.
- *
- * Sends a SCTP RESET to close the stream. The channel transitions to
- * CLOSED and a NANORTC_EVENT_DATACHANNEL_CLOSE event is emitted.
- *
- * @param rtc        Initialized RTC state.
- * @param stream_id  SCTP stream ID of the DataChannel to close.
- * @return NANORTC_OK on success.
- * @retval NANORTC_ERR_INVALID_PARAM  Unknown stream ID.
- */
-NANORTC_API int nanortc_close_datachannel(nanortc_t *rtc, uint16_t stream_id);
-
-/**
- * @brief Send binary data on a DataChannel.
- *
- * @param rtc        Initialized RTC state.
- * @param stream_id  SCTP stream ID of the DataChannel.
- * @param data       Payload to send.
- * @param len        Payload length in bytes.
- * @return NANORTC_OK on success.
- * @retval NANORTC_ERR_STATE        DataChannel not open.
- * @retval NANORTC_ERR_WOULD_BLOCK  Send queue full (try again after timeout).
- */
-NANORTC_API int nanortc_send_datachannel(nanortc_t *rtc, uint16_t stream_id, const void *data,
-                                         size_t len);
-
-/**
- * @brief Send a UTF-8 string on a DataChannel.
- *
- * @param rtc        Initialized RTC state.
- * @param stream_id  SCTP stream ID of the DataChannel.
- * @param str        NUL-terminated UTF-8 string to send.
- * @return NANORTC_OK on success.
- * @retval NANORTC_ERR_STATE        DataChannel not open.
- * @retval NANORTC_ERR_WOULD_BLOCK  Send queue full (try again after timeout).
- */
-NANORTC_API int nanortc_send_datachannel_string(nanortc_t *rtc, uint16_t stream_id,
-                                                const char *str);
-
-/**
- * @brief Get the label of a DataChannel.
- *
- * @param rtc        Initialized RTC state.
- * @param stream_id  SCTP stream ID of the DataChannel.
- * @param label      Receives pointer to internal label string (valid until destroy).
- * @return NANORTC_OK on success.
- * @retval NANORTC_ERR_INVALID_PARAM  Unknown stream ID.
- */
-NANORTC_API int nanortc_get_datachannel_label(nanortc_t *rtc, uint16_t stream_id,
-                                              const char **label);
 #endif
 
 /* ----------------------------------------------------------------
@@ -679,16 +675,15 @@ NANORTC_API int nanortc_get_datachannel_label(nanortc_t *rtc, uint16_t stream_id
 
 #if NANORTC_HAVE_MEDIA_TRANSPORT
 
-/** Flags for nanortc_send_media() when sending video. */
+/** Flags for nanortc_writer_write() when sending video. */
 #define NANORTC_VIDEO_FLAG_KEYFRAME 0x01 /**< This NAL is part of a keyframe (IDR). */
 #define NANORTC_VIDEO_FLAG_MARKER   0x02 /**< Last NAL in access unit (sets RTP marker bit). */
 
 /**
- * @brief Add a media track (audio or video).
+ * @brief Add a media track (audio or video) to the SDP session.
  *
- * Call before nanortc_create_offer() / nanortc_accept_offer(). Each call adds
- * one SDP m-line. Returns the MID (media ID) which is the track handle for
- * all subsequent operations.
+ * Call before nanortc_create_offer() or nanortc_accept_offer(). Each call
+ * adds one SDP m-line. Returns the MID (media ID) which is the track handle.
  *
  * @param rtc         Initialized RTC state.
  * @param kind        NANO_MEDIA_AUDIO or NANO_MEDIA_VIDEO.
@@ -703,58 +698,166 @@ NANORTC_API int nanortc_add_media(nanortc_t *rtc, nano_media_kind_t kind,
                                   uint32_t sample_rate, uint8_t channels);
 
 /**
- * @brief Send media data on a specific track.
+ * @brief Change direction of an existing media track.
  *
- * For audio tracks: @p data is an encoded audio frame, @p flags is ignored.
- * For video tracks: @p data is a raw H.264 NAL unit (no start codes),
- * @p flags is a bitwise OR of NANORTC_VIDEO_FLAG_*.
+ * @param rtc  Initialized RTC state.
+ * @param mid  Track MID returned by nanortc_add_media().
+ * @param dir  New direction.
+ */
+NANORTC_API void nanortc_set_direction(nanortc_t *rtc, uint8_t mid, nanortc_direction_t dir);
+
+/**
+ * @brief Get read-only access to a media track's state.
  *
- * @param rtc        Initialized RTC state.
- * @param mid        Track MID returned by nanortc_add_media().
+ * @param rtc  Initialized RTC state.
+ * @param mid  Track MID.
+ * @return Pointer to internal media state, or NULL if MID is invalid.
+ *         Valid until next SDP negotiation or destroy.
+ */
+NANORTC_API const nano_media_t *nanortc_media(const nanortc_t *rtc, uint8_t mid);
+
+/**
+ * @brief Obtain a writer handle for sending media on a track.
+ *
+ * Validates that the track exists and direction allows sending.
+ *
+ * @param rtc  Initialized RTC state.
+ * @param mid  Track MID.
+ * @param w    Receives the writer handle.
+ * @return NANORTC_OK on success.
+ * @retval NANORTC_ERR_INVALID_PARAM  Track not found.
+ * @retval NANORTC_ERR_STATE          Direction is recvonly/inactive, or not connected.
+ */
+NANORTC_API int nanortc_writer(nanortc_t *rtc, uint8_t mid, nano_writer_t *w);
+
+/**
+ * @brief Send media data through a writer handle.
+ *
+ * For audio: @p data is an encoded frame, @p flags is 0.
+ * For video: @p data is a raw H.264 NAL unit, @p flags is NANORTC_VIDEO_FLAG_*.
+ *
+ * @param w          Writer handle from nanortc_writer().
  * @param timestamp  RTP timestamp.
  * @param data       Encoded payload.
  * @param len        Payload length in bytes.
  * @param flags      Video flags (0 for audio).
  * @return NANORTC_OK on success.
  */
-NANORTC_API int nanortc_send_media(nanortc_t *rtc, uint8_t mid, uint32_t timestamp,
-                                   const void *data, size_t len, int flags);
+NANORTC_API int nanortc_writer_write(nano_writer_t *w, uint32_t timestamp, const void *data,
+                                     size_t len, int flags);
 
 /**
  * @brief Request a keyframe from the remote video sender (RTCP PLI).
  *
- * @param rtc  Initialized RTC state.
- * @param mid  Video track MID.
+ * @param w  Writer handle for a video track.
  * @return NANORTC_OK on success.
  */
-NANORTC_API int nanortc_request_keyframe(nanortc_t *rtc, uint8_t mid);
+NANORTC_API int nanortc_writer_request_keyframe(nano_writer_t *w);
 
 #endif /* NANORTC_HAVE_MEDIA_TRANSPORT */
+
+/* ----------------------------------------------------------------
+ * DataChannel API (str0m Channel handle pattern)
+ * ---------------------------------------------------------------- */
+
+#if NANORTC_FEATURE_DATACHANNEL
+
+/**
+ * @brief Register a DataChannel in the SDP session (before offer/answer).
+ *
+ * @param rtc    Initialized RTC state.
+ * @param label  Channel label (NUL-terminated).
+ * @return Stream ID (>= 0) on success, negative error on failure.
+ */
+NANORTC_API int nanortc_add_channel(nanortc_t *rtc, const char *label);
+
+/**
+ * @brief Register a DataChannel with custom configuration.
+ *
+ * @param rtc  Initialized RTC state.
+ * @param cfg  Channel configuration.
+ * @return Stream ID (>= 0) on success, negative error on failure.
+ */
+NANORTC_API int nanortc_add_channel_ex(nanortc_t *rtc, const nanortc_datachannel_config_t *cfg);
+
+/**
+ * @brief Obtain a channel handle for DataChannel I/O.
+ *
+ * @param rtc  Initialized RTC state.
+ * @param id   SCTP stream ID.
+ * @param ch   Receives the channel handle.
+ * @return NANORTC_OK on success.
+ * @retval NANORTC_ERR_INVALID_PARAM  Unknown or closed channel.
+ */
+NANORTC_API int nanortc_channel(nanortc_t *rtc, uint16_t id, nano_channel_t *ch);
+
+/**
+ * @brief Send binary data on a DataChannel.
+ *
+ * @param ch    Channel handle from nanortc_channel().
+ * @param data  Payload to send.
+ * @param len   Payload length in bytes.
+ * @return NANORTC_OK on success.
+ */
+NANORTC_API int nanortc_channel_send(nano_channel_t *ch, const void *data, size_t len);
+
+/**
+ * @brief Send a UTF-8 string on a DataChannel.
+ *
+ * @param ch   Channel handle from nanortc_channel().
+ * @param str  NUL-terminated UTF-8 string.
+ * @return NANORTC_OK on success.
+ */
+NANORTC_API int nanortc_channel_send_string(nano_channel_t *ch, const char *str);
+
+/**
+ * @brief Close a DataChannel.
+ *
+ * @param ch  Channel handle.
+ * @return NANORTC_OK on success.
+ */
+NANORTC_API int nanortc_channel_close(nano_channel_t *ch);
+
+/**
+ * @brief Get the label of a DataChannel.
+ *
+ * @param ch  Channel handle.
+ * @return Label string, or NULL if invalid. Valid until nanortc_destroy().
+ */
+NANORTC_API const char *nanortc_channel_label(nano_channel_t *ch);
+
+#endif /* NANORTC_FEATURE_DATACHANNEL */
 
 /* ----------------------------------------------------------------
  * Connection state API
  * ---------------------------------------------------------------- */
 
 /**
- * @brief Get the current connection state.
+ * @brief Check if the RTC instance is still operational.
  *
- * @param rtc  Initialized RTC state.
- * @return Current state, or NANORTC_STATE_CLOSED if @p rtc is NULL.
+ * @param rtc  RTC state, or NULL.
+ * @return true if alive (not closed), false if closed or NULL.
  */
-NANORTC_API nano_conn_state_t nanortc_get_state(const nanortc_t *rtc);
+NANORTC_API bool nanortc_is_alive(const nanortc_t *rtc);
 
 /**
- * @brief Initiate graceful connection close.
+ * @brief Check if the connection is fully established.
+ *
+ * @param rtc  RTC state.
+ * @return true if state >= CONNECTED.
+ */
+NANORTC_API bool nanortc_is_connected(const nanortc_t *rtc);
+
+/**
+ * @brief Initiate graceful disconnection.
  *
  * Enqueues SCTP SHUTDOWN (if DataChannel) and DTLS close_notify.
- * Continue calling nanortc_poll_output() to drain the close frames,
- * then call nanortc_destroy() to release resources.
+ * Continue calling nanortc_poll_output() to drain close frames,
+ * then call nanortc_destroy().
  *
  * @param rtc  Initialized RTC state.
- * @return NANORTC_OK on success.
- * @retval NANORTC_ERR_STATE  Already closed or not connected.
  */
-NANORTC_API int nanortc_close(nanortc_t *rtc);
+NANORTC_API void nanortc_disconnect(nanortc_t *rtc);
 
 /* ----------------------------------------------------------------
  * Diagnostics
@@ -766,7 +869,7 @@ NANORTC_API int nanortc_close(nanortc_t *rtc);
  * @param err  Error code (NANORTC_OK, NANORTC_ERR_*, or unknown).
  * @return Static string such as "NANORTC_OK" or "NANORTC_ERR_PARSE". Never NULL.
  */
-NANORTC_API const char *nanortc_err_to_name(int err);
+NANORTC_API const char *nanortc_err_name(int err);
 
 #ifdef __cplusplus
 }

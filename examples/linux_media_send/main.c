@@ -41,28 +41,31 @@ static void on_event(nanortc_t *rtc, const nanortc_event_t *evt, void *userdata)
     (void)userdata;
 
     switch (evt->type) {
-    case NANORTC_EVENT_SCTP_CONNECTED:
+    case NANORTC_EV_CONNECTED:
         fprintf(stderr, "[event] Connected — starting media\n");
         connected = 1;
         break;
 
-    case NANORTC_EVENT_DATACHANNEL_STRING:
-        fprintf(stderr, "[event] DC: %.*s\n", (int)evt->len, (char *)evt->data);
+    case NANORTC_EV_CHANNEL_DATA:
+        if (!evt->channel_data.binary) {
+            fprintf(stderr, "[event] DC: %.*s\n", (int)evt->channel_data.len,
+                    (char *)evt->channel_data.data);
+        }
         break;
 
-#if NANORTC_FEATURE_AUDIO
-    case NANORTC_EVENT_AUDIO_DATA:
-        /* Received audio from remote — could play it */
+#if NANORTC_FEATURE_AUDIO || NANORTC_FEATURE_VIDEO
+    case NANORTC_EV_MEDIA_DATA:
+        /* Received media from remote — could play/render it */
         break;
 #endif
 
 #if NANORTC_FEATURE_VIDEO
-    case NANORTC_EVENT_KEYFRAME_REQUEST:
+    case NANORTC_EV_KEYFRAME_REQUEST:
         fprintf(stderr, "[event] Keyframe requested\n");
         break;
 #endif
 
-    case NANORTC_EVENT_DISCONNECTED:
+    case NANORTC_EV_DISCONNECTED:
         fprintf(stderr, "[event] Disconnected\n");
         connected = 0;
         nano_run_loop_stop(&loop);
@@ -197,7 +200,7 @@ int main(int argc, char *argv[])
     char answer[4096];
     rc = nanortc_accept_offer(&rtc, offer, answer, sizeof(answer), NULL);
     if (rc != NANORTC_OK) {
-        fprintf(stderr, "nanortc_accept_offer failed: %d (%s)\n", rc, nanortc_err_to_name(rc));
+        fprintf(stderr, "nanortc_accept_offer failed: %d (%s)\n", rc, nanortc_err_name(rc));
         return 1;
     }
     nano_signaling_send_answer(&sig, answer);

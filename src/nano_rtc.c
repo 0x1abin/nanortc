@@ -159,14 +159,23 @@ static void rtc_drain_dtls_output(nanortc_t *rtc, const nanortc_addr_t *dest)
     }
 }
 
-/* A4: Emit an event with optional stream_id */
-static int rtc_emit_event(nanortc_t *rtc, nanortc_event_type_t type, uint16_t stream_id)
+/* A4: Emit a simple event (no extra data) */
+static int rtc_emit_event(nanortc_t *rtc, nanortc_event_type_t type)
 {
     nanortc_output_t evt;
     memset(&evt, 0, sizeof(evt));
     evt.type = NANORTC_OUTPUT_EVENT;
     evt.event.type = type;
-    evt.event.stream_id = stream_id;
+    return rtc_enqueue_output(rtc, &evt);
+}
+
+/* Emit a typed event with full event struct */
+static int rtc_emit_event_full(nanortc_t *rtc, const nanortc_event_t *event)
+{
+    nanortc_output_t evt;
+    memset(&evt, 0, sizeof(evt));
+    evt.type = NANORTC_OUTPUT_EVENT;
+    evt.event = *event;
     return rtc_enqueue_output(rtc, &evt);
 }
 
@@ -283,6 +292,15 @@ static void rtc_apply_negotiated_media(nanortc_t *rtc)
             media_init(&rtc->media[mid], mid, kind, local_dir, ml->codec, ml->sample_rate,
                        ml->channels, jitter_ms);
             m = &rtc->media[mid];
+
+            /* Emit MEDIA_ADDED event for remote-initiated tracks */
+            nanortc_event_t maevt;
+            memset(&maevt, 0, sizeof(maevt));
+            maevt.type = NANORTC_EV_MEDIA_ADDED;
+            maevt.media_added.mid = mid;
+            maevt.media_added.kind = (uint8_t)kind;
+            maevt.media_added.direction = local_dir;
+            rtc_emit_event_full(rtc, &maevt);
         }
 
         /* Apply negotiated direction (answerer computes complement) */
@@ -387,14 +405,7 @@ int nanortc_create_offer(nanortc_t *rtc, char *offer_buf, size_t offer_buf_len, 
     /* Offerer is DTLS active, setup=actpass in SDP (RFC 8842) */
     rtc->sdp.local_setup = NANORTC_SDP_SETUP_ACTPASS;
 
-#if NANORTC_FEATURE_DATACHANNEL
-    /* Ensure DataChannel m-line is registered for the offer SDP */
-    if (!rtc->sdp.has_datachannel) {
-        rtc->sdp.has_datachannel = true;
-        rtc->sdp.dc_mid = rtc->sdp.mid_count;
-        rtc->sdp.mid_count++;
-    }
-#endif
+    /* DataChannel m-line is registered via nanortc_add_channel() — no auto-add */
 
     /* Early DTLS init — need certificate fingerprint for SDP.
      * Role is tentative (client); accept_answer() finalizes via dtls_set_role. */
@@ -716,10 +727,14 @@ int nanortc_handle_receive(nanortc_t *rtc, uint32_t now_ms, const uint8_t *data,
         if (rtc->ice.state == NANORTC_ICE_STATE_CONNECTED &&
             rtc->state < NANORTC_STATE_ICE_CONNECTED) {
             rtc->state = NANORTC_STATE_ICE_CONNECTED;
-            rtc_emit_event(rtc, NANORTC_EVENT_ICE_CONNECTED, 0);
-            /* B3: Also emit generic ICE_STATE_CHANGE */
-            rtc_emit_event(rtc, NANORTC_EVENT_ICE_STATE_CHANGE,
-                           (uint16_t)NANORTC_ICE_STATE_CONNECTED);
+            /* Emit ICE_STATE_CHANGE (CONNECTED emitted later when fully ready) */
+            {
+                nanortc_event_t ice_evt;
+                memset(&ice_evt, 0, sizeof(ice_evt));
+                ice_evt.type = NANORTC_EV_ICE_STATE_CHANGE;
+                ice_evt.ice_state = (uint16_t)NANORTC_ICE_STATE_CONNECTED;
+                rtc_emit_event_full(rtc, &ice_evt);
+            }
 
             int drc = rtc_begin_dtls_handshake(rtc, src);
             if (drc != NANORTC_OK) {
@@ -748,7 +763,6 @@ int nanortc_handle_receive(nanortc_t *rtc, uint32_t now_ms, const uint8_t *data,
             rtc->state < NANORTC_STATE_DTLS_CONNECTED) {
             rtc->state = NANORTC_STATE_DTLS_CONNECTED;
             rtc->remote_addr = *src; /* save for timeout-driven output */
-            rtc_emit_event(rtc, NANORTC_EVENT_DTLS_CONNECTED, 0);
 
             rtc_cache_fingerprint(rtc);
 
@@ -799,6 +813,8 @@ int nanortc_handle_receive(nanortc_t *rtc, uint32_t now_ms, const uint8_t *data,
 #else
             /* No DataChannel — DTLS connected is final state */
             rtc->state = NANORTC_STATE_CONNECTED;
+            rtc_emit_event(rtc, NANORTC_EV_CONNECTED);
+            NANORTC_LOGI("RTC", "connected (no DC)");
 #endif
         }
 
@@ -816,8 +832,8 @@ int nanortc_handle_receive(nanortc_t *rtc, uint32_t now_ms, const uint8_t *data,
                 if (rtc->sctp.state == NANORTC_SCTP_STATE_ESTABLISHED &&
                     rtc->state < NANORTC_STATE_CONNECTED) {
                     rtc->state = NANORTC_STATE_CONNECTED;
-                    rtc_emit_event(rtc, NANORTC_EVENT_SCTP_CONNECTED, 0);
-                    NANORTC_LOGI("RTC", "SCTP established");
+                    rtc_emit_event(rtc, NANORTC_EV_CONNECTED);
+                    NANORTC_LOGI("RTC", "connected (SCTP established)");
                 }
 
                 /* Deliver SCTP payload via DataChannel */
@@ -827,42 +843,36 @@ int nanortc_handle_receive(nanortc_t *rtc, uint32_t now_ms, const uint8_t *data,
                                       rtc->sctp.delivered_len);
                     rtc->sctp.has_delivered = false;
 
-                    /* Emit DC events for data messages */
-                    nanortc_event_type_t etype;
-                    if (rtc->sctp.delivered_ppid == DCEP_PPID_STRING ||
-                        rtc->sctp.delivered_ppid == DCEP_PPID_STRING_EMPTY) {
-                        etype = NANORTC_EVENT_DATACHANNEL_STRING;
-                    } else if (rtc->sctp.delivered_ppid == DCEP_PPID_BINARY ||
-                               rtc->sctp.delivered_ppid == DCEP_PPID_BINARY_EMPTY) {
-                        etype = NANORTC_EVENT_DATACHANNEL_DATA;
-                    } else if (rtc->sctp.delivered_ppid == DCEP_PPID_CONTROL) {
+                    /* Emit DC events using typed event structs */
+                    if (rtc->sctp.delivered_ppid == DCEP_PPID_CONTROL) {
                         if (!rtc->datachannel.last_was_open) {
                             goto skip_dc_event;
                         }
-                        etype = NANORTC_EVENT_DATACHANNEL_OPEN;
-                    } else {
-                        etype = NANORTC_EVENT_DATACHANNEL_DATA; /* fallback */
-                    }
-
-                    {
-                        nanortc_output_t devt2;
-                        memset(&devt2, 0, sizeof(devt2));
-                        devt2.type = NANORTC_OUTPUT_EVENT;
-                        devt2.event.type = etype;
-                        devt2.event.stream_id = rtc->sctp.delivered_stream;
-                        devt2.event.data = rtc->sctp.delivered_data;
-                        devt2.event.len = rtc->sctp.delivered_len;
-                        /* Attach label for OPEN events */
-                        if (etype == NANORTC_EVENT_DATACHANNEL_OPEN) {
-                            for (uint8_t ci = 0; ci < rtc->datachannel.channel_count; ci++) {
-                                if (rtc->datachannel.channels[ci].stream_id ==
-                                    rtc->sctp.delivered_stream) {
-                                    devt2.event.label = rtc->datachannel.channels[ci].label;
-                                    break;
-                                }
+                        /* CHANNEL_OPEN event */
+                        nanortc_event_t oevt;
+                        memset(&oevt, 0, sizeof(oevt));
+                        oevt.type = NANORTC_EV_CHANNEL_OPEN;
+                        oevt.channel_open.id = rtc->sctp.delivered_stream;
+                        for (uint8_t ci = 0; ci < rtc->datachannel.channel_count; ci++) {
+                            if (rtc->datachannel.channels[ci].stream_id ==
+                                rtc->sctp.delivered_stream) {
+                                oevt.channel_open.label = rtc->datachannel.channels[ci].label;
+                                break;
                             }
                         }
-                        rtc_enqueue_output(rtc, &devt2);
+                        rtc_emit_event_full(rtc, &oevt);
+                    } else {
+                        /* CHANNEL_DATA event (binary or string) */
+                        bool is_binary = (rtc->sctp.delivered_ppid == DCEP_PPID_BINARY ||
+                                          rtc->sctp.delivered_ppid == DCEP_PPID_BINARY_EMPTY);
+                        nanortc_event_t devt;
+                        memset(&devt, 0, sizeof(devt));
+                        devt.type = NANORTC_EV_CHANNEL_DATA;
+                        devt.channel_data.id = rtc->sctp.delivered_stream;
+                        devt.channel_data.data = rtc->sctp.delivered_data;
+                        devt.channel_data.len = rtc->sctp.delivered_len;
+                        devt.channel_data.binary = is_binary;
+                        rtc_emit_event_full(rtc, &devt);
                     }
                 skip_dc_event:;
                 }
@@ -918,12 +928,11 @@ int nanortc_handle_receive(nanortc_t *rtc, uint32_t now_ms, const uint8_t *data,
                 /* PLI — find video track by SSRC and emit keyframe request event */
                 int mid = ssrc_map_lookup(rtc->ssrc_map, NANORTC_MAX_SSRC_MAP, info.ssrc);
                 if (mid >= 0) {
-                    nanortc_output_t kfevt;
+                    nanortc_event_t kfevt;
                     memset(&kfevt, 0, sizeof(kfevt));
-                    kfevt.type = NANORTC_OUTPUT_EVENT;
-                    kfevt.event.type = NANORTC_EVENT_KEYFRAME_REQUEST;
-                    kfevt.event.mid = (uint8_t)mid;
-                    rtc_enqueue_output(rtc, &kfevt);
+                    kfevt.type = NANORTC_EV_KEYFRAME_REQUEST;
+                    kfevt.keyframe_request.mid = (uint8_t)mid;
+                    rtc_emit_event_full(rtc, &kfevt);
                 }
             }
             return NANORTC_OK;
@@ -1007,15 +1016,16 @@ int nanortc_handle_receive(nanortc_t *rtc, uint32_t now_ms, const uint8_t *data,
             uint32_t pop_ts = 0;
             while (jitter_pop(&m->jitter, rtc->now_ms, m->media_buf, sizeof(m->media_buf), &pop_len,
                               &pop_ts) == NANORTC_OK) {
-                nanortc_output_t aevt;
+                nanortc_event_t aevt;
                 memset(&aevt, 0, sizeof(aevt));
-                aevt.type = NANORTC_OUTPUT_EVENT;
-                aevt.event.type = NANORTC_EVENT_AUDIO_DATA;
-                aevt.event.mid = m->mid;
-                aevt.event.data = m->media_buf;
-                aevt.event.len = pop_len;
-                aevt.event.timestamp = pop_ts;
-                rtc_enqueue_output(rtc, &aevt);
+                aevt.type = NANORTC_EV_MEDIA_DATA;
+                aevt.media_data.mid = m->mid;
+                aevt.media_data.pt = m->rtp.payload_type;
+                aevt.media_data.data = m->media_buf;
+                aevt.media_data.len = pop_len;
+                aevt.media_data.timestamp = pop_ts;
+                aevt.media_data.contiguous = true; /* jitter buffer ensures order */
+                rtc_emit_event_full(rtc, &aevt);
             }
 #endif
         } else {
@@ -1027,16 +1037,17 @@ int nanortc_handle_receive(nanortc_t *rtc, uint32_t now_ms, const uint8_t *data,
             int drc = h264_depkt_push(&m->h264_depkt, payload, payload_len, rtp_marker, &nalu_out,
                                       &nalu_len);
             if (drc == NANORTC_OK && nalu_out && nalu_len > 0) {
-                nanortc_output_t vevt;
+                nanortc_event_t vevt;
                 memset(&vevt, 0, sizeof(vevt));
-                vevt.type = NANORTC_OUTPUT_EVENT;
-                vevt.event.type = NANORTC_EVENT_VIDEO_DATA;
-                vevt.event.mid = m->mid;
-                vevt.event.data = nalu_out;
-                vevt.event.len = nalu_len;
-                vevt.event.timestamp = rtp_ts;
-                vevt.event.is_keyframe = h264_is_keyframe(nalu_out, nalu_len) ? true : false;
-                rtc_enqueue_output(rtc, &vevt);
+                vevt.type = NANORTC_EV_MEDIA_DATA;
+                vevt.media_data.mid = m->mid;
+                vevt.media_data.pt = m->rtp.payload_type;
+                vevt.media_data.data = nalu_out;
+                vevt.media_data.len = nalu_len;
+                vevt.media_data.timestamp = rtp_ts;
+                vevt.media_data.is_keyframe = h264_is_keyframe(nalu_out, nalu_len) ? true : false;
+                vevt.media_data.contiguous = true;
+                rtc_emit_event_full(rtc, &vevt);
             }
 #endif
         }
@@ -1088,10 +1099,13 @@ int nanortc_handle_timeout(nanortc_t *rtc, uint32_t now_ms)
             rtc_enqueue_output(rtc, &out);
         }
 
-        /* B3: Emit ICE_STATE_CHANGE on transition to CHECKING */
+        /* Emit ICE_STATE_CHANGE on transition to CHECKING */
         if (rtc->ice.state != prev_ice && rtc->ice.state == NANORTC_ICE_STATE_CHECKING) {
-            rtc_emit_event(rtc, NANORTC_EVENT_ICE_STATE_CHANGE,
-                           (uint16_t)NANORTC_ICE_STATE_CHECKING);
+            nanortc_event_t isce;
+            memset(&isce, 0, sizeof(isce));
+            isce.type = NANORTC_EV_ICE_STATE_CHANGE;
+            isce.ice_state = (uint16_t)NANORTC_ICE_STATE_CHECKING;
+            rtc_emit_event_full(rtc, &isce);
         }
 
         /* Schedule next timeout */
@@ -1105,7 +1119,11 @@ int nanortc_handle_timeout(nanortc_t *rtc, uint32_t now_ms)
 
         /* Propagate ICE failure */
         if (rtc->ice.state == NANORTC_ICE_STATE_FAILED) {
-            rtc_emit_event(rtc, NANORTC_EVENT_ICE_STATE_CHANGE, (uint16_t)NANORTC_ICE_STATE_FAILED);
+            nanortc_event_t fice;
+            memset(&fice, 0, sizeof(fice));
+            fice.type = NANORTC_EV_ICE_STATE_CHANGE;
+            fice.ice_state = (uint16_t)NANORTC_ICE_STATE_FAILED;
+            rtc_emit_event_full(rtc, &fice);
             rtc->state = NANORTC_STATE_CLOSED;
         }
     }
@@ -1145,114 +1163,145 @@ static uint16_t rtc_alloc_stream_id(nanortc_t *rtc)
     return max_id;
 }
 
-int nanortc_create_datachannel(nanortc_t *rtc, const nanortc_datachannel_config_t *cfg,
-                               uint16_t *stream_id)
+int nanortc_add_channel(nanortc_t *rtc, const char *label)
 {
-    if (!rtc || !cfg || !cfg->label || !stream_id) {
+    if (!rtc || !label) {
         return NANORTC_ERR_INVALID_PARAM;
     }
-    if (rtc->state != NANORTC_STATE_CONNECTED) {
-        return NANORTC_ERR_STATE;
+
+    /* Ensure DC m-line is registered in SDP */
+    if (!rtc->sdp.has_datachannel) {
+        rtc->sdp.has_datachannel = true;
+        rtc->sdp.dc_mid = rtc->sdp.mid_count;
+        rtc->sdp.mid_count++;
     }
 
     uint16_t sid = rtc_alloc_stream_id(rtc);
-    int rc = dc_open(&rtc->datachannel, sid, cfg->label);
+    int rc = dc_open(&rtc->datachannel, sid, label);
     if (rc != NANORTC_OK) {
         return rc;
     }
 
-    /* Drain DCEP OPEN → SCTP → DTLS → output queue */
-    uint8_t dc_buf[NANORTC_DC_OUT_BUF_SIZE];
-    size_t dc_len = 0;
-    uint16_t dc_stream = 0;
-    while (dc_poll_output(&rtc->datachannel, dc_buf, sizeof(dc_buf), &dc_len, &dc_stream) ==
-               NANORTC_OK &&
-           dc_len > 0) {
-        nsctp_send(&rtc->sctp, dc_stream, DCEP_PPID_CONTROL, dc_buf, dc_len);
-        rtc_pump_sctp_through_dtls(rtc, &rtc->remote_addr);
-        dc_len = 0;
-    }
-
-    *stream_id = sid;
-    NANORTC_LOGI("RTC", "datachannel created");
-    return NANORTC_OK;
-}
-
-int nanortc_close_datachannel(nanortc_t *rtc, uint16_t stream_id)
-{
-    if (!rtc) {
-        return NANORTC_ERR_INVALID_PARAM;
-    }
-
-    /* Find channel and mark closed */
-    nano_dc_channel_t *ch = NULL;
-    for (uint8_t i = 0; i < rtc->datachannel.channel_count; i++) {
-        if (rtc->datachannel.channels[i].stream_id == stream_id &&
-            rtc->datachannel.channels[i].state != NANORTC_DC_STATE_CLOSED) {
-            ch = &rtc->datachannel.channels[i];
-            break;
+    /* If already connected, drain DCEP OPEN through SCTP→DTLS */
+    if (rtc->state == NANORTC_STATE_CONNECTED) {
+        uint8_t dc_buf[NANORTC_DC_OUT_BUF_SIZE];
+        size_t dc_len = 0;
+        uint16_t dc_stream = 0;
+        while (dc_poll_output(&rtc->datachannel, dc_buf, sizeof(dc_buf), &dc_len, &dc_stream) ==
+                   NANORTC_OK &&
+               dc_len > 0) {
+            nsctp_send(&rtc->sctp, dc_stream, DCEP_PPID_CONTROL, dc_buf, dc_len);
+            rtc_pump_sctp_through_dtls(rtc, &rtc->remote_addr);
+            dc_len = 0;
         }
     }
-    if (!ch) {
-        return NANORTC_ERR_INVALID_PARAM;
-    }
 
-    ch->state = NANORTC_DC_STATE_CLOSED;
-    rtc_emit_event(rtc, NANORTC_EVENT_DATACHANNEL_CLOSE, stream_id);
-
-    NANORTC_LOGI("RTC", "datachannel closed");
-    return NANORTC_OK;
+    NANORTC_LOGI("RTC", "channel added");
+    return (int)sid;
 }
 
-int nanortc_send_datachannel(nanortc_t *rtc, uint16_t stream_id, const void *data, size_t len)
+int nanortc_add_channel_ex(nanortc_t *rtc, const nanortc_datachannel_config_t *cfg)
 {
-    if (!rtc || !data) {
+    if (!rtc || !cfg || !cfg->label) {
         return NANORTC_ERR_INVALID_PARAM;
     }
-    if (rtc->state != NANORTC_STATE_CONNECTED) {
+    return nanortc_add_channel(rtc, cfg->label);
+}
+
+int nanortc_channel(nanortc_t *rtc, uint16_t id, nano_channel_t *ch)
+{
+    if (!rtc || !ch) {
+        return NANORTC_ERR_INVALID_PARAM;
+    }
+    /* Validate channel exists and is open */
+    for (uint8_t i = 0; i < rtc->datachannel.channel_count; i++) {
+        if (rtc->datachannel.channels[i].stream_id == id &&
+            rtc->datachannel.channels[i].state != NANORTC_DC_STATE_CLOSED) {
+            ch->rtc = rtc;
+            ch->id = id;
+            return NANORTC_OK;
+        }
+    }
+    return NANORTC_ERR_INVALID_PARAM;
+}
+
+int nanortc_channel_send(nano_channel_t *ch, const void *data, size_t len)
+{
+    if (!ch || !ch->rtc || !data) {
+        return NANORTC_ERR_INVALID_PARAM;
+    }
+    if (ch->rtc->state != NANORTC_STATE_CONNECTED) {
         return NANORTC_ERR_STATE;
     }
 
     uint32_t ppid = (len > 0) ? DCEP_PPID_BINARY : DCEP_PPID_BINARY_EMPTY;
-    int rc = nsctp_send(&rtc->sctp, stream_id, ppid, (const uint8_t *)data, len);
+    int rc = nsctp_send(&ch->rtc->sctp, ch->id, ppid, (const uint8_t *)data, len);
     if (rc == NANORTC_ERR_BUFFER_TOO_SMALL) {
-        return NANORTC_ERR_WOULD_BLOCK; /* send queue full — backpressure */
+        return NANORTC_ERR_WOULD_BLOCK;
     }
     return rc;
 }
 
-int nanortc_send_datachannel_string(nanortc_t *rtc, uint16_t stream_id, const char *str)
+int nanortc_channel_send_string(nano_channel_t *ch, const char *str)
 {
-    if (!rtc || !str) {
+    if (!ch || !ch->rtc || !str) {
         return NANORTC_ERR_INVALID_PARAM;
     }
-    if (rtc->state != NANORTC_STATE_CONNECTED) {
+    if (ch->rtc->state != NANORTC_STATE_CONNECTED) {
         return NANORTC_ERR_STATE;
     }
 
     size_t len = strlen(str); /* NANORTC_SAFE: API boundary */
 
     uint32_t ppid = (len > 0) ? DCEP_PPID_STRING : DCEP_PPID_STRING_EMPTY;
-    int rc = nsctp_send(&rtc->sctp, stream_id, ppid, (const uint8_t *)str, len);
+    int rc = nsctp_send(&ch->rtc->sctp, ch->id, ppid, (const uint8_t *)str, len);
     if (rc == NANORTC_ERR_BUFFER_TOO_SMALL) {
-        return NANORTC_ERR_WOULD_BLOCK; /* send queue full — backpressure */
+        return NANORTC_ERR_WOULD_BLOCK;
     }
     return rc;
 }
 
-int nanortc_get_datachannel_label(nanortc_t *rtc, uint16_t stream_id, const char **label)
+int nanortc_channel_close(nano_channel_t *ch)
 {
-    if (!rtc || !label) {
+    if (!ch || !ch->rtc) {
         return NANORTC_ERR_INVALID_PARAM;
     }
-    for (uint8_t i = 0; i < rtc->datachannel.channel_count; i++) {
-        if (rtc->datachannel.channels[i].stream_id == stream_id &&
-            rtc->datachannel.channels[i].state != NANORTC_DC_STATE_CLOSED) {
-            *label = rtc->datachannel.channels[i].label;
-            return NANORTC_OK;
+
+    nano_dc_channel_t *dc = NULL;
+    for (uint8_t i = 0; i < ch->rtc->datachannel.channel_count; i++) {
+        if (ch->rtc->datachannel.channels[i].stream_id == ch->id &&
+            ch->rtc->datachannel.channels[i].state != NANORTC_DC_STATE_CLOSED) {
+            dc = &ch->rtc->datachannel.channels[i];
+            break;
         }
     }
-    return NANORTC_ERR_INVALID_PARAM;
+    if (!dc) {
+        return NANORTC_ERR_INVALID_PARAM;
+    }
+
+    dc->state = NANORTC_DC_STATE_CLOSED;
+    nanortc_event_t cevt;
+    memset(&cevt, 0, sizeof(cevt));
+    cevt.type = NANORTC_EV_CHANNEL_CLOSE;
+    cevt.channel_id.id = ch->id;
+    rtc_emit_event_full(ch->rtc, &cevt);
+
+    NANORTC_LOGI("RTC", "channel closed");
+    return NANORTC_OK;
+}
+
+const char *nanortc_channel_label(nano_channel_t *ch)
+{
+    if (!ch || !ch->rtc) {
+        return NULL;
+    }
+    for (uint8_t i = 0; i < ch->rtc->datachannel.channel_count; i++) {
+        if (ch->rtc->datachannel.channels[i].stream_id == ch->id &&
+            ch->rtc->datachannel.channels[i].state != NANORTC_DC_STATE_CLOSED) {
+            return ch->rtc->datachannel.channels[i].label;
+        }
+    }
+    return NULL;
 }
 #endif /* NANORTC_FEATURE_DATACHANNEL */
 
@@ -1260,34 +1309,40 @@ int nanortc_get_datachannel_label(nanortc_t *rtc, uint16_t stream_id, const char
  * Connection state API
  * ---------------------------------------------------------------- */
 
-nano_conn_state_t nanortc_get_state(const nanortc_t *rtc)
+bool nanortc_is_alive(const nanortc_t *rtc)
 {
     if (!rtc) {
-        return NANORTC_STATE_CLOSED;
+        return false;
     }
-    return rtc->state;
+    return rtc->state != NANORTC_STATE_CLOSED;
 }
 
-int nanortc_close(nanortc_t *rtc)
+bool nanortc_is_connected(const nanortc_t *rtc)
 {
     if (!rtc) {
-        return NANORTC_ERR_INVALID_PARAM;
+        return false;
+    }
+    return rtc->state >= NANORTC_STATE_CONNECTED && rtc->state != NANORTC_STATE_CLOSED;
+}
+
+void nanortc_disconnect(nanortc_t *rtc)
+{
+    if (!rtc) {
+        return;
     }
     if (rtc->state == NANORTC_STATE_CLOSED || rtc->state == NANORTC_STATE_NEW) {
-        return NANORTC_ERR_STATE;
+        return;
     }
 
 #if NANORTC_FEATURE_DATACHANNEL
     /* Send SCTP SHUTDOWN if association is established */
     if (rtc->sctp.state == NANORTC_SCTP_STATE_ESTABLISHED) {
-        /* Encode SHUTDOWN chunk — cumulative TSN of received data */
         uint8_t shutdown_pkt[64];
         size_t hdr_len = nsctp_encode_header(shutdown_pkt, rtc->sctp.local_port,
                                              rtc->sctp.remote_port, rtc->sctp.remote_vtag);
         size_t chunk_len = nsctp_encode_shutdown(shutdown_pkt + hdr_len, rtc->sctp.cumulative_tsn);
         nsctp_finalize_checksum(shutdown_pkt, hdr_len + chunk_len);
 
-        /* Encrypt through DTLS and enqueue */
         dtls_encrypt(&rtc->dtls, shutdown_pkt, hdr_len + chunk_len);
         rtc_drain_dtls_output(rtc, &rtc->remote_addr);
         rtc->sctp.state = NANORTC_SCTP_STATE_SHUTDOWN_SENT;
@@ -1299,10 +1354,9 @@ int nanortc_close(nanortc_t *rtc)
     rtc_drain_dtls_output(rtc, &rtc->remote_addr);
 
     rtc->state = NANORTC_STATE_CLOSED;
-    rtc_emit_event(rtc, NANORTC_EVENT_DISCONNECTED, 0);
+    rtc_emit_event(rtc, NANORTC_EV_DISCONNECTED);
 
-    NANORTC_LOGI("RTC", "graceful close initiated");
-    return NANORTC_OK;
+    NANORTC_LOGI("RTC", "disconnected");
 }
 
 #if NANORTC_HAVE_MEDIA_TRANSPORT
@@ -1462,16 +1516,44 @@ static int rtc_send_video(nanortc_t *rtc, nano_media_t *m, uint32_t timestamp, c
 }
 #endif /* NANORTC_FEATURE_VIDEO */
 
-int nanortc_send_media(nanortc_t *rtc, uint8_t mid, uint32_t timestamp, const void *data,
-                       size_t len, int flags)
+void nanortc_set_direction(nanortc_t *rtc, uint8_t mid, nanortc_direction_t dir)
 {
-    if (!rtc || !data || len == 0) {
+    if (!rtc) {
+        return;
+    }
+    nano_media_t *m = media_find_by_mid(rtc->media, rtc->media_count, mid);
+    if (!m) {
+        return;
+    }
+    nanortc_direction_t old_dir = m->direction;
+    m->direction = dir;
+
+    /* Emit MEDIA_CHANGED event if direction actually changed */
+    if (old_dir != dir) {
+        nanortc_event_t mce;
+        memset(&mce, 0, sizeof(mce));
+        mce.type = NANORTC_EV_MEDIA_CHANGED;
+        mce.media_changed.mid = mid;
+        mce.media_changed.old_direction = old_dir;
+        mce.media_changed.new_direction = dir;
+        rtc_emit_event_full(rtc, &mce);
+    }
+}
+
+const nano_media_t *nanortc_media(const nanortc_t *rtc, uint8_t mid)
+{
+    if (!rtc) {
+        return NULL;
+    }
+    return media_find_by_mid((nano_media_t *)rtc->media, rtc->media_count, mid);
+}
+
+int nanortc_writer(nanortc_t *rtc, uint8_t mid, nano_writer_t *w)
+{
+    if (!rtc || !w) {
         return NANORTC_ERR_INVALID_PARAM;
     }
-    if (rtc->state < NANORTC_STATE_DTLS_CONNECTED) {
-        return NANORTC_ERR_STATE;
-    }
-    if (!rtc->srtp.ready) {
+    if (rtc->state < NANORTC_STATE_DTLS_CONNECTED || !rtc->srtp.ready) {
         return NANORTC_ERR_STATE;
     }
 
@@ -1479,9 +1561,30 @@ int nanortc_send_media(nanortc_t *rtc, uint8_t mid, uint32_t timestamp, const vo
     if (!m) {
         return NANORTC_ERR_INVALID_PARAM;
     }
-    /* Validate direction allows sending */
     if (m->direction == NANORTC_DIR_RECVONLY || m->direction == NANORTC_DIR_INACTIVE) {
         return NANORTC_ERR_STATE;
+    }
+
+    w->rtc = rtc;
+    w->mid = mid;
+    return NANORTC_OK;
+}
+
+int nanortc_writer_write(nano_writer_t *w, uint32_t timestamp, const void *data, size_t len,
+                         int flags)
+{
+    if (!w || !w->rtc || !data || len == 0) {
+        return NANORTC_ERR_INVALID_PARAM;
+    }
+
+    nanortc_t *rtc = w->rtc;
+    if (rtc->state < NANORTC_STATE_DTLS_CONNECTED || !rtc->srtp.ready) {
+        return NANORTC_ERR_STATE;
+    }
+
+    nano_media_t *m = media_find_by_mid(rtc->media, rtc->media_count, w->mid);
+    if (!m) {
+        return NANORTC_ERR_INVALID_PARAM;
     }
 
     if (m->kind == NANO_MEDIA_AUDIO) {
@@ -1495,19 +1598,18 @@ int nanortc_send_media(nanortc_t *rtc, uint8_t mid, uint32_t timestamp, const vo
     return NANORTC_ERR_INVALID_PARAM;
 }
 
-int nanortc_request_keyframe(nanortc_t *rtc, uint8_t mid)
+int nanortc_writer_request_keyframe(nano_writer_t *w)
 {
-    if (!rtc) {
+    if (!w || !w->rtc) {
         return NANORTC_ERR_INVALID_PARAM;
     }
-    if (rtc->state < NANORTC_STATE_DTLS_CONNECTED) {
-        return NANORTC_ERR_STATE;
-    }
-    if (!rtc->srtp.ready) {
+
+    nanortc_t *rtc = w->rtc;
+    if (rtc->state < NANORTC_STATE_DTLS_CONNECTED || !rtc->srtp.ready) {
         return NANORTC_ERR_STATE;
     }
 
-    nano_media_t *m = media_find_by_mid(rtc->media, rtc->media_count, mid);
+    nano_media_t *m = media_find_by_mid(rtc->media, rtc->media_count, w->mid);
     if (!m || m->kind != NANO_MEDIA_VIDEO) {
         return NANORTC_ERR_INVALID_PARAM;
     }
@@ -1534,7 +1636,7 @@ int nanortc_request_keyframe(nanortc_t *rtc, uint8_t mid)
 
 #endif /* NANORTC_HAVE_MEDIA_TRANSPORT */
 
-const char *nanortc_err_to_name(int err)
+const char *nanortc_err_name(int err)
 {
     switch (err) {
     case NANORTC_OK:

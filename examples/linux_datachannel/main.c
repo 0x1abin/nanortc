@@ -35,37 +35,36 @@ static void on_event(nanortc_t *rtc, const nanortc_event_t *evt, void *userdata)
     (void)userdata;
 
     switch (evt->type) {
-    case NANORTC_EVENT_ICE_CONNECTED:
-        fprintf(stderr, "[event] ICE connected\n");
+    case NANORTC_EV_ICE_STATE_CHANGE:
+        if (evt->ice_state == NANORTC_ICE_STATE_CONNECTED) {
+            fprintf(stderr, "[event] ICE connected\n");
+        }
         break;
 
-    case NANORTC_EVENT_DTLS_CONNECTED:
-        fprintf(stderr, "[event] DTLS connected\n");
+    case NANORTC_EV_CONNECTED:
+        fprintf(stderr, "[event] Connected\n");
         break;
 
-    case NANORTC_EVENT_SCTP_CONNECTED:
-        fprintf(stderr, "[event] SCTP connected\n");
+    case NANORTC_EV_CHANNEL_OPEN:
+        fprintf(stderr, "[event] DataChannel open (id=%d)\n", evt->channel_open.id);
         break;
 
-    case NANORTC_EVENT_DATACHANNEL_OPEN:
-        fprintf(stderr, "[event] DataChannel open (stream=%d)\n", evt->stream_id);
+    case NANORTC_EV_CHANNEL_DATA:
+        if (evt->channel_data.binary) {
+            fprintf(stderr, "[event] DC data (%zu bytes), echoing back\n", evt->channel_data.len);
+            nanortc_channel_send(&evt->channel_data, evt->channel_data.data, evt->channel_data.len);
+        } else {
+            fprintf(stderr, "[event] DC string: %.*s\n", (int)evt->channel_data.len,
+                    (char *)evt->channel_data.data);
+            nanortc_channel_send_string(&evt->channel_data, (const char *)evt->channel_data.data);
+        }
         break;
 
-    case NANORTC_EVENT_DATACHANNEL_DATA:
-        fprintf(stderr, "[event] DC data (%zu bytes), echoing back\n", evt->len);
-        nanortc_send_datachannel(rtc, evt->stream_id, evt->data, evt->len);
-        break;
-
-    case NANORTC_EVENT_DATACHANNEL_STRING:
-        fprintf(stderr, "[event] DC string: %.*s\n", (int)evt->len, (char *)evt->data);
-        nanortc_send_datachannel_string(rtc, evt->stream_id, (const char *)evt->data);
-        break;
-
-    case NANORTC_EVENT_DATACHANNEL_CLOSE:
+    case NANORTC_EV_CHANNEL_CLOSE:
         fprintf(stderr, "[event] DataChannel closed\n");
         break;
 
-    case NANORTC_EVENT_DISCONNECTED:
+    case NANORTC_EV_DISCONNECTED:
         fprintf(stderr, "[event] Disconnected\n");
         nano_run_loop_stop(&loop);
         break;
@@ -124,7 +123,8 @@ int main(int argc, char *argv[])
     }
     nano_run_loop_set_event_cb(&loop, on_event, NULL);
 
-    fprintf(stderr, "nanortc DataChannel echo (port=%d, DC=%d)\n", port, NANORTC_FEATURE_DATACHANNEL);
+    fprintf(stderr, "nanortc DataChannel echo (port=%d, DC=%d)\n", port,
+            NANORTC_FEATURE_DATACHANNEL);
 
     /* 3. Signaling: exchange SDP via stdin/stdout */
     nano_signaling_t sig;
@@ -140,7 +140,7 @@ int main(int argc, char *argv[])
     char answer[4096];
     rc = nanortc_accept_offer(&rtc, offer, answer, sizeof(answer), NULL);
     if (rc != NANORTC_OK) {
-        fprintf(stderr, "nanortc_accept_offer failed: %d (%s)\n", rc, nanortc_err_to_name(rc));
+        fprintf(stderr, "nanortc_accept_offer failed: %d (%s)\n", rc, nanortc_err_name(rc));
         return 1;
     }
     nano_signaling_send_answer(&sig, answer);

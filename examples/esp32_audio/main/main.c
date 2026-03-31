@@ -47,24 +47,24 @@ static const char *TAG = "nanortc_audio";
  * Codec configuration (resolved at compile time from Kconfig)
  * ---------------------------------------------------------------- */
 #if defined(CONFIG_EXAMPLE_AUDIO_CODEC_OPUS)
-#define AUDIO_CODEC      NANORTC_CODEC_OPUS
+#define AUDIO_CODEC       NANORTC_CODEC_OPUS
 #define AUDIO_SAMPLE_RATE 48000
 #define AUDIO_CHANNELS    1
-#define SAMPLES_PER_FRAME 960  /* 48kHz * 20ms */
+#define SAMPLES_PER_FRAME 960 /* 48kHz * 20ms */
 #define RTP_TS_INCREMENT  960
 #define CODEC_NAME        "Opus 48kHz mono"
 #elif defined(CONFIG_EXAMPLE_AUDIO_CODEC_PCMA)
-#define AUDIO_CODEC      NANORTC_CODEC_PCMA
+#define AUDIO_CODEC       NANORTC_CODEC_PCMA
 #define AUDIO_SAMPLE_RATE 8000
 #define AUDIO_CHANNELS    1
-#define SAMPLES_PER_FRAME 160  /* 8kHz * 20ms */
+#define SAMPLES_PER_FRAME 160 /* 8kHz * 20ms */
 #define RTP_TS_INCREMENT  160
 #define CODEC_NAME        "G.711 A-law 8kHz"
 #else /* default: PCMU */
-#define AUDIO_CODEC      NANORTC_CODEC_PCMU
+#define AUDIO_CODEC       NANORTC_CODEC_PCMU
 #define AUDIO_SAMPLE_RATE 8000
 #define AUDIO_CHANNELS    1
-#define SAMPLES_PER_FRAME 160  /* 8kHz * 20ms */
+#define SAMPLES_PER_FRAME 160 /* 8kHz * 20ms */
 #define RTP_TS_INCREMENT  160
 #define CODEC_NAME        "G.711 mu-law 8kHz"
 #endif
@@ -114,8 +114,7 @@ static void audio_send_tick(uint32_t now)
     while (s_audio_frame_count < target_frames) {
         /* 1. Generate music PCM */
         static int16_t pcm_buf[SAMPLES_PER_FRAME * AUDIO_CHANNELS];
-        music_generate(pcm_buf, SAMPLES_PER_FRAME, AUDIO_SAMPLE_RATE,
-                       AUDIO_CHANNELS);
+        music_generate(pcm_buf, SAMPLES_PER_FRAME, AUDIO_SAMPLE_RATE, AUDIO_CHANNELS);
 
         /* 2. Encode (unified esp_audio_codec API) */
         static uint8_t encoded[1024];
@@ -128,11 +127,9 @@ static void audio_send_tick(uint32_t now)
                 .buffer = encoded,
                 .len = (uint32_t)s_enc_out_size,
             };
-            esp_audio_err_t ret =
-                esp_audio_enc_process(s_encoder, &in_frame, &out_frame);
+            esp_audio_err_t ret = esp_audio_enc_process(s_encoder, &in_frame, &out_frame);
             if (ret == ESP_AUDIO_ERR_OK && out_frame.encoded_bytes > 0) {
-                nanortc_send_audio(&s_rtc, s_audio_rtp_ts, encoded,
-                                   out_frame.encoded_bytes);
+                nanortc_send_audio(&s_rtc, s_audio_rtp_ts, encoded, out_frame.encoded_bytes);
             }
         }
 
@@ -144,19 +141,20 @@ static void audio_send_tick(uint32_t now)
 /* ----------------------------------------------------------------
  * nanortc event callback
  * ---------------------------------------------------------------- */
-static void on_event(nanortc_t *rtc, const nanortc_event_t *evt,
-                     void *userdata)
+static void on_event(nanortc_t *rtc, const nanortc_event_t *evt, void *userdata)
 {
     (void)rtc;
     (void)userdata;
 
     switch (evt->type) {
-    case NANORTC_EVENT_ICE_CONNECTED:
-        ESP_LOGI(TAG, "ICE connected");
+    case NANORTC_EV_ICE_STATE_CHANGE:
+        if (evt->ice_state == NANORTC_ICE_STATE_CONNECTED) {
+            ESP_LOGI(TAG, "ICE connected");
+        }
         break;
 
-    case NANORTC_EVENT_DTLS_CONNECTED:
-        ESP_LOGI(TAG, "DTLS connected — starting audio");
+    case NANORTC_EV_CONNECTED:
+        ESP_LOGI(TAG, "Connected — starting audio");
         s_connected = 1;
         s_audio_epoch_ms = 0;
         s_audio_frame_count = 0;
@@ -165,7 +163,7 @@ static void on_event(nanortc_t *rtc, const nanortc_event_t *evt,
         encoder_init();
         break;
 
-    case NANORTC_EVENT_DISCONNECTED:
+    case NANORTC_EV_DISCONNECTED:
         ESP_LOGI(TAG, "Disconnected");
         s_connected = 0;
         if (s_encoder) {
@@ -269,10 +267,8 @@ static esp_err_t http_post_offer(httpd_req_t *req)
     free(offer);
 
     if (rc != NANORTC_OK) {
-        ESP_LOGE(TAG, "nanortc_accept_offer failed: %d (%s)", rc,
-                 nanortc_err_to_name(rc));
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
-                            nanortc_err_to_name(rc));
+        ESP_LOGE(TAG, "nanortc_accept_offer failed: %d (%s)", rc, nanortc_err_name(rc));
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, nanortc_err_name(rc));
         free(answer);
         return ESP_FAIL;
     }
@@ -301,10 +297,14 @@ static httpd_handle_t start_http_server(void)
     }
 
     httpd_uri_t uri_root = {
-        .uri = "/", .method = HTTP_GET, .handler = http_get_root,
+        .uri = "/",
+        .method = HTTP_GET,
+        .handler = http_get_root,
     };
     httpd_uri_t uri_offer = {
-        .uri = "/offer", .method = HTTP_POST, .handler = http_post_offer,
+        .uri = "/offer",
+        .method = HTTP_POST,
+        .handler = http_post_offer,
     };
     httpd_register_uri_handler(server, &uri_root);
     httpd_register_uri_handler(server, &uri_offer);
@@ -358,8 +358,7 @@ static void encoder_init(void)
         return;
     }
     esp_audio_enc_get_frame_size(s_encoder, &s_enc_in_size, &s_enc_out_size);
-    ESP_LOGI(TAG, "Encoder initialized: in=%d out=%d bytes", s_enc_in_size,
-             s_enc_out_size);
+    ESP_LOGI(TAG, "Encoder initialized: in=%d out=%d bytes", s_enc_in_size, s_enc_out_size);
 }
 
 /* ----------------------------------------------------------------
@@ -388,13 +387,11 @@ static void webrtc_task(void *arg)
  * ---------------------------------------------------------------- */
 void app_main(void)
 {
-    ESP_LOGI(TAG, "nanortc ESP32 Audio example — %s, %d BPM music",
-             CODEC_NAME, MUSIC_BPM);
+    ESP_LOGI(TAG, "nanortc ESP32 Audio example — %s, %d BPM music", CODEC_NAME, MUSIC_BPM);
 
     /* 1. NVS init (required for WiFi) */
     esp_err_t ret = nvs_flash_init();
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES ||
-        ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
         ret = nvs_flash_init();
     }

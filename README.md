@@ -99,6 +99,7 @@ cfg.role   = NANORTC_ROLE_CONTROLLING;
 nanortc_init(&rtc, &cfg);
 
 nanortc_add_local_candidate(&rtc, "192.168.1.200", 9999);
+nanortc_add_channel(&rtc, "chat");  // register DataChannel before offer
 
 char offer[4096];
 nanortc_create_offer(&rtc, offer, sizeof(offer), NULL);
@@ -119,14 +120,10 @@ for (;;) {
             sendto(fd, out.transmit.data, out.transmit.len, ...);
             break;
         case NANORTC_OUTPUT_EVENT:
-            if (out.event.type == NANORTC_EVENT_SCTP_CONNECTED) {
-                nanortc_datachannel_config_t dc = {.label = "chat", .ordered = true};
-                uint16_t stream_id;
-                nanortc_create_datachannel(&rtc, &dc, &stream_id);
-            } else if (out.event.type == NANORTC_EVENT_DATACHANNEL_STRING) {
-                nanortc_send_datachannel_string(&rtc, out.event.stream_id,
-                                                (const char *)out.event.data);
-            } else if (out.event.type == NANORTC_EVENT_DISCONNECTED) {
+            if (out.event.type == NANORTC_EV_CHANNEL_DATA && !out.event.channel_data.binary) {
+                nano_channel_t ch = {.rtc = &rtc, .id = out.event.channel_data.id};
+                nanortc_channel_send_string(&ch, (const char *)out.event.channel_data.data);
+            } else if (out.event.type == NANORTC_EV_DISCONNECTED) {
                 goto done;
             }
             break;
@@ -140,7 +137,7 @@ for (;;) {
     nanortc_handle_timeout(&rtc, now_ms);
 }
 done:
-nanortc_close(&rtc);
+nanortc_disconnect(&rtc);
 nanortc_destroy(&rtc);
 ```
 

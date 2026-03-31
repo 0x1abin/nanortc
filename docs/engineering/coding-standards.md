@@ -134,14 +134,14 @@ All `nano_*` public API functions return `int` as a status code:
 - `NANORTC_OK` (0) = success
 - `NANORTC_ERR_*` (negative) = failure
 
-**Never return positive values.** Output lengths are passed via `size_t *out_len` parameters. Use `nanortc_err_to_name()` to convert error codes to human-readable strings for diagnostics.
+**Never return positive values.** Output lengths are passed via `size_t *out_len` parameters. Use `nanortc_err_name()` to convert error codes to human-readable strings for diagnostics.
 
 ```c
 /* Good: status code + out_len */
 size_t answer_len = 0;
 int rc = nanortc_accept_offer(&rtc, offer, answer, sizeof(answer), &answer_len);
 if (rc != NANORTC_OK) {
-    fprintf(stderr, "failed: %s\n", nanortc_err_to_name(rc));
+    fprintf(stderr, "failed: %s\n", nanortc_err_name(rc));
     return rc;
 }
 
