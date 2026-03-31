@@ -248,7 +248,7 @@ static esp_err_t http_post_offer(httpd_req_t *req)
     }
 
     /* Add audio track via Writer handle pattern */
-    s_audio_mid = nanortc_add_track(&s_rtc, NANO_MEDIA_AUDIO, NANORTC_DIR_SENDONLY, AUDIO_CODEC,
+    s_audio_mid = nanortc_add_track(&s_rtc, NANORTC_TRACK_AUDIO, NANORTC_DIR_SENDONLY, AUDIO_CODEC,
                                     AUDIO_SAMPLE_RATE, AUDIO_CHANNELS);
     if (s_audio_mid < 0) {
         ESP_LOGE(TAG, "nanortc_add_track failed: %d", s_audio_mid);

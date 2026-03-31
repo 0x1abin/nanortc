@@ -148,7 +148,7 @@ TEST(test_e2e_stubs_not_implemented)
 #if NANORTC_HAVE_MEDIA_TRANSPORT
     /* nanortc_writer returns ERR_STATE when not connected */
     {
-        int mid = nanortc_add_track(&rtc, NANO_MEDIA_AUDIO, NANORTC_DIR_SENDRECV,
+        int mid = nanortc_add_track(&rtc, NANORTC_TRACK_AUDIO, NANORTC_DIR_SENDRECV,
                                     NANORTC_CODEC_OPUS, 48000, 2);
         ASSERT(mid >= 0);
         nanortc_writer_t w;
@@ -158,7 +158,7 @@ TEST(test_e2e_stubs_not_implemented)
 
 #if NANORTC_FEATURE_VIDEO
     {
-        int vmid = nanortc_add_track(&rtc, NANO_MEDIA_VIDEO, NANORTC_DIR_SENDRECV,
+        int vmid = nanortc_add_track(&rtc, NANORTC_TRACK_VIDEO, NANORTC_DIR_SENDRECV,
                                      NANORTC_CODEC_H264, 0, 0);
         ASSERT(vmid >= 0);
         nanortc_writer_t vw;
@@ -546,7 +546,7 @@ TEST(test_e2e_create_offer_content)
     ASSERT(nanortc_create_datachannel(&rtc, "test", NULL) >= 0);
 #elif NANORTC_HAVE_MEDIA_TRANSPORT
     /* Without DC, add a media track so the offer has at least one m-line */
-    ASSERT(nanortc_add_track(&rtc, NANO_MEDIA_AUDIO, NANORTC_DIR_SENDRECV, NANORTC_CODEC_OPUS,
+    ASSERT(nanortc_add_track(&rtc, NANORTC_TRACK_AUDIO, NANORTC_DIR_SENDRECV, NANORTC_CODEC_OPUS,
                              48000, 2) >= 0);
 #endif
 
@@ -591,7 +591,7 @@ TEST(test_e2e_offer_answer_roundtrip)
     ASSERT(nanortc_create_datachannel(&offerer, "test", NULL) >= 0);
 #elif NANORTC_HAVE_MEDIA_TRANSPORT
     /* Without DC, add a media track so the offer has at least one m-line */
-    ASSERT(nanortc_add_track(&offerer, NANO_MEDIA_AUDIO, NANORTC_DIR_SENDRECV, NANORTC_CODEC_OPUS,
+    ASSERT(nanortc_add_track(&offerer, NANORTC_TRACK_AUDIO, NANORTC_DIR_SENDRECV, NANORTC_CODEC_OPUS,
                              48000, 2) >= 0);
 #endif
 
@@ -648,7 +648,7 @@ TEST(test_e2e_full_sdp_to_dtls)
     ASSERT(nanortc_create_datachannel(&offerer, "test", NULL) >= 0);
 #elif NANORTC_HAVE_MEDIA_TRANSPORT
     /* Without DC, add a media track so the offer has at least one m-line */
-    ASSERT(nanortc_add_track(&offerer, NANO_MEDIA_AUDIO, NANORTC_DIR_SENDRECV, NANORTC_CODEC_OPUS,
+    ASSERT(nanortc_add_track(&offerer, NANORTC_TRACK_AUDIO, NANORTC_DIR_SENDRECV, NANORTC_CODEC_OPUS,
                              48000, 2) >= 0);
 #endif
 
@@ -1282,7 +1282,7 @@ TEST(test_e2e_set_frame_duration)
     ASSERT_TRUE(mid >= 0);
 
     /* Default is 0 (20ms auto for audio) */
-    const nano_media_t *m = nanortc_get_track(&rtc, (uint8_t)mid);
+    const nanortc_track_t *m = nanortc_get_track(&rtc, (uint8_t)mid);
     ASSERT_TRUE(m != NULL);
     ASSERT_EQ(m->send_frame_dur_ms, 0u);
 

@@ -271,7 +271,7 @@ typedef struct nanortc nanortc_t;
 typedef struct {
     nanortc_t *rtc;        /**< Parent RTC state (do not modify). */
     uint8_t mid;           /**< Track MID. */
-    uint8_t kind;          /**< 0 = audio, 1 = video (matches nano_media_kind_t). */
+    uint8_t kind;          /**< 0 = audio, 1 = video (matches nanortc_track_kind_t). */
     uint32_t rtp_ts;       /**< Current RTP timestamp (auto-advanced by send_audio/send_video). */
     uint32_t clock_rate;   /**< RTP clock: audio=sample_rate, video=90000. */
     uint32_t frame_dur_ms; /**< Frame interval ms (0 = no auto-advance). */
@@ -293,8 +293,8 @@ typedef struct {
 
 /** @brief Data for NANORTC_EV_MEDIA_ADDED: remote added a new media track. */
 typedef struct {
-    uint8_t mid;                   /**< Media ID (track index). */
-    uint8_t kind;                  /**< nano_media_kind_t: NANO_MEDIA_AUDIO or NANO_MEDIA_VIDEO. */
+    uint8_t mid;  /**< Media ID (track index). */
+    uint8_t kind; /**< nanortc_track_kind_t: NANORTC_TRACK_AUDIO or NANORTC_TRACK_VIDEO. */
     nanortc_direction_t direction; /**< Negotiated local direction for this track. */
 } nanortc_ev_media_added_t;
 
@@ -497,11 +497,11 @@ struct nanortc {
 
 #if NANORTC_HAVE_MEDIA_TRANSPORT
     /** Media tracks (str0m-inspired: indexed by MID). */
-    nano_media_t media[NANORTC_MAX_MEDIA_TRACKS];
+    nanortc_track_t media[NANORTC_MAX_MEDIA_TRACKS];
     uint8_t media_count; /**< Number of allocated media track slots. */
 
     /** SSRC → MID lookup table for RTP receive-path demuxing. */
-    nano_ssrc_entry_t ssrc_map[NANORTC_MAX_SSRC_MAP];
+    nanortc_ssrc_entry_t ssrc_map[NANORTC_MAX_SSRC_MAP];
 
     /** Shared SRTP session (keys shared across all tracks in BUNDLE). */
     nano_srtp_t srtp;
@@ -727,9 +727,9 @@ NANORTC_API int nanortc_add_video_track(nanortc_t *rtc, nanortc_direction_t dire
                                         nanortc_codec_t codec);
 
 /** @brief Generic add media track. Prefer nanortc_add_audio_track() / nanortc_add_video_track(). */
-NANORTC_API int nanortc_add_track(nanortc_t *rtc, nano_media_kind_t kind,
-                                        nanortc_direction_t direction, nanortc_codec_t codec,
-                                        uint32_t sample_rate, uint8_t channels);
+NANORTC_API int nanortc_add_track(nanortc_t *rtc, nanortc_track_kind_t kind,
+                                  nanortc_direction_t direction, nanortc_codec_t codec,
+                                  uint32_t sample_rate, uint8_t channels);
 
 /**
  * @brief Change direction of an existing media track.
@@ -748,7 +748,7 @@ NANORTC_API void nanortc_set_direction(nanortc_t *rtc, uint8_t mid, nanortc_dire
  * @return Pointer to internal media state, or NULL if MID is invalid.
  *         Valid until next SDP negotiation or destroy.
  */
-NANORTC_API const nano_media_t *nanortc_get_track(const nanortc_t *rtc, uint8_t mid);
+NANORTC_API const nanortc_track_t *nanortc_get_track(const nanortc_t *rtc, uint8_t mid);
 
 /**
  * @brief Obtain a writer handle for sending media on a track.

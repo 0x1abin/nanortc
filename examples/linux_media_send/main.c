@@ -173,7 +173,7 @@ int main(int argc, char *argv[])
 
 #if NANORTC_FEATURE_AUDIO
     if (has_audio) {
-        audio_mid = nanortc_add_track(&rtc, NANO_MEDIA_AUDIO, NANORTC_DIR_SENDONLY,
+        audio_mid = nanortc_add_track(&rtc, NANORTC_TRACK_AUDIO, NANORTC_DIR_SENDONLY,
                                       NANORTC_CODEC_OPUS, 48000, 2);
         if (audio_mid < 0) {
             fprintf(stderr, "nanortc_add_track(audio) failed: %d\n", audio_mid);
@@ -184,7 +184,7 @@ int main(int argc, char *argv[])
 
 #if NANORTC_FEATURE_VIDEO
     if (has_video) {
-        video_mid = nanortc_add_track(&rtc, NANO_MEDIA_VIDEO, NANORTC_DIR_SENDONLY,
+        video_mid = nanortc_add_track(&rtc, NANORTC_TRACK_VIDEO, NANORTC_DIR_SENDONLY,
                                       NANORTC_CODEC_H264, 90000, 0);
         if (video_mid < 0) {
             fprintf(stderr, "nanortc_add_track(video) failed: %d\n", video_mid);

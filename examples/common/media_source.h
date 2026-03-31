@@ -26,13 +26,13 @@ typedef enum {
     NANORTC_MEDIA_H264,
     NANORTC_MEDIA_H265,
     NANORTC_MEDIA_OPUS,
-} nano_media_type_t;
+} nanortc_track_type_t;
 
 #define NANORTC_MEDIA_MAX_FRAME_SIZE 16384 /* 16 KB max frame */
 #define NANORTC_MEDIA_MAX_PATH       512
 
 typedef struct nano_media_source {
-    nano_media_type_t type;
+    nanortc_track_type_t type;
     char sample_dir[NANORTC_MEDIA_MAX_PATH];
     int frame_index;   /* current frame (1-based for video, 0-based for opus) */
     int frame_count;   /* total frames available */
@@ -42,7 +42,7 @@ typedef struct nano_media_source {
 
 /* Initialize: point to sample data directory */
 int nano_media_source_init(nano_media_source_t *src,
-                           nano_media_type_t type,
+                           nanortc_track_type_t type,
                            const char *sample_dir);
 
 /* Read next frame. Loops when end is reached.

@@ -327,7 +327,7 @@ int main(int argc, char *argv[])
 
 #if NANORTC_FEATURE_AUDIO
     if (audio_dir) {
-        app_ctx.audio_mid = nanortc_add_track(&rtc, NANO_MEDIA_AUDIO, NANORTC_DIR_SENDONLY,
+        app_ctx.audio_mid = nanortc_add_track(&rtc, NANORTC_TRACK_AUDIO, NANORTC_DIR_SENDONLY,
                                               NANORTC_CODEC_OPUS, 48000, 2);
         if (app_ctx.audio_mid < 0)
             fprintf(stderr, "nanortc_add_track(audio) failed: %d\n", app_ctx.audio_mid);
@@ -336,7 +336,7 @@ int main(int argc, char *argv[])
 
 #if NANORTC_FEATURE_VIDEO
     if (video_dir) {
-        app_ctx.video_mid = nanortc_add_track(&rtc, NANO_MEDIA_VIDEO, NANORTC_DIR_SENDONLY,
+        app_ctx.video_mid = nanortc_add_track(&rtc, NANORTC_TRACK_VIDEO, NANORTC_DIR_SENDONLY,
                                               NANORTC_CODEC_H264, 90000, 0);
         if (app_ctx.video_mid < 0)
             fprintf(stderr, "nanortc_add_track(video) failed: %d\n", app_ctx.video_mid);

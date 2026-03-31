@@ -341,7 +341,7 @@ static esp_err_t http_post_offer(httpd_req_t *req)
     }
 
     /* Add video track via Writer handle pattern */
-    s_video_mid = nanortc_add_track(&s_rtc, NANO_MEDIA_VIDEO, NANORTC_DIR_SENDONLY,
+    s_video_mid = nanortc_add_track(&s_rtc, NANORTC_TRACK_VIDEO, NANORTC_DIR_SENDONLY,
                                     NANORTC_CODEC_H264, 90000, 0);
     if (s_video_mid < 0) {
         ESP_LOGE(TAG, "nanortc_add_track failed: %d", s_video_mid);

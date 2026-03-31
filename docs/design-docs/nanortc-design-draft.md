@@ -138,11 +138,11 @@ const char *nanortc_datachannel_get_label(nano_channel_t *ch);
 
 // ---- 媒体 (Writer handle pattern) ----
 #if NANORTC_HAVE_MEDIA_TRANSPORT
-int  nanortc_add_track(nanortc_t *rtc, nano_media_kind_t kind,
+int  nanortc_add_track(nanortc_t *rtc, nanortc_track_kind_t kind,
                        nanortc_direction_t dir, nanortc_codec_t codec,
                        uint32_t sample_rate, uint8_t channels);
 void nanortc_set_direction(nanortc_t *rtc, uint8_t mid, nanortc_direction_t dir);
-const nano_media_t *nanortc_get_track(const nanortc_t *rtc, uint8_t mid);
+const nanortc_track_t *nanortc_get_track(const nanortc_t *rtc, uint8_t mid);
 int  nanortc_writer(nanortc_t *rtc, uint8_t mid, nano_writer_t *w);
 int  nanortc_writer_write(nano_writer_t *w, uint32_t timestamp,
                           const void *data, size_t len, int flags);
