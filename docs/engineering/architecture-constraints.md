@@ -46,10 +46,11 @@ clang-format --dry-run --Werror src/*.c src/*.h include/*.h crypto/*.h crypto/*.
 
 ## 5. Public Symbol Naming
 
-All exported symbols must start with `nano_`:
+All exported symbols must use allowed module prefixes (`nano_`, `nanortc_`, `stun_`, `ice_`, `dtls_`, `sctp_`, `dc_`, `sdp_`, `rtp_`, `rtcp_`, `srtp_`, `jitter_`, `bwe_`, `h264_`, `media_`, `addr_`, etc.):
 ```bash
-nm -g libnanortc.a | grep ' T ' | awk '{print $3}' | grep -v '^nano_' | grep -v '^_'
-# Must return empty (except compiler-generated symbols)
+ALLOWED='nano_|nanortc_|stun_|ice_|dtls_|nsctp_|sctp_|dc_|sdp_|rtp_|rtcp_|srtp_|jitter_|bwe_|h264_|media_|ssrc_map_|addr_'
+nm -g libnanortc.a | grep ' T ' | awk '{print $3}' | grep -v '^_' | grep -vE "^($ALLOWED)"
+# Must return empty
 ```
 
 ## 6. No Global Mutable State

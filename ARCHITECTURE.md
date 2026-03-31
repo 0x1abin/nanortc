@@ -52,10 +52,10 @@ Dependencies flow strictly downward. No cycles allowed.
                                             ↑ AUDIO    ↑ VIDEO    ↑ VIDEO
 
   Cross-cutting:
-  ┌──────────────────┐   ┌──────────────┐
-  │ nanortc_crypto.h    │   │ nano_crc32c  │
-  │ (provider iface) │   │ (SCTP csum)  │
-  └──────────────────┘   └──────────────┘
+  ┌──────────────────┐   ┌──────────────┐   ┌────────────┐
+  │ nanortc_crypto.h │   │ nano_crc32c  │   │ nano_addr  │
+  │ (provider iface) │   │ (SCTP csum)  │   │ (IP parse) │
+  └──────────────────┘   └──────────────┘   └────────────┘
 ```
 
 ## Layer Model
@@ -83,15 +83,18 @@ Orthogonal compile-time feature flags control which modules are included:
 
 | Feature flag | Modules compiled | Guard macro |
 |---|---|---|
-| *(core, always)* | rtc, ice, stun, dtls, sdp, crc32 | — |
+| *(core, always)* | rtc, ice, stun, dtls, sdp, crc32, addr | — |
 | `NANORTC_FEATURE_DATACHANNEL` | sctp, datachannel, crc32c | `#if NANORTC_FEATURE_DATACHANNEL` |
 | `NANORTC_FEATURE_AUDIO` or `VIDEO` | rtp, rtcp, srtp | `#if NANORTC_HAVE_MEDIA_TRANSPORT` |
 | `NANORTC_FEATURE_AUDIO` | jitter | `#if NANORTC_FEATURE_AUDIO` |
 | `NANORTC_FEATURE_VIDEO` | h264, bwe | `#if NANORTC_FEATURE_VIDEO` |
+| `NANORTC_FEATURE_IPV6` | IPv6 parsing/formatting in addr | `#if NANORTC_FEATURE_IPV6` |
 
 Sub-features (only when `DATACHANNEL=1`):
 - `NANORTC_FEATURE_DC_RELIABLE` — retransmit/RTO logic (default ON)
 - `NANORTC_FEATURE_DC_ORDERED` — SSN-based ordered delivery (default ON)
+
+`NANORTC_FEATURE_IPV6` (default ON) controls IPv6 address string parsing in `nano_addr`. When OFF, IPv6 candidates are silently rejected. IPv4 parsing is always compiled.
 
 Six CI-tested combinations: DATA, AUDIO, MEDIA, AUDIO_ONLY, MEDIA_ONLY, CORE_ONLY.
 
@@ -135,6 +138,7 @@ nanortc_poll_output(rtc, &out)
 | Configuration defaults | `include/nanortc_config.h` |
 | Public API | `include/nanortc.h` |
 | Main state machine | `src/nano_rtc.c` |
+| Address utilities (IPv4/IPv6) | `src/nano_addr.c` |
 | Crypto provider interface | `crypto/nanortc_crypto.h` |
 | Design document (authoritative) | `docs/design-docs/nanortc-design-draft.md` |
 | Quality tracking | `docs/QUALITY_SCORE.md` |

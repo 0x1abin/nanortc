@@ -35,6 +35,7 @@ cmake -B build -DNANORTC_FEATURE_AUDIO=ON          # RTP/SRTP + jitter buffer
 cmake -B build -DNANORTC_FEATURE_VIDEO=ON           # RTP/SRTP + BWE
 cmake -B build -DNANORTC_FEATURE_DC_RELIABLE=OFF    # Disable retransmit (sub-feature of DC)
 cmake -B build -DNANORTC_FEATURE_DC_ORDERED=OFF     # Disable ordered delivery (sub-feature of DC)
+cmake -B build -DNANORTC_FEATURE_IPV6=OFF           # Disable IPv6 address support (saves ~300 bytes)
 
 # Common combinations
 cmake -B build -DNANORTC_FEATURE_DATACHANNEL=ON -DNANORTC_FEATURE_AUDIO=ON -DNANORTC_FEATURE_VIDEO=ON  # Full media
@@ -85,7 +86,7 @@ These rules are mechanically enforced. Violations will break the build or CI.
 
 **Byte order:** Use `nanortc_htons`/`nanortc_ntohs`/`nanortc_htonl`/`nanortc_ntohl` from `nanortc.h`. Never platform `htons`.
 
-**Feature guards:** Code guarded by orthogonal feature flags: `#if NANORTC_FEATURE_DATACHANNEL`, `#if NANORTC_FEATURE_AUDIO`, `#if NANORTC_FEATURE_VIDEO`, `#if NANORTC_HAVE_MEDIA_TRANSPORT`. All 6 feature combinations must compile and pass tests (DATA, AUDIO, MEDIA, AUDIO_ONLY, MEDIA_ONLY, CORE_ONLY).
+**Feature guards:** Code guarded by orthogonal feature flags: `#if NANORTC_FEATURE_DATACHANNEL`, `#if NANORTC_FEATURE_AUDIO`, `#if NANORTC_FEATURE_VIDEO`, `#if NANORTC_FEATURE_IPV6`, `#if NANORTC_HAVE_MEDIA_TRANSPORT`. All 6 feature combinations must compile and pass tests (DATA, AUDIO, MEDIA, AUDIO_ONLY, MEDIA_ONLY, CORE_ONLY).
 
 **No global state:** All state in `nanortc_t`. Multiple instances must coexist.
 

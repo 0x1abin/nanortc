@@ -71,6 +71,7 @@ Per-module audit of NanoRTC against authoritative RFC specifications.
 | # | Requirement | RFC | Impl | Test | Gap |
 |---|-------------|-----|------|------|-----|
 | 1 | Host candidates | §5.1.1 | Y | Y | Default candidate type |
+| 1b | IPv6 host candidates | §5.1.1 | Y | Y | `test_e2e_ipv6_remote_candidate`; guarded by `NANORTC_FEATURE_IPV6` |
 | 2 | Server Reflexive (SRFLX) | §5.1.1 | N | N | Requires STUN server — N/A embedded |
 | 3 | Peer Reflexive (PRFLX) | §5.1.1 | N | N | N/A embedded |
 | 4 | Relay (TURN) | §5.1.1 | N | N | N/A embedded (RFC 5766) |
@@ -221,7 +222,8 @@ Per-module audit of NanoRTC against authoritative RFC specifications.
 | # | Requirement | RFC | Impl | Test | Gap |
 |---|-------------|-----|------|------|-----|
 | 1 | v=0 version line | RFC 8866 §5.1 | Y | P | Parsed but no explicit reject-on-missing test |
-| 2 | o= origin line | RFC 8866 §5.2 | Y | Y | Generated/parsed |
+| 2 | o= origin line | RFC 8866 §5.2 | Y | Y | Generated/parsed; IPv6-aware (`IN IP6 ::` when local candidate is IPv6) |
+| 2b | c= connection line IPv4/IPv6 | RFC 8866 §5.7 | Y | Y | `test_sdp_generate_ipv6/ipv4_connection_line`; auto-selects `IN IP4`/`IN IP6` |
 | 3 | m= media description | RFC 8866 §5.14 | Y | Y | DC/audio/video media lines |
 | 4 | a=ice-ufrag / a=ice-pwd | RFC 8839 | Y | Y | `test_sdp_parse_chrome_offer` |
 | 5 | a=fingerprint (SHA-256) | RFC 8122 | Y | Y | Parsed and generated |
@@ -339,14 +341,14 @@ Per-module audit of NanoRTC against authoritative RFC specifications.
 |-----|--------|--------------|---------------|---------------|
 | RFC 8489 | STUN | 95% | 90% | Unknown attr rejection test |
 | RFC 5769 | STUN Vectors | 100% | 100% | — |
-| RFC 8445 | ICE | 70% (host only) | 85% | Priority formula test, role conflict |
+| RFC 8445 | ICE | 75% (host, IPv4+IPv6) | 85% | Priority formula test, role conflict |
 | RFC 6347 | DTLS | 80% | 70% | Content type, epoch, timeout tests |
 | RFC 5764 | DTLS-SRTP | 90% | 80% | Keying material length test |
 | RFC 4960 | SCTP | 75% | 70% | **Gap ack blocks**, RFC vectors, vtag test |
 | RFC 3758 | PR-SCTP | 60% | 50% | FORWARD-TSN only |
 | RFC 8832 | DCEP | 90% | 80% | — |
 | RFC 8831 | DataChannel | 85% | 60% | E2E message exchange, PPID tests |
-| RFC 8866 | SDP | 85% | 80% | Malformed rejection, BUNDLE, ice-lite |
+| RFC 8866 | SDP | 90% | 85% | Malformed rejection, BUNDLE, ice-lite |
 | RFC 8829 | JSEP | 70% | 60% | Multi-mid BUNDLE test |
 | RFC 3550 | RTP | 80% | 60% | Padding, extension, CSRC tests |
 | RFC 3550 | RTCP | 70% | 70% | BYE, compound, SR+RB, extended seq |

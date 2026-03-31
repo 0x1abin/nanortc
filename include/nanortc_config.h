@@ -163,6 +163,14 @@
 #endif
 #endif
 
+#if defined(IDF_VER) && !defined(NANORTC_FEATURE_IPV6)
+#ifdef CONFIG_NANORTC_FEATURE_IPV6
+#define NANORTC_FEATURE_IPV6 1
+#else
+#define NANORTC_FEATURE_IPV6 0
+#endif
+#endif
+
 /* ----------------------------------------------------------------
  * Feature flags (orthogonal, user-configurable)
  *
@@ -172,6 +180,7 @@
  *   NANORTC_FEATURE_DC_ORDERED   — SSN-based ordered delivery (sub-feature of DC)
  *   NANORTC_FEATURE_AUDIO        — Audio (RTP/SRTP/Jitter)
  *   NANORTC_FEATURE_VIDEO        — Video (RTP/SRTP/BWE)
+ *   NANORTC_FEATURE_IPV6         — IPv6 address parsing/generation
  * ---------------------------------------------------------------- */
 
 /** @brief Enable DataChannel (SCTP + DCEP). Default: 1. */
@@ -197,6 +206,12 @@
 /** @brief Enable video transport (RTP/SRTP + BWE). Default: 0. */
 #ifndef NANORTC_FEATURE_VIDEO
 #define NANORTC_FEATURE_VIDEO 0
+#endif
+
+/** @brief Enable IPv6 address support. Default: 1.
+ *  When disabled, IPv6 candidates are silently rejected, saving ~300 bytes. */
+#ifndef NANORTC_FEATURE_IPV6
+#define NANORTC_FEATURE_IPV6 1
 #endif
 
 /* Derived (internal): true when any media transport is needed */

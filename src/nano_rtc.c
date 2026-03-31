@@ -9,6 +9,7 @@
 #include "nano_ice.h"
 #include "nano_stun.h"
 #include "nano_sdp.h"
+#include "nano_addr.h"
 #include "nano_log.h"
 #include "nanortc_util.h"
 
@@ -570,31 +571,12 @@ int nanortc_add_remote_candidate(nanortc_t *rtc, const char *candidate_str)
         return NANORTC_ERR_PARSE;
     }
 
-    /* Parse IPv4 address (simple: a.b.c.d) */
-    char addr_buf[NANORTC_IPV6_STR_SIZE];
-    memcpy(addr_buf, addr_str, addr_len);
-    addr_buf[addr_len] = '\0';
-
-    uint8_t ip[4] = {0};
-    int octet = 0;
-    uint16_t val = 0;
-    for (size_t i = 0; i <= addr_len; i++) {
-        if (i == addr_len || addr_buf[i] == '.') {
-            if (octet >= 4 || val > 255) {
-                return NANORTC_ERR_PARSE;
-            }
-            ip[octet++] = (uint8_t)val;
-            val = 0;
-        } else if (addr_buf[i] >= '0' && addr_buf[i] <= '9') {
-            val = val * 10 + (uint16_t)(addr_buf[i] - '0');
-        } else {
-            /* Not a simple IPv4 — could be IPv6, not yet supported */
-            return NANORTC_ERR_NOT_IMPLEMENTED;
-        }
-    }
-
-    if (octet != 4) {
-        return NANORTC_ERR_PARSE;
+    /* Parse IP address (IPv4 or IPv6) */
+    uint8_t parsed_addr[NANORTC_ADDR_SIZE] = {0};
+    uint8_t family = 0;
+    int rc = addr_parse_auto(addr_str, addr_len, parsed_addr, &family);
+    if (rc != 0) {
+        return rc;
     }
 
     /* Store in ICE remote candidates array */
@@ -603,9 +585,10 @@ int nanortc_add_remote_candidate(nanortc_t *rtc, const char *candidate_str)
         return NANORTC_ERR_BUFFER_TOO_SMALL;
     }
     uint8_t idx = rtc->ice.remote_candidate_count;
-    rtc->ice.remote_candidates[idx].family = 4;
+    rtc->ice.remote_candidates[idx].family = family;
     memset(rtc->ice.remote_candidates[idx].addr, 0, NANORTC_ADDR_SIZE);
-    memcpy(rtc->ice.remote_candidates[idx].addr, ip, 4);
+    memcpy(rtc->ice.remote_candidates[idx].addr, parsed_addr,
+           family == 4 ? 4u : (size_t)NANORTC_ADDR_SIZE);
     rtc->ice.remote_candidates[idx].port = port;
     rtc->ice.remote_candidate_count++;
 

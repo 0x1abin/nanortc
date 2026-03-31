@@ -772,6 +772,72 @@ TEST(test_sdp_wrong_version)
 }
 
 /* ================================================================
+ * IPv6 SDP generation
+ * ================================================================ */
+
+#if NANORTC_FEATURE_IPV6
+TEST(test_sdp_generate_ipv6_connection_line)
+{
+    nano_sdp_t sdp;
+    sdp_init(&sdp);
+
+    memcpy(sdp.local_ufrag, "abcd1234", 8);
+    memcpy(sdp.local_pwd, "password0123456789ab", 20);
+    sdp.local_sctp_port = 5000;
+    sdp.local_setup = NANORTC_SDP_SETUP_PASSIVE;
+    sdp.has_datachannel = true;
+    sdp.dc_mid = 0;
+    sdp.mid_count = 1;
+
+    /* Set an IPv6 local candidate */
+    sdp.has_local_candidate = true;
+    memcpy(sdp.local_candidate_ip, "2001:db8::1", 12);
+    sdp.local_candidate_port = 5000;
+
+    char buf[2048];
+    size_t out_len = 0;
+    ASSERT_OK(sdp_generate_answer(&sdp, buf, sizeof(buf), &out_len));
+    ASSERT_TRUE(out_len > 0);
+
+    /* Verify IPv6 connection and origin lines */
+    ASSERT_TRUE(strstr(buf, "c=IN IP6 ::") != NULL);
+    ASSERT_TRUE(strstr(buf, "o=- 1 1 IN IP6 ::") != NULL);
+    /* IPv4 lines should NOT appear */
+    ASSERT_TRUE(strstr(buf, "IN IP4") == NULL);
+    /* Candidate line should contain IPv6 address */
+    ASSERT_TRUE(strstr(buf, "2001:db8::1") != NULL);
+}
+
+TEST(test_sdp_generate_ipv4_connection_line)
+{
+    nano_sdp_t sdp;
+    sdp_init(&sdp);
+
+    memcpy(sdp.local_ufrag, "abcd1234", 8);
+    memcpy(sdp.local_pwd, "password0123456789ab", 20);
+    sdp.local_sctp_port = 5000;
+    sdp.local_setup = NANORTC_SDP_SETUP_PASSIVE;
+    sdp.has_datachannel = true;
+    sdp.dc_mid = 0;
+    sdp.mid_count = 1;
+
+    /* Set an IPv4 local candidate */
+    sdp.has_local_candidate = true;
+    memcpy(sdp.local_candidate_ip, "192.168.1.1", 12);
+    sdp.local_candidate_port = 5000;
+
+    char buf[2048];
+    size_t out_len = 0;
+    ASSERT_OK(sdp_generate_answer(&sdp, buf, sizeof(buf), &out_len));
+    ASSERT_TRUE(out_len > 0);
+
+    /* Verify IPv4 connection and origin lines */
+    ASSERT_TRUE(strstr(buf, "c=IN IP4 0.0.0.0") != NULL);
+    ASSERT_TRUE(strstr(buf, "o=- 1 1 IN IP4 0.0.0.0") != NULL);
+}
+#endif
+
+/* ================================================================
  * Test runner
  * ================================================================ */
 
@@ -804,5 +870,9 @@ RUN(test_sdp_parse_video_offer);
 RUN(test_sdp_parse_full_media_offer);
 RUN(test_sdp_generate_video_answer);
 RUN(test_sdp_video_roundtrip);
+#endif
+#if NANORTC_FEATURE_IPV6
+RUN(test_sdp_generate_ipv6_connection_line);
+RUN(test_sdp_generate_ipv4_connection_line);
 #endif
 TEST_MAIN_END

@@ -8,6 +8,7 @@ if(DEFINED ENV{IDF_PATH})
         src/nano_sdp.c
         src/nano_ice.c
         src/nano_stun.c
+        src/nano_addr.c
         src/nano_dtls.c
         src/nano_crc32.c
         crypto/nanortc_crypto_mbedtls.c
@@ -57,8 +58,9 @@ option(NANORTC_FEATURE_DC_RELIABLE "Enable reliable DataChannel delivery" ON)
 option(NANORTC_FEATURE_DC_ORDERED  "Enable ordered DataChannel delivery" ON)
 option(NANORTC_FEATURE_AUDIO "Enable audio (RTP/SRTP/Jitter)" OFF)
 option(NANORTC_FEATURE_VIDEO "Enable video (RTP/SRTP/BWE)" OFF)
+option(NANORTC_FEATURE_IPV6  "Enable IPv6 address support" ON)
 
-message(STATUS "nanortc features: DC=${NANORTC_FEATURE_DATACHANNEL} DC_REL=${NANORTC_FEATURE_DC_RELIABLE} DC_ORD=${NANORTC_FEATURE_DC_ORDERED} AUDIO=${NANORTC_FEATURE_AUDIO} VIDEO=${NANORTC_FEATURE_VIDEO}")
+message(STATUS "nanortc features: DC=${NANORTC_FEATURE_DATACHANNEL} DC_REL=${NANORTC_FEATURE_DC_RELIABLE} DC_ORD=${NANORTC_FEATURE_DC_ORDERED} AUDIO=${NANORTC_FEATURE_AUDIO} VIDEO=${NANORTC_FEATURE_VIDEO} IPV6=${NANORTC_FEATURE_IPV6}")
 
 # Crypto backend selection
 set(NANORTC_CRYPTO "mbedtls" CACHE STRING "Crypto backend: mbedtls or openssl")
@@ -78,6 +80,7 @@ set(NANORTC_SOURCES
     src/nano_stun.c
     src/nano_dtls.c
     src/nano_crc32.c
+    src/nano_addr.c
 )
 
 # ---- DataChannel sources ----
@@ -134,6 +137,7 @@ target_compile_definitions(nanortc PUBLIC
     NANORTC_FEATURE_DC_ORDERED=$<BOOL:${NANORTC_FEATURE_DC_ORDERED}>
     NANORTC_FEATURE_AUDIO=$<BOOL:${NANORTC_FEATURE_AUDIO}>
     NANORTC_FEATURE_VIDEO=$<BOOL:${NANORTC_FEATURE_VIDEO}>
+    NANORTC_FEATURE_IPV6=$<BOOL:${NANORTC_FEATURE_IPV6}>
 )
 
 if(NANORTC_CONFIG_FILE)

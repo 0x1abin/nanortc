@@ -38,6 +38,13 @@ menu "NanoRTC Configuration"
             Enable video media transport. Compiles RTP, RTCP, SRTP,
             and bandwidth estimation modules.
 
+    config NANORTC_FEATURE_IPV6
+        bool "Enable IPv6 address support"
+        default y
+        help
+            Enable IPv6 candidate parsing and SDP generation.
+            Disable on IPv4-only targets to save code size.
+
     config NANORTC_MAX_DATACHANNELS
         int "Maximum number of DataChannels"
         default 8

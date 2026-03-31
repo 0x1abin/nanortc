@@ -7,7 +7,7 @@ Track known debt, prioritize by impact, pay down continuously.
 | ID | Category | Description | Impact | Priority | Plan to Resolve |
 |----|----------|-------------|--------|----------|-----------------|
 | TD-001 | Build | `-Wno-unused-parameter` suppresses useful warnings | Low | Phase 3 | Remove per-file as stubs are replaced (all audio modules implemented, only BWE stub remains) |
-| TD-002 | Test | No test framework — manual macros only (150+ tests, exceeds 50 threshold) | Medium | Phase 3 | Evaluate Unity (embedded C test framework) — threshold reached |
+| TD-002 | Test | No test framework — manual macros only (313 tests, exceeds 50 threshold) | Medium | Phase 3 | Evaluate Unity (embedded C test framework) — threshold reached |
 | TD-008 | CI | `scripts/ci-check.sh` uses `declare -A` (bash 4+), fails on macOS default bash 3.2 | Low | Phase 3 | Replace associative array with positional args or install bash 4+ in CI |
 | ~~TD-003~~ | ~~CI~~ | ~~No CI pipeline yet~~ | ~~Medium~~ | ~~Phase 1~~ | ~~Resolved~~ |
 | ~~TD-004~~ | ~~Crypto~~ | ~~DTLS stubs remain in both backends~~ | ~~High~~ | ~~Phase 1 Step 2~~ | ~~Resolved~~ |
@@ -18,6 +18,7 @@ Track known debt, prioritize by impact, pay down continuously.
 | ~~TD-010~~ | ~~Crypto~~ | ~~mbedTLS 3.6 (ESP-IDF v5.x) build fails — `MBEDTLS_DEPRECATED_REMOVED` removes `pk_ec()`/`ecp_gen_key()`/`set_serial()`~~ | ~~High~~ | ~~Phase 1~~ | ~~Resolved~~ |
 | ~~TD-011~~ | ~~Crypto~~ | ~~mbedTLS backend missing DTLS-SRTP `use_srtp` extension — Chrome silently drops all SRTP packets~~ | ~~High~~ | ~~Phase 2~~ | ~~Resolved~~ |
 | ~~TD-012~~ | ~~SDP~~ | ~~`sdp_parse()` overwrites local `audio_pt` with remote offer's first PT — answerer sends wrong codec~~ | ~~High~~ | ~~Phase 2~~ | ~~Resolved~~ |
+| ~~TD-013~~ | ~~ICE~~ | ~~`nanortc_add_remote_candidate()` returns `ERR_NOT_IMPLEMENTED` for IPv6 addresses — no IPv6 support~~ | ~~Medium~~ | ~~—~~ | ~~Resolved~~ |
 
 ## Resolved Debt
 
@@ -32,6 +33,7 @@ Track known debt, prioritize by impact, pay down continuously.
 | TD-010 | 2026-03-30 | Added `NANORTC_MBEDTLS_3_6` version tier for mbedTLS 3.6+ (ESP-IDF v5.x). Uses PSA keygen (`psa_generate_key` + `pk_copy_from_psa`) and `set_serial_raw()` to avoid deprecated APIs removed by `MBEDTLS_DEPRECATED_REMOVED`. |
 | TD-011 | 2026-03-30 | Added DTLS-SRTP `use_srtp` extension (`MBEDTLS_TLS_SRTP_AES128_CM_HMAC_SHA1_80`) to mbedTLS backend. OpenSSL backend already had it. Without this extension, Chrome/Firefox silently discard all SRTP packets. |
 | TD-012 | 2026-03-30 | Refactored SDP codec negotiation: added `remote_audio_pt` field to separate parsed remote PT from local config PT. Removed `audio_sample_rate`/`audio_channels` parsing from rtpmap (local config is authoritative). |
+| TD-013 | 2026-03-31 | Added `nano_addr.c/h` module with RFC 4291/5952 IPv6 parsing + formatting. Refactored `nanortc_add_remote_candidate()` to use `addr_parse_auto()` for dual-stack support. SDP `c=`/`o=` lines auto-select IP4/IP6. Guarded by `NANORTC_FEATURE_IPV6` (default ON). 48 address tests + IPv6 e2e + SDP tests. |
 
 ## Principles
 

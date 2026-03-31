@@ -1141,6 +1141,43 @@ TEST(test_e2e_ice_connection_timeout)
     nanortc_destroy(&rtc);
 }
 
+/* ================================================================
+ * IPv6 candidate parsing
+ * ================================================================ */
+
+#if NANORTC_FEATURE_IPV6
+TEST(test_e2e_ipv6_remote_candidate)
+{
+    nanortc_t rtc;
+    nanortc_config_t cfg = e2e_default_config();
+    ASSERT_OK(nanortc_init(&rtc, &cfg));
+
+    /* IPv6 SDP candidate line */
+    ASSERT_OK(nanortc_add_remote_candidate(
+        &rtc, "candidate:1 1 UDP 2122260223 2001:db8::1 50000 typ host"));
+    ASSERT_EQ(rtc.ice.remote_candidate_count, 1);
+    ASSERT_EQ(rtc.ice.remote_candidates[0].family, 6);
+    ASSERT_EQ(rtc.ice.remote_candidates[0].port, 50000);
+    ASSERT_EQ(rtc.ice.remote_candidates[0].addr[0], 0x20);
+    ASSERT_EQ(rtc.ice.remote_candidates[0].addr[1], 0x01);
+    ASSERT_EQ(rtc.ice.remote_candidates[0].addr[15], 0x01);
+
+    /* Short form: "ip port" */
+    ASSERT_OK(nanortc_add_remote_candidate(&rtc, "::1 60000"));
+    ASSERT_EQ(rtc.ice.remote_candidate_count, 2);
+    ASSERT_EQ(rtc.ice.remote_candidates[1].family, 6);
+    ASSERT_EQ(rtc.ice.remote_candidates[1].port, 60000);
+    ASSERT_EQ(rtc.ice.remote_candidates[1].addr[15], 0x01);
+
+    /* Mixed: IPv4 candidate after IPv6 */
+    ASSERT_OK(nanortc_add_remote_candidate(&rtc, "192.168.1.1 5000"));
+    ASSERT_EQ(rtc.ice.remote_candidate_count, 3);
+    ASSERT_EQ(rtc.ice.remote_candidates[2].family, 4);
+
+    nanortc_destroy(&rtc);
+}
+#endif
+
 /* ---- Runner ---- */
 
 TEST_MAIN_BEGIN("nanortc E2E tests")
@@ -1174,4 +1211,7 @@ RUN(test_e2e_multi_channel_create);
 /* E2E connection lifecycle */
 RUN(test_e2e_full_lifecycle);
 RUN(test_e2e_ice_connection_timeout);
+#if NANORTC_FEATURE_IPV6
+RUN(test_e2e_ipv6_remote_candidate);
+#endif
 TEST_MAIN_END

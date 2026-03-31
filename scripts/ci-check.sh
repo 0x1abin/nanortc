@@ -114,7 +114,7 @@ echo "=== Symbol Checks ==="
 MEDIA_LIB="$ROOT/build-ci-MEDIA/libnanortc.a"
 if [ -f "$MEDIA_LIB" ]; then
     # All symbols must use nano_ (public) or known module prefixes (internal)
-    ALLOWED='nano_|nanortc_|stun_|ice_|dtls_|nsctp_|sctp_|dc_|sdp_|rtp_|rtcp_|srtp_|jitter_|bwe_|h264_|media_|ssrc_map_'
+    ALLOWED='nano_|nanortc_|stun_|ice_|dtls_|nsctp_|sctp_|dc_|sdp_|rtp_|rtcp_|srtp_|jitter_|bwe_|h264_|media_|ssrc_map_|addr_'
     run_check "Symbols use allowed prefixes" \
         bash -c 'test -z "$(nm -g '"$MEDIA_LIB"' 2>/dev/null | grep " T " | awk "{print \$3}" | grep -v "^_" | grep -vE "^('"$ALLOWED"')")"'
 
