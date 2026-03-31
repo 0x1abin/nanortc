@@ -53,14 +53,22 @@ typedef struct nano_media {
     uint32_t sample_rate; /**< Audio sample rate (0 for video). */
     uint8_t channels;     /**< Audio channels (0 for video). */
 
+#if NANORTC_HAVE_MEDIA_TRANSPORT
+    /** Audio/video-specific state (union — a track is one or the other). */
+    union {
 #if NANORTC_FEATURE_AUDIO
-    nano_jitter_t jitter;     /**< Audio jitter buffer. */
-    uint32_t jitter_depth_ms; /**< Jitter buffer depth. */
+        struct {
+            nano_jitter_t jitter;     /**< Audio jitter buffer. */
+            uint32_t jitter_depth_ms; /**< Jitter buffer depth. */
+        } audio;
 #endif
-
 #if NANORTC_FEATURE_VIDEO
-    nano_h264_depkt_t h264_depkt; /**< H.264 FU-A reassembly. */
+        struct {
+            nano_h264_depkt_t h264_depkt; /**< H.264 FU-A reassembly. */
+        } video;
 #endif
+    } track;
+#endif /* NANORTC_HAVE_MEDIA_TRANSPORT */
 
     /** Per-track scratch buffer for RTP packing + SRTP. */
     uint8_t media_buf[NANORTC_MEDIA_BUF_SIZE];

@@ -1002,11 +1002,11 @@ int nanortc_handle_receive(nanortc_t *rtc, uint32_t now_ms, const uint8_t *data,
         if (m->kind == NANO_MEDIA_AUDIO) {
 #if NANORTC_FEATURE_AUDIO
             /* Push into jitter buffer, then try to pop completed frame */
-            jitter_push(&m->jitter, rtp_seq, rtp_ts, payload, payload_len, rtc->now_ms);
+            jitter_push(&m->track.audio.jitter, rtp_seq, rtp_ts, payload, payload_len, rtc->now_ms);
             size_t pop_len = 0;
             uint32_t pop_ts = 0;
-            while (jitter_pop(&m->jitter, rtc->now_ms, m->media_buf, sizeof(m->media_buf), &pop_len,
-                              &pop_ts) == NANORTC_OK) {
+            while (jitter_pop(&m->track.audio.jitter, rtc->now_ms, m->media_buf,
+                              sizeof(m->media_buf), &pop_len, &pop_ts) == NANORTC_OK) {
                 nanortc_event_t aevt;
                 memset(&aevt, 0, sizeof(aevt));
                 aevt.type = NANORTC_EV_MEDIA_DATA;
@@ -1025,8 +1025,8 @@ int nanortc_handle_receive(nanortc_t *rtc, uint32_t now_ms, const uint8_t *data,
             uint8_t rtp_marker = (pkt[1] >> 7) & 1;
             const uint8_t *nalu_out = NULL;
             size_t nalu_len = 0;
-            int drc = h264_depkt_push(&m->h264_depkt, payload, payload_len, rtp_marker, &nalu_out,
-                                      &nalu_len);
+            int drc = h264_depkt_push(&m->track.video.h264_depkt, payload, payload_len, rtp_marker,
+                                      &nalu_out, &nalu_len);
             if (drc == NANORTC_OK && nalu_out && nalu_len > 0) {
                 nanortc_event_t vevt;
                 memset(&vevt, 0, sizeof(vevt));

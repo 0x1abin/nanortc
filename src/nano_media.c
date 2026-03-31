@@ -29,14 +29,14 @@ int media_init(nano_media_t *m, uint8_t mid, nano_media_kind_t kind, nanortc_dir
 
 #if NANORTC_FEATURE_AUDIO
     if (kind == NANO_MEDIA_AUDIO) {
-        jitter_init(&m->jitter, jitter_depth_ms);
-        m->jitter_depth_ms = jitter_depth_ms;
+        jitter_init(&m->track.audio.jitter, jitter_depth_ms);
+        m->track.audio.jitter_depth_ms = jitter_depth_ms;
     }
 #endif
 
 #if NANORTC_FEATURE_VIDEO
     if (kind == NANO_MEDIA_VIDEO) {
-        h264_depkt_init(&m->h264_depkt);
+        h264_depkt_init(&m->track.video.h264_depkt);
     }
 #endif
 
@@ -46,14 +46,15 @@ int media_init(nano_media_t *m, uint8_t mid, nano_media_kind_t kind, nanortc_dir
 
 nano_media_t *media_find_by_mid(nano_media_t *media, uint8_t media_count, uint8_t mid)
 {
-    if (!media || mid >= media_count) {
+    if (!media) {
         return NULL;
     }
-    nano_media_t *m = &media[mid];
-    if (!m->active) {
-        return NULL;
+    for (uint8_t i = 0; i < media_count; i++) {
+        if (media[i].active && media[i].mid == mid) {
+            return &media[i];
+        }
     }
-    return m;
+    return NULL;
 }
 
 int ssrc_map_register(nano_ssrc_entry_t *map, uint8_t map_size, uint32_t ssrc, uint8_t mid)
