@@ -670,14 +670,19 @@ int sdp_generate_answer(nano_sdp_t *sdp, char *buf, size_t buf_len, size_t *out_
         /* Write m-lines in order. ICE candidate on first m-line (BUNDLE anchor). */
         char mid_str[4];
         for (int i = 0; i < n_entries; i++) {
-            /* Convert MID to string (supports MID 0-99) */
+            /* Convert MID to string (supports MID 0-255) */
             if (entries[i].mid < 10) {
                 mid_str[0] = '0' + entries[i].mid;
                 mid_str[1] = '\0';
-            } else {
+            } else if (entries[i].mid < 100) {
                 mid_str[0] = '0' + (entries[i].mid / 10);
                 mid_str[1] = '0' + (entries[i].mid % 10);
                 mid_str[2] = '\0';
+            } else {
+                mid_str[0] = '0' + (entries[i].mid / 100);
+                mid_str[1] = '0' + ((entries[i].mid / 10) % 10);
+                mid_str[2] = '0' + (entries[i].mid % 10);
+                mid_str[3] = '\0';
             }
             switch (entries[i].type) {
             case SDP_MLINE_APPLICATION:

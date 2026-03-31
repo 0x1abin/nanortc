@@ -264,6 +264,9 @@ static void rtc_apply_negotiated_media(nanortc_t *rtc)
             nano_media_kind_t kind =
                 (ml->kind == SDP_MLINE_AUDIO) ? NANO_MEDIA_AUDIO : NANO_MEDIA_VIDEO;
             uint8_t mid = ml->mid;
+            if (mid >= NANORTC_MAX_MEDIA_TRACKS) {
+                continue; /* MID exceeds track array — skip */
+            }
             /* Ensure media_count covers this MID */
             if (mid >= rtc->media_count) {
                 /* Zero-init any gap slots */
@@ -893,15 +896,15 @@ int nanortc_handle_receive(nanortc_t *rtc, uint32_t now_ms, const uint8_t *data,
             return NANORTC_OK; /* SRTP not ready yet, discard */
         }
 
-        /* Distinguish RTP vs RTCP by payload type field (byte 1, bits 0-6).
-         * RTCP PT range: 72-76 (old) and 200-211 (standard).
+        /* Distinguish RTP vs RTCP by payload type field (byte 1).
+         * RTCP PT range: 200-211 (standard).
          * RFC 5761 §4: RTP PT < 72 or > 76, RTCP PT ∈ {200..211}. */
         if (len < 2) {
             return NANORTC_ERR_PARSE;
         }
-        uint8_t pt_field = data[1] & 0x7F;
+        uint8_t second = data[1];
 
-        if (pt_field >= 200 - 128 && pt_field <= 211 - 128) {
+        if (second >= 200 && second <= 211) {
             /* RTCP packet — parse and handle PLI/NACK/SR */
             /* Copy to scratch for unprotect (in-place) */
             if (len > sizeof(rtc->stun_buf)) {
@@ -1032,7 +1035,7 @@ int nanortc_handle_receive(nanortc_t *rtc, uint32_t now_ms, const uint8_t *data,
                 vevt.event.data = nalu_out;
                 vevt.event.len = nalu_len;
                 vevt.event.timestamp = rtp_ts;
-                vevt.event.is_keyframe = h264_is_keyframe(payload, payload_len) ? true : false;
+                vevt.event.is_keyframe = h264_is_keyframe(nalu_out, nalu_len) ? true : false;
                 rtc_enqueue_output(rtc, &vevt);
             }
 #endif
@@ -1339,6 +1342,9 @@ int nanortc_add_media(nanortc_t *rtc, nano_media_kind_t kind, nanortc_direction_
 
     /* Initialize media track at the MID index */
     uint8_t midx = (uint8_t)mid;
+    if (midx >= NANORTC_MAX_MEDIA_TRACKS) {
+        return NANORTC_ERR_BUFFER_TOO_SMALL;
+    }
     if (midx >= rtc->media_count) {
         /* Zero-init any gap slots */
         for (uint8_t g = rtc->media_count; g < midx; g++) {

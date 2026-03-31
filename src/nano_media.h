@@ -1,6 +1,6 @@
 /*
  * nanortc — Media track abstraction (str0m-inspired multi-track)
- * @internal Not part of the public API.
+ * Per-track media state used by nanortc_t.
  *
  * Each nano_media_t represents one SDP m-line / WebRTC transceiver.
  * The MID (media ID) is the universal track identifier, mapping 1:1
