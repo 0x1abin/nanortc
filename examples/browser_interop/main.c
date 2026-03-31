@@ -31,6 +31,10 @@
 typedef struct {
     int offer_mode;
     int media_connected; /* DTLS+SRTP ready for media */
+    nano_writer_t audio_writer;
+    nano_writer_t video_writer;
+    int audio_mid;
+    int video_mid;
 } app_ctx_t;
 
 static nano_run_loop_t loop;
@@ -57,6 +61,15 @@ static void on_event(nanortc_t *rtc, const nanortc_event_t *evt, void *userdata)
     case NANORTC_EV_CONNECTED:
         fprintf(stderr, "[event] Connected\n");
         ctx->media_connected = 1;
+        /* Obtain writer handles for media tracks */
+        if (ctx->audio_mid >= 0) {
+            if (nanortc_writer(rtc, (uint8_t)ctx->audio_mid, &ctx->audio_writer) != NANORTC_OK)
+                fprintf(stderr, "[event] Warning: failed to obtain audio writer\n");
+        }
+        if (ctx->video_mid >= 0) {
+            if (nanortc_writer(rtc, (uint8_t)ctx->video_mid, &ctx->video_writer) != NANORTC_OK)
+                fprintf(stderr, "[event] Warning: failed to obtain video writer\n");
+        }
         /* Offerer must create the DataChannel after connection is ready */
         if (ctx->offer_mode) {
             nano_channel_t ch;
@@ -283,7 +296,7 @@ int main(int argc, char *argv[])
         }
     }
 
-    app_ctx_t app_ctx = {.offer_mode = offer_mode};
+    app_ctx_t app_ctx = {.offer_mode = offer_mode, .audio_mid = -1, .video_mid = -1};
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
 
@@ -307,28 +320,30 @@ int main(int argc, char *argv[])
 #endif
     cfg.role = offer_mode ? NANORTC_ROLE_CONTROLLING : NANORTC_ROLE_CONTROLLED;
 
-#if NANORTC_FEATURE_AUDIO
-    if (audio_dir) {
-        cfg.audio_codec = NANORTC_CODEC_OPUS;
-        cfg.audio_sample_rate = 48000;
-        cfg.audio_channels = 2;
-        cfg.audio_direction = NANORTC_DIR_SENDONLY;
-    }
-#endif
-
-#if NANORTC_FEATURE_VIDEO
-    if (video_dir) {
-        cfg.video_codec = NANORTC_CODEC_H264;
-        cfg.video_direction = NANORTC_DIR_SENDONLY;
-    }
-#endif
-
     rc = nanortc_init(&rtc, &cfg);
     if (rc != NANORTC_OK) {
         fprintf(stderr, "nanortc_init failed: %d\n", rc);
         http_sig_leave(&sig);
         return 1;
     }
+
+#if NANORTC_FEATURE_AUDIO
+    if (audio_dir) {
+        app_ctx.audio_mid = nanortc_add_media(&rtc, NANO_MEDIA_AUDIO, NANORTC_DIR_SENDONLY,
+                                              NANORTC_CODEC_OPUS, 48000, 2);
+        if (app_ctx.audio_mid < 0)
+            fprintf(stderr, "nanortc_add_media(audio) failed: %d\n", app_ctx.audio_mid);
+    }
+#endif
+
+#if NANORTC_FEATURE_VIDEO
+    if (video_dir) {
+        app_ctx.video_mid = nanortc_add_media(&rtc, NANO_MEDIA_VIDEO, NANORTC_DIR_SENDONLY,
+                                              NANORTC_CODEC_H264, 90000, 0);
+        if (app_ctx.video_mid < 0)
+            fprintf(stderr, "nanortc_add_media(video) failed: %d\n", app_ctx.video_mid);
+    }
+#endif
 
     /* 3. Auto-detect IP if not specified */
     if (bind_ip[0] == '\0') {
@@ -435,7 +450,8 @@ int main(int argc, char *argv[])
                 if (nano_media_source_next_frame(&audio_src, frame_buf, sizeof(frame_buf),
                                                  &frame_len, &ts_ms) == 0) {
                     uint32_t audio_ts_rtp = audio_frame_count * 960;
-                    int arc = nanortc_send_audio(&rtc, audio_ts_rtp, frame_buf, frame_len);
+                    int arc = nanortc_writer_write(&app_ctx.audio_writer, audio_ts_rtp, frame_buf,
+                                                   frame_len, 0);
                     if (arc == NANORTC_OK) {
                         audio_frame_count++;
                     } else if (arc != NANORTC_ERR_STATE) {
@@ -480,7 +496,8 @@ int main(int argc, char *argv[])
                         if (annex_b_find_nal(frame_buf, frame_len, &peek_off, &peek_len) == NULL) {
                             flags |= NANORTC_VIDEO_FLAG_MARKER;
                         }
-                        nanortc_send_video(&rtc, video_ts_rtp, nal, nal_len, flags);
+                        nanortc_writer_write(&app_ctx.video_writer, video_ts_rtp, nal, nal_len,
+                                             flags);
                     }
                     video_frame_count++;
                 }

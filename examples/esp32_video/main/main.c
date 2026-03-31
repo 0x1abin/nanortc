@@ -49,6 +49,8 @@ static nanortc_t s_rtc;
 static nano_run_loop_t s_loop;
 static char s_local_ip[16];
 static int s_connected;
+static nano_writer_t s_video_writer;
+static int s_video_mid; /* MID returned by nanortc_add_media() */
 
 /* Video state */
 static nano_media_source_t s_video_src;
@@ -229,7 +231,7 @@ static void video_send_tick(uint32_t now)
             if (annex_b_find_nal(frame_buf, frame_len, &peek_off, &peek_len) == NULL) {
                 flags |= NANORTC_VIDEO_FLAG_MARKER;
             }
-            nanortc_send_video(&s_rtc, video_ts_rtp, nal, nal_len, flags);
+            nanortc_writer_write(&s_video_writer, video_ts_rtp, nal, nal_len, flags);
         }
         s_video_frame_count++;
     }
@@ -255,6 +257,11 @@ static void on_event(nanortc_t *rtc, const nanortc_event_t *evt, void *userdata)
         s_connected = 1;
         s_video_epoch_ms = 0;
         s_video_frame_count = 0;
+        /* Obtain writer handle for video track */
+        if (nanortc_writer(rtc, (uint8_t)s_video_mid, &s_video_writer) != NANORTC_OK) {
+            ESP_LOGE(TAG, "Failed to obtain video writer");
+            s_connected = 0;
+        }
         break;
 
     case NANORTC_EV_KEYFRAME_REQUEST:
@@ -324,14 +331,22 @@ static esp_err_t http_post_offer(httpd_req_t *req)
     memset(&cfg, 0, sizeof(cfg));
     cfg.crypto = nanortc_crypto_mbedtls();
     cfg.role = NANORTC_ROLE_CONTROLLED;
-    cfg.video_codec = NANORTC_CODEC_H264;
-    cfg.video_direction = NANORTC_DIR_SENDONLY;
 
     int rc = nanortc_init(&s_rtc, &cfg);
     if (rc != NANORTC_OK) {
         ESP_LOGE(TAG, "nanortc_init failed: %d", rc);
         free(offer);
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Init fail");
+        return ESP_FAIL;
+    }
+
+    /* Add video track via Writer handle pattern */
+    s_video_mid = nanortc_add_media(&s_rtc, NANO_MEDIA_VIDEO, NANORTC_DIR_SENDONLY,
+                                    NANORTC_CODEC_H264, 90000, 0);
+    if (s_video_mid < 0) {
+        ESP_LOGE(TAG, "nanortc_add_media failed: %d", s_video_mid);
+        free(offer);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Media fail");
         return ESP_FAIL;
     }
 

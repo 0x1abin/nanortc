@@ -74,6 +74,8 @@ static nanortc_t s_rtc;
 static nano_run_loop_t s_loop;
 static char s_local_ip[16];
 static int s_connected;
+static nano_writer_t s_audio_writer;
+static int s_audio_mid; /* MID returned by nanortc_add_media() */
 
 /* Audio state */
 static uint32_t s_audio_epoch_ms;
@@ -129,7 +131,8 @@ static void audio_send_tick(uint32_t now)
             };
             esp_audio_err_t ret = esp_audio_enc_process(s_encoder, &in_frame, &out_frame);
             if (ret == ESP_AUDIO_ERR_OK && out_frame.encoded_bytes > 0) {
-                nanortc_send_audio(&s_rtc, s_audio_rtp_ts, encoded, out_frame.encoded_bytes);
+                nanortc_writer_write(&s_audio_writer, s_audio_rtp_ts, encoded,
+                                     out_frame.encoded_bytes, 0);
             }
         }
 
@@ -161,6 +164,11 @@ static void on_event(nanortc_t *rtc, const nanortc_event_t *evt, void *userdata)
         s_audio_rtp_ts = 0;
         music_reset();
         encoder_init();
+        /* Obtain writer handle for audio track */
+        if (nanortc_writer(rtc, (uint8_t)s_audio_mid, &s_audio_writer) != NANORTC_OK) {
+            ESP_LOGE(TAG, "Failed to obtain audio writer");
+            s_connected = 0;
+        }
         break;
 
     case NANORTC_EV_DISCONNECTED:
@@ -230,16 +238,22 @@ static esp_err_t http_post_offer(httpd_req_t *req)
     memset(&cfg, 0, sizeof(cfg));
     cfg.crypto = nanortc_crypto_mbedtls();
     cfg.role = NANORTC_ROLE_CONTROLLED;
-    cfg.audio_codec = AUDIO_CODEC;
-    cfg.audio_sample_rate = AUDIO_SAMPLE_RATE;
-    cfg.audio_channels = AUDIO_CHANNELS;
-    cfg.audio_direction = NANORTC_DIR_SENDONLY;
 
     int rc = nanortc_init(&s_rtc, &cfg);
     if (rc != NANORTC_OK) {
         ESP_LOGE(TAG, "nanortc_init failed: %d", rc);
         free(offer);
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Init fail");
+        return ESP_FAIL;
+    }
+
+    /* Add audio track via Writer handle pattern */
+    s_audio_mid = nanortc_add_media(&s_rtc, NANO_MEDIA_AUDIO, NANORTC_DIR_SENDONLY, AUDIO_CODEC,
+                                    AUDIO_SAMPLE_RATE, AUDIO_CHANNELS);
+    if (s_audio_mid < 0) {
+        ESP_LOGE(TAG, "nanortc_add_media failed: %d", s_audio_mid);
+        free(offer);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Media fail");
         return ESP_FAIL;
     }
 
