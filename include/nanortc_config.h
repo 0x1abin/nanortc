@@ -212,7 +212,7 @@
 
 /** @brief Maximum number of media tracks (audio + video combined). Default: 4. */
 #ifndef NANORTC_MAX_MEDIA_TRACKS
-#define NANORTC_MAX_MEDIA_TRACKS 4
+#define NANORTC_MAX_MEDIA_TRACKS 2
 #endif
 
 /** @brief Maximum SSRC map entries for RTP demuxing. Default: 2 * MAX_MEDIA_TRACKS. */

@@ -273,25 +273,16 @@ static void rtc_apply_negotiated_media(nanortc_t *rtc)
             nano_media_kind_t kind =
                 (ml->kind == SDP_MLINE_AUDIO) ? NANO_MEDIA_AUDIO : NANO_MEDIA_VIDEO;
             uint8_t mid = ml->mid;
-            if (mid >= NANORTC_MAX_MEDIA_TRACKS) {
-                continue; /* MID exceeds track array — skip */
-            }
-            /* Ensure media_count covers this MID */
-            if (mid >= rtc->media_count) {
-                /* Zero-init any gap slots */
-                for (uint8_t g = rtc->media_count; g < mid; g++) {
-                    memset(&rtc->media[g], 0, sizeof(nano_media_t));
-                }
-                rtc->media_count = mid + 1;
-            }
+            uint8_t tidx = rtc->media_count;
             nanortc_direction_t local_dir = direction_complement(ml->remote_direction);
             uint32_t jitter_ms = 0;
 #if NANORTC_FEATURE_AUDIO
             jitter_ms = rtc->config.jitter_depth_ms;
 #endif
-            media_init(&rtc->media[mid], mid, kind, local_dir, ml->codec, ml->sample_rate,
+            media_init(&rtc->media[tidx], mid, kind, local_dir, ml->codec, ml->sample_rate,
                        ml->channels, jitter_ms);
-            m = &rtc->media[mid];
+            rtc->media_count = tidx + 1;
+            m = &rtc->media[tidx];
 
             /* Emit MEDIA_ADDED event for remote-initiated tracks */
             nanortc_event_t maevt;
@@ -1394,28 +1385,20 @@ int nanortc_add_media(nanortc_t *rtc, nano_media_kind_t kind, nanortc_direction_
         return mid;
     }
 
-    /* Initialize media track at the MID index */
-    uint8_t midx = (uint8_t)mid;
-    if (midx >= NANORTC_MAX_MEDIA_TRACKS) {
-        return NANORTC_ERR_BUFFER_TOO_SMALL;
-    }
-    if (midx >= rtc->media_count) {
-        /* Zero-init any gap slots */
-        for (uint8_t g = rtc->media_count; g < midx; g++) {
-            memset(&rtc->media[g], 0, sizeof(nano_media_t));
-        }
-        rtc->media_count = midx + 1;
-    }
+    /* Initialize media track at the next available slot (not by MID index —
+     * DC can occupy SDP MIDs without consuming media track slots). */
+    uint8_t tidx = rtc->media_count;
 
     uint32_t jitter_ms = 0;
 #if NANORTC_FEATURE_AUDIO
     jitter_ms = rtc->config.jitter_depth_ms;
 #endif
-    int rc = media_init(&rtc->media[midx], midx, kind, direction, (uint8_t)codec, sample_rate,
-                        channels, jitter_ms);
+    int rc = media_init(&rtc->media[tidx], (uint8_t)mid, kind, direction, (uint8_t)codec,
+                        sample_rate, channels, jitter_ms);
     if (rc != NANORTC_OK) {
         return rc;
     }
+    rtc->media_count = tidx + 1;
 
     NANORTC_LOGI("RTC", "media track added");
     return mid;
