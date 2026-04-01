@@ -65,6 +65,15 @@ jobs:
           ! grep -rn '\bcalloc\b' src/
           ! grep -rn '\brealloc\b' src/
 
+      - name: "Check: no unbounded string functions in src/+crypto/"
+        run: |
+          BANNED='strlen|sprintf|snprintf|strcpy|strncpy|strcat|strncat|sscanf|atoi|atol|gets'
+          ! grep -rnE "\b($BANNED)\b" src/ crypto/ | grep -v "NANORTC_SAFE"
+
+      - name: "Check: no hardcoded array sizes in struct headers"
+        run: |
+          ! grep -rnE '\b(uint8_t|char|int8_t|uint16_t|uint32_t)\s+\w+\[\s*[0-9]+\s*\];' src/*.h include/nanortc.h | grep -v '//'
+
       - name: "Check: code formatting"
         run: |
           pip install clang-format==22.1.2
