@@ -22,7 +22,7 @@ typedef struct nano_run_loop {
     nanortc_t *rtc;
     int fd;               /* UDP socket */
     uint16_t port;
-    int running;
+    volatile int running;
     nano_event_cb event_cb;
     void *event_userdata;
     uint32_t max_poll_ms; /* max select timeout (0 = default 100ms) */

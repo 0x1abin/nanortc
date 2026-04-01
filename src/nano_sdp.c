@@ -259,26 +259,36 @@ int sdp_parse(nano_sdp_t *sdp, const char *sdp_str, size_t len)
                    sdp->mlines[current_mline_idx].kind == SDP_MLINE_VIDEO &&
                    line_starts_with(line, line_len, "a=fmtp:")) {
             nano_sdp_mline_t *ml = &sdp->mlines[current_mline_idx];
-            /* Parse video fmtp for packetization-mode=1 (RFC 6184 §8.1) */
+            /* Parse video fmtp for H264 packetization-mode=1 (RFC 6184 §8.1).
+             * Prefer the entry whose profile-level-id matches our own (42e01f,
+             * Constrained Baseline Level 3.1).  Fall back to any H264 with
+             * packetization-mode=1 if no exact match. */
             const char *fp = line + 7;
             const char *fend = line + line_len;
             const char *fnext;
             uint32_t fmtp_pt = parse_u32(fp, fend, &fnext);
             bool has_mode1 = false;
+            bool has_preferred_profile = false;
             const char *search = fnext;
             size_t remain = (size_t)(fend - search);
             while (remain >= 20) {
                 if (memcmp(search, "packetization-mode=1", 20) == 0) {
                     has_mode1 = true;
-                    break;
+                }
+                if (remain >= 23 && memcmp(search, "profile-level-id=42e01f", 23) == 0) {
+                    has_preferred_profile = true;
                 }
                 search++;
                 remain--;
             }
-            if (has_mode1 && ml->pt == 0) {
-                if (ml->video_h264_rtpmap_pt == 0 || ml->video_h264_rtpmap_pt == (uint8_t)fmtp_pt) {
-                    ml->pt = (uint8_t)fmtp_pt;
-                }
+            /* Select this PT if it's H264 with packetization-mode=1 and
+             * the rtpmap PT matches (or is the first H264 we've seen). */
+            bool is_valid_h264 = has_mode1 && (ml->video_h264_rtpmap_pt == 0 ||
+                                               ml->video_h264_rtpmap_pt == (uint8_t)fmtp_pt);
+            if (is_valid_h264 && (has_preferred_profile || ml->pt == 0)) {
+                ml->pt = (uint8_t)fmtp_pt;
+                NANORTC_LOGD("SDP", has_preferred_profile ? "video H264 PT selected (profile match)"
+                                                          : "video H264 PT selected (fallback)");
             }
         } else if (current_mline_idx >= 0 && (line_starts_with(line, line_len, "a=sendrecv") ||
                                               line_starts_with(line, line_len, "a=sendonly") ||

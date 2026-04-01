@@ -31,6 +31,9 @@ CONFIG_NANORTC_FEATURE_VIDEO=y
 # Output queue (video FU-A fragmentation needs more slots)
 CONFIG_NANORTC_OUT_QUEUE_SIZE=16
 
+# Media buffer must hold: RTP header (12) + MTU payload (1200) + SRTP tag (10)
+CONFIG_NANORTC_MEDIA_BUF_SIZE=1280
+
 # FAT long filename support (SD card frame files use long names)
 CONFIG_FATFS_LFN_HEAP=y
 CONFIG_FATFS_MAX_LFN=255

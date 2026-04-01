@@ -40,6 +40,13 @@
 
 static const char *TAG = "nanortc_video";
 
+static void nanortc_log_cb(const nanortc_log_message_t *msg, void *ctx)
+{
+    (void)ctx;
+    ESP_LOGI("nrtc", "[%s] %s", msg->subsystem ? msg->subsystem : "?",
+             msg->message ? msg->message : "");
+}
+
 #define SD_MOUNT_POINT "/sd"
 #define VIDEO_FPS      CONFIG_EXAMPLE_VIDEO_FPS
 #define FRAME_INTERVAL (1000 / VIDEO_FPS) /* ms per frame */
@@ -273,6 +280,54 @@ static esp_err_t http_get_root(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* GET /myip — return the client's IPv4 address (for mDNS replacement).
+ * lwIP uses IPv6 sockets, so IPv4 clients appear as ::FFFF:x.x.x.x. */
+static esp_err_t http_get_myip(httpd_req_t *req)
+{
+    int sockfd = httpd_req_to_sockfd(req);
+    struct sockaddr_in6 addr6;
+    socklen_t addr_len = sizeof(addr6);
+    if (getpeername(sockfd, (struct sockaddr *)&addr6, &addr_len) != 0) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "getpeername");
+        return ESP_FAIL;
+    }
+    char ip_str[64];
+    /* Check for IPv4-mapped IPv6 (::FFFF:x.x.x.x) and extract IPv4 */
+    if (addr6.sin6_family == AF_INET6 && IN6_IS_ADDR_V4MAPPED(&addr6.sin6_addr)) {
+        struct in_addr v4;
+        memcpy(&v4, &addr6.sin6_addr.s6_addr[12], 4);
+        inet_ntop(AF_INET, &v4, ip_str, sizeof(ip_str));
+    } else if (addr6.sin6_family == AF_INET) {
+        struct sockaddr_in *a4 = (struct sockaddr_in *)&addr6;
+        inet_ntop(AF_INET, &a4->sin_addr, ip_str, sizeof(ip_str));
+    } else {
+        inet_ntop(AF_INET6, &addr6.sin6_addr, ip_str, sizeof(ip_str));
+    }
+    httpd_resp_set_type(req, "text/plain");
+    httpd_resp_send(req, ip_str, -1);
+    return ESP_OK;
+}
+
+/* GET /debug — return internal state for diagnostics */
+static volatile uint32_t s_step_count;
+static volatile uint32_t s_task_alive;
+
+/* GET /debug — return internal state for diagnostics */
+static esp_err_t http_get_debug(httpd_req_t *req)
+{
+    char buf[512];
+    int n = snprintf(buf, sizeof(buf),
+        "running=%d fd=%d connected=%d video_ready=%d video_mid=%d\n"
+        "ice.remote_candidates=%d ice.state=%d\n"
+        "state=%d steps=%lu alive=%lu\n",
+        s_loop.running, s_loop.fd, s_connected, s_video_ready, s_video_mid,
+        s_rtc.ice.remote_candidate_count, s_rtc.ice.state,
+        s_rtc.state, (unsigned long)s_step_count, (unsigned long)s_task_alive);
+    httpd_resp_set_type(req, "text/plain");
+    httpd_resp_send(req, buf, n);
+    return ESP_OK;
+}
+
 /* POST /offer — receive SDP offer, return SDP answer */
 static esp_err_t http_post_offer(httpd_req_t *req)
 {
@@ -307,6 +362,8 @@ static esp_err_t http_post_offer(httpd_req_t *req)
     memset(&cfg, 0, sizeof(cfg));
     cfg.crypto = nanortc_crypto_mbedtls();
     cfg.role = NANORTC_ROLE_CONTROLLED;
+    cfg.log.callback = nanortc_log_cb;
+    cfg.log.level = NANORTC_LOG_DEBUG;
 
     int rc = nanortc_init(&s_rtc, &cfg);
     if (rc != NANORTC_OK) {
@@ -336,7 +393,7 @@ static esp_err_t http_post_offer(httpd_req_t *req)
     nanortc_add_local_candidate(&s_rtc, s_local_ip, CONFIG_EXAMPLE_UDP_PORT);
     nano_run_loop_set_event_cb(&s_loop, on_event, NULL);
     s_loop.max_poll_ms = 5;
-    s_loop.running = 1;
+    /* Don't set running=1 yet — avoid race with webrtc_task during accept_offer */
 
     char *answer = malloc(8192);
     if (!answer) {
@@ -355,7 +412,11 @@ static esp_err_t http_post_offer(httpd_req_t *req)
         return ESP_FAIL;
     }
 
-    ESP_LOGI(TAG, "SDP answer generated (%u bytes)", (unsigned)answer_len);
+    /* Safe to start event loop now — nanortc fully initialized */
+    s_loop.running = 1;
+
+    ESP_LOGI(TAG, "SDP answer generated (%u bytes), remote_candidates=%d",
+             (unsigned)answer_len, s_rtc.ice.remote_candidate_count);
     httpd_resp_set_type(req, "text/plain");
     httpd_resp_send(req, answer, (ssize_t)answer_len);
     free(answer);
@@ -383,12 +444,24 @@ static httpd_handle_t start_http_server(void)
         .method = HTTP_GET,
         .handler = http_get_root,
     };
+    httpd_uri_t uri_myip = {
+        .uri = "/myip",
+        .method = HTTP_GET,
+        .handler = http_get_myip,
+    };
     httpd_uri_t uri_offer = {
         .uri = "/offer",
         .method = HTTP_POST,
         .handler = http_post_offer,
     };
+    httpd_uri_t uri_debug = {
+        .uri = "/debug",
+        .method = HTTP_GET,
+        .handler = http_get_debug,
+    };
     httpd_register_uri_handler(server, &uri_root);
+    httpd_register_uri_handler(server, &uri_myip);
+    httpd_register_uri_handler(server, &uri_debug);
     httpd_register_uri_handler(server, &uri_offer);
 
     ESP_LOGI(TAG, "HTTP server started on port %d", config.server_port);
@@ -401,11 +474,13 @@ static httpd_handle_t start_http_server(void)
 static void webrtc_task(void *arg)
 {
     (void)arg;
-    ESP_LOGI(TAG, "WebRTC task started");
+    ESP_LOGI(TAG, "WebRTC task started on core %d", xPortGetCoreID());
 
     for (;;) {
+        s_task_alive++;
         if (s_loop.running) {
             nano_run_loop_step(&s_loop);
+            s_step_count++;
             if (s_connected && s_video_ready) {
                 uint32_t now = nano_get_millis();
                 video_send_tick(now);
@@ -454,7 +529,7 @@ void app_main(void)
 
     /* 5. Start WebRTC task early (before SD mount which may block for seconds).
      * The task idles until http_post_offer sets s_loop.running = 1. */
-    xTaskCreatePinnedToCore(webrtc_task, "webrtc", 32768, NULL, 5, NULL, 0);
+    xTaskCreatePinnedToCore(webrtc_task, "webrtc", 32768, NULL, 5, NULL, 1);
 
     /* 6. Mount SD card, try PSRAM preload, fallback to per-frame I/O */
     if (sd_card_mount() != 0) {
@@ -463,10 +538,7 @@ void app_main(void)
         char h264_path[128];
         snprintf(h264_path, sizeof(h264_path), "%s/%s", SD_MOUNT_POINT, CONFIG_EXAMPLE_H264_DIR);
 
-        if (preload_frames(h264_path) == 0) {
-            s_psram_mode = 1;
-            s_video_ready = 1;
-        } else if (nano_media_source_init(&s_video_src, NANORTC_MEDIA_H264, h264_path) == 0) {
+        if (nano_media_source_init(&s_video_src, NANORTC_MEDIA_H264, h264_path) == 0) {
             s_video_ready = 1;
             ESP_LOGI(TAG, "SD I/O mode: %s (%d frames)", h264_path, s_video_src.frame_count);
         } else {

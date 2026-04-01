@@ -410,12 +410,16 @@
  * Media transport configuration
  * ---------------------------------------------------------------- */
 
+/** @brief RTP payload MTU for H.264 FU-A fragmentation (bytes). */
+#ifndef NANORTC_VIDEO_MTU
+#define NANORTC_VIDEO_MTU 1200
+#endif
+
 /* Media scratch buffer size (for RTP/SRTP processing).
- * 1200 bytes matches NANORTC_VIDEO_MTU — sufficient for any RTP-over-DTLS
- * packet within a typical UDP MTU.  Increase to 1500 if jumbo payloads are
- * expected. */
+ * Must hold: RTP header (12) + max payload (NANORTC_VIDEO_MTU) + SRTP tag (10).
+ * Formula: NANORTC_VIDEO_MTU + 80 provides sufficient headroom. */
 #ifndef NANORTC_MEDIA_BUF_SIZE
-#define NANORTC_MEDIA_BUF_SIZE 1200
+#define NANORTC_MEDIA_BUF_SIZE (NANORTC_VIDEO_MTU + 80)
 #endif
 
 /* RTCP send interval in milliseconds (RFC 3550 §6.2) */
@@ -430,11 +434,6 @@
 /** @brief Maximum reassembled NAL unit size for FU-A depacketizer (bytes). */
 #ifndef NANORTC_VIDEO_NAL_BUF_SIZE
 #define NANORTC_VIDEO_NAL_BUF_SIZE 32768
-#endif
-
-/** @brief RTP payload MTU for H.264 FU-A fragmentation (bytes). */
-#ifndef NANORTC_VIDEO_MTU
-#define NANORTC_VIDEO_MTU 1200
 #endif
 
 /** @brief Default dynamic Payload Type for H.264 (RFC 6184). */

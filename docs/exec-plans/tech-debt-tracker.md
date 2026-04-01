@@ -19,6 +19,9 @@ Track known debt, prioritize by impact, pay down continuously.
 | ~~TD-011~~ | ~~Crypto~~ | ~~mbedTLS backend missing DTLS-SRTP `use_srtp` extension — Chrome silently drops all SRTP packets~~ | ~~High~~ | ~~Phase 2~~ | ~~Resolved~~ |
 | ~~TD-012~~ | ~~SDP~~ | ~~`sdp_parse()` overwrites local `audio_pt` with remote offer's first PT — answerer sends wrong codec~~ | ~~High~~ | ~~Phase 2~~ | ~~Resolved~~ |
 | ~~TD-013~~ | ~~ICE~~ | ~~`nanortc_add_remote_candidate()` returns `ERR_NOT_IMPLEMENTED` for IPv6 addresses — no IPv6 support~~ | ~~Medium~~ | ~~—~~ | ~~Resolved~~ |
+| ~~TD-014~~ | ~~SDP~~ | ~~`rtc_apply_negotiated_media()` overwrites fmtp-selected H264 PT with m-line first PT (often VP8) — browser video decode fails~~ | ~~High~~ | ~~Phase 3~~ | ~~Resolved~~ |
+| ~~TD-015~~ | ~~Config~~ | ~~`NANORTC_MEDIA_BUF_SIZE=1200` too small for RTP header (12) + max payload (1200) + SRTP tag (10) — video keyframe send fails~~ | ~~High~~ | ~~Phase 3~~ | ~~Resolved~~ |
+| ~~TD-016~~ | ~~Examples~~ | ~~`browser_interop` and `linux_datachannel` pass event struct pointer to `nanortc_datachannel_send*()` instead of `nanortc_datachannel_t` handle~~ | ~~Medium~~ | ~~Phase 3~~ | ~~Resolved~~ |
 
 ## Resolved Debt
 
@@ -34,6 +37,9 @@ Track known debt, prioritize by impact, pay down continuously.
 | TD-011 | 2026-03-30 | Added DTLS-SRTP `use_srtp` extension (`MBEDTLS_TLS_SRTP_AES128_CM_HMAC_SHA1_80`) to mbedTLS backend. OpenSSL backend already had it. Without this extension, Chrome/Firefox silently discard all SRTP packets. |
 | TD-012 | 2026-03-30 | Refactored SDP codec negotiation: added `remote_audio_pt` field to separate parsed remote PT from local config PT. Removed `audio_sample_rate`/`audio_channels` parsing from rtpmap (local config is authoritative). |
 | TD-013 | 2026-03-31 | Added `nano_addr.c/h` module with RFC 4291/5952 IPv6 parsing + formatting. Refactored `nanortc_add_remote_candidate()` to use `addr_parse_auto()` for dual-stack support. SDP `c=`/`o=` lines auto-select IP4/IP6. Guarded by `NANORTC_FEATURE_IPV6` (default ON). 48 address tests + IPv6 e2e + SDP tests. |
+| TD-014 | 2026-03-31 | Refactored `rtc_apply_negotiated_media()`: video uses fmtp-selected PT (H264 with profile-level-id match), audio uses remote_pt. Added profile-level-id=42e01f preference in fmtp parsing. Debug logging at PT selection points. |
+| TD-015 | 2026-03-31 | Changed `NANORTC_MEDIA_BUF_SIZE` from hardcoded 1200 to `(NANORTC_VIDEO_MTU + 80)`, derived from MTU constant. Provides headroom for RTP header (12) + SRTP tag (10) + alignment. |
+| TD-016 | 2026-03-31 | Fixed `browser_interop` and `linux_datachannel` examples to use `nanortc_get_datachannel()` → `nanortc_datachannel_t` handle for send calls, matching the flat send API. |
 
 ## Principles
 

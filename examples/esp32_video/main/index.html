@@ -80,7 +80,17 @@ async function connect() {
   log('info', 'Connecting...');
 
   try {
-    pc = new RTCPeerConnection({ iceServers: [] });
+    /* Get browser's real IP from ESP32 (Chrome hides LAN IPs behind mDNS) */
+    let myIP = '';
+    try {
+      const r = await fetch('/myip');
+      myIP = (await r.text()).trim();
+      log('info', 'My IP: ' + myIP);
+    } catch(e) { log('err', 'Failed to get IP'); }
+
+    pc = new RTCPeerConnection({
+      iceServers: [{urls: 'stun:stun.l.google.com:19302'}]
+    });
 
     pc.oniceconnectionstatechange = () => {
       const s = pc.iceConnectionState;
@@ -109,11 +119,19 @@ async function connect() {
     log('info', 'Gathering ICE candidates...');
     await waitIceGathering(pc, 3000);
 
+    /* Replace mDNS hostnames with real IP in the SDP (ESP32 can't resolve mDNS) */
+    let offerSdp = pc.localDescription.sdp;
+    if (myIP) {
+      offerSdp = offerSdp.replace(
+        /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.local/g, myIP);
+      log('info', 'mDNS replaced with ' + myIP);
+    }
+
     setStatus('info', 'Sending offer to ESP32...');
-    log('info', 'Sending offer (' + pc.localDescription.sdp.length + ' bytes)');
+    log('info', 'Sending offer (' + offerSdp.length + ' bytes)');
     const resp = await fetch('/offer', {
       method: 'POST',
-      body: pc.localDescription.sdp,
+      body: offerSdp,
     });
 
     if (!resp.ok) {
@@ -123,6 +141,15 @@ async function connect() {
     const answerSdp = await resp.text();
     log('info', 'Got answer (' + answerSdp.length + ' bytes)');
     await pc.setRemoteDescription({ type: 'answer', sdp: answerSdp });
+
+    /* Manually extract and add candidates from the answer SDP.
+     * Some Chrome versions don't auto-parse candidates from the answer. */
+    const candLines = answerSdp.match(/a=candidate:.+/g) || [];
+    for (const line of candLines) {
+      await pc.addIceCandidate({candidate: line, sdpMid: '0', sdpMLineIndex: 0});
+      log('info', 'Added candidate: ' + line.substring(0, 60));
+    }
+
     setStatus('info', 'Waiting for connection...');
 
   } catch (e) {

@@ -333,10 +333,18 @@ static void rtc_apply_negotiated_media(nanortc_t *rtc)
         }
         ml->direction = m->direction;
 
-        /* Apply negotiated PT */
-        if (ml->remote_pt != 0) {
+        /* Apply negotiated PT.
+         * For video: fmtp parsing already selected the correct H264 PT from
+         * the offer's codec list (matching packetization-mode=1).  Don't
+         * overwrite it with remote_pt, which is just the *first* PT on the
+         * m= line (often VP8, not H264). */
+        if (ml->kind == SDP_MLINE_VIDEO && ml->pt != 0) {
+            m->rtp.payload_type = ml->pt;
+            NANORTC_LOGD("SDP", "video using negotiated H264 PT");
+        } else if (ml->remote_pt != 0) {
             m->rtp.payload_type = ml->remote_pt;
             ml->pt = ml->remote_pt;
+            NANORTC_LOGD("SDP", "media using remote PT");
         }
     }
 #endif
@@ -797,6 +805,7 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
                     m->rtp.seq = init_seq;
                     m->rtcp.ssrc = ssrc;
                     ssrc_map_register(rtc->ssrc_map, NANORTC_MAX_SSRC_MAP, ssrc, m->mid);
+                    NANORTC_LOGD("RTP", "track RTP initialized");
                 }
                 NANORTC_LOGI("RTC", "SRTP keys derived, RTP ready");
             }
@@ -1249,12 +1258,14 @@ int nanortc_datachannel_send(nanortc_datachannel_t *ch, const void *data, size_t
         return NANORTC_ERR_INVALID_PARAM;
     }
     if (ch->rtc->state != NANORTC_STATE_CONNECTED) {
+        NANORTC_LOGW("DC", "send failed: not connected");
         return NANORTC_ERR_STATE;
     }
 
     uint32_t ppid = (len > 0) ? DCEP_PPID_BINARY : DCEP_PPID_BINARY_EMPTY;
     int rc = nsctp_send(&ch->rtc->sctp, ch->id, ppid, (const uint8_t *)data, len);
     if (rc == NANORTC_ERR_BUFFER_TOO_SMALL) {
+        NANORTC_LOGD("DC", "send would block (SCTP buffer full)");
         return NANORTC_ERR_WOULD_BLOCK;
     }
     return rc;
@@ -1496,6 +1507,7 @@ static int video_send_fragment_cb(const uint8_t *payload, size_t len, int marker
     int rc =
         rtp_pack(&m->rtp, ctx->timestamp, payload, len, pkt_buf, NANORTC_MEDIA_BUF_SIZE, &rtp_len);
     if (rc != NANORTC_OK) {
+        NANORTC_LOGW("RTP", "video rtp_pack failed");
         ctx->last_rc = rc;
         return rc;
     }
@@ -1503,6 +1515,7 @@ static int video_send_fragment_cb(const uint8_t *payload, size_t len, int marker
     size_t srtp_len = 0;
     rc = srtp_protect(&rtc->srtp, pkt_buf, rtp_len, &srtp_len);
     if (rc != NANORTC_OK) {
+        NANORTC_LOGW("SRTP", "video srtp_protect failed");
         ctx->last_rc = rc;
         return rc;
     }
@@ -1720,6 +1733,7 @@ int nanortc_send_video(nanortc_t *rtc, uint8_t mid, const void *data, size_t len
         return NANORTC_ERR_INVALID_PARAM;
     }
     if (rtc->state < NANORTC_STATE_DTLS_CONNECTED || !rtc->srtp.ready) {
+        NANORTC_LOGW("RTP", "video send blocked by state");
         return NANORTC_ERR_STATE;
     }
 

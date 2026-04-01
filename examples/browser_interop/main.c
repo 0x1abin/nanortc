@@ -70,21 +70,29 @@ static void on_event(nanortc_t *rtc, const nanortc_event_t *evt, void *userdata)
         }
         break;
 
-    case NANORTC_EV_DATACHANNEL_OPEN:
+    case NANORTC_EV_DATACHANNEL_OPEN: {
         fprintf(stderr, "[event] DataChannel open (id=%d)\n", evt->datachannel_open.id);
-        nanortc_datachannel_send_string(&evt->datachannel_open, "hello");
+        nanortc_datachannel_t ch;
+        if (nanortc_get_datachannel(rtc, evt->datachannel_open.id, &ch) == NANORTC_OK) {
+            nanortc_datachannel_send_string(&ch, "hello");
+        }
         break;
+    }
 
-    case NANORTC_EV_DATACHANNEL_DATA:
+    case NANORTC_EV_DATACHANNEL_DATA: {
+        nanortc_datachannel_t ch;
+        if (nanortc_get_datachannel(rtc, evt->datachannel_data.id, &ch) != NANORTC_OK)
+            break;
         if (evt->datachannel_data.binary) {
             fprintf(stderr, "[event] DC data (%zu bytes), echoing back\n", evt->datachannel_data.len);
-            nanortc_datachannel_send(&evt->datachannel_data, evt->datachannel_data.data, evt->datachannel_data.len);
+            nanortc_datachannel_send(&ch, evt->datachannel_data.data, evt->datachannel_data.len);
         } else {
             fprintf(stderr, "[event] DC string: %.*s\n", (int)evt->datachannel_data.len,
                     (char *)evt->datachannel_data.data);
-            nanortc_datachannel_send_string(&evt->datachannel_data, (const char *)evt->datachannel_data.data);
+            nanortc_datachannel_send_string(&ch, (const char *)evt->datachannel_data.data);
         }
         break;
+    }
 
     case NANORTC_EV_DATACHANNEL_CLOSE:
         fprintf(stderr, "[event] DataChannel closed\n");
