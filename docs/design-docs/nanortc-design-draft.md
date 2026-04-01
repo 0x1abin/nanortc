@@ -125,15 +125,14 @@ int  nanortc_handle_input(nanortc_t *rtc, uint32_t now_ms,
                          const uint8_t *data, size_t len,
                          const nanortc_addr_t *src);
 
-// ---- DataChannel (Channel handle pattern) ----
+// ---- DataChannel (flat API — no handle needed) ----
 #if NANORTC_FEATURE_DATACHANNEL
 int  nanortc_create_datachannel(nanortc_t *rtc, const char *label,
                                const nanortc_datachannel_options_t *options);
-int  nanortc_get_datachannel(nanortc_t *rtc, uint16_t id, nanortc_datachannel_t *ch);
-int  nanortc_datachannel_send(nanortc_datachannel_t *ch, const void *data, size_t len);
-int  nanortc_datachannel_send_string(nanortc_datachannel_t *ch, const char *str);
-int  nanortc_datachannel_close(nanortc_datachannel_t *ch);
-const char *nanortc_datachannel_get_label(nanortc_datachannel_t *ch);
+int  nanortc_datachannel_send(nanortc_t *rtc, uint16_t id, const void *data, size_t len);
+int  nanortc_datachannel_send_string(nanortc_t *rtc, uint16_t id, const char *str);
+int  nanortc_datachannel_close(nanortc_t *rtc, uint16_t id);
+const char *nanortc_datachannel_get_label(nanortc_t *rtc, uint16_t id);
 #endif
 
 // ---- 媒体 (Writer handle pattern) ----

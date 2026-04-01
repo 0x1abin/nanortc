@@ -133,15 +133,14 @@ TEST(test_e2e_stubs_not_implemented)
     uint8_t data[] = {0x00, 0x01, 0x00, 0x00};
 
 #if NANORTC_FEATURE_DATACHANNEL
-    /* nanortc_datachannel_send returns ERR_STATE (not connected) via channel handle */
+    /* nanortc_datachannel_send returns ERR_STATE (not connected) */
     {
         int sid = nanortc_create_datachannel(&rtc, "test", NULL);
         ASSERT(sid >= 0);
-        nanortc_datachannel_t ch;
-        ch.rtc = &rtc;
-        ch.id = (uint16_t)sid;
-        ASSERT_EQ(nanortc_datachannel_send(&ch, data, sizeof(data)), NANORTC_ERR_STATE);
-        ASSERT_EQ(nanortc_datachannel_send_string(&ch, "hello"), NANORTC_ERR_STATE);
+        ASSERT_EQ(nanortc_datachannel_send(&rtc, (uint16_t)sid, data, sizeof(data)),
+                  NANORTC_ERR_STATE);
+        ASSERT_EQ(nanortc_datachannel_send_string(&rtc, (uint16_t)sid, "hello"),
+                  NANORTC_ERR_STATE);
     }
 #endif
 
@@ -777,10 +776,8 @@ TEST(test_e2e_channel_close)
     while (nanortc_poll_output(&rtc, &tmp) == NANORTC_OK) {
     }
 
-    /* Close via channel handle */
-    nanortc_datachannel_t ch;
-    ASSERT_OK(nanortc_get_datachannel(&rtc, (uint16_t)sid, &ch));
-    ASSERT_OK(nanortc_datachannel_close(&ch));
+    /* Close via flat API */
+    ASSERT_OK(nanortc_datachannel_close(&rtc, (uint16_t)sid));
 
     /* Should emit CHANNEL_CLOSE event */
     nanortc_output_t evt;
@@ -794,21 +791,20 @@ TEST(test_e2e_channel_close)
 
 TEST(test_e2e_channel_invalid)
 {
-    /* Getting a handle for nonexistent channel should fail */
+    /* Closing a nonexistent channel should fail */
     nanortc_t rtc;
     nanortc_config_t cfg = e2e_default_config();
     ASSERT_OK(nanortc_init(&rtc, &cfg));
 
     rtc.state = NANORTC_STATE_CONNECTED;
-    nanortc_datachannel_t ch;
-    ASSERT_EQ(nanortc_get_datachannel(&rtc, 9999, &ch), NANORTC_ERR_INVALID_PARAM);
+    ASSERT_EQ(nanortc_datachannel_close(&rtc, 9999), NANORTC_ERR_INVALID_PARAM);
 
     nanortc_destroy(&rtc);
 }
 
 TEST(test_e2e_channel_label)
 {
-    /* Create a DC and verify label retrieval via channel handle */
+    /* Create a DC and verify label retrieval */
     nanortc_t rtc;
     nanortc_config_t cfg = e2e_default_config();
     ASSERT_OK(nanortc_init(&rtc, &cfg));
@@ -816,10 +812,7 @@ TEST(test_e2e_channel_label)
     int sid = nanortc_create_datachannel(&rtc, "my-label", NULL);
     ASSERT_TRUE(sid >= 0);
 
-    nanortc_datachannel_t ch;
-    ch.rtc = &rtc;
-    ch.id = (uint16_t)sid;
-    const char *label = nanortc_datachannel_get_label(&ch);
+    const char *label = nanortc_datachannel_get_label(&rtc, (uint16_t)sid);
     ASSERT_TRUE(label != NULL);
     ASSERT_TRUE(str_contains(label, "my-label"));
 
@@ -993,20 +986,15 @@ TEST(test_e2e_datachannel_send_recv)
     while (nanortc_poll_output(&rtc, &out) == NANORTC_OK) {
     }
 
-    /* Get channel handle */
-    nanortc_datachannel_t ch;
-    ch.rtc = &rtc;
-    ch.id = (uint16_t)sid;
-
     /* Send a message — should succeed even though SCTP path isn't live
      * (message goes into send queue) */
-    int rc = nanortc_datachannel_send_string(&ch, "Hello!");
+    int rc = nanortc_datachannel_send_string(&rtc, (uint16_t)sid, "Hello!");
     /* Either succeeds (queued) or fails with WOULD_BLOCK/STATE — both valid */
     (void)rc;
 
     /* Send binary data */
     uint8_t binary[] = {0x01, 0x02, 0x03, 0x04};
-    rc = nanortc_datachannel_send(&ch, binary, sizeof(binary));
+    rc = nanortc_datachannel_send(&rtc, (uint16_t)sid, binary, sizeof(binary));
     (void)rc;
 
     nanortc_destroy(&rtc);
@@ -1037,16 +1025,10 @@ TEST(test_e2e_multi_channel_create)
     /* All 3 should be tracked */
     ASSERT_EQ(rtc.datachannel.channel_count, 3);
 
-    /* Verify labels via channel handle */
-    nanortc_datachannel_t ch;
-    ch.rtc = &rtc;
-
-    ch.id = (uint16_t)id1;
-    ASSERT_TRUE(str_contains(nanortc_datachannel_get_label(&ch), "channel-1"));
-    ch.id = (uint16_t)id2;
-    ASSERT_TRUE(str_contains(nanortc_datachannel_get_label(&ch), "channel-2"));
-    ch.id = (uint16_t)id3;
-    ASSERT_TRUE(str_contains(nanortc_datachannel_get_label(&ch), "channel-3"));
+    /* Verify labels */
+    ASSERT_TRUE(str_contains(nanortc_datachannel_get_label(&rtc, (uint16_t)id1), "channel-1"));
+    ASSERT_TRUE(str_contains(nanortc_datachannel_get_label(&rtc, (uint16_t)id2), "channel-2"));
+    ASSERT_TRUE(str_contains(nanortc_datachannel_get_label(&rtc, (uint16_t)id3), "channel-3"));
 
     nanortc_destroy(&rtc);
 }

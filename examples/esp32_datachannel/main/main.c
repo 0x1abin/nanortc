@@ -65,11 +65,13 @@ static void on_event(nanortc_t *rtc, const nanortc_event_t *evt, void *userdata)
     case NANORTC_EV_DATACHANNEL_DATA:
         if (evt->datachannel_data.binary) {
             ESP_LOGI(TAG, "DC data (%u bytes), echoing back", (unsigned)evt->datachannel_data.len);
-            nanortc_datachannel_send(&evt->datachannel_data, evt->datachannel_data.data, evt->datachannel_data.len);
+            nanortc_datachannel_send(rtc, evt->datachannel_data.id,
+                                     evt->datachannel_data.data, evt->datachannel_data.len);
         } else {
             ESP_LOGI(TAG, "DC string: %.*s", (int)evt->datachannel_data.len,
                      (char *)evt->datachannel_data.data);
-            nanortc_datachannel_send_string(&evt->datachannel_data, (const char *)evt->datachannel_data.data);
+            nanortc_datachannel_send_string(rtc, evt->datachannel_data.id,
+                                            (const char *)evt->datachannel_data.data);
         }
         break;
 

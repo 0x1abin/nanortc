@@ -187,12 +187,7 @@ TEST(test_interop_dc_string_nanortc_to_libdatachannel)
     const char *msg = "hello libdatachannel";
     int initial_count = atomic_load(&libdatachannel.msg_count);
 
-    /* Channel handle for stream_id 0 (the DC opened by libdatachannel) */
-    nanortc_datachannel_t nano_ch;
-    nano_ch.rtc = &nano.rtc;
-    nano_ch.id = 0;
-
-    rc = nanortc_datachannel_send_string(&nano_ch, msg);
+    rc = nanortc_datachannel_send_string(&nano.rtc, 0, msg);
     ASSERT_OK(rc);
 
     /* Wait for libdatachannel to receive it */
@@ -282,10 +277,7 @@ TEST(test_interop_dc_binary_nanortc_to_libdatachannel)
     }
 
     int initial_count = atomic_load(&libdatachannel.msg_count);
-    nanortc_datachannel_t nano_ch;
-    nano_ch.rtc = &nano.rtc;
-    nano_ch.id = 0;
-    rc = nanortc_datachannel_send(&nano_ch, payload, sizeof(payload));
+    rc = nanortc_datachannel_send(&nano.rtc, 0, payload, sizeof(payload));
     ASSERT_OK(rc);
 
     /* Wait for libdatachannel to receive */
@@ -389,10 +381,7 @@ TEST(test_interop_dc_single_byte)
     /* nanortc -> libdatachannel: single byte 0xAB */
     uint8_t byte_nano = 0xAB;
     int initial_ldc = atomic_load(&libdatachannel.msg_count);
-    nanortc_datachannel_t nano_ch;
-    nano_ch.rtc = &nano.rtc;
-    nano_ch.id = 0;
-    rc = nanortc_datachannel_send(&nano_ch, &byte_nano, 1);
+    rc = nanortc_datachannel_send(&nano.rtc, 0, &byte_nano, 1);
     ASSERT_OK(rc);
 
     start = interop_get_millis();
@@ -487,10 +476,7 @@ TEST(test_interop_dc_bidirectional)
     const char *from_nano = "from-nano";
     const char *from_ldc = "from-libdc";
 
-    nanortc_datachannel_t nano_ch;
-    nano_ch.rtc = &nano.rtc;
-    nano_ch.id = 0;
-    rc = nanortc_datachannel_send_string(&nano_ch, from_nano);
+    rc = nanortc_datachannel_send_string(&nano.rtc, 0, from_nano);
     ASSERT_OK(rc);
     rc = interop_libdatachannel_send_string(&libdatachannel, from_ldc);
     ASSERT_TRUE(rc >= 0);
@@ -560,10 +546,7 @@ TEST(test_interop_dc_echo_roundtrip)
     /* Step 2: nanortc echoes back a reply */
     const char *reply = "echo-reply";
     int initial_ldc = atomic_load(&libdatachannel.msg_count);
-    nanortc_datachannel_t nano_ch;
-    nano_ch.rtc = &nano.rtc;
-    nano_ch.id = 0;
-    rc = nanortc_datachannel_send_string(&nano_ch, reply);
+    rc = nanortc_datachannel_send_string(&nano.rtc, 0, reply);
     ASSERT_OK(rc);
 
     start = interop_get_millis();

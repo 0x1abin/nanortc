@@ -39,7 +39,7 @@ Track known debt, prioritize by impact, pay down continuously.
 | TD-013 | 2026-03-31 | Added `nano_addr.c/h` module with RFC 4291/5952 IPv6 parsing + formatting. Refactored `nanortc_add_remote_candidate()` to use `addr_parse_auto()` for dual-stack support. SDP `c=`/`o=` lines auto-select IP4/IP6. Guarded by `NANORTC_FEATURE_IPV6` (default ON). 48 address tests + IPv6 e2e + SDP tests. |
 | TD-014 | 2026-03-31 | Refactored `rtc_apply_negotiated_media()`: video uses fmtp-selected PT (H264 with profile-level-id match), audio uses remote_pt. Added profile-level-id=42e01f preference in fmtp parsing. Debug logging at PT selection points. |
 | TD-015 | 2026-03-31 | Changed `NANORTC_MEDIA_BUF_SIZE` from hardcoded 1200 to `(NANORTC_VIDEO_MTU + 80)`, derived from MTU constant. Provides headroom for RTP header (12) + SRTP tag (10) + alignment. |
-| TD-016 | 2026-03-31 | Fixed `browser_interop` and `linux_datachannel` examples to use `nanortc_get_datachannel()` → `nanortc_datachannel_t` handle for send calls, matching the flat send API. |
+| TD-016 | 2026-03-31 | Fixed `browser_interop` and `linux_datachannel` examples to use `nanortc_get_datachannel()` → `nanortc_datachannel_t` handle for send calls, matching the flat send API. Superseded 2026-04-01: removed handle type entirely, DataChannel API simplified to flat `nanortc_datachannel_send(rtc, id, ...)`. |
 
 ## Principles
 

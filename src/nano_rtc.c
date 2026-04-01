@@ -1244,35 +1244,18 @@ int nanortc_create_datachannel(nanortc_t *rtc, const char *label,
     return (int)sid;
 }
 
-int nanortc_get_datachannel(nanortc_t *rtc, uint16_t id, nanortc_datachannel_t *ch)
+int nanortc_datachannel_send(nanortc_t *rtc, uint16_t id, const void *data, size_t len)
 {
-    if (!rtc || !ch) {
+    if (!rtc || !data) {
         return NANORTC_ERR_INVALID_PARAM;
     }
-    /* Validate channel exists and is open */
-    for (uint8_t i = 0; i < rtc->datachannel.channel_count; i++) {
-        if (rtc->datachannel.channels[i].stream_id == id &&
-            rtc->datachannel.channels[i].state != NANORTC_DC_STATE_CLOSED) {
-            ch->rtc = rtc;
-            ch->id = id;
-            return NANORTC_OK;
-        }
-    }
-    return NANORTC_ERR_INVALID_PARAM;
-}
-
-int nanortc_datachannel_send(nanortc_datachannel_t *ch, const void *data, size_t len)
-{
-    if (!ch || !ch->rtc || !data) {
-        return NANORTC_ERR_INVALID_PARAM;
-    }
-    if (ch->rtc->state != NANORTC_STATE_CONNECTED) {
+    if (rtc->state != NANORTC_STATE_CONNECTED) {
         NANORTC_LOGW("DC", "send failed: not connected");
         return NANORTC_ERR_STATE;
     }
 
     uint32_t ppid = (len > 0) ? DCEP_PPID_BINARY : DCEP_PPID_BINARY_EMPTY;
-    int rc = nsctp_send(&ch->rtc->sctp, ch->id, ppid, (const uint8_t *)data, len);
+    int rc = nsctp_send(&rtc->sctp, id, ppid, (const uint8_t *)data, len);
     if (rc == NANORTC_ERR_BUFFER_TOO_SMALL) {
         NANORTC_LOGD("DC", "send would block (SCTP buffer full)");
         return NANORTC_ERR_WOULD_BLOCK;
@@ -1280,36 +1263,36 @@ int nanortc_datachannel_send(nanortc_datachannel_t *ch, const void *data, size_t
     return rc;
 }
 
-int nanortc_datachannel_send_string(nanortc_datachannel_t *ch, const char *str)
+int nanortc_datachannel_send_string(nanortc_t *rtc, uint16_t id, const char *str)
 {
-    if (!ch || !ch->rtc || !str) {
+    if (!rtc || !str) {
         return NANORTC_ERR_INVALID_PARAM;
     }
-    if (ch->rtc->state != NANORTC_STATE_CONNECTED) {
+    if (rtc->state != NANORTC_STATE_CONNECTED) {
         return NANORTC_ERR_STATE;
     }
 
     size_t len = strlen(str); /* NANORTC_SAFE: API boundary */
 
     uint32_t ppid = (len > 0) ? DCEP_PPID_STRING : DCEP_PPID_STRING_EMPTY;
-    int rc = nsctp_send(&ch->rtc->sctp, ch->id, ppid, (const uint8_t *)str, len);
+    int rc = nsctp_send(&rtc->sctp, id, ppid, (const uint8_t *)str, len);
     if (rc == NANORTC_ERR_BUFFER_TOO_SMALL) {
         return NANORTC_ERR_WOULD_BLOCK;
     }
     return rc;
 }
 
-int nanortc_datachannel_close(nanortc_datachannel_t *ch)
+int nanortc_datachannel_close(nanortc_t *rtc, uint16_t id)
 {
-    if (!ch || !ch->rtc) {
+    if (!rtc) {
         return NANORTC_ERR_INVALID_PARAM;
     }
 
     nano_dc_channel_t *dc = NULL;
-    for (uint8_t i = 0; i < ch->rtc->datachannel.channel_count; i++) {
-        if (ch->rtc->datachannel.channels[i].stream_id == ch->id &&
-            ch->rtc->datachannel.channels[i].state != NANORTC_DC_STATE_CLOSED) {
-            dc = &ch->rtc->datachannel.channels[i];
+    for (uint8_t i = 0; i < rtc->datachannel.channel_count; i++) {
+        if (rtc->datachannel.channels[i].stream_id == id &&
+            rtc->datachannel.channels[i].state != NANORTC_DC_STATE_CLOSED) {
+            dc = &rtc->datachannel.channels[i];
             break;
         }
     }
@@ -1321,22 +1304,22 @@ int nanortc_datachannel_close(nanortc_datachannel_t *ch)
     nanortc_event_t cevt;
     memset(&cevt, 0, sizeof(cevt));
     cevt.type = NANORTC_EV_DATACHANNEL_CLOSE;
-    cevt.datachannel_id.id = ch->id;
-    rtc_emit_event_full(ch->rtc, &cevt);
+    cevt.datachannel_id.id = id;
+    rtc_emit_event_full(rtc, &cevt);
 
     NANORTC_LOGI("RTC", "channel closed");
     return NANORTC_OK;
 }
 
-const char *nanortc_datachannel_get_label(nanortc_datachannel_t *ch)
+const char *nanortc_datachannel_get_label(nanortc_t *rtc, uint16_t id)
 {
-    if (!ch || !ch->rtc) {
+    if (!rtc) {
         return NULL;
     }
-    for (uint8_t i = 0; i < ch->rtc->datachannel.channel_count; i++) {
-        if (ch->rtc->datachannel.channels[i].stream_id == ch->id &&
-            ch->rtc->datachannel.channels[i].state != NANORTC_DC_STATE_CLOSED) {
-            return ch->rtc->datachannel.channels[i].label;
+    for (uint8_t i = 0; i < rtc->datachannel.channel_count; i++) {
+        if (rtc->datachannel.channels[i].stream_id == id &&
+            rtc->datachannel.channels[i].state != NANORTC_DC_STATE_CLOSED) {
+            return rtc->datachannel.channels[i].label;
         }
     }
     return NULL;

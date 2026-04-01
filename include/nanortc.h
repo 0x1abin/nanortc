@@ -533,19 +533,6 @@ struct nanortc {
 };
 
 /* ----------------------------------------------------------------
- * Handle types (str0m-inspired Writer / Channel pattern)
- * ---------------------------------------------------------------- */
-
-/* nanortc_writer_t is defined above (before event structs, needed by
- * nanortc_ev_connected_t). */
-
-/** @brief DataChannel handle. Obtain via nanortc_get_datachannel(). */
-typedef struct {
-    nanortc_t *rtc; /**< Parent RTC state (do not modify). */
-    uint16_t id;    /**< SCTP stream ID. */
-} nanortc_datachannel_t;
-
-/* ----------------------------------------------------------------
  * Lifecycle API
  * ---------------------------------------------------------------- */
 
@@ -886,7 +873,7 @@ NANORTC_API int nanortc_send_video(nanortc_t *rtc, uint8_t mid, const void *data
 #endif /* NANORTC_HAVE_MEDIA_TRANSPORT */
 
 /* ----------------------------------------------------------------
- * DataChannel API (str0m Channel handle pattern)
+ * DataChannel API
  * ---------------------------------------------------------------- */
 
 #if NANORTC_FEATURE_DATACHANNEL
@@ -906,50 +893,46 @@ NANORTC_API int nanortc_create_datachannel(nanortc_t *rtc, const char *label,
                                            const nanortc_datachannel_options_t *options);
 
 /**
- * @brief Obtain a channel handle for DataChannel I/O.
- *
- * @param rtc  Initialized RTC state.
- * @param id   SCTP stream ID.
- * @param ch   Receives the channel handle.
- * @return NANORTC_OK on success.
- * @retval NANORTC_ERR_INVALID_PARAM  Unknown or closed channel.
- */
-NANORTC_API int nanortc_get_datachannel(nanortc_t *rtc, uint16_t id, nanortc_datachannel_t *ch);
-
-/**
  * @brief Send binary data on a DataChannel.
  *
- * @param ch    Channel handle from nanortc_get_datachannel().
+ * @param rtc   Initialized RTC state (must be connected).
+ * @param id    SCTP stream ID.
  * @param data  Payload to send.
  * @param len   Payload length in bytes.
  * @return NANORTC_OK on success.
+ * @retval NANORTC_ERR_STATE  Not connected.
+ * @retval NANORTC_ERR_WOULD_BLOCK  SCTP send buffer full.
  */
-NANORTC_API int nanortc_datachannel_send(nanortc_datachannel_t *ch, const void *data, size_t len);
+NANORTC_API int nanortc_datachannel_send(nanortc_t *rtc, uint16_t id, const void *data, size_t len);
 
 /**
  * @brief Send a UTF-8 string on a DataChannel.
  *
- * @param ch   Channel handle from nanortc_get_datachannel().
+ * @param rtc  Initialized RTC state (must be connected).
+ * @param id   SCTP stream ID.
  * @param str  NUL-terminated UTF-8 string.
  * @return NANORTC_OK on success.
  */
-NANORTC_API int nanortc_datachannel_send_string(nanortc_datachannel_t *ch, const char *str);
+NANORTC_API int nanortc_datachannel_send_string(nanortc_t *rtc, uint16_t id, const char *str);
 
 /**
  * @brief Close a DataChannel.
  *
- * @param ch  Channel handle.
+ * @param rtc  Initialized RTC state.
+ * @param id   SCTP stream ID.
  * @return NANORTC_OK on success.
+ * @retval NANORTC_ERR_INVALID_PARAM  Unknown or closed channel.
  */
-NANORTC_API int nanortc_datachannel_close(nanortc_datachannel_t *ch);
+NANORTC_API int nanortc_datachannel_close(nanortc_t *rtc, uint16_t id);
 
 /**
  * @brief Get the label of a DataChannel.
  *
- * @param ch  Channel handle.
+ * @param rtc  Initialized RTC state.
+ * @param id   SCTP stream ID.
  * @return Label string, or NULL if invalid. Valid until nanortc_destroy().
  */
-NANORTC_API const char *nanortc_datachannel_get_label(nanortc_datachannel_t *ch);
+NANORTC_API const char *nanortc_datachannel_get_label(nanortc_t *rtc, uint16_t id);
 
 #endif /* NANORTC_FEATURE_DATACHANNEL */
 
