@@ -780,7 +780,8 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
             if (rtc->dtls.keying_material_ready) {
                 int is_client = !rtc->dtls.is_server;
                 nano_srtp_init(&rtc->srtp, rtc->config.crypto, is_client);
-                nano_srtp_derive_keys(&rtc->srtp, rtc->dtls.keying_material, NANORTC_DTLS_KEYING_SIZE);
+                nano_srtp_derive_keys(&rtc->srtp, rtc->dtls.keying_material,
+                                      NANORTC_DTLS_KEYING_SIZE);
 
                 /* Generate random SSRC + init_seq for each active track,
                  * register in ssrc_map for receive-path demuxing. */
