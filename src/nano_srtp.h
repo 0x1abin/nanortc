@@ -65,9 +65,9 @@ typedef struct nano_srtp {
     int ready;     /* Keys derived and ready for use */
 } nano_srtp_t;
 
-int srtp_init(nano_srtp_t *srtp, const nanortc_crypto_provider_t *crypto, int is_client);
-int srtp_derive_keys(nano_srtp_t *srtp, const uint8_t *keying_material, size_t len);
-int srtp_protect(nano_srtp_t *srtp, uint8_t *packet, size_t len, size_t *out_len);
-int srtp_unprotect(nano_srtp_t *srtp, uint8_t *packet, size_t len, size_t *out_len);
+int nano_srtp_init(nano_srtp_t *srtp, const nanortc_crypto_provider_t *crypto, int is_client);
+int nano_srtp_derive_keys(nano_srtp_t *srtp, const uint8_t *keying_material, size_t len);
+int nano_srtp_protect(nano_srtp_t *srtp, uint8_t *packet, size_t len, size_t *out_len);
+int nano_srtp_unprotect(nano_srtp_t *srtp, uint8_t *packet, size_t len, size_t *out_len);
 
 #endif /* NANORTC_SRTP_H_ */

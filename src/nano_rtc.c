@@ -246,7 +246,7 @@ int nanortc_init(nanortc_t *rtc, const nanortc_config_t *cfg)
     /* Media tracks start empty — user adds them via nanortc_add_track() */
     rtc->media_count = 0;
     memset(rtc->ssrc_map, 0, sizeof(rtc->ssrc_map));
-    srtp_init(&rtc->srtp, cfg->crypto, 0);
+    nano_srtp_init(&rtc->srtp, cfg->crypto, 0);
 #endif
 
 #if NANORTC_FEATURE_VIDEO
@@ -779,8 +779,8 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
             /* Derive SRTP keys from DTLS keying material (RFC 5764 §4.2) */
             if (rtc->dtls.keying_material_ready) {
                 int is_client = !rtc->dtls.is_server;
-                srtp_init(&rtc->srtp, rtc->config.crypto, is_client);
-                srtp_derive_keys(&rtc->srtp, rtc->dtls.keying_material, NANORTC_DTLS_KEYING_SIZE);
+                nano_srtp_init(&rtc->srtp, rtc->config.crypto, is_client);
+                nano_srtp_derive_keys(&rtc->srtp, rtc->dtls.keying_material, NANORTC_DTLS_KEYING_SIZE);
 
                 /* Generate random SSRC + init_seq for each active track,
                  * register in ssrc_map for receive-path demuxing. */
@@ -812,13 +812,21 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
 #endif
 
 #if NANORTC_FEATURE_DATACHANNEL
-            /* Initiate SCTP: DTLS client sends INIT (RFC 8831) */
-            if (!rtc->dtls.is_server) {
-                nsctp_start(&rtc->sctp);
-                rtc->state = NANORTC_STATE_SCTP_CONNECTING;
+            /* Initiate SCTP only if m=application was negotiated */
+            if (rtc->sdp.has_datachannel) {
+                /* DTLS client sends INIT (RFC 8831) */
+                if (!rtc->dtls.is_server) {
+                    nsctp_start(&rtc->sctp);
+                    rtc->state = NANORTC_STATE_SCTP_CONNECTING;
 
-                /* Drain SCTP output (INIT) through DTLS encrypt */
-                rtc_pump_sctp_through_dtls(rtc, src);
+                    /* Drain SCTP output (INIT) through DTLS encrypt */
+                    rtc_pump_sctp_through_dtls(rtc, src);
+                }
+            } else {
+                /* Media-only session — DTLS connected is final state */
+                rtc->state = NANORTC_STATE_CONNECTED;
+                rtc_emit_connected(rtc);
+                NANORTC_LOGI("RTC", "connected (media only, no SCTP)");
             }
 #else
             /* No DataChannel — DTLS connected is final state */
@@ -964,7 +972,7 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
 
         /* SRTP unprotect */
         size_t plain_len = 0;
-        int src_rc = srtp_unprotect(&rtc->srtp, pkt, pkt_len, &plain_len);
+        int src_rc = nano_srtp_unprotect(&rtc->srtp, pkt, pkt_len, &plain_len);
         if (src_rc != NANORTC_OK) {
             return NANORTC_OK; /* Silently discard bad SRTP packets */
         }
@@ -1463,7 +1471,7 @@ static int rtc_send_audio(nanortc_t *rtc, nanortc_track_t *m, uint32_t timestamp
         return rc;
 
     size_t srtp_len = 0;
-    rc = srtp_protect(&rtc->srtp, m->media_buf, rtp_len, &srtp_len);
+    rc = nano_srtp_protect(&rtc->srtp, m->media_buf, rtp_len, &srtp_len);
     if (rc != NANORTC_OK)
         return rc;
 
@@ -1513,7 +1521,7 @@ static int video_send_fragment_cb(const uint8_t *payload, size_t len, int marker
     }
 
     size_t srtp_len = 0;
-    rc = srtp_protect(&rtc->srtp, pkt_buf, rtp_len, &srtp_len);
+    rc = nano_srtp_protect(&rtc->srtp, pkt_buf, rtp_len, &srtp_len);
     if (rc != NANORTC_OK) {
         NANORTC_LOGW("SRTP", "video srtp_protect failed");
         ctx->last_rc = rc;

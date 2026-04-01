@@ -15,11 +15,14 @@ FetchContent_Declare(libdatachannel
     GIT_SHALLOW    TRUE
 )
 
-# Minimal build: data channels only, no websocket/media/examples/tests
+# Build with media support (needed for audio/video track interop tests)
 set(NO_WEBSOCKET ON CACHE BOOL "" FORCE)
-set(NO_MEDIA ON CACHE BOOL "" FORCE)
+set(NO_MEDIA OFF CACHE BOOL "" FORCE)
 set(NO_EXAMPLES ON CACHE BOOL "" FORCE)
 set(NO_TESTS ON CACHE BOOL "" FORCE)
+
+# Disable libsrtp test targets to avoid name collision with nanortc's test_srtp
+set(TEST_APPS OFF CACHE BOOL "" FORCE)
 
 # Save and force BUILD_SHARED_LIBS OFF for libdatachannel deps.
 # libdatachannel's CMake turns this ON, which would pollute the
@@ -32,7 +35,18 @@ FetchContent_MakeAvailable(libdatachannel)
 # Restore
 set(BUILD_SHARED_LIBS "${_save_BSL}")
 
-# --- Interop test executable ---
+# ---- Common include directories for all interop tests ----
+set(INTEROP_INCLUDE_DIRS
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/crypto
+    ${CMAKE_SOURCE_DIR}/examples/common
+    ${CMAKE_SOURCE_DIR}/tests
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${libdatachannel_SOURCE_DIR}/include
+)
+
+# ---- DataChannel interop test ----
 
 add_executable(test_interop_dc
     test_interop_dc.c
@@ -42,14 +56,7 @@ add_executable(test_interop_dc
     ${CMAKE_SOURCE_DIR}/examples/common/run_loop_linux.c
 )
 
-target_include_directories(test_interop_dc PRIVATE
-    ${CMAKE_SOURCE_DIR}/include
-    ${CMAKE_SOURCE_DIR}/src
-    ${CMAKE_SOURCE_DIR}/crypto
-    ${CMAKE_SOURCE_DIR}/examples/common
-    ${CMAKE_SOURCE_DIR}/tests
-    ${libdatachannel_SOURCE_DIR}/include
-)
+target_include_directories(test_interop_dc PRIVATE ${INTEROP_INCLUDE_DIRS})
 
 # Enable C++ linker since libdatachannel is a C++ library
 set_target_properties(test_interop_dc PROPERTIES LINKER_LANGUAGE CXX)
@@ -63,3 +70,51 @@ target_link_libraries(test_interop_dc PRIVATE
 # Register with ctest
 add_test(NAME interop_datachannel COMMAND test_interop_dc)
 set_tests_properties(interop_datachannel PROPERTIES TIMEOUT 120)
+
+# ---- Audio interop test (requires NANORTC_FEATURE_AUDIO) ----
+
+if(NANORTC_FEATURE_AUDIO)
+    add_executable(test_interop_audio
+        test_interop_audio.c
+        interop_common.c
+        interop_nanortc_media_peer.c
+        interop_libdatachannel_media_peer.c
+        ${CMAKE_SOURCE_DIR}/examples/common/run_loop_linux.c
+    )
+
+    target_include_directories(test_interop_audio PRIVATE ${INTEROP_INCLUDE_DIRS})
+    set_target_properties(test_interop_audio PROPERTIES LINKER_LANGUAGE CXX)
+
+    target_link_libraries(test_interop_audio PRIVATE
+        nanortc
+        LibDataChannel::LibDataChannelStatic
+        pthread
+    )
+
+    add_test(NAME interop_audio COMMAND test_interop_audio)
+    set_tests_properties(interop_audio PROPERTIES TIMEOUT 120)
+endif()
+
+# ---- Video interop test (requires NANORTC_FEATURE_VIDEO) ----
+
+if(NANORTC_FEATURE_VIDEO)
+    add_executable(test_interop_video
+        test_interop_video.c
+        interop_common.c
+        interop_nanortc_media_peer.c
+        interop_libdatachannel_media_peer.c
+        ${CMAKE_SOURCE_DIR}/examples/common/run_loop_linux.c
+    )
+
+    target_include_directories(test_interop_video PRIVATE ${INTEROP_INCLUDE_DIRS})
+    set_target_properties(test_interop_video PROPERTIES LINKER_LANGUAGE CXX)
+
+    target_link_libraries(test_interop_video PRIVATE
+        nanortc
+        LibDataChannel::LibDataChannelStatic
+        pthread
+    )
+
+    add_test(NAME interop_video COMMAND test_interop_video)
+    set_tests_properties(interop_video PROPERTIES TIMEOUT 120)
+endif()
