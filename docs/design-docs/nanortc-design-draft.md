@@ -135,17 +135,19 @@ int  nanortc_datachannel_close(nanortc_t *rtc, uint16_t id);
 const char *nanortc_datachannel_get_label(nanortc_t *rtc, uint16_t id);
 #endif
 
-// ---- 媒体 (Writer handle pattern) ----
+// ---- 媒体 ----
 #if NANORTC_HAVE_MEDIA_TRANSPORT
-int  nanortc_add_track(nanortc_t *rtc, nanortc_track_kind_t kind,
-                       nanortc_direction_t dir, nanortc_codec_t codec,
-                       uint32_t sample_rate, uint8_t channels);
+int  nanortc_add_audio_track(nanortc_t *rtc, nanortc_direction_t dir,
+                             nanortc_codec_t codec, uint32_t sample_rate,
+                             uint8_t channels);
+int  nanortc_add_video_track(nanortc_t *rtc, nanortc_direction_t dir,
+                             nanortc_codec_t codec);
 void nanortc_set_direction(nanortc_t *rtc, uint8_t mid, nanortc_direction_t dir);
-const nanortc_track_t *nanortc_get_track(const nanortc_t *rtc, uint8_t mid);
-int  nanortc_get_writer(nanortc_t *rtc, uint8_t mid, nanortc_writer_t *w);
-int  nanortc_writer_write(nanortc_writer_t *w, uint32_t timestamp,
-                          const void *data, size_t len, int flags);
-int  nanortc_writer_request_keyframe(nanortc_writer_t *w);
+int  nanortc_send_audio(nanortc_t *rtc, uint8_t mid, uint32_t pts_ms,
+                        const void *data, size_t len);
+int  nanortc_send_video(nanortc_t *rtc, uint8_t mid, uint32_t pts_ms,
+                        const void *data, size_t len);
+int  nanortc_request_keyframe(nanortc_t *rtc, uint8_t mid);
 #endif
 
 // ---- 连接状态 ----

@@ -267,16 +267,6 @@ typedef enum {
 /* Forward declarations needed by event data structures */
 typedef struct nanortc nanortc_t;
 
-/** @brief Media writer handle. Obtain via nanortc_get_writer() or NANORTC_EV_CONNECTED. */
-typedef struct {
-    nanortc_t *rtc;        /**< Parent RTC state (do not modify). */
-    uint8_t mid;           /**< Track MID. */
-    uint8_t kind;          /**< 0 = audio, 1 = video (matches nanortc_track_kind_t). */
-    uint32_t rtp_ts;       /**< Current RTP timestamp (auto-advanced by send_audio/send_video). */
-    uint32_t clock_rate;   /**< RTP clock: audio=sample_rate, video=90000. */
-    uint32_t frame_dur_ms; /**< Frame interval ms (0 = no auto-advance). */
-} nanortc_writer_t;
-
 /* ----------------------------------------------------------------
  * Per-event data structures (str0m-inspired typed events)
  * ---------------------------------------------------------------- */
@@ -284,8 +274,8 @@ typedef struct {
 /** @brief Data for NANORTC_EV_CONNECTED: connection fully established. */
 typedef struct {
 #if NANORTC_HAVE_MEDIA_TRANSPORT
-    nanortc_writer_t writers[NANORTC_MAX_MEDIA_TRACKS]; /**< Pre-filled writer handles. */
-    uint8_t writer_count;                               /**< Number of valid writers. */
+    uint8_t mids[NANORTC_MAX_MEDIA_TRACKS]; /**< MIDs of sendable media tracks. */
+    uint8_t mid_count;                      /**< Number of valid entries in mids[]. */
 #else
     uint8_t _pad; /**< Placeholder when media transport is disabled. */
 #endif
@@ -678,10 +668,6 @@ typedef struct nanortc_datachannel_options {
 
 #if NANORTC_HAVE_MEDIA_TRANSPORT
 
-/** Flags for nanortc_writer_write() when sending video. */
-#define NANORTC_VIDEO_FLAG_KEYFRAME 0x01 /**< This NAL is part of a keyframe (IDR). */
-#define NANORTC_VIDEO_FLAG_MARKER   0x02 /**< Last NAL in access unit (sets RTP marker bit). */
-
 /**
  * @brief Add an audio track to the SDP session.
  *
@@ -713,11 +699,6 @@ NANORTC_API int nanortc_add_audio_track(nanortc_t *rtc, nanortc_direction_t dire
 NANORTC_API int nanortc_add_video_track(nanortc_t *rtc, nanortc_direction_t direction,
                                         nanortc_codec_t codec);
 
-/** @brief Generic add media track. Prefer nanortc_add_audio_track() / nanortc_add_video_track(). */
-NANORTC_API int nanortc_add_track(nanortc_t *rtc, nanortc_track_kind_t kind,
-                                  nanortc_direction_t direction, nanortc_codec_t codec,
-                                  uint32_t sample_rate, uint8_t channels);
-
 /**
  * @brief Change direction of an existing media track.
  *
@@ -727,148 +708,58 @@ NANORTC_API int nanortc_add_track(nanortc_t *rtc, nanortc_track_kind_t kind,
  */
 NANORTC_API void nanortc_set_direction(nanortc_t *rtc, uint8_t mid, nanortc_direction_t dir);
 
-/**
- * @brief Get read-only access to a media track's state.
- *
- * @param rtc  Initialized RTC state.
- * @param mid  Track MID.
- * @return Pointer to internal media state, or NULL if MID is invalid.
- *         Valid until next SDP negotiation or destroy.
- */
-NANORTC_API const nanortc_track_t *nanortc_get_track(const nanortc_t *rtc, uint8_t mid);
+/* ----------------------------------------------------------------
+ * Media send API
+ * ---------------------------------------------------------------- */
 
 /**
- * @brief Obtain a writer handle for sending media on a track.
+ * @brief Send an encoded audio frame on a track.
  *
- * Validates that the track exists and direction allows sending.
+ * @p pts_ms is a monotonic timestamp in milliseconds (e.g. millis()).
+ * The library converts to RTP clock internally. Both audio and video
+ * should use the same clock source for proper A/V synchronization.
  *
- * @param rtc  Initialized RTC state.
- * @param mid  Track MID.
- * @param w    Receives the writer handle.
+ * @param rtc     Initialized RTC state (must be connected).
+ * @param mid     Audio track MID.
+ * @param pts_ms  Presentation timestamp in milliseconds (monotonic clock).
+ * @param data    Encoded audio payload (e.g. Opus frame).
+ * @param len     Payload length in bytes.
  * @return NANORTC_OK on success.
- * @retval NANORTC_ERR_INVALID_PARAM  Track not found.
- * @retval NANORTC_ERR_STATE          Direction is recvonly/inactive, or not connected.
  */
-NANORTC_API int nanortc_get_writer(nanortc_t *rtc, uint8_t mid, nanortc_writer_t *w);
+NANORTC_API int nanortc_send_audio(nanortc_t *rtc, uint8_t mid, uint32_t pts_ms, const void *data,
+                                   size_t len);
 
+#if NANORTC_FEATURE_VIDEO
 /**
- * @brief Send media data through a writer handle.
+ * @brief Send a video frame on a track.
  *
- * For audio: @p data is an encoded frame, @p flags is 0.
- * For video: @p data is a raw H.264 NAL unit, @p flags is NANORTC_VIDEO_FLAG_*.
+ * For H.264: pass an Annex-B access unit. Internally splits NAL units,
+ * detects IDR keyframes, sets marker bits, and packetizes via FU-A.
  *
- * @param w          Writer handle from nanortc_get_writer().
- * @param timestamp  RTP timestamp.
- * @param data       Encoded payload.
- * @param len        Payload length in bytes.
- * @param flags      Video flags (0 for audio).
+ * @p pts_ms is a monotonic timestamp in milliseconds (e.g. millis()).
+ * The library converts to RTP clock (90 kHz) internally.
+ *
+ * @param rtc     Initialized RTC state (must be connected).
+ * @param mid     Video track MID.
+ * @param pts_ms  Presentation timestamp in milliseconds (monotonic clock).
+ * @param data    Video frame (Annex-B for H.264).
+ * @param len     Frame length in bytes.
  * @return NANORTC_OK on success.
  */
-NANORTC_API int nanortc_writer_write(nanortc_writer_t *w, uint32_t timestamp, const void *data,
-                                     size_t len, int flags);
+NANORTC_API int nanortc_send_video(nanortc_t *rtc, uint8_t mid, uint32_t pts_ms, const void *data,
+                                   size_t len);
+#endif /* NANORTC_FEATURE_VIDEO */
 
 /**
  * @brief Request a keyframe from the remote video sender (RTCP PLI).
  *
- * @param w  Writer handle for a video track.
+ * @param rtc  Initialized RTC state (must be connected).
+ * @param mid  Video track MID.
  * @return NANORTC_OK on success.
+ * @retval NANORTC_ERR_INVALID_PARAM  Not a video track or invalid MID.
+ * @retval NANORTC_ERR_STATE          Not connected.
  */
-NANORTC_API int nanortc_writer_request_keyframe(nanortc_writer_t *w);
-
-/**
- * @brief Set the frame duration for automatic RTP timestamp advance.
- *
- * Call once after obtaining a writer handle. Used by nanortc_writer_send_audio()
- * and nanortc_writer_send_video() to auto-increment @c rtp_ts.
- *
- * @param w         Writer handle.
- * @param frame_ms  Frame interval in milliseconds (e.g. 20 for audio, 33 for 30fps video).
- *                  0 disables auto-advance (caller manages rtp_ts manually).
- */
-static inline void nanortc_writer_set_frame_duration(nanortc_writer_t *w, uint32_t frame_ms)
-{
-    if (w) {
-        w->frame_dur_ms = frame_ms;
-    }
-}
-
-/**
- * @brief Send an encoded audio frame (convenience wrapper).
- *
- * Calls nanortc_writer_write() with flags=0 and auto-advances rtp_ts
- * by clock_rate * frame_dur_ms / 1000 (default: clock_rate / 50 for 20ms).
- *
- * @param w     Writer handle (audio track).
- * @param data  Encoded audio payload (e.g. Opus frame).
- * @param len   Payload length in bytes.
- * @return NANORTC_OK on success.
- */
-NANORTC_API int nanortc_writer_send_audio(nanortc_writer_t *w, const void *data, size_t len);
-
-#if NANORTC_FEATURE_VIDEO
-/**
- * @brief Send a video frame (convenience wrapper).
- *
- * For H.264: pass an Annex-B access unit. Internally splits NAL units,
- * detects IDR keyframes, sets marker bits, and packetizes via FU-A.
- * Auto-advances rtp_ts by clock_rate * frame_dur_ms / 1000.
- *
- * @param w     Writer handle (video track).
- * @param data  Video frame (Annex-B for H.264).
- * @param len   Frame length in bytes.
- * @return NANORTC_OK on success.
- */
-NANORTC_API int nanortc_writer_send_video(nanortc_writer_t *w, const void *data, size_t len);
-#endif /* NANORTC_FEATURE_VIDEO */
-
-/* ----------------------------------------------------------------
- * Flat convenience API (no writer handle needed)
- * ---------------------------------------------------------------- */
-
-/**
- * @brief Set the frame duration for a media track.
- *
- * Controls the automatic RTP timestamp advance used by nanortc_send_audio()
- * and nanortc_send_video(). Call once after nanortc_add_track().
- *
- * @param rtc       Initialized RTC state.
- * @param mid       Track MID.
- * @param frame_ms  Frame interval in ms (e.g. 20 for audio, 33 for 30fps, 40 for 25fps).
- *                  0 = use default (20ms for audio; no auto-advance for video).
- */
-NANORTC_API void nanortc_set_frame_duration(nanortc_t *rtc, uint8_t mid, uint32_t frame_ms);
-
-/**
- * @brief Send an encoded audio frame on a track (no writer handle needed).
- *
- * RTP timestamp is auto-managed internally. Frame duration defaults to 20ms
- * (override with nanortc_set_frame_duration()).
- *
- * @param rtc   Initialized RTC state (must be connected).
- * @param mid   Audio track MID.
- * @param data  Encoded audio payload (e.g. Opus frame).
- * @param len   Payload length in bytes.
- * @return NANORTC_OK on success.
- */
-NANORTC_API int nanortc_send_audio(nanortc_t *rtc, uint8_t mid, const void *data, size_t len);
-
-#if NANORTC_FEATURE_VIDEO
-/**
- * @brief Send a video frame on a track (no writer handle needed).
- *
- * Codec is auto-detected from the track's negotiated codec. For H.264,
- * pass an Annex-B access unit; NAL splitting, IDR detection, and marker
- * bits are handled internally. RTP timestamp is auto-managed.
- * Set frame duration first with nanortc_set_frame_duration() (e.g. 40 for 25fps).
- *
- * @param rtc   Initialized RTC state (must be connected).
- * @param mid   Video track MID.
- * @param data  Video frame (Annex-B for H.264).
- * @param len   Frame length in bytes.
- * @return NANORTC_OK on success.
- */
-NANORTC_API int nanortc_send_video(nanortc_t *rtc, uint8_t mid, const void *data, size_t len);
-#endif /* NANORTC_FEATURE_VIDEO */
+NANORTC_API int nanortc_request_keyframe(nanortc_t *rtc, uint8_t mid);
 
 #endif /* NANORTC_HAVE_MEDIA_TRANSPORT */
 

@@ -95,13 +95,13 @@ int interop_nanortc_media_stop(interop_nanortc_media_peer_t *peer);
  * Thread-safe (nanortc_send_audio is re-entrant for output queuing).
  */
 int interop_nanortc_media_send_audio(interop_nanortc_media_peer_t *peer, uint8_t mid,
-                                     const void *data, size_t len);
+                                     uint32_t pts_ms, const void *data, size_t len);
 
 /*
  * Send video on the given track MID.
  */
 int interop_nanortc_media_send_video(interop_nanortc_media_peer_t *peer, uint8_t mid,
-                                     const void *data, size_t len);
+                                     uint32_t pts_ms, const void *data, size_t len);
 
 /*
  * Get the last received media frame (copies into caller's buffer).

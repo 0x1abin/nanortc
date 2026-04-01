@@ -28,6 +28,9 @@
 #if NANORTC_FEATURE_VIDEO
 #include "nano_h264.h"
 #include "nano_bwe.h"
+/* Internal video flags for RTP packetization */
+#define NANORTC_VIDEO_FLAG_KEYFRAME 0x01 /* NAL is part of a keyframe (IDR) */
+#define NANORTC_VIDEO_FLAG_MARKER   0x02 /* Last NAL in access unit (RTP marker bit) */
 #endif
 
 #include <string.h>
@@ -188,8 +191,8 @@ static int rtc_emit_connected(nanortc_t *rtc)
     event.type = NANORTC_EV_CONNECTED;
 
 #if NANORTC_HAVE_MEDIA_TRANSPORT
-    uint8_t wc = 0;
-    for (uint8_t i = 0; i < rtc->media_count && wc < NANORTC_MAX_MEDIA_TRACKS; i++) {
+    uint8_t mc = 0;
+    for (uint8_t i = 0; i < rtc->media_count && mc < NANORTC_MAX_MEDIA_TRACKS; i++) {
         nanortc_track_t *m = &rtc->media[i];
         if (!m->active) {
             continue;
@@ -197,16 +200,10 @@ static int rtc_emit_connected(nanortc_t *rtc)
         if (m->direction == NANORTC_DIR_RECVONLY || m->direction == NANORTC_DIR_INACTIVE) {
             continue;
         }
-        event.connected.writers[wc].rtc = rtc;
-        event.connected.writers[wc].mid = m->mid;
-        event.connected.writers[wc].kind = (uint8_t)m->kind;
-        event.connected.writers[wc].rtp_ts = 0;
-        event.connected.writers[wc].clock_rate =
-            (m->kind == NANORTC_TRACK_VIDEO) ? 90000 : m->sample_rate;
-        event.connected.writers[wc].frame_dur_ms = 0;
-        wc++;
+        event.connected.mids[mc] = m->mid;
+        mc++;
     }
-    event.connected.writer_count = wc;
+    event.connected.mid_count = mc;
 #endif
 
     return rtc_emit_event_full(rtc, &event);
@@ -1382,8 +1379,9 @@ void nanortc_disconnect(nanortc_t *rtc)
 
 #if NANORTC_HAVE_MEDIA_TRANSPORT
 
-int nanortc_add_track(nanortc_t *rtc, nanortc_track_kind_t kind, nanortc_direction_t direction,
-                      nanortc_codec_t codec, uint32_t sample_rate, uint8_t channels)
+static int nanortc_add_track(nanortc_t *rtc, nanortc_track_kind_t kind,
+                             nanortc_direction_t direction, nanortc_codec_t codec,
+                             uint32_t sample_rate, uint8_t channels)
 {
     if (!rtc) {
         return NANORTC_ERR_INVALID_PARAM;
@@ -1566,140 +1564,17 @@ void nanortc_set_direction(nanortc_t *rtc, uint8_t mid, nanortc_direction_t dir)
     }
 }
 
-const nanortc_track_t *nanortc_get_track(const nanortc_t *rtc, uint8_t mid)
-{
-    if (!rtc) {
-        return NULL;
-    }
-    return track_find_by_mid((nanortc_track_t *)rtc->media, rtc->media_count, mid);
-}
-
-int nanortc_get_writer(nanortc_t *rtc, uint8_t mid, nanortc_writer_t *w)
-{
-    if (!rtc || !w) {
-        return NANORTC_ERR_INVALID_PARAM;
-    }
-    if (rtc->state < NANORTC_STATE_DTLS_CONNECTED || !rtc->srtp.ready) {
-        return NANORTC_ERR_STATE;
-    }
-
-    nanortc_track_t *m = track_find_by_mid(rtc->media, rtc->media_count, mid);
-    if (!m) {
-        return NANORTC_ERR_INVALID_PARAM;
-    }
-    if (m->direction == NANORTC_DIR_RECVONLY || m->direction == NANORTC_DIR_INACTIVE) {
-        return NANORTC_ERR_STATE;
-    }
-
-    w->rtc = rtc;
-    w->mid = mid;
-    w->kind = (uint8_t)m->kind;
-    w->rtp_ts = 0;
-    w->clock_rate = (m->kind == NANORTC_TRACK_VIDEO) ? 90000 : m->sample_rate;
-    w->frame_dur_ms = 0;
-    return NANORTC_OK;
-}
-
-int nanortc_writer_write(nanortc_writer_t *w, uint32_t timestamp, const void *data, size_t len,
-                         int flags)
-{
-    if (!w || !w->rtc || !data || len == 0) {
-        return NANORTC_ERR_INVALID_PARAM;
-    }
-
-    nanortc_t *rtc = w->rtc;
-    if (rtc->state < NANORTC_STATE_DTLS_CONNECTED || !rtc->srtp.ready) {
-        return NANORTC_ERR_STATE;
-    }
-
-    nanortc_track_t *m = track_find_by_mid(rtc->media, rtc->media_count, w->mid);
-    if (!m) {
-        return NANORTC_ERR_INVALID_PARAM;
-    }
-
-    if (m->kind == NANORTC_TRACK_AUDIO) {
-        return rtc_send_audio(rtc, m, timestamp, (const uint8_t *)data, len);
-    }
-#if NANORTC_FEATURE_VIDEO
-    if (m->kind == NANORTC_TRACK_VIDEO) {
-        return rtc_send_video(rtc, m, timestamp, (const uint8_t *)data, len, flags);
-    }
-#endif
-    return NANORTC_ERR_INVALID_PARAM;
-}
-
-int nanortc_writer_request_keyframe(nanortc_writer_t *w)
-{
-    if (!w || !w->rtc) {
-        return NANORTC_ERR_INVALID_PARAM;
-    }
-
-    nanortc_t *rtc = w->rtc;
-    if (rtc->state < NANORTC_STATE_DTLS_CONNECTED || !rtc->srtp.ready) {
-        return NANORTC_ERR_STATE;
-    }
-
-    nanortc_track_t *m = track_find_by_mid(rtc->media, rtc->media_count, w->mid);
-    if (!m || m->kind != NANORTC_TRACK_VIDEO) {
-        return NANORTC_ERR_INVALID_PARAM;
-    }
-
-    /* Generate PLI (RFC 4585 §6.3.1) */
-    uint8_t pli_buf[RTCP_PLI_SIZE + NANORTC_SRTP_AUTH_TAG_SIZE + 4];
-    size_t pli_len = 0;
-    int rc =
-        rtcp_generate_pli(m->rtcp.ssrc, m->rtcp.remote_ssrc, pli_buf, sizeof(pli_buf), &pli_len);
-    if (rc != NANORTC_OK) {
-        return rc;
-    }
-
-    /* TODO: SRTCP protect (deferred to full RTCP integration) */
-
-    nanortc_output_t out;
-    memset(&out, 0, sizeof(out));
-    out.type = NANORTC_OUTPUT_TRANSMIT;
-    out.transmit.data = pli_buf;
-    out.transmit.len = pli_len;
-    out.transmit.dest = rtc->remote_addr;
-    return rtc_enqueue_output(rtc, &out);
-}
-
 /* ----------------------------------------------------------------
- * Flat convenience API (no writer handle)
- *
- * These are the canonical implementations. The writer convenience
- * functions (nanortc_writer_send_audio / nanortc_writer_send_video)
- * delegate here to avoid logic duplication.
+ * Media send API
  * ---------------------------------------------------------------- */
 
-void nanortc_set_frame_duration(nanortc_t *rtc, uint8_t mid, uint32_t frame_ms)
+/** Convert millisecond PTS to RTP clock timestamp. */
+static inline uint32_t pts_ms_to_rtp(uint32_t pts_ms, uint32_t clock_rate)
 {
-    if (!rtc) {
-        return;
-    }
-    nanortc_track_t *m = track_find_by_mid(rtc->media, rtc->media_count, mid);
-    if (m) {
-        m->send_frame_dur_ms = frame_ms;
-    }
+    return (uint32_t)((uint64_t)pts_ms * clock_rate / 1000);
 }
 
-/** Advance the per-track RTP timestamp after sending one frame. */
-static void track_advance_rtp_ts(nanortc_track_t *m)
-{
-    uint32_t clock = (m->kind == NANORTC_TRACK_VIDEO) ? 90000 : m->sample_rate;
-    if (clock == 0) {
-        return;
-    }
-    if (m->send_frame_dur_ms > 0) {
-        m->send_rtp_ts += clock * m->send_frame_dur_ms / 1000;
-    } else if (m->kind == NANORTC_TRACK_AUDIO) {
-        m->send_rtp_ts += clock / 50; /* default 20ms */
-    }
-    /* Video with frame_dur_ms==0: no auto-advance (user must call
-     * nanortc_set_frame_duration first, since fps is unknown). */
-}
-
-int nanortc_send_audio(nanortc_t *rtc, uint8_t mid, const void *data, size_t len)
+int nanortc_send_audio(nanortc_t *rtc, uint8_t mid, uint32_t pts_ms, const void *data, size_t len)
 {
     if (!rtc || !data || len == 0) {
         return NANORTC_ERR_INVALID_PARAM;
@@ -1713,13 +1588,12 @@ int nanortc_send_audio(nanortc_t *rtc, uint8_t mid, const void *data, size_t len
         return NANORTC_ERR_INVALID_PARAM;
     }
 
-    int rc = rtc_send_audio(rtc, m, m->send_rtp_ts, (const uint8_t *)data, len);
-    track_advance_rtp_ts(m);
-    return rc;
+    uint32_t rtp_ts = pts_ms_to_rtp(pts_ms, m->sample_rate);
+    return rtc_send_audio(rtc, m, rtp_ts, (const uint8_t *)data, len);
 }
 
 #if NANORTC_FEATURE_VIDEO
-int nanortc_send_video(nanortc_t *rtc, uint8_t mid, const void *data, size_t len)
+int nanortc_send_video(nanortc_t *rtc, uint8_t mid, uint32_t pts_ms, const void *data, size_t len)
 {
     if (!rtc || !data || len == 0) {
         return NANORTC_ERR_INVALID_PARAM;
@@ -1734,7 +1608,7 @@ int nanortc_send_video(nanortc_t *rtc, uint8_t mid, const void *data, size_t len
         return NANORTC_ERR_INVALID_PARAM;
     }
 
-    uint32_t ts = m->send_rtp_ts;
+    uint32_t ts = pts_ms_to_rtp(pts_ms, 90000);
     const uint8_t *buf = (const uint8_t *)data;
     size_t offset = 0;
     size_t nal_len = 0;
@@ -1763,30 +1637,43 @@ int nanortc_send_video(nanortc_t *rtc, uint8_t mid, const void *data, size_t len
         }
     }
 
-    track_advance_rtp_ts(m);
     return last_rc;
 }
 #endif /* NANORTC_FEATURE_VIDEO */
 
-/* Writer convenience: thin wrappers around flat API */
-
-int nanortc_writer_send_audio(nanortc_writer_t *w, const void *data, size_t len)
+int nanortc_request_keyframe(nanortc_t *rtc, uint8_t mid)
 {
-    if (!w || !w->rtc) {
+    if (!rtc) {
         return NANORTC_ERR_INVALID_PARAM;
     }
-    return nanortc_send_audio(w->rtc, w->mid, data, len);
-}
+    if (rtc->state < NANORTC_STATE_DTLS_CONNECTED || !rtc->srtp.ready) {
+        return NANORTC_ERR_STATE;
+    }
 
-#if NANORTC_FEATURE_VIDEO
-int nanortc_writer_send_video(nanortc_writer_t *w, const void *data, size_t len)
-{
-    if (!w || !w->rtc) {
+    nanortc_track_t *m = track_find_by_mid(rtc->media, rtc->media_count, mid);
+    if (!m || m->kind != NANORTC_TRACK_VIDEO) {
         return NANORTC_ERR_INVALID_PARAM;
     }
-    return nanortc_send_video(w->rtc, w->mid, data, len);
+
+    /* Generate PLI (RFC 4585 §6.3.1) */
+    uint8_t pli_buf[RTCP_PLI_SIZE + NANORTC_SRTP_AUTH_TAG_SIZE + 4];
+    size_t pli_len = 0;
+    int rc =
+        rtcp_generate_pli(m->rtcp.ssrc, m->rtcp.remote_ssrc, pli_buf, sizeof(pli_buf), &pli_len);
+    if (rc != NANORTC_OK) {
+        return rc;
+    }
+
+    /* TODO: SRTCP protect (deferred to full RTCP integration) */
+
+    nanortc_output_t out;
+    memset(&out, 0, sizeof(out));
+    out.type = NANORTC_OUTPUT_TRANSMIT;
+    out.transmit.data = pli_buf;
+    out.transmit.len = pli_len;
+    out.transmit.dest = rtc->remote_addr;
+    return rtc_enqueue_output(rtc, &out);
 }
-#endif /* NANORTC_FEATURE_VIDEO */
 
 #endif /* NANORTC_HAVE_MEDIA_TRANSPORT */
 

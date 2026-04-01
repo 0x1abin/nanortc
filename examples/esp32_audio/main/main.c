@@ -129,7 +129,8 @@ static void audio_send_tick(uint32_t now)
             };
             esp_audio_err_t ret = esp_audio_enc_process(s_encoder, &in_frame, &out_frame);
             if (ret == ESP_AUDIO_ERR_OK && out_frame.encoded_bytes > 0) {
-                nanortc_send_audio(&s_rtc, (uint8_t)s_audio_mid, encoded,
+                nanortc_send_audio(&s_rtc, (uint8_t)s_audio_mid,
+                                   (uint32_t)(esp_timer_get_time() / 1000), encoded,
                                    out_frame.encoded_bytes);
             }
         }

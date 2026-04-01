@@ -220,7 +220,8 @@ static void video_send_tick(uint32_t now)
             frame_buf = sd_buf;
         }
 
-        nanortc_send_video(&s_rtc, (uint8_t)s_video_mid, frame_buf, frame_len);
+        nanortc_send_video(&s_rtc, (uint8_t)s_video_mid, (uint32_t)(esp_timer_get_time() / 1000),
+                           frame_buf, frame_len);
         s_video_frame_count++;
     }
 }
@@ -317,12 +318,12 @@ static esp_err_t http_get_debug(httpd_req_t *req)
 {
     char buf[512];
     int n = snprintf(buf, sizeof(buf),
-        "running=%d fd=%d connected=%d video_ready=%d video_mid=%d\n"
-        "ice.remote_candidates=%d ice.state=%d\n"
-        "state=%d steps=%lu alive=%lu\n",
-        s_loop.running, s_loop.fd, s_connected, s_video_ready, s_video_mid,
-        s_rtc.ice.remote_candidate_count, s_rtc.ice.state,
-        s_rtc.state, (unsigned long)s_step_count, (unsigned long)s_task_alive);
+                     "running=%d fd=%d connected=%d video_ready=%d video_mid=%d\n"
+                     "ice.remote_candidates=%d ice.state=%d\n"
+                     "state=%d steps=%lu alive=%lu\n",
+                     s_loop.running, s_loop.fd, s_connected, s_video_ready, s_video_mid,
+                     s_rtc.ice.remote_candidate_count, s_rtc.ice.state, s_rtc.state,
+                     (unsigned long)s_step_count, (unsigned long)s_task_alive);
     httpd_resp_set_type(req, "text/plain");
     httpd_resp_send(req, buf, n);
     return ESP_OK;
@@ -381,8 +382,6 @@ static esp_err_t http_post_offer(httpd_req_t *req)
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Media fail");
         return ESP_FAIL;
     }
-    nanortc_set_frame_duration(&s_rtc, (uint8_t)s_video_mid, 1000 / VIDEO_FPS);
-
     rc = nano_run_loop_init(&s_loop, &s_rtc, NULL, CONFIG_EXAMPLE_UDP_PORT);
     if (rc < 0) {
         ESP_LOGE(TAG, "Failed to bind UDP port");
@@ -415,8 +414,8 @@ static esp_err_t http_post_offer(httpd_req_t *req)
     /* Safe to start event loop now — nanortc fully initialized */
     s_loop.running = 1;
 
-    ESP_LOGI(TAG, "SDP answer generated (%u bytes), remote_candidates=%d",
-             (unsigned)answer_len, s_rtc.ice.remote_candidate_count);
+    ESP_LOGI(TAG, "SDP answer generated (%u bytes), remote_candidates=%d", (unsigned)answer_len,
+             s_rtc.ice.remote_candidate_count);
     httpd_resp_set_type(req, "text/plain");
     httpd_resp_send(req, answer, (ssize_t)answer_len);
     free(answer);

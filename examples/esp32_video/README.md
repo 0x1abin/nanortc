@@ -62,16 +62,16 @@ Browser                          ESP32
   │  GET /  ──────────────────→    │  Serve index.html
   │  ←──────────────────────────   │
   │                                │
-  │  POST /offer (SDP) ──────→    │  nanortc_accept_offer()
-  │  ←──── SDP answer ─────────   │
+  │  POST /offer (SDP) ──────→     │  nanortc_accept_offer()
+  │  ←──── SDP answer ─────────    │
   │                                │
-  │  ═══ WebRTC (STUN/DTLS/RTP) ══│  Direct UDP on LAN
+  │  ═══ WebRTC (STUN/DTLS/RTP) ══ │  Direct UDP on LAN
   │                                │
-  │  ←──── Video (H.264) ───────  │  25fps, sendonly
+  │  ←──── Video (H.264) ───────   │  25fps, sendonly
   │                                │
   │         SD Card ──→ read frame │  frame-NNNN.h264
   │                    NAL split   │  annex_b_find_nal()
-  │                    RTP pack    │  nanortc_writer_write()
+  │                    RTP pack    │  nanortc_send_video()
 ```
 
 ## Configuration

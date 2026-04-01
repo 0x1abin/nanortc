@@ -261,22 +261,22 @@ int interop_nanortc_media_stop(interop_nanortc_media_peer_t *peer)
 }
 
 int interop_nanortc_media_send_audio(interop_nanortc_media_peer_t *peer, uint8_t mid,
-                                     const void *data, size_t len)
+                                     uint32_t pts_ms, const void *data, size_t len)
 {
     if (!peer || !data) {
         return -1;
     }
-    return nanortc_send_audio(&peer->rtc, mid, data, len);
+    return nanortc_send_audio(&peer->rtc, mid, pts_ms, data, len);
 }
 
 int interop_nanortc_media_send_video(interop_nanortc_media_peer_t *peer, uint8_t mid,
-                                     const void *data, size_t len)
+                                     uint32_t pts_ms, const void *data, size_t len)
 {
     if (!peer || !data) {
         return -1;
     }
 #if NANORTC_FEATURE_VIDEO
-    return nanortc_send_video(&peer->rtc, mid, data, len);
+    return nanortc_send_video(&peer->rtc, mid, pts_ms, data, len);
 #else
     (void)mid;
     (void)len;

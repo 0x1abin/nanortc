@@ -213,8 +213,8 @@ TEST(test_interop_audio_opus_nano_to_ldc)
 
     int initial_count = atomic_load(&ldc.frame_count);
     ASSERT_TRUE(nano.track_mids[0] >= 0);
-    rc = interop_nanortc_media_send_audio(&nano, (uint8_t)nano.track_mids[0], audio_frame,
-                                          sizeof(audio_frame));
+    rc = interop_nanortc_media_send_audio(&nano, (uint8_t)nano.track_mids[0], nano_get_millis(),
+                                          audio_frame, sizeof(audio_frame));
     ASSERT_OK(rc);
 
     /* Wait for libdatachannel to receive it */
@@ -278,8 +278,8 @@ TEST(test_interop_audio_bidirectional)
 
     int initial_ldc = atomic_load(&ldc.frame_count);
     ASSERT_TRUE(nano.track_mids[0] >= 0);
-    rc = interop_nanortc_media_send_audio(&nano, (uint8_t)nano.track_mids[0], frame_nano,
-                                          sizeof(frame_nano));
+    rc = interop_nanortc_media_send_audio(&nano, (uint8_t)nano.track_mids[0], nano_get_millis(),
+                                          frame_nano, sizeof(frame_nano));
     ASSERT_OK(rc);
 
     rc = wait_frame_count(&ldc.frame_count, initial_ldc + 1, INTEROP_TIMEOUT_MS);

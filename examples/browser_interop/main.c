@@ -77,9 +77,10 @@ static void on_event(nanortc_t *rtc, const nanortc_event_t *evt, void *userdata)
 
     case NANORTC_EV_DATACHANNEL_DATA:
         if (evt->datachannel_data.binary) {
-            fprintf(stderr, "[event] DC data (%zu bytes), echoing back\n", evt->datachannel_data.len);
-            nanortc_datachannel_send(rtc, evt->datachannel_data.id,
-                                     evt->datachannel_data.data, evt->datachannel_data.len);
+            fprintf(stderr, "[event] DC data (%zu bytes), echoing back\n",
+                    evt->datachannel_data.len);
+            nanortc_datachannel_send(rtc, evt->datachannel_data.id, evt->datachannel_data.data,
+                                     evt->datachannel_data.len);
         } else {
             fprintf(stderr, "[event] DC string: %.*s\n", (int)evt->datachannel_data.len,
                     (char *)evt->datachannel_data.data);
@@ -318,8 +319,8 @@ int main(int argc, char *argv[])
 
 #if NANORTC_FEATURE_AUDIO
     if (audio_dir) {
-        app_ctx.audio_mid = nanortc_add_audio_track(&rtc, NANORTC_DIR_SENDONLY,
-                                                    NANORTC_CODEC_OPUS, 48000, 2);
+        app_ctx.audio_mid =
+            nanortc_add_audio_track(&rtc, NANORTC_DIR_SENDONLY, NANORTC_CODEC_OPUS, 48000, 2);
         if (app_ctx.audio_mid < 0)
             fprintf(stderr, "nanortc_add_audio_track failed: %d\n", app_ctx.audio_mid);
     }
@@ -327,12 +328,9 @@ int main(int argc, char *argv[])
 
 #if NANORTC_FEATURE_VIDEO
     if (video_dir) {
-        app_ctx.video_mid = nanortc_add_video_track(&rtc, NANORTC_DIR_SENDONLY,
-                                                    NANORTC_CODEC_H264);
+        app_ctx.video_mid = nanortc_add_video_track(&rtc, NANORTC_DIR_SENDONLY, NANORTC_CODEC_H264);
         if (app_ctx.video_mid < 0)
             fprintf(stderr, "nanortc_add_video_track failed: %d\n", app_ctx.video_mid);
-        else
-            nanortc_set_frame_duration(&rtc, (uint8_t)app_ctx.video_mid, 40); /* 25fps */
     }
 #endif
 
@@ -440,7 +438,8 @@ int main(int argc, char *argv[])
                 uint32_t ts_ms = 0;
                 if (nano_media_source_next_frame(&audio_src, frame_buf, sizeof(frame_buf),
                                                  &frame_len, &ts_ms) == 0) {
-                    nanortc_send_audio(&rtc, (uint8_t)app_ctx.audio_mid, frame_buf, frame_len);
+                    nanortc_send_audio(&rtc, (uint8_t)app_ctx.audio_mid, ts_ms, frame_buf,
+                                       frame_len);
                     audio_frame_count++;
                 }
             }
@@ -463,7 +462,8 @@ int main(int argc, char *argv[])
                 uint32_t ts_ms = 0;
                 if (nano_media_source_next_frame(&video_src, frame_buf, sizeof(frame_buf),
                                                  &frame_len, &ts_ms) == 0) {
-                    nanortc_send_video(&rtc, (uint8_t)app_ctx.video_mid, frame_buf, frame_len);
+                    nanortc_send_video(&rtc, (uint8_t)app_ctx.video_mid, nano_get_millis(),
+                                       frame_buf, frame_len);
                     video_frame_count++;
                 }
             }

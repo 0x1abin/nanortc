@@ -222,8 +222,8 @@ TEST(test_interop_video_h264_nano_to_ldc)
 
     int initial_count = atomic_load(&ldc.frame_count);
     ASSERT_TRUE(nano.track_mids[0] >= 0);
-    rc = interop_nanortc_media_send_video(&nano, (uint8_t)nano.track_mids[0], h264_frame,
-                                          sizeof(h264_frame));
+    rc = interop_nanortc_media_send_video(&nano, (uint8_t)nano.track_mids[0], nano_get_millis(),
+                                          h264_frame, sizeof(h264_frame));
     ASSERT_OK(rc);
 
     /* Wait for libdatachannel to receive */

@@ -139,29 +139,28 @@ TEST(test_e2e_stubs_not_implemented)
         ASSERT(sid >= 0);
         ASSERT_EQ(nanortc_datachannel_send(&rtc, (uint16_t)sid, data, sizeof(data)),
                   NANORTC_ERR_STATE);
-        ASSERT_EQ(nanortc_datachannel_send_string(&rtc, (uint16_t)sid, "hello"),
-                  NANORTC_ERR_STATE);
+        ASSERT_EQ(nanortc_datachannel_send_string(&rtc, (uint16_t)sid, "hello"), NANORTC_ERR_STATE);
     }
 #endif
 
 #if NANORTC_HAVE_MEDIA_TRANSPORT
-    /* nanortc_get_writer returns ERR_STATE when not connected */
+    /* nanortc_send_audio returns ERR_STATE when not connected */
     {
-        int mid = nanortc_add_track(&rtc, NANORTC_TRACK_AUDIO, NANORTC_DIR_SENDRECV,
-                                    NANORTC_CODEC_OPUS, 48000, 2);
+        int mid = nanortc_add_audio_track(&rtc, NANORTC_DIR_SENDRECV, NANORTC_CODEC_OPUS, 48000, 2);
         ASSERT(mid >= 0);
-        nanortc_writer_t w;
-        ASSERT_EQ(nanortc_get_writer(&rtc, (uint8_t)mid, &w), NANORTC_ERR_STATE);
+        uint8_t dummy[4] = {0};
+        ASSERT_EQ(nanortc_send_audio(&rtc, (uint8_t)mid, 0, dummy, sizeof(dummy)),
+                  NANORTC_ERR_STATE);
     }
 #endif
 
 #if NANORTC_FEATURE_VIDEO
     {
-        int vmid = nanortc_add_track(&rtc, NANORTC_TRACK_VIDEO, NANORTC_DIR_SENDRECV,
-                                     NANORTC_CODEC_H264, 0, 0);
+        int vmid = nanortc_add_video_track(&rtc, NANORTC_DIR_SENDRECV, NANORTC_CODEC_H264);
         ASSERT(vmid >= 0);
-        nanortc_writer_t vw;
-        ASSERT_EQ(nanortc_get_writer(&rtc, (uint8_t)vmid, &vw), NANORTC_ERR_STATE);
+        uint8_t dummy[4] = {0};
+        ASSERT_EQ(nanortc_send_video(&rtc, (uint8_t)vmid, 0, dummy, sizeof(dummy)),
+                  NANORTC_ERR_STATE);
     }
 #endif
 
@@ -254,8 +253,7 @@ TEST(test_e2e_demux_byte_ranges)
 
     /* DTLS range: 0x14-0x40 — rejected before ICE connects */
     uint8_t dtls_pkt[20] = {0x14, 0xFE, 0xFD};
-    ASSERT_EQ(nanortc_handle_input(&rtc, 0, dtls_pkt, sizeof(dtls_pkt), &addr),
-              NANORTC_ERR_STATE);
+    ASSERT_EQ(nanortc_handle_input(&rtc, 0, dtls_pkt, sizeof(dtls_pkt), &addr), NANORTC_ERR_STATE);
 
     /* SRTP range: 0x80-0xBF — silently consumed (no decode path yet) */
     uint8_t srtp_pkt[20] = {0x80, 0x60};
@@ -545,8 +543,7 @@ TEST(test_e2e_create_offer_content)
     ASSERT(nanortc_create_datachannel(&rtc, "test", NULL) >= 0);
 #elif NANORTC_HAVE_MEDIA_TRANSPORT
     /* Without DC, add a media track so the offer has at least one m-line */
-    ASSERT(nanortc_add_track(&rtc, NANORTC_TRACK_AUDIO, NANORTC_DIR_SENDRECV, NANORTC_CODEC_OPUS,
-                             48000, 2) >= 0);
+    ASSERT(nanortc_add_audio_track(&rtc, NANORTC_DIR_SENDRECV, NANORTC_CODEC_OPUS, 48000, 2) >= 0);
 #endif
 
     char offer[4096];
@@ -590,8 +587,8 @@ TEST(test_e2e_offer_answer_roundtrip)
     ASSERT(nanortc_create_datachannel(&offerer, "test", NULL) >= 0);
 #elif NANORTC_HAVE_MEDIA_TRANSPORT
     /* Without DC, add a media track so the offer has at least one m-line */
-    ASSERT(nanortc_add_track(&offerer, NANORTC_TRACK_AUDIO, NANORTC_DIR_SENDRECV, NANORTC_CODEC_OPUS,
-                             48000, 2) >= 0);
+    ASSERT(nanortc_add_audio_track(&offerer, NANORTC_DIR_SENDRECV, NANORTC_CODEC_OPUS, 48000, 2) >=
+           0);
 #endif
 
     /* Offerer creates offer */
@@ -647,8 +644,8 @@ TEST(test_e2e_full_sdp_to_dtls)
     ASSERT(nanortc_create_datachannel(&offerer, "test", NULL) >= 0);
 #elif NANORTC_HAVE_MEDIA_TRANSPORT
     /* Without DC, add a media track so the offer has at least one m-line */
-    ASSERT(nanortc_add_track(&offerer, NANORTC_TRACK_AUDIO, NANORTC_DIR_SENDRECV, NANORTC_CODEC_OPUS,
-                             48000, 2) >= 0);
+    ASSERT(nanortc_add_audio_track(&offerer, NANORTC_DIR_SENDRECV, NANORTC_CODEC_OPUS, 48000, 2) >=
+           0);
 #endif
 
     /* --- SDP negotiation --- */
@@ -1195,11 +1192,7 @@ TEST(test_e2e_send_audio_before_connected)
 
     /* Must fail: not connected */
     uint8_t dummy[10] = {0};
-    ASSERT_EQ(nanortc_send_audio(&rtc, (uint8_t)mid, dummy, sizeof(dummy)), NANORTC_ERR_STATE);
-
-    /* Writer handle also fails before connection */
-    nanortc_writer_t w;
-    ASSERT_FAIL(nanortc_get_writer(&rtc, (uint8_t)mid, &w));
+    ASSERT_EQ(nanortc_send_audio(&rtc, (uint8_t)mid, 0, dummy, sizeof(dummy)), NANORTC_ERR_STATE);
 
     nanortc_destroy(&rtc);
 }
@@ -1212,11 +1205,11 @@ TEST(test_e2e_send_audio_bad_params)
 
     uint8_t dummy[10] = {0};
     /* NULL rtc */
-    ASSERT_FAIL(nanortc_send_audio(NULL, 0, dummy, sizeof(dummy)));
+    ASSERT_FAIL(nanortc_send_audio(NULL, 0, 0, dummy, sizeof(dummy)));
     /* NULL data */
-    ASSERT_FAIL(nanortc_send_audio(&rtc, 0, NULL, 10));
+    ASSERT_FAIL(nanortc_send_audio(&rtc, 0, 0, NULL, 10));
     /* Zero len */
-    ASSERT_FAIL(nanortc_send_audio(&rtc, 0, dummy, 0));
+    ASSERT_FAIL(nanortc_send_audio(&rtc, 0, 0, dummy, 0));
 
     nanortc_destroy(&rtc);
 }
@@ -1229,9 +1222,9 @@ TEST(test_e2e_send_video_bad_params)
     ASSERT_OK(nanortc_init(&rtc, &cfg));
 
     uint8_t dummy[10] = {0};
-    ASSERT_FAIL(nanortc_send_video(NULL, 0, dummy, sizeof(dummy)));
-    ASSERT_FAIL(nanortc_send_video(&rtc, 0, NULL, 10));
-    ASSERT_FAIL(nanortc_send_video(&rtc, 0, dummy, 0));
+    ASSERT_FAIL(nanortc_send_video(NULL, 0, 0, dummy, sizeof(dummy)));
+    ASSERT_FAIL(nanortc_send_video(&rtc, 0, 0, NULL, 10));
+    ASSERT_FAIL(nanortc_send_video(&rtc, 0, 0, dummy, 0));
 
     nanortc_destroy(&rtc);
 }
@@ -1244,87 +1237,50 @@ TEST(test_e2e_send_video_before_connected)
 
     int mid = nanortc_add_video_track(&rtc, NANORTC_DIR_SENDONLY, NANORTC_CODEC_H264);
     ASSERT_TRUE(mid >= 0);
-    nanortc_set_frame_duration(&rtc, (uint8_t)mid, 40);
 
     /* Annex-B frame: single IDR NAL */
     uint8_t annexb[] = {0x00, 0x00, 0x00, 0x01, 0x65, 0xAA, 0xBB};
-    ASSERT_EQ(nanortc_send_video(&rtc, (uint8_t)mid, annexb, sizeof(annexb)), NANORTC_ERR_STATE);
+    ASSERT_EQ(nanortc_send_video(&rtc, (uint8_t)mid, 0, annexb, sizeof(annexb)), NANORTC_ERR_STATE);
 
     nanortc_destroy(&rtc);
 }
 #endif /* NANORTC_FEATURE_VIDEO */
 
-TEST(test_e2e_set_frame_duration)
-{
-    nanortc_t rtc;
-    nanortc_config_t cfg = e2e_default_config();
-    ASSERT_OK(nanortc_init(&rtc, &cfg));
-
-    int mid = nanortc_add_audio_track(&rtc, NANORTC_DIR_SENDONLY, NANORTC_CODEC_OPUS, 48000, 2);
-    ASSERT_TRUE(mid >= 0);
-
-    /* Default is 0 (20ms auto for audio) */
-    const nanortc_track_t *m = nanortc_get_track(&rtc, (uint8_t)mid);
-    ASSERT_TRUE(m != NULL);
-    ASSERT_EQ(m->send_frame_dur_ms, 0u);
-
-    /* Set 10ms */
-    nanortc_set_frame_duration(&rtc, (uint8_t)mid, 10);
-    m = nanortc_get_track(&rtc, (uint8_t)mid);
-    ASSERT_EQ(m->send_frame_dur_ms, 10u);
-
-    /* Reset to default */
-    nanortc_set_frame_duration(&rtc, (uint8_t)mid, 0);
-    m = nanortc_get_track(&rtc, (uint8_t)mid);
-    ASSERT_EQ(m->send_frame_dur_ms, 0u);
-
-    nanortc_destroy(&rtc);
-}
-
-TEST(test_e2e_connected_event_has_writers)
+TEST(test_e2e_connected_event_has_mids)
 {
     /* Verify the nanortc_ev_connected_t struct layout is usable */
     nanortc_event_t event;
     memset(&event, 0, sizeof(event));
     event.type = NANORTC_EV_CONNECTED;
 
-    /* Simulate: one audio writer */
-    event.connected.writers[0].mid = 0;
-    event.connected.writers[0].kind = 0; /* AUDIO */
-    event.connected.writers[0].clock_rate = 48000;
-    event.connected.writer_count = 1;
+    /* Simulate: one audio track */
+    event.connected.mids[0] = 0;
+    event.connected.mid_count = 1;
 
-    ASSERT_EQ(event.connected.writer_count, 1);
-    ASSERT_EQ(event.connected.writers[0].kind, 0); /* AUDIO */
-    ASSERT_EQ(event.connected.writers[0].clock_rate, 48000u);
+    ASSERT_EQ(event.connected.mid_count, 1);
+    ASSERT_EQ(event.connected.mids[0], 0);
 
 #if NANORTC_FEATURE_VIDEO
-    /* Add a video writer */
-    event.connected.writers[1].mid = 1;
-    event.connected.writers[1].kind = 1; /* VIDEO */
-    event.connected.writers[1].clock_rate = 90000;
-    event.connected.writer_count = 2;
+    /* Add a video track */
+    event.connected.mids[1] = 1;
+    event.connected.mid_count = 2;
 
-    ASSERT_EQ(event.connected.writer_count, 2);
-    ASSERT_EQ(event.connected.writers[1].kind, 1); /* VIDEO */
-    ASSERT_EQ(event.connected.writers[1].clock_rate, 90000u);
+    ASSERT_EQ(event.connected.mid_count, 2);
+    ASSERT_EQ(event.connected.mids[1], 1);
 #endif
 }
 
-TEST(test_e2e_writer_send_delegates_to_flat)
+TEST(test_e2e_request_keyframe_bad_params)
 {
-    /* writer_send_audio/video should fail the same way as the flat API */
-    nanortc_writer_t w;
-    memset(&w, 0, sizeof(w));
+    nanortc_t rtc;
+    nanortc_config_t cfg = e2e_default_config();
+    ASSERT_OK(nanortc_init(&rtc, &cfg));
 
-    /* NULL rtc in writer → ERR_INVALID_PARAM */
-    uint8_t dummy[4] = {0};
-    ASSERT_FAIL(nanortc_writer_send_audio(&w, dummy, sizeof(dummy)));
-    ASSERT_FAIL(nanortc_writer_send_audio(NULL, dummy, sizeof(dummy)));
-#if NANORTC_FEATURE_VIDEO
-    ASSERT_FAIL(nanortc_writer_send_video(&w, dummy, sizeof(dummy)));
-    ASSERT_FAIL(nanortc_writer_send_video(NULL, dummy, sizeof(dummy)));
-#endif
+    ASSERT_FAIL(nanortc_request_keyframe(NULL, 0));
+    /* Not connected → ERR_STATE */
+    ASSERT_EQ(nanortc_request_keyframe(&rtc, 0), NANORTC_ERR_STATE);
+
+    nanortc_destroy(&rtc);
 }
 
 #endif /* NANORTC_HAVE_MEDIA_TRANSPORT */
@@ -1374,8 +1330,7 @@ RUN(test_e2e_send_audio_bad_params);
 RUN(test_e2e_send_video_bad_params);
 RUN(test_e2e_send_video_before_connected);
 #endif
-RUN(test_e2e_set_frame_duration);
-RUN(test_e2e_connected_event_has_writers);
-RUN(test_e2e_writer_send_delegates_to_flat);
+RUN(test_e2e_connected_event_has_mids);
+RUN(test_e2e_request_keyframe_bad_params);
 #endif
 TEST_MAIN_END
