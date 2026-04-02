@@ -70,4 +70,11 @@ int nano_srtp_derive_keys(nano_srtp_t *srtp, const uint8_t *keying_material, siz
 int nano_srtp_protect(nano_srtp_t *srtp, uint8_t *packet, size_t len, size_t *out_len);
 int nano_srtp_unprotect(nano_srtp_t *srtp, uint8_t *packet, size_t len, size_t *out_len);
 
+/* SRTCP protect/unprotect (RFC 3711 §3.4) */
+int nano_srtp_protect_rtcp(nano_srtp_t *srtp, uint8_t *packet, size_t len, size_t *out_len);
+int nano_srtp_unprotect_rtcp(nano_srtp_t *srtp, uint8_t *packet, size_t len, size_t *out_len);
+
+/* SRTCP overhead: 4 bytes (E-flag + index) + 10 bytes (auth tag) */
+#define NANORTC_SRTCP_OVERHEAD (4 + NANORTC_SRTP_AUTH_TAG_SIZE)
+
 #endif /* NANORTC_SRTP_H_ */

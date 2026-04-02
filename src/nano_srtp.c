@@ -331,6 +331,120 @@ int nano_srtp_protect(nano_srtp_t *srtp, uint8_t *packet, size_t len, size_t *ou
     return NANORTC_OK;
 }
 
+/*
+ * SRTCP protect (RFC 3711 §3.4).
+ *
+ * Input:  plain RTCP compound packet (len bytes)
+ * Output: [RTCP header(8) + encrypted payload] [E+index(4)] [auth tag(10)]
+ *
+ * Caller must ensure buffer has room for len + NANORTC_SRTCP_OVERHEAD bytes.
+ * The first 8 bytes of the RTCP header remain in cleartext per RFC 3711 §3.4.
+ */
+int nano_srtp_protect_rtcp(nano_srtp_t *srtp, uint8_t *packet, size_t len, size_t *out_len)
+{
+    if (!srtp || !packet || !out_len || !srtp->ready) {
+        return NANORTC_ERR_INVALID_PARAM;
+    }
+    /* Minimum RTCP: V(1) + PT(1) + length(2) + SSRC(4) = 8 bytes */
+    if (len < 8) {
+        return NANORTC_ERR_INVALID_PARAM;
+    }
+
+    /* SSRC of sender from first RTCP header (bytes 4-7) */
+    uint32_t ssrc = nanortc_read_u32be(packet + 4);
+    uint32_t index = srtp->srtcp_send_index;
+
+    /* Encrypt payload after first 8 bytes (RFC 3711 §3.4) */
+    size_t payload_len = len - 8;
+    if (payload_len > 0) {
+        uint8_t iv[16];
+        srtp_compute_iv(iv, srtp->send_rtcp_salt, ssrc, (uint64_t)index);
+
+        int rc =
+            srtp->crypto->aes_128_cm(srtp->send_rtcp_key, iv, packet + 8, payload_len, packet + 8);
+        if (rc != 0) {
+            return NANORTC_ERR_CRYPTO;
+        }
+    }
+
+    /* Append E-flag(1) + SRTCP index(31) as 4-byte trailer */
+    uint32_t e_and_index = (1u << 31) | (index & 0x7FFFFFFFu);
+    packet[len] = (uint8_t)(e_and_index >> 24);
+    packet[len + 1] = (uint8_t)(e_and_index >> 16);
+    packet[len + 2] = (uint8_t)(e_and_index >> 8);
+    packet[len + 3] = (uint8_t)(e_and_index);
+
+    /* Auth tag covers: RTCP + encrypted payload + E+index (RFC 3711 §4.2) */
+    srtp->crypto->hmac_sha1_80(srtp->send_rtcp_auth_key, NANORTC_SRTP_AUTH_KEY_SIZE, packet,
+                               len + 4, packet + len + 4);
+
+    srtp->srtcp_send_index++;
+
+    *out_len = len + NANORTC_SRTCP_OVERHEAD;
+    return NANORTC_OK;
+}
+
+/*
+ * SRTCP unprotect (RFC 3711 §3.4).
+ *
+ * Input:  SRTCP packet (len bytes) = [RTCP + E+index(4) + auth_tag(10)]
+ * Output: plain RTCP compound packet (*out_len bytes, in-place)
+ */
+int nano_srtp_unprotect_rtcp(nano_srtp_t *srtp, uint8_t *packet, size_t len, size_t *out_len)
+{
+    if (!srtp || !packet || !out_len || !srtp->ready) {
+        return NANORTC_ERR_INVALID_PARAM;
+    }
+    /* Minimum: 8 (RTCP header) + 4 (E+index) + 10 (auth tag) = 22 */
+    if (len < 8 + NANORTC_SRTCP_OVERHEAD) {
+        return NANORTC_ERR_INVALID_PARAM;
+    }
+
+    /* Layout: [RTCP data | E+index(4) | auth_tag(10)] */
+    size_t auth_start = len - NANORTC_SRTP_AUTH_TAG_SIZE;
+    size_t rtcp_len = auth_start - 4;
+
+    /* Verify auth tag first (covers RTCP data + E+index) */
+    {
+        uint8_t recv_tag[NANORTC_SRTP_AUTH_TAG_SIZE];
+        memcpy(recv_tag, packet + auth_start, NANORTC_SRTP_AUTH_TAG_SIZE);
+
+        uint8_t computed_tag[NANORTC_SRTP_AUTH_TAG_SIZE];
+        srtp->crypto->hmac_sha1_80(srtp->recv_rtcp_auth_key, NANORTC_SRTP_AUTH_KEY_SIZE, packet,
+                                   auth_start, computed_tag);
+
+        /* Constant-time comparison */
+        uint8_t diff = 0;
+        for (int i = 0; i < NANORTC_SRTP_AUTH_TAG_SIZE; i++) {
+            diff |= recv_tag[i] ^ computed_tag[i];
+        }
+        if (diff != 0) {
+            return NANORTC_ERR_CRYPTO;
+        }
+    }
+
+    /* Parse E-flag and SRTCP index */
+    uint32_t e_and_index = nanortc_read_u32be(packet + rtcp_len);
+    int encrypted = (int)((e_and_index >> 31) & 1u);
+    uint32_t index = e_and_index & 0x7FFFFFFFu;
+
+    /* Decrypt if E=1 and there is payload beyond the 8-byte header */
+    if (encrypted && rtcp_len > 8) {
+        uint32_t ssrc = nanortc_read_u32be(packet + 4);
+        uint8_t iv[16];
+        srtp_compute_iv(iv, srtp->recv_rtcp_salt, ssrc, (uint64_t)index);
+
+        int rc =
+            srtp->crypto->aes_128_cm(srtp->recv_rtcp_key, iv, packet + 8, rtcp_len - 8, packet + 8);
+        if (rc != 0) {
+            return NANORTC_ERR_CRYPTO;
+        }
+    }
+
+    *out_len = rtcp_len;
+    return NANORTC_OK;
+}
+
 int nano_srtp_unprotect(nano_srtp_t *srtp, uint8_t *packet, size_t len, size_t *out_len)
 {
     if (!srtp || !packet || !out_len || !srtp->ready) {

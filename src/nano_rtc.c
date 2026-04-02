@@ -931,24 +931,44 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
         uint8_t second = data[1];
 
         if (second >= 200 && second <= 211) {
-            /* RTCP packet — parse and handle PLI/NACK/SR */
-            /* Copy to scratch for unprotect (in-place) */
+            /* RTCP packet — SRTCP unprotect then parse */
             if (len > sizeof(rtc->stun_buf)) {
                 return NANORTC_ERR_BUFFER_TOO_SMALL;
             }
-            /* TODO: SRTCP unprotect when full SRTCP support is added */
+            /* Copy to scratch for in-place SRTCP unprotect */
+            memcpy(rtc->stun_buf, data, len);
+            size_t rtcp_len = 0;
+            int urc = nano_srtp_unprotect_rtcp(&rtc->srtp, rtc->stun_buf, len, &rtcp_len);
+            if (urc != NANORTC_OK) {
+                return NANORTC_OK; /* Silently discard bad SRTCP packets */
+            }
             nano_rtcp_info_t info;
             memset(&info, 0, sizeof(info));
-            int rrc = rtcp_parse(data, len, &info);
-            if (rrc == NANORTC_OK && info.type == RTCP_PSFB) {
-                /* PLI — find video track by SSRC and emit keyframe request event */
-                int mid = ssrc_map_lookup(rtc->ssrc_map, NANORTC_MAX_SSRC_MAP, info.ssrc);
-                if (mid >= 0) {
-                    nanortc_event_t kfevt;
-                    memset(&kfevt, 0, sizeof(kfevt));
-                    kfevt.type = NANORTC_EV_KEYFRAME_REQUEST;
-                    kfevt.keyframe_request.mid = (uint8_t)mid;
-                    rtc_emit_event_full(rtc, &kfevt);
+            int rrc = rtcp_parse(rtc->stun_buf, rtcp_len, &info);
+            if (rrc == NANORTC_OK) {
+                if (info.type == RTCP_SR) {
+                    /* Sender Report — update receiver stats for DLSR (RFC 3550 §6.4.1).
+                     * Compact NTP = middle 32 bits of NTP timestamp. */
+                    int mid = ssrc_map_lookup(rtc->ssrc_map, NANORTC_MAX_SSRC_MAP, info.ssrc);
+                    if (mid >= 0) {
+                        nanortc_track_t *m =
+                            track_find_by_mid(rtc->media, rtc->media_count, (uint8_t)mid);
+                        if (m) {
+                            m->rtcp.last_sr_ntp =
+                                ((info.ntp_sec & 0xFFFFu) << 16) | (info.ntp_frac >> 16);
+                            m->rtcp.last_sr_recv_ms = rtc->now_ms;
+                        }
+                    }
+                } else if (info.type == RTCP_PSFB) {
+                    /* PLI — find video track by SSRC and emit keyframe request event */
+                    int mid = ssrc_map_lookup(rtc->ssrc_map, NANORTC_MAX_SSRC_MAP, info.ssrc);
+                    if (mid >= 0) {
+                        nanortc_event_t kfevt;
+                        memset(&kfevt, 0, sizeof(kfevt));
+                        kfevt.type = NANORTC_EV_KEYFRAME_REQUEST;
+                        kfevt.keyframe_request.mid = (uint8_t)mid;
+                        rtc_emit_event_full(rtc, &kfevt);
+                    }
                 }
             }
             return NANORTC_OK;
@@ -1145,6 +1165,55 @@ static int rtc_process_timers(nanortc_t *rtc, uint32_t now_ms)
 
         /* Pump any SCTP output (retransmits, heartbeats, pending DATA) through DTLS */
         rtc_pump_sctp_through_dtls(rtc, &rtc->remote_addr);
+    }
+#endif
+
+#if NANORTC_HAVE_MEDIA_TRANSPORT
+    /* Periodic RTCP Sender Report (RFC 3550 §6.2) */
+    if (rtc->srtp.ready && (now_ms - rtc->last_rtcp_send_ms) >= NANORTC_RTCP_INTERVAL_MS) {
+        rtc->last_rtcp_send_ms = now_ms;
+
+        /* NTP timestamp from monotonic now_ms (RFC 3550 §4):
+         * No wall-clock available in Sans I/O; relative time is sufficient
+         * for DLSR calculation at the receiver. */
+        uint32_t ntp_sec = now_ms / 1000;
+        uint32_t ntp_frac = (uint32_t)((uint64_t)(now_ms % 1000) * 4294967u);
+
+        for (uint8_t ti = 0; ti < rtc->media_count; ti++) {
+            nanortc_track_t *m = &rtc->media[ti];
+            if (!m->active)
+                continue;
+            /* Only send SR for tracks that are sending */
+            if (m->direction == NANORTC_DIR_RECVONLY || m->direction == NANORTC_DIR_INACTIVE)
+                continue;
+            if (m->rtcp.packets_sent == 0)
+                continue;
+
+            /* RTP timestamp corresponding to NTP time */
+            uint32_t clock_rate = (m->kind == NANORTC_TRACK_VIDEO) ? 90000 : m->sample_rate;
+            uint32_t rtp_ts = (uint32_t)((uint64_t)now_ms * clock_rate / 1000);
+
+            /* Generate SR + SRTCP protect into stun_buf (safe: ICE checks
+             * only run when NOT connected, see guard above) */
+            size_t sr_len = 0;
+            int sr_rc = rtcp_generate_sr(&m->rtcp, ntp_sec, ntp_frac, rtp_ts, rtc->stun_buf,
+                                         sizeof(rtc->stun_buf), &sr_len);
+            if (sr_rc != NANORTC_OK)
+                continue;
+
+            size_t srtcp_len = 0;
+            sr_rc = nano_srtp_protect_rtcp(&rtc->srtp, rtc->stun_buf, sr_len, &srtcp_len);
+            if (sr_rc != NANORTC_OK)
+                continue;
+
+            nanortc_output_t out;
+            memset(&out, 0, sizeof(out));
+            out.type = NANORTC_OUTPUT_TRANSMIT;
+            out.transmit.data = rtc->stun_buf;
+            out.transmit.len = srtcp_len;
+            out.transmit.dest = rtc->remote_addr;
+            rtc_enqueue_output(rtc, &out);
+        }
     }
 #endif
 
@@ -1664,13 +1733,18 @@ int nanortc_request_keyframe(nanortc_t *rtc, uint8_t mid)
         return rc;
     }
 
-    /* TODO: SRTCP protect (deferred to full RTCP integration) */
+    /* SRTCP protect (RFC 3711 §3.4) */
+    size_t srtcp_len = 0;
+    int prc = nano_srtp_protect_rtcp(&rtc->srtp, pli_buf, pli_len, &srtcp_len);
+    if (prc != NANORTC_OK) {
+        return prc;
+    }
 
     nanortc_output_t out;
     memset(&out, 0, sizeof(out));
     out.type = NANORTC_OUTPUT_TRANSMIT;
     out.transmit.data = pli_buf;
-    out.transmit.len = pli_len;
+    out.transmit.len = srtcp_len;
     out.transmit.dest = rtc->remote_addr;
     return rtc_enqueue_output(rtc, &out);
 }

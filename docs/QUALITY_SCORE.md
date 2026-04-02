@@ -36,7 +36,7 @@ Per-module quality grades for NanoRTC. Updated as implementation progresses.
 |--------|------|-------|-------|-------|
 | RTP | `nano_rtp.c` | **B** | 8 tests (byte vectors, roundtrip, marker bit, error cases) | RFC 3550 pack/unpack, V=2/CSRC/extension header support |
 | RTCP | `nano_rtcp.c` | **B** | 15 tests (SR/RR/NACK generate + parse, roundtrip, error cases) | RFC 3550 SR/RR, RFC 4585 Generic NACK, parser with validation |
-| SRTP | `nano_srtp.c` | **B** | 6 tests (RFC 3711 B.3 key derivation vectors, protect/unprotect roundtrip, tamper detection, multi-packet) | RFC 3711 AES-128-CM-HMAC-SHA1-80, key derivation, protect/unprotect with ROC tracking. IV computation verified against libsrtp/str0m (packet_index bytes 6-13). |
+| SRTP | `nano_srtp.c` | **B+** | 13 tests (RFC 3711 B.3 key derivation, RTP protect/unprotect, tamper detection, SRTCP protect/unprotect roundtrip, SRTCP tamper, SRTCP index, key direction) | RFC 3711 AES-128-CM-HMAC-SHA1-80 for both SRTP and SRTCP. Key derivation (labels 0x00-0x05). ROC tracking. SRTCP with E-flag + 31-bit index trailer. Periodic RTCP SR sending (RFC 3550 §6.2). Inbound SR handling for DLSR. |
 | Jitter | `nano_jitter.c` | **B-** | 8 tests (push/pop, reorder, wraparound, playout delay, overflow) | Fixed ring buffer with playout delay and reordering |
 
 ### Video (VIDEO/MEDIA profiles)

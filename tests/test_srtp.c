@@ -353,6 +353,197 @@ TEST(test_srtp_keying_material_size)
     ASSERT_FAIL(nano_srtp_derive_keys(&srtp2, km, 59));
 }
 
+/* ================================================================
+ * SRTCP tests (RFC 3711 §3.4)
+ * ================================================================ */
+
+/*
+ * SRTCP roundtrip: protect → unprotect with paired client/server contexts.
+ * Verifies the E+index trailer and auth tag are correctly applied/verified.
+ */
+TEST(test_srtcp_protect_unprotect_roundtrip)
+{
+    const nanortc_crypto_provider_t *crypto = nano_test_crypto();
+
+    uint8_t km[60];
+    crypto->random_bytes(km, sizeof(km));
+
+    nano_srtp_t sender, receiver;
+    nano_srtp_init(&sender, crypto, 1);
+    nano_srtp_init(&receiver, crypto, 0);
+    ASSERT_OK(nano_srtp_derive_keys(&sender, km, sizeof(km)));
+    ASSERT_OK(nano_srtp_derive_keys(&receiver, km, sizeof(km)));
+
+    /* Build a minimal RTCP SR packet (28 bytes) */
+    uint8_t buf[128];
+    memset(buf, 0, sizeof(buf));
+    /* V=2, RC=0, PT=200 (SR), length=6 words */
+    buf[0] = 0x80; /* V=2, P=0, RC=0 */
+    buf[1] = 200;  /* PT = SR */
+    buf[2] = 0x00;
+    buf[3] = 0x06; /* length = 6 (words) */
+    /* SSRC = 0x12345678 */
+    buf[4] = 0x12;
+    buf[5] = 0x34;
+    buf[6] = 0x56;
+    buf[7] = 0x78;
+    /* Sender info: NTP timestamp, RTP timestamp, packet count, octet count */
+    buf[8] = 0x01;
+    buf[12] = 0x02;
+    buf[16] = 0x03;
+    buf[20] = 0x00;
+    buf[21] = 0x00;
+    buf[22] = 0x00;
+    buf[23] = 0x0A; /* 10 packets */
+    buf[24] = 0x00;
+    buf[25] = 0x00;
+    buf[26] = 0x10;
+    buf[27] = 0x00; /* 4096 octets */
+    size_t rtcp_len = 28;
+
+    /* Save original for comparison */
+    uint8_t original[128];
+    memcpy(original, buf, rtcp_len);
+
+    /* Protect */
+    size_t srtcp_len = 0;
+    ASSERT_OK(nano_srtp_protect_rtcp(&sender, buf, rtcp_len, &srtcp_len));
+    /* SRTCP = RTCP(28) + E+index(4) + auth_tag(10) = 42 */
+    ASSERT_EQ(srtcp_len, rtcp_len + NANORTC_SRTCP_OVERHEAD);
+
+    /* Encrypted payload (bytes 8-27) should differ from original */
+    ASSERT_TRUE(memcmp(buf + 8, original + 8, rtcp_len - 8) != 0);
+    /* Header (first 8 bytes) should remain in cleartext */
+    ASSERT_MEM_EQ(buf, original, 8);
+
+    /* Unprotect */
+    size_t plain_len = 0;
+    ASSERT_OK(nano_srtp_unprotect_rtcp(&receiver, buf, srtcp_len, &plain_len));
+    ASSERT_EQ(plain_len, rtcp_len);
+
+    /* Decrypted should match original */
+    ASSERT_MEM_EQ(buf, original, rtcp_len);
+}
+
+/*
+ * SRTCP tamper detection: corrupted packet should fail auth verification.
+ */
+TEST(test_srtcp_tamper_detection)
+{
+    const nanortc_crypto_provider_t *crypto = nano_test_crypto();
+
+    uint8_t km[60];
+    crypto->random_bytes(km, sizeof(km));
+
+    nano_srtp_t sender, receiver;
+    nano_srtp_init(&sender, crypto, 1);
+    nano_srtp_init(&receiver, crypto, 0);
+    ASSERT_OK(nano_srtp_derive_keys(&sender, km, sizeof(km)));
+    ASSERT_OK(nano_srtp_derive_keys(&receiver, km, sizeof(km)));
+
+    /* Build RTCP SR */
+    uint8_t buf[128];
+    memset(buf, 0, sizeof(buf));
+    buf[0] = 0x80;
+    buf[1] = 200;
+    buf[2] = 0x00;
+    buf[3] = 0x06;
+    buf[4] = 0xAA;
+    buf[5] = 0xBB;
+    buf[6] = 0xCC;
+    buf[7] = 0xDD;
+    size_t rtcp_len = 28;
+
+    size_t srtcp_len = 0;
+    ASSERT_OK(nano_srtp_protect_rtcp(&sender, buf, rtcp_len, &srtcp_len));
+
+    /* Tamper with encrypted payload */
+    buf[10] ^= 0xFF;
+
+    /* Unprotect should fail */
+    size_t plain_len = 0;
+    ASSERT_EQ(nano_srtp_unprotect_rtcp(&receiver, buf, srtcp_len, &plain_len), NANORTC_ERR_CRYPTO);
+}
+
+/*
+ * SRTCP index increment: each protect call advances the SRTCP index.
+ * The E+index trailer encodes the monotonically increasing index.
+ */
+TEST(test_srtcp_index_increment)
+{
+    const nanortc_crypto_provider_t *crypto = nano_test_crypto();
+
+    uint8_t km[60];
+    crypto->random_bytes(km, sizeof(km));
+
+    nano_srtp_t sender, receiver;
+    nano_srtp_init(&sender, crypto, 1);
+    nano_srtp_init(&receiver, crypto, 0);
+    ASSERT_OK(nano_srtp_derive_keys(&sender, km, sizeof(km)));
+    ASSERT_OK(nano_srtp_derive_keys(&receiver, km, sizeof(km)));
+
+    /* Send 5 SRTCP packets, verify each can be unprotected */
+    int i;
+    for (i = 0; i < 5; i++) {
+        uint8_t buf[128];
+        memset(buf, 0, sizeof(buf));
+        buf[0] = 0x80;
+        buf[1] = 200;
+        buf[2] = 0x00;
+        buf[3] = 0x06;
+        buf[4] = 0x42;
+        buf[5] = 0x42;
+        buf[6] = 0x42;
+        buf[7] = 0x42;
+        buf[20] = (uint8_t)i; /* vary content */
+        size_t rtcp_len = 28;
+
+        size_t srtcp_len = 0;
+        ASSERT_OK(nano_srtp_protect_rtcp(&sender, buf, rtcp_len, &srtcp_len));
+
+        /* Verify E-flag is set and index matches */
+        uint32_t e_and_idx = ((uint32_t)buf[rtcp_len] << 24) | ((uint32_t)buf[rtcp_len + 1] << 16) |
+                             ((uint32_t)buf[rtcp_len + 2] << 8) | (uint32_t)buf[rtcp_len + 3];
+        ASSERT_TRUE((e_and_idx & 0x80000000u) != 0);     /* E=1 */
+        ASSERT_EQ(e_and_idx & 0x7FFFFFFFu, (uint32_t)i); /* index = i */
+
+        /* Unprotect should succeed */
+        size_t plain_len = 0;
+        ASSERT_OK(nano_srtp_unprotect_rtcp(&receiver, buf, srtcp_len, &plain_len));
+        ASSERT_EQ(plain_len, rtcp_len);
+    }
+
+    /* Verify sender index advanced */
+    ASSERT_EQ(sender.srtcp_send_index, 5u);
+}
+
+/*
+ * SRTCP key direction: client/server RTCP keys should be correctly crossed.
+ */
+TEST(test_srtcp_key_direction)
+{
+    const nanortc_crypto_provider_t *crypto = nano_test_crypto();
+
+    uint8_t km[60];
+    crypto->random_bytes(km, sizeof(km));
+
+    nano_srtp_t client, server;
+    nano_srtp_init(&client, crypto, 1);
+    nano_srtp_init(&server, crypto, 0);
+    ASSERT_OK(nano_srtp_derive_keys(&client, km, sizeof(km)));
+    ASSERT_OK(nano_srtp_derive_keys(&server, km, sizeof(km)));
+
+    /* Client RTCP send keys = Server RTCP recv keys */
+    ASSERT_MEM_EQ(client.send_rtcp_key, server.recv_rtcp_key, NANORTC_SRTP_KEY_SIZE);
+    ASSERT_MEM_EQ(client.send_rtcp_auth_key, server.recv_rtcp_auth_key, NANORTC_SRTP_AUTH_KEY_SIZE);
+    ASSERT_MEM_EQ(client.send_rtcp_salt, server.recv_rtcp_salt, NANORTC_SRTP_SALT_SIZE);
+
+    /* Server RTCP send keys = Client RTCP recv keys */
+    ASSERT_MEM_EQ(server.send_rtcp_key, client.recv_rtcp_key, NANORTC_SRTP_KEY_SIZE);
+    ASSERT_MEM_EQ(server.send_rtcp_auth_key, client.recv_rtcp_auth_key, NANORTC_SRTP_AUTH_KEY_SIZE);
+    ASSERT_MEM_EQ(server.send_rtcp_salt, client.recv_rtcp_salt, NANORTC_SRTP_SALT_SIZE);
+}
+
 #endif /* NANORTC_HAVE_MEDIA_TRANSPORT */
 
 /* ---- Runner ---- */
@@ -369,5 +560,10 @@ RUN(test_aes_128_cm_basic);
 RUN(test_rfc3711_aes_cm_keystream);
 RUN(test_srtp_roc_rollover);
 RUN(test_srtp_keying_material_size);
+/* SRTCP tests (RFC 3711 §3.4) */
+RUN(test_srtcp_protect_unprotect_roundtrip);
+RUN(test_srtcp_tamper_detection);
+RUN(test_srtcp_index_increment);
+RUN(test_srtcp_key_direction);
 #endif
 TEST_MAIN_END

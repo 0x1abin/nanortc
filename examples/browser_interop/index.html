@@ -239,9 +239,15 @@ async function start() {
     setupDC(dc);
     log('info', 'Created DataChannel "test"');
 
-    // Add audio transceiver for receiving remote audio
-    pc.addTransceiver('audio', {direction: 'recvonly'});
-    log('info', 'Added audio transceiver (recvonly)');
+    // Add audio: try sendrecv with microphone, fall back to recvonly
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({audio: true});
+      stream.getAudioTracks().forEach(t => pc.addTrack(t, stream));
+      log('info', 'Added audio track (sendrecv via microphone)');
+    } catch (e) {
+      pc.addTransceiver('audio', {direction: 'recvonly'});
+      log('warn', 'Microphone unavailable, audio recvonly: ' + e.message);
+    }
 
     // Add video transceiver for receiving remote video
     pc.addTransceiver('video', {direction: 'recvonly'});

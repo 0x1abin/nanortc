@@ -495,6 +495,9 @@ struct nanortc {
 
     /** Shared SRTP session (keys shared across all tracks in BUNDLE). */
     nano_srtp_t srtp;
+
+    /** Last time RTCP SR was sent (for periodic RTCP, RFC 3550 §6.2). */
+    uint32_t last_rtcp_send_ms;
 #endif
 
 #if NANORTC_FEATURE_VIDEO
