@@ -1,10 +1,10 @@
 /*
- * nanortc ESP32 Video example — H.264 SD card video sender
+ * nanortc ESP32 Audio/Video example — embedded media sender
  *
  * The ESP32 hosts a web page at http://<ip>/. The browser connects,
  * sends an SDP offer via POST /offer, and receives an answer.
- * ESP32 reads pre-encoded H.264 frames from the SD card and streams
- * them to the browser via WebRTC video.
+ * ESP32 reads pre-encoded H.264 video and Opus audio from flash
+ * (embedded blobs) and streams them to the browser via WebRTC.
  *
  * Build: cd examples/esp32_video && idf.py build
  * Flash: idf.py flash monitor
@@ -15,30 +15,23 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "esp_system.h"
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_timer.h"
 #include "nvs_flash.h"
 #include "esp_http_server.h"
 #include "protocol_examples_common.h"
 #include <lwip/sockets.h>
 
-/* SD card (SDMMC 1-line) */
-#include "driver/sdmmc_host.h"
-#include "esp_vfs_fat.h"
-#include "sdmmc_cmd.h"
-
 #include "nanortc.h"
 #include "nanortc_crypto.h"
 #include "run_loop.h"
 #include "media_source.h"
-#include "h264_utils.h"
 
-static const char *TAG = "nanortc_video";
+static const char *TAG = "nanortc_av";
 
 static void nanortc_log_cb(const nanortc_log_message_t *msg, void *ctx)
 {
@@ -47,9 +40,9 @@ static void nanortc_log_cb(const nanortc_log_message_t *msg, void *ctx)
              msg->message ? msg->message : "");
 }
 
-#define SD_MOUNT_POINT "/sd"
-#define VIDEO_FPS      CONFIG_EXAMPLE_VIDEO_FPS
-#define FRAME_INTERVAL (1000 / VIDEO_FPS) /* ms per frame */
+#define VIDEO_FPS        CONFIG_EXAMPLE_VIDEO_FPS
+#define VIDEO_INTERVAL   (1000 / VIDEO_FPS) /* ms per frame */
+#define AUDIO_INTERVAL   20                 /* 20 ms per Opus frame */
 
 /* nanortc state */
 static nanortc_t s_rtc;
@@ -57,118 +50,27 @@ static nano_run_loop_t s_loop;
 static char s_local_ip[16];
 static int s_connected;
 static int s_video_mid;
+static int s_audio_mid;
 
 /* Video state */
 static nano_media_source_t s_video_src;
 static int s_video_ready;
-static int s_psram_mode;
 static uint32_t s_video_epoch_ms;
 static uint32_t s_video_frame_count;
 
-/* PSRAM preloaded frame index (used when PSRAM available) */
-typedef struct {
-    uint32_t offset;
-    uint32_t len;
-} frame_entry_t;
+/* Audio state */
+static nano_media_source_t s_audio_src;
+static int s_audio_ready;
+static uint32_t s_audio_epoch_ms;
+static uint32_t s_audio_frame_count;
 
-#define MAX_VIDEO_FRAMES 1500
-static uint8_t *s_frame_data;
-static frame_entry_t s_frames[MAX_VIDEO_FRAMES];
-static int s_frame_total;
-
-/* Embedded HTML file */
+/* Embedded files */
 extern const uint8_t index_html_start[] asm("_binary_index_html_start");
 extern const uint8_t index_html_end[] asm("_binary_index_html_end");
-
-/* ----------------------------------------------------------------
- * SD card mount (SDMMC 1-line)
- * ---------------------------------------------------------------- */
-static int sd_card_mount(void)
-{
-    sdmmc_host_t host = SDMMC_HOST_DEFAULT();
-    host.max_freq_khz = SDMMC_FREQ_DEFAULT;
-    host.flags = SDMMC_HOST_FLAG_1BIT;
-
-    sdmmc_slot_config_t slot = SDMMC_SLOT_CONFIG_DEFAULT();
-    slot.width = 1;
-    slot.cmd = CONFIG_EXAMPLE_SD_CMD_PIN;
-    slot.clk = CONFIG_EXAMPLE_SD_CLK_PIN;
-    slot.d0 = CONFIG_EXAMPLE_SD_D0_PIN;
-    slot.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
-
-    esp_vfs_fat_sdmmc_mount_config_t mount_cfg = {
-        .format_if_mount_failed = false,
-        .max_files = 5,
-        .allocation_unit_size = 16 * 1024,
-    };
-
-    sdmmc_card_t *card = NULL;
-    esp_err_t ret = esp_vfs_fat_sdmmc_mount(SD_MOUNT_POINT, &host, &slot, &mount_cfg, &card);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "SD card mount failed: %s", esp_err_to_name(ret));
-        return -1;
-    }
-
-    ESP_LOGI(TAG, "SD card mounted: %s (%lluMB)", card->cid.name,
-             (unsigned long long)(((uint64_t)card->csd.capacity) * card->csd.sector_size /
-                                  (1024 * 1024)));
-
-    return 0;
-}
-
-/* ----------------------------------------------------------------
- * Try to preload all H.264 frames into PSRAM (returns -1 if no PSRAM)
- * ---------------------------------------------------------------- */
-static int preload_frames(const char *dir)
-{
-    char path[300];
-    uint32_t total_size = 0;
-    int count = 0;
-
-    for (int i = 1; i <= MAX_VIDEO_FRAMES; i++) {
-        snprintf(path, sizeof(path), "%s/frame-%04d.h264", dir, i);
-        FILE *f = fopen(path, "rb");
-        if (!f)
-            break;
-        fseek(f, 0, SEEK_END);
-        long sz = ftell(f);
-        fclose(f);
-        if (sz <= 0)
-            break;
-        total_size += (uint32_t)sz;
-        count++;
-    }
-    if (count == 0)
-        return -1;
-
-    ESP_LOGI(TAG, "Trying PSRAM preload: %d frames, %lu KB...", count,
-             (unsigned long)(total_size / 1024));
-
-    s_frame_data = heap_caps_malloc(total_size, MALLOC_CAP_SPIRAM);
-    if (!s_frame_data) {
-        ESP_LOGW(TAG, "PSRAM not available (%lu bytes)", (unsigned long)total_size);
-        return -1;
-    }
-
-    uint32_t offset = 0;
-    for (int i = 0; i < count; i++) {
-        snprintf(path, sizeof(path), "%s/frame-%04d.h264", dir, i + 1);
-        FILE *f = fopen(path, "rb");
-        if (!f)
-            break;
-        fseek(f, 0, SEEK_END);
-        long sz = ftell(f);
-        fseek(f, 0, SEEK_SET);
-        size_t nread = fread(s_frame_data + offset, 1, (size_t)sz, f);
-        fclose(f);
-        s_frames[i].offset = offset;
-        s_frames[i].len = (uint32_t)nread;
-        offset += (uint32_t)nread;
-    }
-    s_frame_total = count;
-    ESP_LOGI(TAG, "PSRAM preload OK: %d frames, %lu KB", count, (unsigned long)(offset / 1024));
-    return 0;
-}
+extern const uint8_t video_blob_start[] asm("_binary_video_blob_start");
+extern const uint8_t video_blob_end[] asm("_binary_video_blob_end");
+extern const uint8_t audio_blob_start[] asm("_binary_audio_blob_start");
+extern const uint8_t audio_blob_end[] asm("_binary_audio_blob_end");
 
 /* ----------------------------------------------------------------
  * Get station IP
@@ -195,7 +97,7 @@ static void video_send_tick(uint32_t now)
     if (s_video_epoch_ms == 0)
         s_video_epoch_ms = now;
 
-    uint32_t target_frames = (now - s_video_epoch_ms) / FRAME_INTERVAL;
+    uint32_t target_frames = (now - s_video_epoch_ms) / VIDEO_INTERVAL;
 
     /* Skip frames if we fell too far behind */
     if (target_frames - s_video_frame_count > 2) {
@@ -203,26 +105,44 @@ static void video_send_tick(uint32_t now)
     }
 
     while (s_video_frame_count < target_frames) {
-        const uint8_t *frame_buf;
-        size_t frame_len;
         static uint8_t sd_buf[NANORTC_MEDIA_MAX_FRAME_SIZE];
-
-        if (s_psram_mode) {
-            int idx = (int)(s_video_frame_count % (uint32_t)s_frame_total);
-            frame_buf = s_frame_data + s_frames[idx].offset;
-            frame_len = s_frames[idx].len;
-        } else {
-            uint32_t ts_ms = 0;
-            frame_len = 0;
-            if (nano_media_source_next_frame(&s_video_src, sd_buf, sizeof(sd_buf), &frame_len,
-                                             &ts_ms) != 0)
-                break;
-            frame_buf = sd_buf;
-        }
+        size_t frame_len = 0;
+        uint32_t ts_ms = 0;
+        if (nano_media_source_next_frame(&s_video_src, sd_buf, sizeof(sd_buf), &frame_len,
+                                         &ts_ms) != 0)
+            break;
 
         nanortc_send_video(&s_rtc, (uint8_t)s_video_mid, (uint32_t)(esp_timer_get_time() / 1000),
-                           frame_buf, frame_len);
+                           sd_buf, frame_len);
         s_video_frame_count++;
+    }
+}
+
+/* ----------------------------------------------------------------
+ * Audio send tick (epoch-based pacing, 20ms Opus frames)
+ * ---------------------------------------------------------------- */
+static void audio_send_tick(uint32_t now)
+{
+    if (s_audio_epoch_ms == 0)
+        s_audio_epoch_ms = now;
+
+    uint32_t target_frames = (now - s_audio_epoch_ms) / AUDIO_INTERVAL;
+
+    if (target_frames - s_audio_frame_count > 2) {
+        s_audio_frame_count = target_frames - 1;
+    }
+
+    while (s_audio_frame_count < target_frames) {
+        static uint8_t audio_buf[960]; /* Opus frames are small (~160 bytes) */
+        size_t frame_len = 0;
+        uint32_t ts_ms = 0;
+        if (nano_media_source_next_frame(&s_audio_src, audio_buf, sizeof(audio_buf), &frame_len,
+                                         &ts_ms) != 0)
+            break;
+
+        nanortc_send_audio(&s_rtc, (uint8_t)s_audio_mid, (uint32_t)(esp_timer_get_time() / 1000),
+                           audio_buf, frame_len);
+        s_audio_frame_count++;
     }
 }
 
@@ -242,17 +162,18 @@ static void on_event(nanortc_t *rtc, const nanortc_event_t *evt, void *userdata)
         break;
 
     case NANORTC_EV_CONNECTED:
-        ESP_LOGI(TAG, "Connected — starting video");
+        ESP_LOGI(TAG, "Connected — starting media");
         s_connected = 1;
         s_video_epoch_ms = 0;
         s_video_frame_count = 0;
+        s_audio_epoch_ms = 0;
+        s_audio_frame_count = 0;
         break;
 
     case NANORTC_EV_KEYFRAME_REQUEST:
         ESP_LOGI(TAG, "Keyframe requested (mid=%d) — resetting to frame 0",
                  evt->keyframe_request.mid);
-        if (!s_psram_mode)
-            nano_media_source_reset(&s_video_src);
+        nano_media_source_reset(&s_video_src);
         s_video_epoch_ms = 0;
         s_video_frame_count = 0;
         break;
@@ -374,7 +295,17 @@ static esp_err_t http_post_offer(httpd_req_t *req)
         return ESP_FAIL;
     }
 
-    /* Add video track via Writer handle pattern */
+    /* Add tracks in same order as browser offer (audio first, video second)
+     * so that MID values match during SDP negotiation. */
+    s_audio_mid = nanortc_add_audio_track(&s_rtc, NANORTC_DIR_SENDONLY, NANORTC_CODEC_OPUS, 48000,
+                                          2);
+    if (s_audio_mid < 0) {
+        ESP_LOGE(TAG, "nanortc_add_audio_track failed: %d", s_audio_mid);
+        free(offer);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Media fail");
+        return ESP_FAIL;
+    }
+
     s_video_mid = nanortc_add_video_track(&s_rtc, NANORTC_DIR_SENDONLY, NANORTC_CODEC_H264);
     if (s_video_mid < 0) {
         ESP_LOGE(TAG, "nanortc_add_video_track failed: %d", s_video_mid);
@@ -391,7 +322,7 @@ static esp_err_t http_post_offer(httpd_req_t *req)
     }
     nanortc_add_local_candidate(&s_rtc, s_local_ip, CONFIG_EXAMPLE_UDP_PORT);
     nano_run_loop_set_event_cb(&s_loop, on_event, NULL);
-    s_loop.max_poll_ms = 5;
+    s_loop.max_poll_ms = 20;
     /* Don't set running=1 yet — avoid race with webrtc_task during accept_offer */
 
     char *answer = malloc(8192);
@@ -480,12 +411,17 @@ static void webrtc_task(void *arg)
         if (s_loop.running) {
             nano_run_loop_step(&s_loop);
             s_step_count++;
-            if (s_connected && s_video_ready) {
+            if (s_connected && (s_video_ready || s_audio_ready)) {
                 uint32_t now = nano_get_millis();
-                video_send_tick(now);
+                if (s_video_ready)
+                    video_send_tick(now);
+                if (s_audio_ready)
+                    audio_send_tick(now);
+            } else {
+                vTaskDelay(pdMS_TO_TICKS(20));
             }
         } else {
-            vTaskDelay(pdMS_TO_TICKS(50));
+            vTaskDelay(pdMS_TO_TICKS(100));
         }
     }
 }
@@ -495,7 +431,7 @@ static void webrtc_task(void *arg)
  * ---------------------------------------------------------------- */
 void app_main(void)
 {
-    ESP_LOGI(TAG, "nanortc ESP32 Video example — H.264 from SD, %d fps", VIDEO_FPS);
+    ESP_LOGI(TAG, "nanortc ESP32 A/V example — H.264 + Opus from flash, %d fps", VIDEO_FPS);
 
     /* 1. NVS init (required for WiFi) */
     esp_err_t ret = nvs_flash_init();
@@ -526,23 +462,31 @@ void app_main(void)
         return;
     }
 
-    /* 5. Start WebRTC task early (before SD mount which may block for seconds).
+    /* 5. Start WebRTC task.
      * The task idles until http_post_offer sets s_loop.running = 1. */
-    xTaskCreatePinnedToCore(webrtc_task, "webrtc", 32768, NULL, 5, NULL, 1);
+    xTaskCreate(webrtc_task, "webrtc", 8 * 1024, NULL, 5, NULL);
 
-    /* 6. Mount SD card, try PSRAM preload, fallback to per-frame I/O */
-    if (sd_card_mount() != 0) {
-        ESP_LOGE(TAG, "SD card mount failed — video will not work");
+    /* 6. Init media sources from embedded flash blobs */
+    memset(&s_video_src, 0, sizeof(s_video_src));
+    s_video_src.blob = video_blob_start;
+    s_video_src.blob_len = (size_t)(video_blob_end - video_blob_start);
+    if (nano_media_source_init(&s_video_src, NANORTC_MEDIA_H264, NULL) == 0) {
+        s_video_ready = 1;
+        ESP_LOGI(TAG, "Embedded video: %d frames (%.1f KB)", s_video_src.frame_count,
+                 (float)s_video_src.blob_len / 1024.0f);
     } else {
-        char h264_path[128];
-        snprintf(h264_path, sizeof(h264_path), "%s/%s", SD_MOUNT_POINT, CONFIG_EXAMPLE_H264_DIR);
+        ESP_LOGE(TAG, "Failed to init embedded video source");
+    }
 
-        if (nano_media_source_init(&s_video_src, NANORTC_MEDIA_H264, h264_path) == 0) {
-            s_video_ready = 1;
-            ESP_LOGI(TAG, "SD I/O mode: %s (%d frames)", h264_path, s_video_src.frame_count);
-        } else {
-            ESP_LOGE(TAG, "Cannot open H.264 frames in %s", h264_path);
-        }
+    memset(&s_audio_src, 0, sizeof(s_audio_src));
+    s_audio_src.blob = audio_blob_start;
+    s_audio_src.blob_len = (size_t)(audio_blob_end - audio_blob_start);
+    if (nano_media_source_init(&s_audio_src, NANORTC_MEDIA_OPUS, NULL) == 0) {
+        s_audio_ready = 1;
+        ESP_LOGI(TAG, "Embedded audio: %d frames (%.1f KB)", s_audio_src.frame_count,
+                 (float)s_audio_src.blob_len / 1024.0f);
+    } else {
+        ESP_LOGE(TAG, "Failed to init embedded audio source");
     }
 
     ESP_LOGI(TAG, "Open http://%s/ in your browser", s_local_ip);

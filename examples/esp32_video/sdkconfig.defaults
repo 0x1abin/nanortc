@@ -1,8 +1,11 @@
-# nanortc ESP32 Video example — default SDK configuration
+# nanortc ESP32 A/V example — default SDK configuration
 #
-# Custom partition table (factory = 1.75 MB)
+# Custom partition table (factory = ~12 MB for firmware + embedded media blobs)
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# 16 MB flash
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 
 # mbedTLS DTLS support
 CONFIG_MBEDTLS_SSL_PROTO_DTLS=y
@@ -21,12 +24,12 @@ CONFIG_LWIP_SO_RCVTIMEO=y
 CONFIG_LWIP_SO_REUSE=y
 
 # Task stack (nanortc_t is large, needs generous stack)
-CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
 
-# nanortc features: Video only (no DataChannel, no Audio)
+# nanortc features: Audio + Video (no DataChannel)
 CONFIG_NANORTC_FEATURE_VIDEO=y
+CONFIG_NANORTC_FEATURE_AUDIO=y
 # CONFIG_NANORTC_FEATURE_DATACHANNEL is not set
-# CONFIG_NANORTC_FEATURE_AUDIO is not set
 
 # Output queue (video FU-A fragmentation needs more slots)
 CONFIG_NANORTC_OUT_QUEUE_SIZE=16
@@ -34,6 +37,6 @@ CONFIG_NANORTC_OUT_QUEUE_SIZE=16
 # Media buffer must hold: RTP header (12) + MTU payload (1200) + SRTP tag (10)
 CONFIG_NANORTC_MEDIA_BUF_SIZE=1280
 
-# FAT long filename support (SD card frame files use long names)
-CONFIG_FATFS_LFN_HEAP=y
-CONFIG_FATFS_MAX_LFN=255
+# WiFi (override via menuconfig or sdkconfig.local)
+CONFIG_EXAMPLE_WIFI_SSID="myssid"
+CONFIG_EXAMPLE_WIFI_PASSWORD="mypassword"

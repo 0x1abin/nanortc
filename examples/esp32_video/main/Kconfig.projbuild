@@ -12,30 +12,6 @@ menu "ESP32 Video Example"
         default 25
         range 1 60
         help
-            Playback speed for H.264 sample frames from SD card.
-
-    config EXAMPLE_H264_DIR
-        string "H.264 frames directory on SD card"
-        default "sample_data/h264SampleFrames"
-        help
-            Directory under the SD card mount point containing
-            frame-NNNN.h264 files (Annex-B format).
-            Example: "sample_data/h264SampleFrames" or just "h264SampleFrames".
-
-    menu "SD Card (SDMMC 1-line)"
-
-        config EXAMPLE_SD_CMD_PIN
-            int "SD CMD GPIO"
-            default 7
-
-        config EXAMPLE_SD_CLK_PIN
-            int "SD CLK GPIO"
-            default 15
-
-        config EXAMPLE_SD_D0_PIN
-            int "SD D0 GPIO"
-            default 4
-
-    endmenu
+            Playback speed for H.264 sample frames from embedded flash blob.
 
 endmenu

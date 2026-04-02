@@ -38,6 +38,9 @@ typedef struct nano_media_source {
     int frame_count;   /* total frames available */
     uint32_t frame_interval_ms; /* ms between frames */
     uint32_t timestamp_ms;      /* running timestamp */
+    /* Embedded blob source (set before init; NULL = file-based) */
+    const uint8_t *blob;
+    size_t blob_len;
 } nano_media_source_t;
 
 /* Initialize: point to sample data directory */

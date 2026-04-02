@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>nanortc ESP32 Video</title>
+<title>nanortc ESP32 A/V</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: monospace; max-width: 720px; margin: 2em auto;
@@ -23,7 +23,7 @@
 </style>
 </head>
 <body>
-<h1>nanortc ESP32 Video</h1>
+<h1>nanortc ESP32 A/V</h1>
 
 <div class="row">
   <label>Status:</label>
@@ -32,6 +32,10 @@
 </div>
 
 <video id="video" autoplay playsinline muted></video>
+
+<div class="row">
+  <button id="btnUnmute" onclick="unmute()" style="display:none">Unmute</button>
+</div>
 
 <div id="log"></div>
 
@@ -69,6 +73,13 @@ function waitIceGathering(pc, timeout) {
   });
 }
 
+function unmute() {
+  const video = document.getElementById('video');
+  video.muted = false;
+  document.getElementById('btnUnmute').style.display = 'none';
+  log('ok', 'Audio unmuted');
+}
+
 function cleanup() {
   if (pc) { pc.close(); pc = null; }
 }
@@ -102,14 +113,23 @@ async function connect() {
       }
     };
 
-    /* Add video transceiver (recvonly — we receive video from ESP32) */
+    /* Add audio + video transceivers (recvonly — we receive from ESP32) */
+    pc.addTransceiver('audio', { direction: 'recvonly' });
     pc.addTransceiver('video', { direction: 'recvonly' });
 
     pc.ontrack = (e) => {
       const video = document.getElementById('video');
-      video.srcObject = e.streams[0] || new MediaStream([e.track]);
-      log('ok', 'Video track received');
-      setStatus('ok', 'Playing video');
+      if (!video.srcObject) {
+        video.srcObject = new MediaStream();
+      }
+      video.srcObject.addTrack(e.track);
+      log('ok', e.track.kind + ' track received');
+      if (e.track.kind === 'audio') {
+        document.getElementById('btnUnmute').style.display = '';
+      }
+      if (e.track.kind === 'video') {
+        setStatus('ok', 'Playing');
+      }
     };
 
     const offer = await pc.createOffer();
@@ -143,10 +163,14 @@ async function connect() {
     await pc.setRemoteDescription({ type: 'answer', sdp: answerSdp });
 
     /* Manually extract and add candidates from the answer SDP.
-     * Some Chrome versions don't auto-parse candidates from the answer. */
+     * Some Chrome versions don't auto-parse candidates from the answer.
+     * With BUNDLE, candidates are shared — add to first m-line (audio). */
     const candLines = answerSdp.match(/a=candidate:.+/g) || [];
+    const mids = (answerSdp.match(/a=mid:(\S+)/g) || []).map(s => s.split(':')[1]);
     for (const line of candLines) {
-      await pc.addIceCandidate({candidate: line, sdpMid: '0', sdpMLineIndex: 0});
+      for (let i = 0; i < mids.length; i++) {
+        await pc.addIceCandidate({candidate: line, sdpMid: mids[i], sdpMLineIndex: i});
+      }
       log('info', 'Added candidate: ' + line.substring(0, 60));
     }
 
