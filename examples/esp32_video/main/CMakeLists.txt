@@ -4,6 +4,7 @@ set(PACK_TOOL "${CMAKE_CURRENT_SOURCE_DIR}/../../tools/pack_frames.py")
 set(SRCS
     "main.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../common/run_loop_esp.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../common/webserver_esp.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../common/media_source_embed.c"
 )
 

@@ -2,6 +2,7 @@ set(SRCS
     "main.c"
     "music_gen.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../common/run_loop_esp.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../common/webserver_esp.c"
 )
 
 idf_component_register(
