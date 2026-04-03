@@ -10,7 +10,7 @@ NanoRTC is a **Sans I/O state machine**. The entire library is a pure function o
                          ┌─────────────────────────┐
   Inputs:                │                         │  Outputs:
                          │                         │
-  UDP bytes ────────────►│     nanortc_t          │──────► bytes to send
+  UDP bytes ────────────►│     nanortc_t           │──────► bytes to send
   monotonic time ───────►│   (pure state machine)  │──────► application events
   user commands ────────►│                         │──────► next timeout (ms)
                          │  No sockets. No threads.│
