@@ -140,6 +140,11 @@ cmake --build build -j$(nproc)
 # Build with audio support
 cmake -B build -DNANORTC_CRYPTO=openssl -DNANORTC_BUILD_EXAMPLES=ON -DNANORTC_FEATURE_AUDIO=ON
 cmake --build build -j$(nproc)
+
+# Build with full media (audio + video)
+cmake -B build -DNANORTC_CRYPTO=openssl -DNANORTC_BUILD_EXAMPLES=ON \
+    -DNANORTC_FEATURE_AUDIO=ON -DNANORTC_FEATURE_VIDEO=ON
+cmake --build build -j$(nproc)
 ```
 
 ### Step 1: Start signaling server
@@ -190,6 +195,27 @@ Navigate to `http://localhost:8765/`
 # Browser: select "Answerer", click Connect → should hear Opus audio
 ```
 
+### Step 3e: Test audio + video sending
+
+```bash
+# Terminal: nanortc as answerer with audio + video
+./build/examples/browser_interop/browser_interop --answer -p 9999 \
+    -a examples/sample_data/opusSampleFrames \
+    -v examples/sample_data/h264SampleFrames
+
+# Browser: select "Offerer", click Connect → should see H.264 video and hear Opus audio
+```
+
+### Step 3f: Test video only (offerer mode)
+
+```bash
+# Terminal: nanortc as offerer with video
+./build/examples/browser_interop/browser_interop --offer -p 9999 \
+    -v examples/sample_data/h264SampleFrames
+
+# Browser: select "Answerer", click Connect → should see H.264 video
+```
+
 ### CLI Options
 
 ```
@@ -197,6 +223,7 @@ Navigate to `http://localhost:8765/`
   -b IP          Bind/candidate IP (default: auto-detect)
   -s HOST:PORT   Signaling server (default: localhost:8765)
   -a DIR         Opus frame directory for audio send
+  -v DIR         H.264 frame directory for video send
   --offer        Act as offerer (CONTROLLING)
   --answer       Act as answerer (CONTROLLED, default)
 ```

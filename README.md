@@ -160,9 +160,10 @@ src/                        Protocol modules (Sans I/O, no platform deps)
 crypto/                     Pluggable crypto providers (mbedtls, openssl)
 tests/                      Unit tests + end-to-end tests (no network needed)
 tests/interop/              Interop tests against libdatachannel (C++)
-examples/                   Linux application templates
+examples/                   Application templates
   common/                   Reusable event loop, signaling, media source
   browser_interop/          Browser-based interop test harness
+  macos_camera/             macOS camera/mic → browser streaming (multi-viewer)
   sample_data/              Media samples (git submodule)
 docs/                       Design docs, execution plans, engineering standards
 ```

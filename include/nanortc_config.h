@@ -401,7 +401,8 @@
 /* 32 slots needed for video: a single H.264 frame may produce up to ~20
  * FU-A fragments at 1200-byte MTU (for a ~24KB IDR NAL), and each fragment
  * occupies one output queue slot until dispatch. 8 slots suffice for
- * DataChannel-only or audio-only configurations. */
+ * DataChannel-only or audio-only configurations.
+ * For HD video (720p/1080p), override to 128 via NANORTC_CONFIG_FILE. */
 #ifndef NANORTC_OUT_QUEUE_SIZE
 #define NANORTC_OUT_QUEUE_SIZE 32
 #endif

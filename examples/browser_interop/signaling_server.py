@@ -2,20 +2,25 @@
 """
 nanortc browser_interop — HTTP signaling relay server
 
-Two-peer message relay over pure HTTP. Zero external dependencies.
-Supports browser (fetch), Linux C client, and ESP32 (esp_http_client).
+Two modes:
+  - Legacy 2-peer mode: two peers (0, 1) with binary relay (backward compat)
+  - Host mode: peer 0 is a persistent host, peers 1..N are viewers
 
 API:
-    POST /join          → {"id": N}           Register as a peer (max 2)
-    POST /send?id=N     body=JSON             Relay message to other peer
-    GET  /recv?id=N     → JSON or 204         Long-poll (query: timeout=5)
-    POST /leave?id=N    → {"ok": true}        Unregister peer
-    GET  /              → index.html           Browser UI
+    POST /join              → {"id": N}           Register as a peer (legacy: max 2)
+    POST /join?role=host    → {"id": 0}           Register as host (enables multi-viewer)
+    POST /send?id=N         body=JSON             Relay message (legacy: to other peer)
+    POST /send?id=0&to=M    body=JSON             Host sends to specific viewer
+    GET  /recv?id=N         → JSON or 204         Long-poll (query: timeout=5)
+    POST /leave?id=N        → {"ok": true}        Unregister peer
+    GET  /                  → index.html           Browser UI
 
 Message format (all transports):
     {"type":"offer",     "sdp":"v=0\\r\\n..."}
     {"type":"answer",    "sdp":"v=0\\r\\n..."}
     {"type":"candidate", "candidate":"candidate:..."}
+
+In host mode, messages from viewers to host include "from": N.
 
 Usage:
     python3 signaling_server.py [--port 8765]
@@ -31,13 +36,30 @@ import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
-# Two-peer message queues: peers[id] = {"msgs": [], "event": Event}
+# Peer state: peers[id] = {"msgs": [], "event": Event}
 peers = {}
 lock = threading.Lock()
+host_mode = False
+MAX_PEERS = 8
 
 
-def alloc_peer():
+def alloc_peer(role=None):
+    global host_mode
     with lock:
+        if role == "host":
+            host_mode = True
+            if 0 not in peers:
+                peers[0] = {"msgs": [], "event": threading.Event()}
+                return 0
+            return -1  # host already registered
+        if host_mode:
+            # Multi-viewer: assign pid 1..N
+            for pid in range(1, MAX_PEERS):
+                if pid not in peers:
+                    peers[pid] = {"msgs": [], "event": threading.Event()}
+                    return pid
+            return -1  # full
+        # Legacy 2-peer mode
         for pid in (0, 1):
             if pid not in peers:
                 peers[pid] = {"msgs": [], "event": threading.Event()}
@@ -46,8 +68,12 @@ def alloc_peer():
 
 
 def remove_peer(pid):
+    global host_mode
     with lock:
         peers.pop(pid, None)
+        if pid == 0 and host_mode:
+            host_mode = False
+            print("[sig] Host left, reverting to legacy mode")
         if not peers:
             print("[sig] All peers gone, ready for new session")
 
@@ -153,25 +179,60 @@ class SigHandler(BaseHTTPRequestHandler):
         qs = parse_qs(parsed.query)
 
         if parsed.path == "/join":
-            pid = alloc_peer()
+            role = qs.get("role", [None])[0]
+            pid = alloc_peer(role)
             if pid < 0:
                 self._send_json({"error": "full"}, 409)
             else:
-                print(f"[sig] Peer {pid} joined ({self.client_address[0]})")
+                mode = "host" if role == "host" else (
+                    "viewer" if host_mode else "peer")
+                print(f"[sig] {mode.capitalize()} {pid} joined "
+                      f"({self.client_address[0]})")
                 self._send_json({"id": pid})
 
         elif parsed.path == "/send":
             pid = int(qs.get("id", [-1])[0])
             length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(length).decode() if length > 0 else ""
-            other = 1 - pid
-            try:
-                mtype = json.loads(body).get("type", "?")
-            except (json.JSONDecodeError, AttributeError):
-                mtype = "?"
-            print(f"[sig] Peer {pid} -> Peer {other}: {mtype}")
-            enqueue(other, body)
-            self._send_json({"ok": True})
+
+            if host_mode and pid == 0:
+                # Host sending: route to specific viewer via &to=M
+                to = int(qs.get("to", [-1])[0])
+                if to < 0:
+                    self._send_json({"error": "missing 'to' param"}, 400)
+                    return
+                try:
+                    mtype = json.loads(body).get("type", "?")
+                except (json.JSONDecodeError, AttributeError):
+                    mtype = "?"
+                print(f"[sig] Host -> Viewer {to}: {mtype}")
+                enqueue(to, body)
+                self._send_json({"ok": True})
+
+            elif host_mode and pid > 0:
+                # Viewer sending: route to host, inject "from" field
+                try:
+                    msg = json.loads(body)
+                    mtype = msg.get("type", "?")
+                    msg["from"] = pid
+                    tagged = json.dumps(msg)
+                except (json.JSONDecodeError, AttributeError):
+                    mtype = "?"
+                    tagged = body
+                print(f"[sig] Viewer {pid} -> Host: {mtype}")
+                enqueue(0, tagged)
+                self._send_json({"ok": True})
+
+            else:
+                # Legacy 2-peer mode
+                other = 1 - pid
+                try:
+                    mtype = json.loads(body).get("type", "?")
+                except (json.JSONDecodeError, AttributeError):
+                    mtype = "?"
+                print(f"[sig] Peer {pid} -> Peer {other}: {mtype}")
+                enqueue(other, body)
+                self._send_json({"ok": True})
 
         elif parsed.path == "/leave":
             pid = int(qs.get("id", [-1])[0])
@@ -248,6 +309,7 @@ if __name__ == "__main__":
     print(f"[sig]   Browser UI:  http://localhost:{args.port}/")
     print(f"[sig]   HTTP API:    POST /join, /send?id=N, /leave?id=N")
     print(f"[sig]                GET  /recv?id=N&timeout=5")
+    print(f"[sig]   Host mode:   POST /join?role=host (enables multi-viewer)")
 
     server = ThreadedHTTPServer(("0.0.0.0", args.port), SigHandler)
     try:

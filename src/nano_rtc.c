@@ -41,7 +41,7 @@ static const char hex_chars[] = "0123456789abcdef";
 /* Enqueue an output. Returns NANORTC_OK or NANORTC_ERR_BUFFER_TOO_SMALL. */
 static inline int rtc_enqueue_output(nanortc_t *rtc, const nanortc_output_t *out)
 {
-    uint8_t used = rtc->out_tail - rtc->out_head;
+    uint16_t used = (uint16_t)(rtc->out_tail - rtc->out_head);
     if (used >= NANORTC_OUT_QUEUE_SIZE) {
         return NANORTC_ERR_BUFFER_TOO_SMALL;
     }
@@ -1559,7 +1559,7 @@ static int video_send_fragment_cb(const uint8_t *payload, size_t len, int marker
 
     /* Select a packet buffer from the ring so multiple fragments don't clobber
      * each other before dispatch (Sans I/O). */
-    uint8_t slot = rtc->out_tail & (NANORTC_OUT_QUEUE_SIZE - 1);
+    uint16_t slot = rtc->out_tail & (NANORTC_OUT_QUEUE_SIZE - 1);
     uint8_t *pkt_buf = rtc->pkt_ring[slot];
 
     size_t rtp_len = 0;

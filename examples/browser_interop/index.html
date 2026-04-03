@@ -4,25 +4,56 @@
 <meta charset="utf-8">
 <title>nanortc Browser Interop</title>
 <style>
-  body { font-family: monospace; max-width: 720px; margin: 2em auto; }
-  h1 { font-size: 1.2em; }
-  .row { margin: 0.5em 0; display: flex; gap: 0.5em; align-items: center; }
-  label { min-width: 60px; }
-  input[type=text] { flex: 1; padding: 4px; font-family: monospace; }
-  button { padding: 4px 12px; cursor: pointer; }
-  #log { border: 1px solid #ccc; padding: 8px; height: 300px; overflow-y: auto;
-         white-space: pre-wrap; font-size: 0.85em; background: #f8f8f8; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: monospace; max-width: 800px; margin: 2em auto; padding: 0 1em; }
+  h1 { font-size: 1.2em; margin-bottom: 1em; }
+
+  /* Controls bar */
+  .controls { display: flex; gap: 0.5em; align-items: center; flex-wrap: wrap; }
+  .controls input[type=text] { flex: 1; min-width: 120px; padding: 4px; font-family: monospace; }
+  .controls select, .controls button { padding: 4px 12px; cursor: pointer; }
+
+  .status-bar { margin: 0.5em 0; }
   .status { font-weight: bold; }
   .ok { color: green; }
   .err { color: red; }
   .info { color: #666; }
+
+  /* Sections with top labels */
+  .section { margin: 1em 0; }
+  .section-title { font-weight: bold; font-size: 0.9em; color: #333; margin-bottom: 0.3em; }
+
+  /* Video: aspect-ratio container */
+  .video-wrap {
+    width: 100%; max-width: 640px;
+    background: #000; border-radius: 4px; overflow: hidden;
+  }
+  .video-wrap video {
+    display: block; width: 100%; height: auto;
+    object-fit: contain; background: #000;
+    cursor: pointer;
+  }
+
+  /* Audio */
+  .section audio { width: 100%; max-width: 400px; }
+
+  /* Message input */
+  .msg-row { display: flex; gap: 0.5em; }
+  .msg-row input[type=text] { flex: 1; padding: 4px; font-family: monospace; }
+  .msg-row button { padding: 4px 12px; cursor: pointer; }
+
+  /* Log */
+  #log {
+    border: 1px solid #ccc; padding: 8px; height: 240px; overflow-y: auto;
+    white-space: pre-wrap; font-size: 0.85em; background: #f8f8f8;
+    border-radius: 4px;
+  }
 </style>
 </head>
 <body>
-<h1>nanortc Browser Interop Test</h1>
+<h1>nanortc Browser Interop</h1>
 
-<div class="row">
-  <label>Server:</label>
+<div class="controls">
   <input type="text" id="sigUrl" value="">
   <select id="role">
     <option value="offerer">Offerer (browser creates DC)</option>
@@ -31,28 +62,29 @@
   <button id="btnConnect" onclick="start()">Connect</button>
 </div>
 
-<div class="row">
-  <label>Status:</label>
+<div class="status-bar">
   <span id="status" class="status info">Not connected</span>
 </div>
 
-<div class="row">
-  <input type="text" id="msgInput" placeholder="Type a message..." disabled>
-  <button id="btnSend" onclick="sendMsg()" disabled>Send</button>
+<div class="section">
+  <div class="section-title">Video</div>
+  <div class="video-wrap">
+    <video id="remoteVideo" autoplay playsinline muted controls></video>
+  </div>
 </div>
 
-<div class="row">
-  <label>Audio:</label>
-  <audio id="remoteAudio" autoplay controls></audio>
+<div class="section">
+  <div class="section-title">DataChannel</div>
+  <div class="msg-row">
+    <input type="text" id="msgInput" placeholder="Type a message..." disabled>
+    <button id="btnSend" onclick="sendMsg()" disabled>Send</button>
+  </div>
 </div>
 
-<div class="row">
-  <label>Video:</label>
-  <video id="remoteVideo" autoplay playsinline muted
-         style="max-width:640px; background:#000;"></video>
+<div class="section">
+  <div class="section-title">Log</div>
+  <div id="log"></div>
 </div>
-
-<div id="log"></div>
 
 <script>
 // Auto-detect signaling server URL (same origin)
@@ -206,15 +238,18 @@ async function start() {
 
   pc.ontrack = (e) => {
     log('ok', 'Got remote track: ' + e.track.kind);
-    if (e.track.kind === 'audio') {
-      const audio = document.getElementById('remoteAudio');
-      audio.srcObject = e.streams[0] || new MediaStream([e.track]);
-      log('info', 'Audio track attached to player');
-    } else if (e.track.kind === 'video') {
-      const video = document.getElementById('remoteVideo');
-      video.srcObject = e.streams[0] || new MediaStream([e.track]);
-      log('info', 'Video track attached to player');
+    const video = document.getElementById('remoteVideo');
+    if (e.streams && e.streams[0]) {
+      // Use the WebRTC-associated stream (proper timing/sync)
+      video.srcObject = e.streams[0];
+    } else {
+      // Fallback: manual stream for tracks without stream association
+      if (!video.srcObject) {
+        video.srcObject = new MediaStream();
+      }
+      video.srcObject.addTrack(e.track);
     }
+    log('info', e.track.kind + ' track attached to player');
   };
 
   pc.onicecandidate = async (e) => {

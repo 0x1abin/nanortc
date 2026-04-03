@@ -11,3 +11,7 @@ if(OPUS_FOUND)
 else()
     message(STATUS "libopus not found — skipping opus tools")
 endif()
+
+if(APPLE)
+    add_subdirectory(macos_camera)
+endif()

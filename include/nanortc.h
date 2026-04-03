@@ -511,8 +511,8 @@ struct nanortc {
 
     /* Output queue (simple ring buffer) */
     nanortc_output_t out_queue[NANORTC_OUT_QUEUE_SIZE];
-    uint8_t out_head;
-    uint8_t out_tail;
+    uint16_t out_head;
+    uint16_t out_tail;
 
     /* Scratch buffer for STUN encode/decode.
      * Sans I/O contract: caller must drain outputs before next handle_receive. */
