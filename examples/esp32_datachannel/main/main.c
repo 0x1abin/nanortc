@@ -274,7 +274,7 @@ void app_main(void)
     }
 
     /* 6. Start WebRTC event loop task */
-    xTaskCreatePinnedToCore(webrtc_task, "webrtc", 8192, NULL, 5, NULL, 0);
+    xTaskCreate(webrtc_task, "webrtc", 8192, NULL, 5, NULL);
 
     ESP_LOGI(TAG, "Open http://%s/ in your browser", s_local_ip);
 }
