@@ -960,14 +960,24 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
                         }
                     }
                 } else if (info.type == RTCP_PSFB) {
-                    /* PLI — find video track by SSRC and emit keyframe request event */
-                    int mid = ssrc_map_lookup(rtc->ssrc_map, NANORTC_MAX_SSRC_MAP, info.ssrc);
-                    if (mid >= 0) {
-                        nanortc_event_t kfevt;
-                        memset(&kfevt, 0, sizeof(kfevt));
-                        kfevt.type = NANORTC_EV_KEYFRAME_REQUEST;
-                        kfevt.keyframe_request.mid = (uint8_t)mid;
-                        rtc_emit_event_full(rtc, &kfevt);
+                    /* PSFB — check FMT to distinguish PLI (FMT=1) from REMB (FMT=15) */
+                    uint8_t psfb_fmt = rtc->stun_buf[0] & 0x1F;
+#if NANORTC_FEATURE_VIDEO
+                    if (psfb_fmt == BWE_REMB_FMT) {
+                        /* REMB — feed to bandwidth estimator */
+                        bwe_on_rtcp_feedback(&rtc->bwe, rtc->stun_buf, rtcp_len, rtc->now_ms);
+                    } else
+#endif
+                        if (psfb_fmt == 1) {
+                        /* PLI — find video track by SSRC and emit keyframe request event */
+                        int mid = ssrc_map_lookup(rtc->ssrc_map, NANORTC_MAX_SSRC_MAP, info.ssrc);
+                        if (mid >= 0) {
+                            nanortc_event_t kfevt;
+                            memset(&kfevt, 0, sizeof(kfevt));
+                            kfevt.type = NANORTC_EV_KEYFRAME_REQUEST;
+                            kfevt.keyframe_request.mid = (uint8_t)mid;
+                            rtc_emit_event_full(rtc, &kfevt);
+                        }
                     }
                 }
             }

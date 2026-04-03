@@ -106,6 +106,8 @@ int h264_depkt_init(nano_h264_depkt_t *d)
 int h264_depkt_push(nano_h264_depkt_t *d, const uint8_t *payload, size_t len, int marker,
                     const uint8_t **nalu_out, size_t *nalu_len)
 {
+    (void)marker; /* Reserved: RTP marker bit for access unit boundary */
+
     if (!d || !payload || len == 0 || !nalu_out || !nalu_len) {
         return NANORTC_ERR_INVALID_PARAM;
     }

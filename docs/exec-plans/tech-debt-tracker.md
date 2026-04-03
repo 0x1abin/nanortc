@@ -6,9 +6,9 @@ Track known debt, prioritize by impact, pay down continuously.
 
 | ID | Category | Description | Impact | Priority | Plan to Resolve |
 |----|----------|-------------|--------|----------|-----------------|
-| TD-001 | Build | `-Wno-unused-parameter` suppresses useful warnings | Low | Phase 3 | Remove per-file as stubs are replaced (all audio modules implemented, only BWE stub remains) |
-| TD-002 | Test | No test framework — manual macros only (313 tests, exceeds 50 threshold) | Medium | Phase 3 | Evaluate Unity (embedded C test framework) — threshold reached |
-| TD-008 | CI | `scripts/ci-check.sh` uses `declare -A` (bash 4+), fails on macOS default bash 3.2 | Low | Phase 3 | Replace associative array with positional args or install bash 4+ in CI |
+| TD-002 | Test | No test framework — manual macros only (333 tests, exceeds 50 threshold) | Medium | Phase 4 | Evaluate Unity (embedded C test framework) — threshold reached |
+| ~~TD-001~~ | ~~Build~~ | ~~`-Wno-unused-parameter` suppresses useful warnings~~ | ~~Low~~ | ~~Phase 3~~ | ~~Resolved~~ |
+| ~~TD-008~~ | ~~CI~~ | ~~`scripts/ci-check.sh` uses `declare -A` (bash 4+)~~ | ~~Low~~ | ~~Phase 3~~ | ~~Resolved~~ |
 | ~~TD-003~~ | ~~CI~~ | ~~No CI pipeline yet~~ | ~~Medium~~ | ~~Phase 1~~ | ~~Resolved~~ |
 | ~~TD-004~~ | ~~Crypto~~ | ~~DTLS stubs remain in both backends~~ | ~~High~~ | ~~Phase 1 Step 2~~ | ~~Resolved~~ |
 | ~~TD-005~~ | ~~Build~~ | ~~No `Kconfig` for ESP-IDF menuconfig~~ | ~~Low~~ | ~~Phase 1 Week 4~~ | ~~Resolved~~ |
@@ -40,6 +40,8 @@ Track known debt, prioritize by impact, pay down continuously.
 | TD-014 | 2026-03-31 | Refactored `rtc_apply_negotiated_media()`: video uses fmtp-selected PT (H264 with profile-level-id match), audio uses remote_pt. Added profile-level-id=42e01f preference in fmtp parsing. Debug logging at PT selection points. |
 | TD-015 | 2026-03-31 | Changed `NANORTC_MEDIA_BUF_SIZE` from hardcoded 1200 to `(NANORTC_VIDEO_MTU + 80)`, derived from MTU constant. Provides headroom for RTP header (12) + SRTP tag (10) + alignment. |
 | TD-016 | 2026-03-31 | Fixed `browser_interop` and `linux_datachannel` examples to use `nanortc_get_datachannel()` → `nanortc_datachannel_t` handle for send calls, matching the flat send API. Superseded 2026-04-01: removed handle type entirely, DataChannel API simplified to flat `nanortc_datachannel_send(rtc, id, ...)`. |
+| TD-001 | 2026-04-03 | Removed `-Wno-unused-parameter` from CMake — BWE fully implemented (no stubs remain), fixed `nano_h264.c` marker param with `(void)` cast. All 6 feature combos compile warning-free with `-Wall -Wextra -Werror`. |
+| TD-008 | 2026-04-03 | Already resolved: `ci-check.sh` was rewritten to use indexed arrays (bash 3.2 compatible). No `declare -A` or bash 4+ features. |
 
 ## Principles
 

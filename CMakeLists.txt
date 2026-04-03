@@ -162,7 +162,6 @@ set_target_properties(nanortc PROPERTIES
 
 target_compile_options(nanortc PRIVATE
     -Wall -Wextra -Werror
-    -Wno-unused-parameter
     -fvisibility=hidden
 )
 

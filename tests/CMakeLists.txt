@@ -10,7 +10,7 @@ set(MEDIA_TESTS test_rtp test_srtp test_rtcp)
 set(AUDIO_TESTS test_jitter)
 
 # Tests that require VIDEO specifically
-set(VIDEO_TESTS test_h264)
+set(VIDEO_TESTS test_h264 test_bwe)
 
 foreach(test_source ${TEST_SOURCES})
     get_filename_component(test_name ${test_source} NAME_WE)
