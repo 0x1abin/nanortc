@@ -162,10 +162,8 @@ tests/                      Unit tests + end-to-end tests (no network needed)
 tests/interop/              Interop tests against libdatachannel (C++)
 examples/                   Linux application templates
   common/                   Reusable event loop, signaling, media source
-  linux_datachannel/        DataChannel echo server
-  linux_media_send/         H.264/Opus sender from sample files
-  sample_data/              Media samples (git submodule)
   browser_interop/          Browser-based interop test harness
+  sample_data/              Media samples (git submodule)
 docs/                       Design docs, execution plans, engineering standards
 ```
 
