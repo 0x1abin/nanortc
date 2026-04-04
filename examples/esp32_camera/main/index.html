@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>nanortc ESP32-P4 Camera</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: monospace; max-width: 720px; margin: 2em auto;
+         padding: 0 1em; }
+  h1 { font-size: 1.2em; margin-bottom: 0.5em; }
+  .row { margin: 0.5em 0; display: flex; gap: 0.5em; align-items: center; }
+  label { min-width: 60px; }
+  button { padding: 4px 12px; cursor: pointer; }
+  video { width: 100%; max-width: 640px; background: #000; display: block;
+          margin: 0.5em 0; }
+  #log { border: 1px solid #ccc; padding: 8px; height: 200px; overflow-y: auto;
+         white-space: pre-wrap; font-size: 0.85em; background: #f8f8f8; }
+  .status { font-weight: bold; }
+  .ok { color: green; }
+  .err { color: red; }
+  .info { color: #666; }
+  .live { display: none; background: #e00; color: #fff; padding: 2px 8px;
+          border-radius: 3px; font-size: 0.8em; font-weight: bold;
+          letter-spacing: 1px; }
+  .live.on { display: inline; }
+</style>
+</head>
+<body>
+<h1>nanoRTC ESP32 Camera</h1>
+
+<div class="row">
+  <label>Status:</label>
+  <span id="status" class="status info">Not connected</span>
+  <span id="live" class="live">LIVE</span>
+  <button id="btnConnect" onclick="connect()">Connect</button>
+</div>
+
+<video id="video" autoplay playsinline muted controls></video>
+
+<div id="log"></div>
+
+<script>
+let pc = null;
+
+function log(cls, msg) {
+  const el = document.getElementById('log');
+  const line = document.createElement('div');
+  line.className = cls;
+  line.textContent = '[' + new Date().toLocaleTimeString() + '] ' + msg;
+  el.appendChild(line);
+  el.scrollTop = el.scrollHeight;
+}
+
+function setStatus(cls, text) {
+  const el = document.getElementById('status');
+  el.className = 'status ' + cls;
+  el.textContent = text;
+}
+
+function waitIceGathering(pc, timeout) {
+  return new Promise((resolve) => {
+    if (pc.iceGatheringState === 'complete') {
+      resolve();
+      return;
+    }
+    const timer = setTimeout(resolve, timeout);
+    pc.onicegatheringstatechange = () => {
+      if (pc.iceGatheringState === 'complete') {
+        clearTimeout(timer);
+        resolve();
+      }
+    };
+  });
+}
+
+function cleanup() {
+  if (pc) { pc.close(); pc = null; }
+  document.getElementById('live').className = 'live';
+}
+
+async function connect() {
+  cleanup();
+  document.getElementById('btnConnect').disabled = true;
+  setStatus('info', 'Creating offer...');
+  log('info', 'Connecting...');
+
+  try {
+    /* Get browser's real IP from ESP32 (Chrome hides LAN IPs behind mDNS) */
+    let myIP = '';
+    try {
+      const r = await fetch('/myip');
+      myIP = (await r.text()).trim();
+      log('info', 'My IP: ' + myIP);
+    } catch(e) { log('err', 'Failed to get IP'); }
+
+    pc = new RTCPeerConnection({
+      iceServers: [{urls: 'stun:stun.l.google.com:19302'}]
+    });
+
+    pc.oniceconnectionstatechange = () => {
+      const s = pc.iceConnectionState;
+      log('info', 'ICE: ' + s);
+      if (s === 'connected' || s === 'completed') {
+        setStatus('ok', 'ICE connected');
+      } else if (s === 'failed' || s === 'disconnected') {
+        setStatus('err', 'Disconnected (' + s + ')');
+        document.getElementById('live').className = 'live';
+      }
+    };
+
+    /* Video-only recvonly transceiver */
+    pc.addTransceiver('video', { direction: 'recvonly' });
+
+    pc.ontrack = (e) => {
+      const video = document.getElementById('video');
+      if (!video.srcObject) {
+        video.srcObject = new MediaStream();
+      }
+      video.srcObject.addTrack(e.track);
+      log('ok', e.track.kind + ' track received');
+      if (e.track.kind === 'video') {
+        setStatus('ok', 'Playing');
+        document.getElementById('live').className = 'live on';
+      }
+    };
+
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+
+    setStatus('info', 'Gathering ICE candidates...');
+    log('info', 'Gathering ICE candidates...');
+    await waitIceGathering(pc, 3000);
+
+    /* Replace mDNS hostnames with real IP in the SDP */
+    let offerSdp = pc.localDescription.sdp;
+    if (myIP) {
+      offerSdp = offerSdp.replace(
+        /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.local/g, myIP);
+      log('info', 'mDNS replaced with ' + myIP);
+    }
+
+    setStatus('info', 'Sending offer to ESP32...');
+    log('info', 'Sending offer (' + offerSdp.length + ' bytes)');
+    const resp = await fetch('/offer', {
+      method: 'POST',
+      body: offerSdp,
+    });
+
+    if (!resp.ok) {
+      throw new Error('Server error: ' + resp.status + ' ' + await resp.text());
+    }
+
+    const answerSdp = await resp.text();
+    log('info', 'Got answer (' + answerSdp.length + ' bytes)');
+    await pc.setRemoteDescription({ type: 'answer', sdp: answerSdp });
+
+    /* Extract and add candidates from the answer SDP */
+    const candLines = answerSdp.match(/a=candidate:.+/g) || [];
+    const mids = (answerSdp.match(/a=mid:(\S+)/g) || []).map(s => s.split(':')[1]);
+    for (const line of candLines) {
+      for (let i = 0; i < mids.length; i++) {
+        await pc.addIceCandidate({candidate: line, sdpMid: mids[i], sdpMLineIndex: i});
+      }
+      log('info', 'Added candidate: ' + line.substring(0, 60));
+    }
+
+    setStatus('info', 'Waiting for connection...');
+
+  } catch (e) {
+    setStatus('err', 'Error: ' + e.message);
+    log('err', 'Error: ' + e.message);
+  }
+  document.getElementById('btnConnect').disabled = false;
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,5 @@
+dependencies:
+  protocol_examples_common:
+    path: ${IDF_PATH}/examples/common_components/protocol_examples_common
+  espressif/esp_video: ^2.0.1
+  espressif/esp_cam_sensor: ^2.0.1

@@ -1,0 +1,69 @@
+menu "ESP32 Camera Example"
+
+    config EXAMPLE_UDP_PORT
+        int "Local UDP port for WebRTC"
+        default 9999
+        range 1024 65535
+        help
+            UDP port for STUN/DTLS/RTP traffic.
+
+    config EXAMPLE_VIDEO_WIDTH
+        int "Video width"
+        default 1280
+        help
+            Camera capture and H264 encode width in pixels.
+
+    config EXAMPLE_VIDEO_HEIGHT
+        int "Video height"
+        default 960
+        help
+            Camera capture and H264 encode height in pixels.
+
+    config EXAMPLE_VIDEO_FPS
+        int "Video frame rate (fps)"
+        default 30
+        range 1 60
+        help
+            Camera capture frame rate. The H264 encoder and RTP sender
+            are paced by the camera sensor output rate.
+
+    config EXAMPLE_H264_BITRATE_KBPS
+        int "H264 target bitrate (kbps)"
+        default 1024
+        range 256 8192
+        help
+            Target bitrate for H264 hardware encoder in kilobits per second.
+
+    config EXAMPLE_H264_GOP
+        int "H264 GOP size (keyframe interval in frames)"
+        default 60
+        range 1 250
+        help
+            Group of Pictures size. An IDR keyframe is generated every
+            GOP frames. At 25fps, GOP=50 means a keyframe every 2 seconds.
+
+    config EXAMPLE_CAM_XCLK_PIN
+        int "Camera XCLK GPIO pin"
+        default 33
+        help
+            GPIO pin for camera external clock (XCLK).
+
+    config EXAMPLE_CAM_RESET_PIN
+        int "Camera reset GPIO pin (-1 = not used)"
+        default -1
+        range -1 56
+
+    config EXAMPLE_CAM_PWDN_PIN
+        int "Camera power-down GPIO pin (-1 = not used)"
+        default -1
+        range -1 56
+
+    config EXAMPLE_CAM_SCCB_SCL_PIN
+        int "Camera I2C SCL GPIO pin"
+        default 8
+
+    config EXAMPLE_CAM_SCCB_SDA_PIN
+        int "Camera I2C SDA GPIO pin"
+        default 7
+
+endmenu

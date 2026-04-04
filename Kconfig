@@ -114,7 +114,7 @@ menu "NanoRTC Configuration"
     config NANORTC_OUT_QUEUE_SIZE
         int "Output event queue depth"
         default 8
-        range 4 64
+        range 4 256
         help
             Depth of the output event ring buffer. Must be a power of 2.
 
