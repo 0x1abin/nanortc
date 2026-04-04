@@ -1,5 +1,8 @@
 dependencies:
   protocol_examples_common:
     path: ${IDF_PATH}/examples/common_components/protocol_examples_common
-  espressif/esp_video: ^2.0.1
-  espressif/esp_cam_sensor: ^2.0.1
+  espressif/esp_wifi_remote: '*'
+  espressif/esp_hosted: '*'
+  espressif/esp_capture: ^0.8.1
+  espressif/esp_audio_codec: '~2.4'
+  espressif/esp_board_manager: ^0.5.7

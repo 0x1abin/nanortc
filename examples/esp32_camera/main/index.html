@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>nanortc ESP32-P4 Camera</title>
+<title>nanortc ESP32-P4 Camera + Audio</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: monospace; max-width: 720px; margin: 2em auto;
@@ -27,13 +27,14 @@
 </style>
 </head>
 <body>
-<h1>nanoRTC ESP32 Camera</h1>
+<h1>nanoRTC ESP32 Camera + Audio</h1>
 
 <div class="row">
   <label>Status:</label>
   <span id="status" class="status info">Not connected</span>
   <span id="live" class="live">LIVE</span>
   <button id="btnConnect" onclick="connect()">Connect</button>
+  <button id="btnUnmute" onclick="unmute()" style="display:none">Unmute</button>
 </div>
 
 <video id="video" autoplay playsinline muted controls></video>
@@ -74,9 +75,17 @@ function waitIceGathering(pc, timeout) {
   });
 }
 
+function unmute() {
+  const video = document.getElementById('video');
+  video.muted = false;
+  document.getElementById('btnUnmute').style.display = 'none';
+  log('ok', 'Audio unmuted');
+}
+
 function cleanup() {
   if (pc) { pc.close(); pc = null; }
   document.getElementById('live').className = 'live';
+  document.getElementById('btnUnmute').style.display = 'none';
 }
 
 async function connect() {
@@ -109,7 +118,8 @@ async function connect() {
       }
     };
 
-    /* Video-only recvonly transceiver */
+    /* Audio + video recvonly transceivers (order must match ESP32 track order) */
+    pc.addTransceiver('audio', { direction: 'recvonly' });
     pc.addTransceiver('video', { direction: 'recvonly' });
 
     pc.ontrack = (e) => {
@@ -122,6 +132,10 @@ async function connect() {
       if (e.track.kind === 'video') {
         setStatus('ok', 'Playing');
         document.getElementById('live').className = 'live on';
+      }
+      if (e.track.kind === 'audio') {
+        document.getElementById('btnUnmute').style.display = '';
+        log('info', 'Click "Unmute" to hear audio');
       }
     };
 

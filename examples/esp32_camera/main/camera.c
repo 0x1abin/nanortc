@@ -1,9 +1,9 @@
 /*
- * nanortc ESP32-P4 Camera example — V4L2 capture via esp_video
+ * nanortc ESP32-P4 Camera example — V4L2 capture via board manager
  *
- * Uses the esp_video V4L2 layer to capture YUV420 frames from
- * a MIPI CSI camera sensor. The esp_video component handles
- * CSI controller, ISP, and sensor driver initialization internally.
+ * The board manager handles XCLK, I2C (SCCB), LDO, and esp_video
+ * initialization. This module only does V4L2 device open, format
+ * negotiation, buffer setup, and frame capture.
  *
  * SPDX-License-Identifier: MIT
  */
@@ -18,11 +18,13 @@
 
 #include "esp_log.h"
 
-#include "esp_video_init.h"
+#include "esp_board_device.h"
+#include "esp_board_manager_defs.h"
+#include "dev_camera.h"
+
 #include "esp_video_device.h"
 #include "esp_video_ioctl.h"
 #include "linux/videodev2.h"
-#include "esp_cam_sensor_xclk.h"
 
 static const char *TAG = "camera";
 
@@ -35,7 +37,6 @@ typedef struct {
     int last_dequeued_index;
     uint16_t width;
     uint16_t height;
-    esp_cam_sensor_xclk_handle_t xclk_handle;
 } cam_state_t;
 
 static cam_state_t s_cam;
@@ -52,52 +53,19 @@ int camera_init(uint16_t width, uint16_t height, uint8_t fps)
     s_cam.width = width;
     s_cam.height = height;
 
-    /* Phase 1: XCLK setup (esp_video does not handle XCLK for CSI devices) */
-    esp_err_t ret = esp_cam_sensor_xclk_allocate(
-        ESP_CAM_SENSOR_XCLK_ESP_CLOCK_ROUTER, &s_cam.xclk_handle);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "XCLK allocate failed: %s", esp_err_to_name(ret));
-        return -1;
-    }
-    esp_cam_sensor_xclk_config_t xclk_cfg = {
-        .esp_clock_router_cfg = {
-            .xclk_pin = CONFIG_EXAMPLE_CAM_XCLK_PIN,
-            .xclk_freq_hz = 24 * 1000 * 1000,
-        }
-    };
-    ret = esp_cam_sensor_xclk_start(s_cam.xclk_handle, &xclk_cfg);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "XCLK start failed: %s", esp_err_to_name(ret));
+    /* Get camera device path from board manager (already initialized in main) */
+    dev_camera_handle_t *cam_handle = NULL;
+    esp_err_t ret = esp_board_device_get_handle(ESP_BOARD_DEVICE_NAME_CAMERA,
+                                                 (void **)&cam_handle);
+    if (ret != ESP_OK || cam_handle == NULL) {
+        ESP_LOGE(TAG, "Failed to get camera handle: %s", esp_err_to_name(ret));
         return -1;
     }
 
-    /* Phase 2: Initialize esp_video subsystem (handles CSI+ISP+sensor internally) */
-    esp_video_init_csi_config_t csi_cfg = {
-        .sccb_config = {
-            .init_sccb = true,
-            .i2c_config = {
-                .port = I2C_NUM_0,
-                .scl_pin = CONFIG_EXAMPLE_CAM_SCCB_SCL_PIN,
-                .sda_pin = CONFIG_EXAMPLE_CAM_SCCB_SDA_PIN,
-            },
-            .freq = 100000,
-        },
-        .reset_pin = CONFIG_EXAMPLE_CAM_RESET_PIN,
-        .pwdn_pin = CONFIG_EXAMPLE_CAM_PWDN_PIN,
-    };
-    esp_video_init_config_t cam_config = {
-        .csi = &csi_cfg,
-    };
-    ret = esp_video_init(&cam_config);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "esp_video_init failed: %s", esp_err_to_name(ret));
-        return -1;
-    }
-
-    /* Phase 3: Open V4L2 device and configure capture */
-    s_cam.fd = open(ESP_VIDEO_MIPI_CSI_DEVICE_NAME, O_RDONLY);
+    /* Open V4L2 device using board-provided path */
+    s_cam.fd = open(cam_handle->dev_path, O_RDONLY);
     if (s_cam.fd < 0) {
-        ESP_LOGE(TAG, "Failed to open %s", ESP_VIDEO_MIPI_CSI_DEVICE_NAME);
+        ESP_LOGE(TAG, "Failed to open %s", cam_handle->dev_path);
         return -1;
     }
 
@@ -244,12 +212,5 @@ void camera_deinit(void)
         s_cam.fd = -1;
     }
 
-    if (s_cam.xclk_handle) {
-        esp_cam_sensor_xclk_stop(s_cam.xclk_handle);
-        esp_cam_sensor_xclk_free(s_cam.xclk_handle);
-        s_cam.xclk_handle = NULL;
-    }
-
-    esp_video_deinit();
     ESP_LOGI(TAG, "Camera deinitialized");
 }

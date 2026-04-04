@@ -1,157 +1,162 @@
-# ESP32-P4 Camera — Live WebRTC Streaming
+# ESP32-P4 Camera — WebRTC 实时推流
 
-ESP32-P4 通过 MIPI CSI 采集 OV5647 摄像头画面，经硬件 H.264 编码后，
-使用 NanoRTC 以 WebRTC 协议实时推送到浏览器。
+ESP32-P4 通过 MIPI CSI 采集摄像头画面、I2S 采集 ES8311 麦克风音频，
+经硬件 H.264 + Opus 编码后，使用 NanoRTC 以 WebRTC 协议实时推送到浏览器。
 
-## Requirements
+## 硬件要求
 
-- **ESP-IDF**: v5.5.3
-- **Target**: ESP32-P4
-- **Managed Components**: `esp_video ^2.0.1`, `esp_cam_sensor ^2.0.1`
-
-## Hardware
-
-### Tested Board
-
-| Item | Spec |
+| 项目 | 规格 |
 |------|------|
-| Board | ESP32-P4-Nano v1.0 |
-| SoC | ESP32-P4, rev v1.0, dual-core RISC-V @ 360 MHz |
-| Flash | GD25Q128E, 8 MB QIO (板载 16 MB，固件限制为 8 MB) |
-| PSRAM | 32 MB Hex-PSRAM, 200 MHz |
-| Network | Internal EMAC + IP101 PHY (100 Mbps Ethernet, RJ45) |
-| Camera | OV5647 模组 (5MP, MIPI CSI 2-lane, FPC 排线连接) |
-| Power | USB-C 供电 |
-| Console | USB 串口 (CH340), 115200 baud, GPIO 38 TX / GPIO 37 RX |
+| 开发板 | ESP32-P4-Nano v1.0（或任何带 CSI 摄像头 + I2S 音频 codec 的 ESP32-P4 板） |
+| SoC | ESP32-P4，双核 RISC-V @ 360 MHz，硬件 H.264 编码器 |
+| PSRAM | 必需（建议 32 MB） |
+| 网络 | 以太网（ESP32-P4 无 WiFi） |
+| 摄像头 | OV5647 (MIPI CSI) — 可通过 board YAML 配置其他传感器 |
+| 音频 | ES8311 codec (I2S) — 可通过 board YAML 配置其他 codec |
 
-### GPIO Assignment
+硬件引脚定义在 `boards/<board>/board_peripherals.yaml` 中，
+应用代码不硬编码任何引脚。参见[自定义板适配](#自定义板适配)了解如何适配你的硬件。
 
-| Function | GPIO | Note |
-|----------|------|------|
-| Camera XCLK | 33 | 24 MHz clock output to OV5647 |
-| Camera I2C SCL | 8 | SCCB control bus (100 kHz) |
-| Camera I2C SDA | 7 | SCCB control bus |
-| Camera Reset | -1 | Not connected (使用默认值) |
-| Camera Power Down | -1 | Not connected (使用默认值) |
-| Ethernet MDC | 31 | EMAC management clock |
-| Ethernet MDIO | 52 | EMAC management data |
-| Ethernet PHY Reset | -1 | Not connected |
-| Ethernet PHY Addr | 1 | IP101 PHY address |
-| UART TX | 38 | Console output |
-| UART RX | 37 | Console input |
-
-GPIO 引脚可通过 `idf.py menuconfig` → "ESP32 Camera Example" 修改。
-
-### Camera Sensor Modes (OV5647)
-
-| Resolution | Format | FPS | Kconfig Option |
-|------------|--------|-----|----------------|
-| 1920x1080 | RAW10 | 30 | `CAMERA_OV5647_MIPI_RAW10_1920X1080_30FPS` (default) |
-| 1280x960 | RAW10 | 45 | `CAMERA_OV5647_MIPI_RAW10_1280X960_BINNING_45FPS` |
-| 800x800 | RAW8 | 50 | `CAMERA_OV5647_MIPI_RAW8_800X800_50FPS` |
-| 800x640 | RAW8 | 50 | `CAMERA_OV5647_MIPI_RAW8_800X640_50FPS` |
-| 800x1280 | RAW8 | 50 | `CAMERA_OV5647_MIPI_RAW8_800X1280_50FPS` |
-
-切换分辨率时需同步修改 `EXAMPLE_VIDEO_WIDTH` 和 `EXAMPLE_VIDEO_HEIGHT`。
-
-## Architecture
-
-```
-Core 1 — camera_task (priority 6)          Core 0 — webrtc_task (priority 5)
-┌─────────────────────────────┐            ┌─────────────────────────────┐
-│ V4L2 DQBUF (YUV420)         │            │ nano_run_loop_step()        │
-│         ↓                   │            │   ↑ DTLS/STUN/RTP polling   │
-│ H.264 HW encode             │  FreeRTOS  │         ↓                   │
-│         ↓                   │───Queue───→│ nanortc_send_video()        │
-│ V4L2 QBUF (return buffer)   │  (depth=2) │   ↓ RTP/SRTP → UDP          │
-└─────────────────────────────┘            └─────────────────────────────┘
-```
-
-- **Camera capture**: esp_video V4L2 API (`/dev/video0`), MMAP double buffering
-- **H.264 encoder**: esp_h264 hardware encoder, Annex-B output
-- **WebRTC**: NanoRTC (Sans I/O) + mbedTLS (DTLS-SRTP)
-- **Signaling**: HTTP POST `/offer` (SDP offer/answer exchange)
-
-## Build & Flash
+## 编译与烧录
 
 ```bash
 cd examples/esp32_camera
+
+# 1. 设置目标芯片（会下载依赖组件）
 idf.py set-target esp32p4
+
+# 2. 生成板级配置（首次或切换板型时执行）
+python managed_components/espressif__esp_board_manager/gen_bmgr_config_codes.py \
+  -b esp32_p4_nano -c boards
+
+# 3. 编译并烧录
 idf.py build
 idf.py flash monitor
 ```
 
-## Usage
+步骤 2 完成后，后续修改代码只需 `idf.py build`。
+
+## 使用方法
 
 1. 烧录后等待设备获取 IP 地址（串口日志会打印）
-2. 在浏览器打开 `http://<device-ip>/`
-3. 点击 **Connect** 按钮
-4. 视频流将在页面上实时显示，点击视频控制栏的全屏按钮可全屏观看
+2. 在浏览器打开 `http://<device-ip>/`（推荐 Chrome）
+3. 点击 **Connect**
+4. 实时音视频流将显示在页面上
 
-## Test Status
+## 架构
 
-### 已验证功能
+```
+Core 1 — camera_task (pri 6)               Core 0 — webrtc_task (pri 5)
+┌─────────────────────────────┐            ┌─────────────────────────────┐
+│ V4L2 DQBUF (YUV420)         │            │ nano_run_loop_step()        │
+│         ↓                   │  FreeRTOS  │   ↑ DTLS/STUN/RTP polling   │
+│ H.264 HW encode             │───Queue───→│ nanortc_send_video()        │
+│         ↓                   │  (depth=2) │ nanortc_send_audio()        │
+│ V4L2 QBUF (return buffer)   │            │   ↓ RTP/SRTP → UDP          │
+└─────────────────────────────┘            └─────────────────────────────┘
 
-| Test Case | Status | Note |
-|-----------|--------|------|
-| Camera V4L2 采集 | Pass | 1920x1080 YUV420, ~30fps 稳定 |
-| H.264 硬件编码 | Pass | 3072 kbps, GOP=60 (2s) |
-| WebRTC 连接 (Chrome) | Pass | HTTP signaling, ICE/DTLS/SRTP |
-| 浏览器视频播放 | Pass | Chrome 桌面端实时播放 |
-| 连接时强制 IDR | Pass | 避免首帧等待 |
-| PLI 关键帧请求 | Pass | 浏览器请求 → 编码器响应 |
-| 断连重连 | Pass | 多次连接/断开无泄漏 |
-| 长时间运行 | Pass | Heap 监控显示内存稳定 |
+Core 0 — microphone_task (pri 7)
+┌──────────────────────────────┐
+│ esp_capture (ES8311 → Opus)  │───Queue (depth=4)───→ webrtc_task
+└──────────────────────────────┘
+```
 
-### 内存占用 (运行时)
+- **板级初始化**: `esp_board_manager` 处理 I2C、I2S、XCLK、LDO、codec、摄像头传感器
+- **摄像头采集**: 通过 board manager 提供的 `dev_path` 使用 V4L2 API，MMAP 双缓冲
+- **H.264 编码**: 硬件编码器（仅 ESP32-P4），Annex-B 输出，支持动态关键帧/码率
+- **音频采集**: `esp_capture` 框架 + Opus 编码，codec 由 board manager 管理
+- **WebRTC**: NanoRTC (Sans I/O) + mbedTLS (DTLS-SRTP)
+- **信令**: HTTP POST `/offer` (SDP offer/answer)
 
-| Resource | Free | Min Watermark |
-|----------|------|---------------|
-| Internal RAM | ~193 KB | ~188 KB |
-| PSRAM | ~21 MB (of 32 MB) | 稳定 |
+## 自定义板适配
 
-### 已知限制
+应用代码通过 `esp_board_manager` handle 访问硬件——**没有硬编码任何引脚或芯片型号**。
+适配其他 ESP32-P4 开发板：
 
-- 仅支持 Ethernet 网络（ESP32-P4 无 WiFi）
-- 仅支持单客户端同时连接
-- `VIDIOC_S_PARM` 设置帧率在当前 esp_video 版本不生效，使用传感器默认帧率
+1. 在 `boards/` 下创建新目录（可复制 `boards/esp32_p4_nano/`）：
 
-## Configuration
+   | 文件 | 用途 |
+   |------|------|
+   | `board_info.yaml` | 板名、芯片类型 |
+   | `board_peripherals.yaml` | I2C / I2S / GPIO / LDO 引脚配置 |
+   | `board_devices.yaml` | 摄像头、音频 codec、SD 卡设备配置 |
+   | `sdkconfig.defaults.board` | 摄像头传感器驱动配置（如 OV5647、SC2336） |
 
-通过 `idf.py menuconfig` → "ESP32 Camera Example" 调整参数：
+2. 生成并编译：
+   ```bash
+   python managed_components/espressif__esp_board_manager/gen_bmgr_config_codes.py \
+     -b my_board -c boards
+   idf.py build
+   ```
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
+### YAML 配置指南
+
+| 你的板子有... | 修改... |
+|--------------|---------|
+| 不同的 I2C/I2S 引脚 | `board_peripherals.yaml` |
+| 不同的摄像头传感器 | `board_devices.yaml`（sub_type, xclk）+ `sdkconfig.defaults.board` |
+| 不同的音频 codec（ES8388 等）| `board_devices.yaml`（chip 字段） |
+| 无功放 | 从 peripherals 和 device 引用中删除 `gpio_pa_control` |
+| DVP 摄像头而非 CSI | 改 `sub_type: "dvp"`，删除 `ldo_mipi` |
+
+### 约束条件
+
+- **仅支持 ESP32-P4**：硬件 H.264 编码器是 P4 专有的
+- **需要 PSRAM**：Opus 编码器需要 40 KB+ 栈空间，摄像头帧缓冲使用 PSRAM
+- **CSI 摄像头需要 LDO_MIPI**：`main.c` 中调用 `esp_board_periph_init(LDO_MIPI)`，DVP/SPI 摄像头可注释此行
+
+## 参数配置
+
+通过 `idf.py menuconfig` → "ESP32 Camera Example" 调整：
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
 | `EXAMPLE_UDP_PORT` | 9999 | WebRTC STUN/DTLS/RTP 端口 |
-| `EXAMPLE_VIDEO_WIDTH` | 1920 | 视频宽度（需匹配传感器模式） |
-| `EXAMPLE_VIDEO_HEIGHT` | 1080 | 视频高度（需匹配传感器模式） |
+| `EXAMPLE_VIDEO_WIDTH` | 1280 | 视频宽度（需匹配传感器模式） |
+| `EXAMPLE_VIDEO_HEIGHT` | 960 | 视频高度（需匹配传感器模式） |
 | `EXAMPLE_VIDEO_FPS` | 30 | 视频帧率 |
-| `EXAMPLE_H264_BITRATE_KBPS` | 3072 | H.264 目标码率 (kbps) |
-| `EXAMPLE_H264_GOP` | 60 | 关键帧间隔（帧数），30fps 下 GOP=60 = 2 秒 |
+| `EXAMPLE_H264_BITRATE_KBPS` | 1024 | H.264 目标码率 (kbps) |
+| `EXAMPLE_H264_GOP` | 60 | 关键帧间隔（30fps 下 GOP=60 = 2 秒） |
 
-## Keyframe Handling
+ESP32-P4-Nano 板在 `sdkconfig.defaults.esp32p4` 中覆盖分辨率为 1920x1080。
 
-- **定时 IDR**: 编码器每 GOP 帧自动生成一个 IDR 关键帧
-- **连接时强制 IDR**: WebRTC 连接建立后立即强制编码器输出 IDR，避免浏览器等待下一个 GOP 边界
-- **PLI 响应**: 浏览器发送 RTCP PLI 时，nanortc 触发 `NANORTC_EV_KEYFRAME_REQUEST` 事件，编码器在下一帧强制 IDR
+## 关键帧处理
 
-## File Structure
+- **定时 IDR**: 每 GOP 帧自动生成
+- **连接时 IDR**: WebRTC 连接建立后立即强制输出
+- **PLI 响应**: 浏览器 RTCP PLI → `NANORTC_EV_KEYFRAME_REQUEST` → 编码器 IDR
+
+## 文件结构
 
 ```
 esp32_camera/
-├── CMakeLists.txt              # ESP-IDF project config
-├── partitions.csv              # Flash partition table (factory 1984 KB)
-├── sdkconfig.defaults          # Common SDK config (mbedTLS, lwIP, nanortc)
-├── sdkconfig.defaults.esp32p4  # P4-specific config (SPIRAM, Ethernet, OV5647)
+├── CMakeLists.txt                  # 项目配置（包含 board_manager.defaults）
+├── partitions.csv                  # Flash 分区表
+├── sdkconfig.defaults              # 通用配置（mbedTLS, lwIP, nanortc）
+├── sdkconfig.defaults.esp32p4      # P4 专属（SPIRAM, 以太网, 分辨率）
+├── boards/
+│   └── esp32_p4_nano/              # 板级配置（YAML，见自定义板适配）
+│       ├── board_info.yaml
+│       ├── board_peripherals.yaml
+│       ├── board_devices.yaml
+│       └── sdkconfig.defaults.board
+├── components/
+│   └── gen_bmgr_codes/             # gen_bmgr_config_codes.py 生成（不入 git）
 ├── main/
-│   ├── CMakeLists.txt          # Component sources and embedded files
-│   ├── Kconfig.projbuild       # Menuconfig options
-│   ├── idf_component.yml       # Managed components (esp_video, esp_cam_sensor)
-│   ├── main.c                  # App entry, WebRTC session, dual-core tasks
-│   ├── camera.c                # V4L2 camera capture (esp_video)
-│   ├── camera.h                # Camera API
-│   ├── encoder.c               # H.264 HW encoder (esp_h264)
-│   ├── encoder.h               # Encoder API
-│   └── index.html              # Browser WebRTC UI
-└── README.md
+│   ├── CMakeLists.txt
+│   ├── Kconfig.projbuild           # Menuconfig：视频/编码器参数
+│   ├── idf_component.yml           # 依赖：esp_board_manager, esp_capture 等
+│   ├── main.c                      # 板级初始化、WebRTC 会话、任务编排
+│   ├── camera.c / camera.h         # V4L2 采集（使用 board manager dev_path）
+│   ├── encoder.c / encoder.h       # H.264 硬件编码器（关键帧 + 码率控制）
+│   ├── microphone.c / microphone.h # Opus 采集（使用 board manager codec_dev）
+│   └── index.html                  # 浏览器 WebRTC 界面
+├── README.md                       # English documentation
+└── README_CN.md                    # 本文件
 ```
+
+## 已知限制
+
+- 仅支持以太网（ESP32-P4 无 WiFi）
+- 仅支持单客户端同时连接
+- `VIDIOC_S_PARM` 帧率设置在当前 esp_video 版本不生效，使用传感器默认帧率

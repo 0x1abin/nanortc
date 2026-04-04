@@ -113,13 +113,17 @@ int encoder_encode(const uint8_t *yuv, size_t yuv_len,
     if (!s_enc.enc)
         return -1;
 
-    /* Handle pending keyframe request by resetting encoder */
+    /* Handle pending keyframe request by temporarily setting GOP=1 */
+    bool restore_gop = false;
     if (s_enc.keyframe_requested) {
         s_enc.keyframe_requested = false;
-        ESP_LOGI(TAG, "Forcing IDR: resetting encoder");
-        destroy_encoder();
-        if (create_encoder() != 0)
-            return -1;
+        esp_h264_enc_param_hw_handle_t param_hd = NULL;
+        esp_h264_err_t kr = esp_h264_enc_hw_get_param_hd(s_enc.enc, &param_hd);
+        if (kr == ESP_H264_ERR_OK) {
+            esp_h264_enc_set_gop(&param_hd->base, 1);
+            restore_gop = true;
+            ESP_LOGI(TAG, "Forcing IDR via GOP=1");
+        }
     }
 
     /* Handle pending bitrate change */
@@ -148,6 +152,14 @@ int encoder_encode(const uint8_t *yuv, size_t yuv_len,
     esp_cache_msync(s_enc.out_frame.raw_data.buffer,
                     (s_enc.out_frame.length + 63) & ~63,
                     ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+
+    /* Restore original GOP after IDR */
+    if (restore_gop) {
+        esp_h264_enc_param_hw_handle_t param_hd = NULL;
+        if (esp_h264_enc_hw_get_param_hd(s_enc.enc, &param_hd) == ESP_H264_ERR_OK) {
+            esp_h264_enc_set_gop(&param_hd->base, s_enc.cfg.gop);
+        }
+    }
 
     *h264_out = s_enc.out_frame.raw_data.buffer;
     *out_len = s_enc.out_frame.length;

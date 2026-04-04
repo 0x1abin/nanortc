@@ -42,28 +42,4 @@ menu "ESP32 Camera Example"
             Group of Pictures size. An IDR keyframe is generated every
             GOP frames. At 25fps, GOP=50 means a keyframe every 2 seconds.
 
-    config EXAMPLE_CAM_XCLK_PIN
-        int "Camera XCLK GPIO pin"
-        default 33
-        help
-            GPIO pin for camera external clock (XCLK).
-
-    config EXAMPLE_CAM_RESET_PIN
-        int "Camera reset GPIO pin (-1 = not used)"
-        default -1
-        range -1 56
-
-    config EXAMPLE_CAM_PWDN_PIN
-        int "Camera power-down GPIO pin (-1 = not used)"
-        default -1
-        range -1 56
-
-    config EXAMPLE_CAM_SCCB_SCL_PIN
-        int "Camera I2C SCL GPIO pin"
-        default 8
-
-    config EXAMPLE_CAM_SCCB_SDA_PIN
-        int "Camera I2C SDA GPIO pin"
-        default 7
-
 endmenu
