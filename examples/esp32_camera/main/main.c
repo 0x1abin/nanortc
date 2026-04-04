@@ -73,6 +73,11 @@ extern const uint8_t index_html_end[] asm("_binary_index_html_end");
 static volatile uint32_t s_step_count;
 static volatile uint32_t s_task_alive;
 
+/* Task handles for stack high-water-mark monitoring */
+static TaskHandle_t s_webrtc_handle;
+static TaskHandle_t s_mic_handle;
+static TaskHandle_t s_camera_handle;
+
 /* ----------------------------------------------------------------
  * Microphone queue: microphone_task -> webrtc_task
  * ---------------------------------------------------------------- */
@@ -82,7 +87,7 @@ typedef struct {
     uint32_t pts_ms;
 } mic_msg_t;
 
-#define MIC_QUEUE_DEPTH 4
+#define MIC_QUEUE_DEPTH 3
 static QueueHandle_t s_mic_queue;
 
 /* ----------------------------------------------------------------
@@ -258,6 +263,10 @@ static void camera_task(void *arg)
                      (unsigned long)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
                      (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
                      (unsigned long)heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM));
+            ESP_LOGI(TAG, "[stack HWM] webrtc=%lu mic=%lu camera=%lu words free",
+                     (unsigned long)uxTaskGetStackHighWaterMark(s_webrtc_handle),
+                     (unsigned long)uxTaskGetStackHighWaterMark(s_mic_handle),
+                     (unsigned long)uxTaskGetStackHighWaterMark(s_camera_handle));
         }
 
         if (!s_connected) {
@@ -479,9 +488,9 @@ void app_main(void)
     httpd_register_uri_handler(server, &uri_debug);
 
     /* 10. Start tasks */
-    xTaskCreatePinnedToCore(webrtc_task, "webrtc", 8 * 1024, NULL, 5, NULL, 0);
-    xTaskCreatePinnedToCore(microphone_task, "mic", 4 * 1024, NULL, 7, NULL, 0);
-    xTaskCreatePinnedToCore(camera_task, "camera", 8 * 1024, NULL, 6, NULL, 1);
+    xTaskCreatePinnedToCore(webrtc_task, "webrtc", 6 * 1024, NULL, 5, &s_webrtc_handle, 0);
+    xTaskCreatePinnedToCore(microphone_task, "mic", 3 * 1024, NULL, 7, &s_mic_handle, 0);
+    xTaskCreatePinnedToCore(camera_task, "camera", 4 * 1024, NULL, 6, &s_camera_handle, 1);
 
     ESP_LOGI(TAG, "Open http://%s/ in your browser", s_local_ip);
 }

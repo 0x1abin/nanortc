@@ -33,7 +33,7 @@ CONFIG_NANORTC_FEATURE_AUDIO=y
 # CONFIG_NANORTC_FEATURE_DATACHANNEL is not set
 
 # Output queue: video FU-A fragments (~40 per IDR) + audio RTP packets (50/sec)
-CONFIG_NANORTC_OUT_QUEUE_SIZE=64
+CONFIG_NANORTC_OUT_QUEUE_SIZE=32
 
 # Media buffer: RTP header (12) + MTU payload (1200) + SRTP tag (10)
 CONFIG_NANORTC_MEDIA_BUF_SIZE=1280

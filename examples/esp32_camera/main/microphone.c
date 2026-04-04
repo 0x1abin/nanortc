@@ -43,7 +43,7 @@ static esp_capture_stream_frame_t s_last_frame;
 static void capture_thread_scheduler(const char *name,
                                      esp_capture_thread_schedule_cfg_t *cfg)
 {
-    cfg->stack_size = 32 * 1024;
+    cfg->stack_size = 24 * 1024;
     cfg->priority = 7;
     cfg->core_id = 0;
     cfg->stack_in_ext = 1;
