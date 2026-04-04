@@ -59,11 +59,11 @@ GPIO 引脚可通过 `idf.py menuconfig` → "ESP32 Camera Example" 修改。
 ```
 Core 1 — camera_task (priority 6)          Core 0 — webrtc_task (priority 5)
 ┌─────────────────────────────┐            ┌─────────────────────────────┐
-│ V4L2 DQBUF (YUV420)        │            │ nano_run_loop_step()        │
-│         ↓                   │            │   ↑ DTLS/STUN/RTP polling  │
-│ H.264 HW encode            │  FreeRTOS  │         ↓                   │
+│ V4L2 DQBUF (YUV420)         │            │ nano_run_loop_step()        │
+│         ↓                   │            │   ↑ DTLS/STUN/RTP polling   │
+│ H.264 HW encode             │  FreeRTOS  │         ↓                   │
 │         ↓                   │───Queue───→│ nanortc_send_video()        │
-│ V4L2 QBUF (return buffer)  │  (depth=2) │   ↓ RTP/SRTP → UDP         │
+│ V4L2 QBUF (return buffer)   │  (depth=2) │   ↓ RTP/SRTP → UDP          │
 └─────────────────────────────┘            └─────────────────────────────┘
 ```
 
