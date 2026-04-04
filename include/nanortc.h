@@ -262,6 +262,9 @@ typedef enum {
     NANORTC_EV_DATACHANNEL_DATA = 8,          /**< DataChannel data received. */
     NANORTC_EV_DATACHANNEL_CLOSE = 9,         /**< DataChannel closed. */
     NANORTC_EV_DATACHANNEL_BUFFERED_LOW = 10, /**< Send buffer drained below threshold. */
+#if NANORTC_FEATURE_VIDEO
+    NANORTC_EV_BITRATE_ESTIMATE = 11, /**< BWE: estimated bitrate changed significantly. */
+#endif
 } nanortc_event_type_t;
 
 /* Forward declarations needed by event data structures */
@@ -311,6 +314,14 @@ typedef struct {
     uint8_t mid; /**< Video track MID that needs a keyframe. */
 } nanortc_ev_keyframe_request_t;
 
+#if NANORTC_FEATURE_VIDEO
+/** @brief Data for NANORTC_EV_BITRATE_ESTIMATE: BWE estimate changed. */
+typedef struct {
+    uint32_t bitrate_bps;      /**< Current estimated bitrate (bps). */
+    uint32_t prev_bitrate_bps; /**< Previous estimated bitrate (bps). */
+} nanortc_ev_bitrate_estimate_t;
+#endif
+
 /** @brief Data for NANORTC_EV_DATACHANNEL_OPEN. */
 typedef struct {
     uint16_t id;       /**< SCTP stream ID. */
@@ -348,6 +359,9 @@ typedef struct nanortc_event {
         nanortc_ev_media_changed_t media_changed;       /**< EV_MEDIA_CHANGED */
         nanortc_ev_media_data_t media_data;             /**< EV_MEDIA_DATA */
         nanortc_ev_keyframe_request_t keyframe_request; /**< EV_KEYFRAME_REQUEST */
+#if NANORTC_FEATURE_VIDEO
+        nanortc_ev_bitrate_estimate_t bitrate_estimate; /**< EV_BITRATE_ESTIMATE */
+#endif
         nanortc_ev_datachannel_open_t datachannel_open; /**< EV_DATACHANNEL_OPEN */
         nanortc_ev_datachannel_data_t datachannel_data; /**< EV_DATACHANNEL_DATA */
         nanortc_ev_datachannel_id_t
@@ -763,6 +777,49 @@ NANORTC_API int nanortc_send_video(nanortc_t *rtc, uint8_t mid, uint32_t pts_ms,
  * @retval NANORTC_ERR_STATE          Not connected.
  */
 NANORTC_API int nanortc_request_keyframe(nanortc_t *rtc, uint8_t mid);
+
+/* ----------------------------------------------------------------
+ * Media statistics and bandwidth estimation
+ * ---------------------------------------------------------------- */
+
+/** @brief Per-track RTCP statistics snapshot. */
+typedef struct {
+    uint8_t mid;               /**< Media track ID. */
+    uint32_t packets_sent;     /**< Total RTP packets sent. */
+    uint32_t octets_sent;      /**< Total payload bytes sent. */
+    uint32_t packets_received; /**< Total RTP packets received. */
+    uint32_t packets_lost;     /**< Estimated packets lost. */
+    uint32_t jitter;           /**< Interarrival jitter (RFC 3550 §6.4.1). */
+    uint32_t rtt_ms;           /**< Round-trip time estimate from DLSR (ms). */
+#if NANORTC_FEATURE_VIDEO
+    uint32_t bitrate_bps; /**< BWE estimated bitrate (bps, video only). */
+#endif
+} nanortc_track_stats_t;
+
+/**
+ * @brief Get per-track RTCP statistics.
+ *
+ * @param rtc    Initialized RTC state.
+ * @param mid    Media track ID.
+ * @param stats  Output structure (caller-provided).
+ * @return NANORTC_OK on success.
+ * @retval NANORTC_ERR_INVALID_PARAM  Invalid MID or NULL pointer.
+ */
+NANORTC_API int nanortc_get_track_stats(const nanortc_t *rtc, uint8_t mid,
+                                        nanortc_track_stats_t *stats);
+
+#if NANORTC_FEATURE_VIDEO
+/**
+ * @brief Get current BWE estimated bitrate.
+ *
+ * Returns the receiver-estimated maximum bitrate from REMB feedback.
+ * Applications should use this to adapt encoder bitrate/quality.
+ *
+ * @param rtc  Initialized RTC state.
+ * @return Estimated bitrate in bps, or 0 if unavailable.
+ */
+NANORTC_API uint32_t nanortc_get_estimated_bitrate(const nanortc_t *rtc);
+#endif /* NANORTC_FEATURE_VIDEO */
 
 #endif /* NANORTC_HAVE_MEDIA_TRANSPORT */
 

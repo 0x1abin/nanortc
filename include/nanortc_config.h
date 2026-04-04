@@ -429,6 +429,16 @@
 #endif
 
 /* ----------------------------------------------------------------
+ * Bandwidth estimation configuration (VIDEO feature only)
+ * ---------------------------------------------------------------- */
+
+/** @brief BWE event threshold (percent). Emit NANORTC_EV_BITRATE_ESTIMATE
+ *  only when the estimate changes by more than this percentage. Default: 15. */
+#ifndef NANORTC_BWE_EVENT_THRESHOLD_PCT
+#define NANORTC_BWE_EVENT_THRESHOLD_PCT 15
+#endif
+
+/* ----------------------------------------------------------------
  * Video configuration (VIDEO feature only)
  * ---------------------------------------------------------------- */
 

@@ -44,7 +44,7 @@ Per-module quality grades for NanoRTC. Updated as implementation progresses.
 | Module | File | Grade | Tests | Notes |
 |--------|------|-------|-------|-------|
 | H.264 packetizer | `nano_h264.c` | **B** | 8 tests (single NAL, FU-A fragment, reassembly, edge cases) | RFC 6184 FU-A packetizer + depacketizer/reassembly. MTU-aware fragmentation. |
-| BWE | `nano_bwe.c` | **B** | 20 tests (REMB parse, byte vector, EMA smoothing, min/max clamp, error cases) | REMB parsing (draft-alvestrand-rmcat-remb-03), EMA smoothing, configurable min/max/initial bitrate |
+| BWE | `nano_bwe.c` | **B** | 26 tests (REMB parse, byte vector, EMA smoothing, min/max clamp, event threshold, public API, error cases) | REMB parsing (draft-alvestrand-rmcat-remb-03), EMA smoothing, configurable min/max/initial bitrate. Public API: `nanortc_get_estimated_bitrate()`, `nanortc_get_track_stats()`, `NANORTC_EV_BITRATE_ESTIMATE` event with threshold filtering. |
 
 ### Infrastructure
 
@@ -52,7 +52,7 @@ Per-module quality grades for NanoRTC. Updated as implementation progresses.
 |-----------|-------|-------|
 | Crypto provider interface | **B** | Interface complete; HMAC-SHA1 + CSPRNG + DTLS + AES-128-CM + HMAC-SHA1-80 (both backends). DTLS-SRTP extension (RFC 5764 `use_srtp`) in both backends. mbedTLS 3-tier compat: 2.x (legacy), 3.6+ (PSA keygen + `set_serial_raw`), 4.x (full PSA). |
 | Build system (CMake) | **B** | 3 profiles, 2 crypto backends, ESP-IDF detection, `-fvisibility=hidden`, `-Wall -Wextra -Werror` (no warning suppressions) |
-| Test infrastructure | **B** | Shared macros (`nano_test.h`), 333 tests across 14 suites, RFC 5769/3711/4291 vectors, e2e ICE+DTLS loopback, full public API coverage |
+| Test infrastructure | **B** | Shared macros (`nano_test.h`), 339 tests across 14 suites, RFC 5769/3711/4291 vectors, e2e ICE+DTLS loopback, full public API coverage |
 | Interop test framework | **B** | libdatachannel v0.22.5 as reference peer, 5 interop tests all pass (handshake, DC open, text/binary). SDP compat fixed (commit `4d143f2`). |
 | CI pipeline | **B** | GitHub Actions: 3-profile × 2-crypto matrix, constraints, ASan. Local: `scripts/ci-check.sh` |
 | Examples | **B** | Linux datachannel + media_send + browser interop (HTTP signaling + `signaling_server.py`). Browser audio+video verified: Opus → Chrome (0% concealed), H.264 → Chrome video playback. Shared `h264_utils.h` for Annex-B NAL parsing. Includes opus_verify + opus_gen_tone tools. ESP32 DataChannel example verified (WiFi + Discovery + ICE/DTLS/SCTP/DC echo, ESP32-S3). ESP32 Audio example verified (Opus sine wave → Chrome, ESP32-S3). |

@@ -965,7 +965,17 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
 #if NANORTC_FEATURE_VIDEO
                     if (psfb_fmt == BWE_REMB_FMT) {
                         /* REMB — feed to bandwidth estimator */
+                        uint32_t prev_bps = rtc->bwe.estimated_bitrate;
                         bwe_on_rtcp_feedback(&rtc->bwe, rtc->stun_buf, rtcp_len, rtc->now_ms);
+                        /* Emit event if estimate changed significantly */
+                        if (bwe_should_emit_event(&rtc->bwe)) {
+                            nanortc_event_t bwe_evt;
+                            memset(&bwe_evt, 0, sizeof(bwe_evt));
+                            bwe_evt.type = NANORTC_EV_BITRATE_ESTIMATE;
+                            bwe_evt.bitrate_estimate.bitrate_bps = rtc->bwe.estimated_bitrate;
+                            bwe_evt.bitrate_estimate.prev_bitrate_bps = prev_bps;
+                            rtc_emit_event_full(rtc, &bwe_evt);
+                        }
                     } else
 #endif
                         if (psfb_fmt == 1) {
@@ -1758,6 +1768,61 @@ int nanortc_request_keyframe(nanortc_t *rtc, uint8_t mid)
     out.transmit.dest = rtc->remote_addr;
     return rtc_enqueue_output(rtc, &out);
 }
+
+/* ================================================================
+ * Track statistics
+ * ================================================================ */
+
+int nanortc_get_track_stats(const nanortc_t *rtc, uint8_t mid, nanortc_track_stats_t *stats)
+{
+    if (!rtc || !stats) {
+        return NANORTC_ERR_INVALID_PARAM;
+    }
+
+    const nanortc_track_t *m = NULL;
+    for (uint8_t i = 0; i < rtc->media_count; i++) {
+        if (rtc->media[i].active && rtc->media[i].mid == mid) {
+            m = &rtc->media[i];
+            break;
+        }
+    }
+    if (!m) {
+        return NANORTC_ERR_INVALID_PARAM;
+    }
+
+    memset(stats, 0, sizeof(*stats));
+    stats->mid = mid;
+    stats->packets_sent = m->rtcp.packets_sent;
+    stats->octets_sent = m->rtcp.octets_sent;
+    stats->packets_received = m->rtcp.packets_received;
+    stats->packets_lost = m->rtcp.packets_lost;
+    stats->jitter = m->rtcp.jitter;
+
+    /* RTT from DLSR: if we have a last_sr_recv_ms and the peer has
+     * sent us at least one SR, compute round-trip from DLSR.
+     * For now, expose raw DLSR data — actual RTT requires knowing
+     * the current time, which is only available during handle_input. */
+    stats->rtt_ms = 0;
+    if (m->rtcp.last_sr_recv_ms > 0 && rtc->now_ms > m->rtcp.last_sr_recv_ms) {
+        stats->rtt_ms = rtc->now_ms - m->rtcp.last_sr_recv_ms;
+    }
+
+#if NANORTC_FEATURE_VIDEO
+    stats->bitrate_bps = rtc->bwe.estimated_bitrate;
+#endif
+
+    return NANORTC_OK;
+}
+
+#if NANORTC_FEATURE_VIDEO
+uint32_t nanortc_get_estimated_bitrate(const nanortc_t *rtc)
+{
+    if (!rtc) {
+        return 0;
+    }
+    return bwe_get_bitrate(&rtc->bwe);
+}
+#endif /* NANORTC_FEATURE_VIDEO */
 
 #endif /* NANORTC_HAVE_MEDIA_TRANSPORT */
 

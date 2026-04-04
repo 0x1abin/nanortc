@@ -342,6 +342,97 @@ TEST(test_bwe_parse_remb_byte_vector)
 }
 
 /* ================================================================
+ * Event threshold tests
+ * ================================================================ */
+
+TEST(test_bwe_event_threshold_large_change)
+{
+    nano_bwe_t bwe;
+    bwe_init(&bwe);
+
+    /* First REMB: jump to 500 kbps */
+    uint8_t buf[32];
+    size_t plen = build_remb(buf, sizeof(buf), 0, 500000, 0);
+    bwe_on_rtcp_feedback(&bwe, buf, plen, 1000);
+
+    /* prev_event_bitrate was set to initial (300k), now estimated ~500k.
+     * Change is ~67% — well above 15% threshold */
+    ASSERT_TRUE(bwe_should_emit_event(&bwe));
+
+    /* Immediately after: prev_event_bitrate updated, no change → no event */
+    ASSERT_FALSE(bwe_should_emit_event(&bwe));
+}
+
+TEST(test_bwe_event_threshold_small_change)
+{
+    nano_bwe_t bwe;
+    bwe_init(&bwe);
+
+    /* Set to 500k */
+    uint8_t buf[32];
+    size_t plen = build_remb(buf, sizeof(buf), 0, 500000, 0);
+    bwe_on_rtcp_feedback(&bwe, buf, plen, 1000);
+    /* Consume the initial event */
+    bwe_should_emit_event(&bwe);
+
+    /* Feed 510k — only ~2% change, below 15% threshold */
+    plen = build_remb(buf, sizeof(buf), 0, 510000, 0);
+    bwe_on_rtcp_feedback(&bwe, buf, plen, 2000);
+    ASSERT_FALSE(bwe_should_emit_event(&bwe));
+}
+
+TEST(test_bwe_event_threshold_decrease)
+{
+    nano_bwe_t bwe;
+    bwe_init(&bwe);
+
+    /* Set to 1 Mbps */
+    uint8_t buf[32];
+    size_t plen = build_remb(buf, sizeof(buf), 0, 1000000, 0);
+    bwe_on_rtcp_feedback(&bwe, buf, plen, 1000);
+    bwe_should_emit_event(&bwe); /* consume */
+
+    /* Drop to 500k — 50% decrease, should trigger */
+    plen = build_remb(buf, sizeof(buf), 0, 500000, 0);
+    bwe_on_rtcp_feedback(&bwe, buf, plen, 2000);
+    /* After EMA smoothing, won't drop to 500k immediately but still >15% change */
+    ASSERT_TRUE(bwe_should_emit_event(&bwe));
+}
+
+TEST(test_bwe_event_null)
+{
+    ASSERT_FALSE(bwe_should_emit_event(NULL));
+}
+
+/* ================================================================
+ * Public API tests
+ * ================================================================ */
+
+TEST(test_bwe_public_get_estimated_bitrate)
+{
+    /* nanortc_get_estimated_bitrate is only available with VIDEO feature.
+     * Here we just verify bwe_get_bitrate (the underlying getter) works
+     * correctly after init and after feedback. */
+    nano_bwe_t bwe;
+    bwe_init(&bwe);
+    ASSERT_EQ(bwe_get_bitrate(&bwe), NANORTC_BWE_INITIAL_BITRATE);
+
+    uint8_t buf[32];
+    size_t plen = build_remb(buf, sizeof(buf), 0, 800000, 0);
+    bwe_on_rtcp_feedback(&bwe, buf, plen, 1000);
+
+    uint32_t est = bwe_get_bitrate(&bwe);
+    ASSERT_TRUE(est >= 780000 && est <= 820000);
+}
+
+TEST(test_bwe_init_sets_prev_event_bitrate)
+{
+    nano_bwe_t bwe;
+    bwe_init(&bwe);
+    ASSERT_EQ(bwe.prev_event_bitrate, NANORTC_BWE_INITIAL_BITRATE);
+}
+
+/* ================================================================
  * Runner
  * ================================================================ */
 
@@ -366,4 +457,10 @@ RUN(test_bwe_feedback_max_clamp);
 RUN(test_bwe_feedback_not_remb);
 RUN(test_bwe_feedback_null_params);
 RUN(test_bwe_get_bitrate_null);
+RUN(test_bwe_event_threshold_large_change);
+RUN(test_bwe_event_threshold_small_change);
+RUN(test_bwe_event_threshold_decrease);
+RUN(test_bwe_event_null);
+RUN(test_bwe_public_get_estimated_bitrate);
+RUN(test_bwe_init_sets_prev_event_bitrate);
 TEST_MAIN_END

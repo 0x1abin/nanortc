@@ -45,10 +45,11 @@
 #define BWE_REMB_UNIQUE_ID 0x52454D42 /* "REMB" in ASCII */
 
 typedef struct nano_bwe {
-    uint32_t estimated_bitrate; /* bps — current smoothed estimate */
-    uint32_t last_remb_bitrate; /* bps — last raw REMB value received */
-    uint32_t last_update_ms;    /* monotonic time of last REMB update */
-    uint32_t remb_count;        /* number of REMB packets processed */
+    uint32_t estimated_bitrate;  /* bps — current smoothed estimate */
+    uint32_t prev_event_bitrate; /* bps — bitrate at last event emission */
+    uint32_t last_remb_bitrate;  /* bps — last raw REMB value received */
+    uint32_t last_update_ms;     /* monotonic time of last REMB update */
+    uint32_t remb_count;         /* number of REMB packets processed */
 } nano_bwe_t;
 
 /**
@@ -93,5 +94,17 @@ uint32_t bwe_get_bitrate(const nano_bwe_t *bwe);
  * @return NANORTC_OK on success, NANORTC_ERR_PARSE if not a REMB packet.
  */
 int bwe_parse_remb(const uint8_t *data, size_t len, uint32_t *bitrate);
+
+/**
+ * @brief Check if the estimate changed enough to warrant an event.
+ *
+ * Compares current estimated_bitrate against prev_event_bitrate.
+ * If the change exceeds NANORTC_BWE_EVENT_THRESHOLD_PCT, returns true
+ * and updates prev_event_bitrate.
+ *
+ * @param bwe  Bandwidth estimator state.
+ * @return true if an event should be emitted.
+ */
+int bwe_should_emit_event(nano_bwe_t *bwe);
 
 #endif /* NANORTC_BWE_H_ */

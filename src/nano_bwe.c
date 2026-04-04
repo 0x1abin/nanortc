@@ -41,6 +41,7 @@ int bwe_init(nano_bwe_t *bwe)
     }
     memset(bwe, 0, sizeof(*bwe));
     bwe->estimated_bitrate = NANORTC_BWE_INITIAL_BITRATE;
+    bwe->prev_event_bitrate = NANORTC_BWE_INITIAL_BITRATE;
     return NANORTC_OK;
 }
 
@@ -163,4 +164,31 @@ uint32_t bwe_get_bitrate(const nano_bwe_t *bwe)
         return 0;
     }
     return bwe->estimated_bitrate;
+}
+
+/* ================================================================
+ * Event threshold check
+ * ================================================================ */
+
+int bwe_should_emit_event(nano_bwe_t *bwe)
+{
+    if (!bwe || bwe->prev_event_bitrate == 0) {
+        return 0;
+    }
+
+    /* Calculate absolute percentage change:
+     * |current - prev| * 100 / prev > threshold */
+    uint32_t cur = bwe->estimated_bitrate;
+    uint32_t prev = bwe->prev_event_bitrate;
+    uint32_t diff = (cur > prev) ? (cur - prev) : (prev - cur);
+
+    /* Use integer math: diff * 100 / prev > threshold
+     * Rearranged to avoid overflow: diff > prev * threshold / 100 */
+    uint32_t threshold_abs = prev / 100 * NANORTC_BWE_EVENT_THRESHOLD_PCT;
+
+    if (diff > threshold_abs) {
+        bwe->prev_event_bitrate = cur;
+        return 1;
+    }
+    return 0;
 }
