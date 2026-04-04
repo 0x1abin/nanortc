@@ -291,6 +291,78 @@ size_t nsctp_encode_sack(uint8_t *buf, uint32_t cumulative_tsn, uint32_t a_rwnd)
     return clen;
 }
 
+size_t nsctp_encode_sack_with_gaps(uint8_t *buf, uint32_t cumulative_tsn, uint32_t a_rwnd,
+                                   const nano_sctp_t *sctp)
+{
+    /* Collect gap TSNs and sort them */
+    uint32_t gap_tsns[NANORTC_SCTP_MAX_RECV_GAP];
+    uint8_t ngaps = 0;
+    for (uint8_t i = 0; i < NANORTC_SCTP_MAX_RECV_GAP; i++) {
+        if (sctp->recv_gap[i].valid) {
+            gap_tsns[ngaps++] = sctp->recv_gap[i].tsn;
+        }
+    }
+
+    if (ngaps == 0) {
+        return nsctp_encode_sack(buf, cumulative_tsn, a_rwnd);
+    }
+
+    /* Simple insertion sort (max NANORTC_SCTP_MAX_RECV_GAP entries) */
+    for (uint8_t i = 1; i < ngaps; i++) {
+        uint32_t key = gap_tsns[i];
+        int8_t j = (int8_t)i - 1;
+        /* TSN comparison using signed diff to handle wrapping */
+        while (j >= 0 && (int32_t)(gap_tsns[j] - key) > 0) {
+            gap_tsns[j + 1] = gap_tsns[j];
+            j--;
+        }
+        gap_tsns[j + 1] = key;
+    }
+
+    /* Build gap ack blocks: each block is (start_offset, end_offset) relative to
+     * cumulative_tsn. Contiguous TSNs merge into a single block. (RFC 9260 §3.3.4) */
+    uint16_t block_starts[NANORTC_SCTP_MAX_GAP_BLOCKS];
+    uint16_t block_ends[NANORTC_SCTP_MAX_GAP_BLOCKS];
+    uint8_t nblocks = 0;
+
+    for (uint8_t i = 0; i < ngaps && nblocks < NANORTC_SCTP_MAX_GAP_BLOCKS; i++) {
+        uint16_t offset = (uint16_t)(gap_tsns[i] - cumulative_tsn);
+        if (nblocks > 0 && offset == block_ends[nblocks - 1] + 1) {
+            /* Extend current block */
+            block_ends[nblocks - 1] = offset;
+        } else {
+            /* Start new block */
+            block_starts[nblocks] = offset;
+            block_ends[nblocks] = offset;
+            nblocks++;
+        }
+    }
+
+    /* Encode SACK with gap blocks */
+    uint16_t clen =
+        SCTP_CHUNK_HDR_SIZE + SCTP_SACK_MIN_SIZE + (uint16_t)(nblocks * 4); /* 4 bytes per block */
+
+    buf[0] = SCTP_CHUNK_SACK;
+    buf[1] = 0;
+    nanortc_write_u16be(buf + 2, clen);
+
+    uint8_t *body = buf + SCTP_CHUNK_HDR_SIZE;
+    nanortc_write_u32be(body + 0, cumulative_tsn);
+    nanortc_write_u32be(body + 4, a_rwnd);
+    nanortc_write_u16be(body + 8, nblocks);
+    nanortc_write_u16be(body + 10, 0); /* no dup TSNs */
+
+    /* Gap Ack Block: start(u16) + end(u16) */
+    uint8_t *gap_ptr = body + SCTP_SACK_MIN_SIZE;
+    for (uint8_t i = 0; i < nblocks; i++) {
+        nanortc_write_u16be(gap_ptr + 0, block_starts[i]);
+        nanortc_write_u16be(gap_ptr + 2, block_ends[i]);
+        gap_ptr += 4;
+    }
+
+    return clen;
+}
+
 size_t nsctp_encode_heartbeat(uint8_t *buf, const uint8_t *info, uint16_t info_len)
 {
     /* Heartbeat Info parameter: type=1, length=4+info_len */
@@ -575,6 +647,133 @@ static int nsctp_handle_cookie_ack(nano_sctp_t *sctp)
     return NANORTC_OK;
 }
 
+/* ---- Gap tracking helpers (RFC 9260 §6.2) ---- */
+
+/** Enqueue a message into the delivery queue (for gap-fill batch delivery). */
+static void nsctp_enqueue_delivery(nano_sctp_t *sctp, uint16_t data_offset, uint16_t data_len,
+                                   uint16_t stream_id, uint32_t ppid)
+{
+    uint8_t next = sctp->dq_tail + 1;
+    if (next - sctp->dq_head >= NANORTC_SCTP_MAX_RECV_GAP) {
+        return; /* delivery queue full — should not happen in practice */
+    }
+    uint8_t idx = sctp->dq_tail & (NANORTC_SCTP_MAX_RECV_GAP - 1);
+    sctp->deliver_queue[idx].data_offset = data_offset;
+    sctp->deliver_queue[idx].data_len = data_len;
+    sctp->deliver_queue[idx].stream_id = stream_id;
+    sctp->deliver_queue[idx].ppid = ppid;
+    sctp->dq_tail++;
+}
+
+/** Buffer an out-of-order DATA chunk into the gap array.
+ *  Returns 0 on success, negative on error (no space). */
+static int nsctp_gap_insert(nano_sctp_t *sctp, const nsctp_data_t *data)
+{
+    /* Check for duplicates */
+    for (uint8_t i = 0; i < NANORTC_SCTP_MAX_RECV_GAP; i++) {
+        if (sctp->recv_gap[i].valid && sctp->recv_gap[i].tsn == data->tsn) {
+            return NANORTC_OK; /* duplicate, ignore */
+        }
+    }
+
+    /* Find free slot */
+    uint8_t slot = NANORTC_SCTP_MAX_RECV_GAP;
+    for (uint8_t i = 0; i < NANORTC_SCTP_MAX_RECV_GAP; i++) {
+        if (!sctp->recv_gap[i].valid) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot >= NANORTC_SCTP_MAX_RECV_GAP) {
+        NANORTC_LOGW("SCTP", "gap buffer full, dropping out-of-order TSN");
+        return NANORTC_ERR_BUFFER_TOO_SMALL;
+    }
+
+    /* Check payload fits in recv_gap_buf */
+    if (sctp->recv_gap_buf_used + data->payload_len > NANORTC_SCTP_RECV_GAP_BUF_SIZE) {
+        NANORTC_LOGW("SCTP", "gap buf storage full, dropping out-of-order TSN");
+        return NANORTC_ERR_BUFFER_TOO_SMALL;
+    }
+
+    /* Copy payload into recv_gap_buf */
+    uint16_t offset = sctp->recv_gap_buf_used;
+    if (data->payload && data->payload_len > 0) {
+        memcpy(sctp->recv_gap_buf + offset, data->payload, data->payload_len);
+    }
+    sctp->recv_gap_buf_used += data->payload_len;
+
+    sctp->recv_gap[slot].tsn = data->tsn;
+    sctp->recv_gap[slot].data_offset = offset;
+    sctp->recv_gap[slot].data_len = data->payload_len;
+    sctp->recv_gap[slot].stream_id = data->stream_id;
+    sctp->recv_gap[slot].ppid = data->ppid;
+    sctp->recv_gap[slot].flags = data->flags;
+    sctp->recv_gap[slot].valid = true;
+    sctp->recv_gap_count++;
+
+    NANORTC_LOGD("SCTP", "gap buffered out-of-order TSN");
+    return NANORTC_OK;
+}
+
+/** After advancing cumulative_tsn, drain any contiguous gap entries.
+ *  Enqueues their data into the delivery queue. */
+static void nsctp_gap_drain(nano_sctp_t *sctp)
+{
+    bool progress = true;
+    while (progress) {
+        progress = false;
+        for (uint8_t i = 0; i < NANORTC_SCTP_MAX_RECV_GAP; i++) {
+            if (!sctp->recv_gap[i].valid) {
+                continue;
+            }
+            if (sctp->recv_gap[i].tsn == sctp->cumulative_tsn + 1) {
+                /* This gap entry is now contiguous — deliver it */
+                sctp->cumulative_tsn = sctp->recv_gap[i].tsn;
+
+                nsctp_enqueue_delivery(sctp, sctp->recv_gap[i].data_offset,
+                                       sctp->recv_gap[i].data_len, sctp->recv_gap[i].stream_id,
+                                       sctp->recv_gap[i].ppid);
+
+                sctp->recv_gap[i].valid = false;
+                sctp->recv_gap_count--;
+                progress = true;
+                /* Restart scan since we advanced cumulative_tsn */
+                break;
+            }
+            /* Also discard entries at or below cumulative_tsn (stale) */
+            int32_t diff = (int32_t)(sctp->recv_gap[i].tsn - sctp->cumulative_tsn);
+            if (diff <= 0) {
+                sctp->recv_gap[i].valid = false;
+                sctp->recv_gap_count--;
+                progress = true;
+                break;
+            }
+        }
+    }
+
+    /* If all gap entries drained, reclaim recv_gap_buf space */
+    if (sctp->recv_gap_count == 0) {
+        sctp->recv_gap_buf_used = 0;
+    }
+}
+
+int nsctp_poll_delivery(nano_sctp_t *sctp)
+{
+    if (!sctp || sctp->dq_head == sctp->dq_tail) {
+        return NANORTC_ERR_WOULD_BLOCK;
+    }
+
+    uint8_t idx = sctp->dq_head & (NANORTC_SCTP_MAX_RECV_GAP - 1);
+    sctp->delivered_data = sctp->recv_gap_buf + sctp->deliver_queue[idx].data_offset;
+    sctp->delivered_len = sctp->deliver_queue[idx].data_len;
+    sctp->delivered_stream = sctp->deliver_queue[idx].stream_id;
+    sctp->delivered_ppid = sctp->deliver_queue[idx].ppid;
+    sctp->has_delivered = true;
+    sctp->dq_head++;
+
+    return NANORTC_OK;
+}
+
 static int nsctp_handle_data_chunk(nano_sctp_t *sctp, const uint8_t *chunk, size_t clen)
 {
     if (sctp->state != NANORTC_SCTP_STATE_ESTABLISHED) {
@@ -586,20 +785,30 @@ static int nsctp_handle_data_chunk(nano_sctp_t *sctp, const uint8_t *chunk, size
         return NANORTC_ERR_PARSE;
     }
 
-    /* Update cumulative TSN (simple: advance if contiguous) */
-    if (data.tsn == sctp->cumulative_tsn + 1) {
-        sctp->cumulative_tsn = data.tsn;
-    }
-    /* TODO: handle out-of-order (gap tracking) */
-
     sctp->sack_needed = true;
 
-    /* Deliver payload to caller */
-    sctp->delivered_data = data.payload;
-    sctp->delivered_len = data.payload_len;
-    sctp->delivered_stream = data.stream_id;
-    sctp->delivered_ppid = data.ppid;
-    sctp->has_delivered = true;
+    /* Duplicate check: already received (RFC 9260 §6.2) */
+    int32_t diff = (int32_t)(data.tsn - sctp->cumulative_tsn);
+    if (diff <= 0) {
+        return NANORTC_OK; /* duplicate or old TSN, ignore */
+    }
+
+    if (data.tsn == sctp->cumulative_tsn + 1) {
+        /* In-order: advance cumulative TSN, deliver immediately */
+        sctp->cumulative_tsn = data.tsn;
+
+        sctp->delivered_data = data.payload;
+        sctp->delivered_len = data.payload_len;
+        sctp->delivered_stream = data.stream_id;
+        sctp->delivered_ppid = data.ppid;
+        sctp->has_delivered = true;
+
+        /* Drain any gap entries that are now contiguous */
+        nsctp_gap_drain(sctp);
+    } else {
+        /* Out-of-order: buffer in gap array */
+        nsctp_gap_insert(sctp, &data);
+    }
 
     return NANORTC_OK;
 }
@@ -787,8 +996,14 @@ int nsctp_handle_data(nano_sctp_t *sctp, const uint8_t *data, size_t len)
     /* If DATA was received and we need to send SACK, queue it */
     if (sctp->sack_needed && !nsctp_out_full(sctp)) {
         size_t spos = nsctp_begin_packet(sctp, sctp->remote_vtag);
-        spos += nsctp_encode_sack(nsctp_out_write_buf(sctp) + spos, sctp->cumulative_tsn,
-                                  NANORTC_SCTP_RECV_BUF_SIZE);
+        if (sctp->recv_gap_count > 0) {
+            spos +=
+                nsctp_encode_sack_with_gaps(nsctp_out_write_buf(sctp) + spos, sctp->cumulative_tsn,
+                                            NANORTC_SCTP_RECV_BUF_SIZE, sctp);
+        } else {
+            spos += nsctp_encode_sack(nsctp_out_write_buf(sctp) + spos, sctp->cumulative_tsn,
+                                      NANORTC_SCTP_RECV_BUF_SIZE);
+        }
         nsctp_queue_output(sctp, spos);
         sctp->sack_needed = false;
     }

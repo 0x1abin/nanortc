@@ -1069,6 +1069,262 @@ TEST(test_sctp_chunk_length_field)
 }
 
 /* ================================================================
+ * Gap tracking tests (RFC 9260 §6.2)
+ * ================================================================ */
+
+/** Helper: build a complete SCTP packet containing a DATA chunk with given TSN.
+ *  Returns packet length. sctp->remote_vtag is used for verification tag. */
+static size_t build_data_packet(uint8_t *pkt, uint32_t vtag, uint32_t tsn, uint16_t stream_id,
+                                uint32_t ppid, const uint8_t *payload, uint16_t payload_len)
+{
+    uint8_t chunk[256];
+    size_t clen =
+        nsctp_encode_data(chunk, tsn, stream_id, 0, ppid, 0x03 /* B|E */, payload, payload_len);
+    return build_sctp_packet(pkt, 5000, 5000, vtag, chunk, clen);
+}
+
+/** Helper: set up an established SCTP instance for gap tracking tests. */
+static void setup_established_sctp(nano_sctp_t *sctp)
+{
+    nsctp_init(sctp);
+    sctp->crypto = nano_test_crypto();
+    sctp->state = NANORTC_SCTP_STATE_ESTABLISHED;
+    sctp->local_vtag = 0x11111111;
+    sctp->remote_vtag = 0x22222222;
+    sctp->cumulative_tsn = 100; /* expect next TSN = 101 */
+    sctp->peer_initial_tsn = 101;
+}
+
+TEST(test_sctp_gap_single)
+{
+    /* Send TSN 101 (in-order) then TSN 103 (gap). TSN 103 should be buffered. */
+    nano_sctp_t sctp;
+    setup_established_sctp(&sctp);
+
+    uint8_t pkt[256];
+    uint8_t msg1[] = "msg1";
+    uint8_t msg3[] = "msg3";
+
+    /* TSN 101: in-order → delivered immediately */
+    size_t plen = build_data_packet(pkt, sctp.local_vtag, 101, 0, 51, msg1, 4);
+    ASSERT_OK(nsctp_handle_data(&sctp, pkt, plen));
+    ASSERT_TRUE(sctp.has_delivered);
+    ASSERT_EQ(sctp.cumulative_tsn, 101u);
+    ASSERT_EQ(sctp.delivered_len, 4);
+
+    /* TSN 103: out-of-order → buffered in gap array */
+    plen = build_data_packet(pkt, sctp.local_vtag, 103, 0, 51, msg3, 4);
+    ASSERT_OK(nsctp_handle_data(&sctp, pkt, plen));
+    ASSERT_FALSE(sctp.has_delivered);     /* not delivered yet */
+    ASSERT_EQ(sctp.cumulative_tsn, 101u); /* unchanged */
+    ASSERT_EQ(sctp.recv_gap_count, 1);
+}
+
+TEST(test_sctp_gap_fill)
+{
+    /* Send TSN 101, 103, then 102 (fills the gap). All three should be delivered in order. */
+    nano_sctp_t sctp;
+    setup_established_sctp(&sctp);
+
+    uint8_t pkt[256];
+    uint8_t m1[] = "A", m2[] = "B", m3[] = "C";
+
+    /* TSN 101 in-order */
+    size_t plen = build_data_packet(pkt, sctp.local_vtag, 101, 0, 51, m1, 1);
+    ASSERT_OK(nsctp_handle_data(&sctp, pkt, plen));
+    ASSERT_TRUE(sctp.has_delivered);
+    ASSERT_EQ(sctp.cumulative_tsn, 101u);
+
+    /* TSN 103 out-of-order (gap) */
+    plen = build_data_packet(pkt, sctp.local_vtag, 103, 0, 51, m3, 1);
+    ASSERT_OK(nsctp_handle_data(&sctp, pkt, plen));
+    ASSERT_EQ(sctp.recv_gap_count, 1);
+
+    /* TSN 102 fills the gap → cumulative_tsn should advance to 103 */
+    plen = build_data_packet(pkt, sctp.local_vtag, 102, 0, 51, m2, 1);
+    ASSERT_OK(nsctp_handle_data(&sctp, pkt, plen));
+
+    /* TSN 102 delivered directly */
+    ASSERT_TRUE(sctp.has_delivered);
+    ASSERT_EQ(sctp.cumulative_tsn, 103u); /* gap filled, advanced past 103 */
+    ASSERT_EQ(sctp.recv_gap_count, 0);
+
+    /* TSN 103 should be in delivery queue */
+    ASSERT_OK(nsctp_poll_delivery(&sctp));
+    ASSERT_TRUE(sctp.has_delivered);
+    ASSERT_EQ(sctp.delivered_len, 1);
+    ASSERT_MEM_EQ(sctp.delivered_data, m3, 1);
+}
+
+TEST(test_sctp_gap_multiple)
+{
+    /* Send TSN 101, 103, 105. Should have 2 gap blocks. */
+    nano_sctp_t sctp;
+    setup_established_sctp(&sctp);
+
+    uint8_t pkt[256];
+    uint8_t m[] = "X";
+
+    /* TSN 101 in-order */
+    size_t plen = build_data_packet(pkt, sctp.local_vtag, 101, 0, 51, m, 1);
+    ASSERT_OK(nsctp_handle_data(&sctp, pkt, plen));
+
+    /* TSN 103 gap */
+    plen = build_data_packet(pkt, sctp.local_vtag, 103, 0, 51, m, 1);
+    ASSERT_OK(nsctp_handle_data(&sctp, pkt, plen));
+
+    /* TSN 105 gap */
+    plen = build_data_packet(pkt, sctp.local_vtag, 105, 0, 51, m, 1);
+    ASSERT_OK(nsctp_handle_data(&sctp, pkt, plen));
+
+    ASSERT_EQ(sctp.cumulative_tsn, 101u);
+    ASSERT_EQ(sctp.recv_gap_count, 2);
+}
+
+TEST(test_sctp_gap_duplicate)
+{
+    /* Duplicate TSN should be silently ignored. */
+    nano_sctp_t sctp;
+    setup_established_sctp(&sctp);
+
+    uint8_t pkt[256];
+    uint8_t m[] = "D";
+
+    /* TSN 101 in-order */
+    size_t plen = build_data_packet(pkt, sctp.local_vtag, 101, 0, 51, m, 1);
+    ASSERT_OK(nsctp_handle_data(&sctp, pkt, plen));
+    ASSERT_EQ(sctp.cumulative_tsn, 101u);
+
+    /* TSN 101 again (duplicate) → ignored */
+    plen = build_data_packet(pkt, sctp.local_vtag, 101, 0, 51, m, 1);
+    ASSERT_OK(nsctp_handle_data(&sctp, pkt, plen));
+    ASSERT_EQ(sctp.cumulative_tsn, 101u); /* unchanged */
+
+    /* TSN 103 gap, then 103 again */
+    plen = build_data_packet(pkt, sctp.local_vtag, 103, 0, 51, m, 1);
+    ASSERT_OK(nsctp_handle_data(&sctp, pkt, plen));
+    ASSERT_EQ(sctp.recv_gap_count, 1);
+
+    plen = build_data_packet(pkt, sctp.local_vtag, 103, 0, 51, m, 1);
+    ASSERT_OK(nsctp_handle_data(&sctp, pkt, plen));
+    ASSERT_EQ(sctp.recv_gap_count, 1); /* still 1, not 2 */
+}
+
+TEST(test_sctp_gap_overflow)
+{
+    /* Fill up the gap buffer. Additional out-of-order TSNs should not crash. */
+    nano_sctp_t sctp;
+    setup_established_sctp(&sctp);
+
+    uint8_t pkt[256];
+    uint8_t m[] = "O";
+
+    /* TSN 101 in-order */
+    size_t plen = build_data_packet(pkt, sctp.local_vtag, 101, 0, 51, m, 1);
+    ASSERT_OK(nsctp_handle_data(&sctp, pkt, plen));
+
+    /* Fill gap slots: TSN 103, 105, 107, ... up to max */
+    for (uint8_t i = 0; i < NANORTC_SCTP_MAX_RECV_GAP; i++) {
+        uint32_t tsn = 103 + i * 2; /* skip every other TSN */
+        plen = build_data_packet(pkt, sctp.local_vtag, tsn, 0, 51, m, 1);
+        ASSERT_OK(nsctp_handle_data(&sctp, pkt, plen));
+    }
+    ASSERT_EQ(sctp.recv_gap_count, NANORTC_SCTP_MAX_RECV_GAP);
+
+    /* One more out-of-order TSN — should not crash, just be dropped */
+    uint32_t overflow_tsn = 103 + NANORTC_SCTP_MAX_RECV_GAP * 2;
+    plen = build_data_packet(pkt, sctp.local_vtag, overflow_tsn, 0, 51, m, 1);
+    ASSERT_OK(nsctp_handle_data(&sctp, pkt, plen));            /* should not crash */
+    ASSERT_EQ(sctp.recv_gap_count, NANORTC_SCTP_MAX_RECV_GAP); /* still max */
+}
+
+TEST(test_sctp_sack_with_gaps)
+{
+    /* Verify SACK encoding includes correct gap ack blocks. */
+    nano_sctp_t sctp;
+    setup_established_sctp(&sctp);
+
+    uint8_t pkt[256];
+    uint8_t m[] = "G";
+
+    /* TSN 101 in-order */
+    size_t plen = build_data_packet(pkt, sctp.local_vtag, 101, 0, 51, m, 1);
+    ASSERT_OK(nsctp_handle_data(&sctp, pkt, plen));
+
+    /* TSN 103 gap */
+    plen = build_data_packet(pkt, sctp.local_vtag, 103, 0, 51, m, 1);
+    ASSERT_OK(nsctp_handle_data(&sctp, pkt, plen));
+
+    /* Encode SACK with gap blocks */
+    uint8_t sack_buf[64];
+    size_t sack_len = nsctp_encode_sack_with_gaps(sack_buf, sctp.cumulative_tsn, 4096, &sctp);
+
+    /* Parse the encoded SACK */
+    ASSERT_EQ(sack_buf[0], SCTP_CHUNK_SACK);
+    uint8_t *body = sack_buf + 4; /* skip chunk header */
+
+    uint32_t cum_tsn = nanortc_read_u32be(body + 0);
+    ASSERT_EQ(cum_tsn, 101u);
+
+    uint16_t ngap_blocks = nanortc_read_u16be(body + 8);
+    ASSERT_EQ(ngap_blocks, 1);
+
+    /* Gap block: start=2 (103-101=2), end=2 */
+    uint16_t gap_start = nanortc_read_u16be(body + 12);
+    uint16_t gap_end = nanortc_read_u16be(body + 14);
+    ASSERT_EQ(gap_start, 2);
+    ASSERT_EQ(gap_end, 2);
+
+    /* Total length: 4(chunk hdr) + 12(sack body) + 4(1 gap block) = 20 */
+    ASSERT_EQ(sack_len, 20u);
+}
+
+TEST(test_sctp_gap_fill_chain)
+{
+    /* TSN 101, 104, 103, 102 → filling gap delivers 102, 103, 104 in order */
+    nano_sctp_t sctp;
+    setup_established_sctp(&sctp);
+
+    uint8_t pkt[256];
+    uint8_t m1[] = "1", m2[] = "2", m3[] = "3", m4[] = "4";
+
+    /* TSN 101 in-order */
+    size_t plen = build_data_packet(pkt, sctp.local_vtag, 101, 0, 51, m1, 1);
+    ASSERT_OK(nsctp_handle_data(&sctp, pkt, plen));
+
+    /* TSN 104 out-of-order */
+    plen = build_data_packet(pkt, sctp.local_vtag, 104, 0, 51, m4, 1);
+    ASSERT_OK(nsctp_handle_data(&sctp, pkt, plen));
+
+    /* TSN 103 out-of-order */
+    plen = build_data_packet(pkt, sctp.local_vtag, 103, 0, 51, m3, 1);
+    ASSERT_OK(nsctp_handle_data(&sctp, pkt, plen));
+
+    ASSERT_EQ(sctp.recv_gap_count, 2);
+    ASSERT_EQ(sctp.cumulative_tsn, 101u);
+
+    /* TSN 102 fills the gap → should advance to 104 */
+    plen = build_data_packet(pkt, sctp.local_vtag, 102, 0, 51, m2, 1);
+    ASSERT_OK(nsctp_handle_data(&sctp, pkt, plen));
+
+    ASSERT_TRUE(sctp.has_delivered); /* TSN 102 delivered directly */
+    ASSERT_EQ(sctp.cumulative_tsn, 104u);
+    ASSERT_EQ(sctp.recv_gap_count, 0);
+
+    /* Delivery queue should have TSN 103 and 104 */
+    ASSERT_OK(nsctp_poll_delivery(&sctp));
+    ASSERT_TRUE(sctp.has_delivered);
+    ASSERT_MEM_EQ(sctp.delivered_data, m3, 1); /* TSN 103 */
+
+    ASSERT_OK(nsctp_poll_delivery(&sctp));
+    ASSERT_TRUE(sctp.has_delivered);
+    ASSERT_MEM_EQ(sctp.delivered_data, m4, 1); /* TSN 104 */
+
+    /* No more deliveries */
+    ASSERT_EQ(nsctp_poll_delivery(&sctp), NANORTC_ERR_WOULD_BLOCK);
+}
+
+/* ================================================================
  * Test runner
  * ================================================================ */
 
@@ -1128,5 +1384,13 @@ RUN(test_sctp_data_unordered_flag);
 RUN(test_sctp_shutdown_tsn_value);
 RUN(test_sctp_abort_chunk_encode);
 RUN(test_sctp_chunk_length_field);
+/* Gap tracking (RFC 9260 §6.2) */
+RUN(test_sctp_gap_single);
+RUN(test_sctp_gap_fill);
+RUN(test_sctp_gap_multiple);
+RUN(test_sctp_gap_duplicate);
+RUN(test_sctp_gap_overflow);
+RUN(test_sctp_sack_with_gaps);
+RUN(test_sctp_gap_fill_chain);
 TEST_MAIN_END
 #endif /* NANORTC_FEATURE_DATACHANNEL */

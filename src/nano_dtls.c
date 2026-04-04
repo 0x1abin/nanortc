@@ -255,8 +255,13 @@ void dtls_close(nano_dtls_t *dtls)
     if (!dtls) {
         return;
     }
-    /* TODO: send close_notify via crypto provider when API is extended.
-     * For now, mark as closed so no further data is processed. */
+    /* Send DTLS close_notify alert (RFC 6347 §4.1.2.1).
+     * The close_notify record is written via the BIO send callback,
+     * which queues it in the DTLS output buffer for poll_output. */
+    if (dtls->crypto && dtls->crypto->dtls_close_notify && dtls->crypto_ctx &&
+        dtls->state == NANORTC_DTLS_STATE_ESTABLISHED) {
+        dtls->crypto->dtls_close_notify((nanortc_crypto_dtls_ctx_t *)dtls->crypto_ctx);
+    }
     dtls->state = NANORTC_DTLS_STATE_CLOSED;
 }
 

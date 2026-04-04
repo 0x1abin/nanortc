@@ -671,6 +671,48 @@ static int rtc_begin_dtls_handshake(nanortc_t *rtc, const nanortc_addr_t *src)
 
 #if NANORTC_FEATURE_DATACHANNEL
 /* ----------------------------------------------------------------
+ * Internal: deliver one SCTP message to DataChannel layer + emit events
+ * ---------------------------------------------------------------- */
+
+static void rtc_deliver_sctp_to_dc(nanortc_t *rtc)
+{
+    dc_handle_message(&rtc->datachannel, rtc->sctp.delivered_stream, rtc->sctp.delivered_ppid,
+                      rtc->sctp.delivered_data, rtc->sctp.delivered_len);
+    rtc->sctp.has_delivered = false;
+
+    /* Emit DC events using typed event structs */
+    if (rtc->sctp.delivered_ppid == DCEP_PPID_CONTROL) {
+        if (!rtc->datachannel.last_was_open) {
+            return;
+        }
+        /* CHANNEL_OPEN event */
+        nanortc_event_t oevt;
+        memset(&oevt, 0, sizeof(oevt));
+        oevt.type = NANORTC_EV_DATACHANNEL_OPEN;
+        oevt.datachannel_open.id = rtc->sctp.delivered_stream;
+        for (uint8_t ci = 0; ci < rtc->datachannel.channel_count; ci++) {
+            if (rtc->datachannel.channels[ci].stream_id == rtc->sctp.delivered_stream) {
+                oevt.datachannel_open.label = rtc->datachannel.channels[ci].label;
+                break;
+            }
+        }
+        rtc_emit_event_full(rtc, &oevt);
+    } else {
+        /* CHANNEL_DATA event (binary or string) */
+        bool is_binary = (rtc->sctp.delivered_ppid == DCEP_PPID_BINARY ||
+                          rtc->sctp.delivered_ppid == DCEP_PPID_BINARY_EMPTY);
+        nanortc_event_t devt;
+        memset(&devt, 0, sizeof(devt));
+        devt.type = NANORTC_EV_DATACHANNEL_DATA;
+        devt.datachannel_data.id = rtc->sctp.delivered_stream;
+        devt.datachannel_data.data = rtc->sctp.delivered_data;
+        devt.datachannel_data.len = rtc->sctp.delivered_len;
+        devt.datachannel_data.binary = is_binary;
+        rtc_emit_event_full(rtc, &devt);
+    }
+}
+
+/* ----------------------------------------------------------------
  * Internal: drain SCTP output through DTLS encrypt → transmit queue
  * ---------------------------------------------------------------- */
 
@@ -854,43 +896,12 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
 
                 /* Deliver SCTP payload via DataChannel */
                 if (rtc->sctp.has_delivered) {
-                    dc_handle_message(&rtc->datachannel, rtc->sctp.delivered_stream,
-                                      rtc->sctp.delivered_ppid, rtc->sctp.delivered_data,
-                                      rtc->sctp.delivered_len);
-                    rtc->sctp.has_delivered = false;
+                    rtc_deliver_sctp_to_dc(rtc);
+                }
 
-                    /* Emit DC events using typed event structs */
-                    if (rtc->sctp.delivered_ppid == DCEP_PPID_CONTROL) {
-                        if (!rtc->datachannel.last_was_open) {
-                            goto skip_dc_event;
-                        }
-                        /* CHANNEL_OPEN event */
-                        nanortc_event_t oevt;
-                        memset(&oevt, 0, sizeof(oevt));
-                        oevt.type = NANORTC_EV_DATACHANNEL_OPEN;
-                        oevt.datachannel_open.id = rtc->sctp.delivered_stream;
-                        for (uint8_t ci = 0; ci < rtc->datachannel.channel_count; ci++) {
-                            if (rtc->datachannel.channels[ci].stream_id ==
-                                rtc->sctp.delivered_stream) {
-                                oevt.datachannel_open.label = rtc->datachannel.channels[ci].label;
-                                break;
-                            }
-                        }
-                        rtc_emit_event_full(rtc, &oevt);
-                    } else {
-                        /* CHANNEL_DATA event (binary or string) */
-                        bool is_binary = (rtc->sctp.delivered_ppid == DCEP_PPID_BINARY ||
-                                          rtc->sctp.delivered_ppid == DCEP_PPID_BINARY_EMPTY);
-                        nanortc_event_t devt;
-                        memset(&devt, 0, sizeof(devt));
-                        devt.type = NANORTC_EV_DATACHANNEL_DATA;
-                        devt.datachannel_data.id = rtc->sctp.delivered_stream;
-                        devt.datachannel_data.data = rtc->sctp.delivered_data;
-                        devt.datachannel_data.len = rtc->sctp.delivered_len;
-                        devt.datachannel_data.binary = is_binary;
-                        rtc_emit_event_full(rtc, &devt);
-                    }
-                skip_dc_event:;
+                /* Drain gap-fill delivery queue (out-of-order reordering) */
+                while (nsctp_poll_delivery(&rtc->sctp) == NANORTC_OK) {
+                    rtc_deliver_sctp_to_dc(rtc);
                 }
 
                 /* Drain SCTP output (SACK, handshake) through DTLS */

@@ -359,6 +359,52 @@ TEST(test_dtls_fingerprint_sha256_format)
 }
 
 /* ----------------------------------------------------------------
+ * close_notify test (RFC 6347 §4.1.2.1)
+ * ---------------------------------------------------------------- */
+
+TEST(test_dtls_close_notify)
+{
+    nano_dtls_t server, client;
+    const nanortc_crypto_provider_t *crypto = nano_test_crypto();
+
+    /* Set up established DTLS session */
+    ASSERT_OK(dtls_init(&server, crypto, 1));
+    ASSERT_OK(dtls_init(&client, crypto, 0));
+    ASSERT_OK(dtls_start(&client));
+
+    for (int round = 0; round < 30; round++) {
+        dtls_relay(&client, &server);
+        dtls_relay(&server, &client);
+        if (server.state == NANORTC_DTLS_STATE_ESTABLISHED &&
+            client.state == NANORTC_DTLS_STATE_ESTABLISHED) {
+            break;
+        }
+    }
+    ASSERT_EQ(server.state, NANORTC_DTLS_STATE_ESTABLISHED);
+    ASSERT_EQ(client.state, NANORTC_DTLS_STATE_ESTABLISHED);
+
+    /* Close client — should generate close_notify output */
+    dtls_close(&client);
+    ASSERT_EQ(client.state, NANORTC_DTLS_STATE_CLOSED);
+
+    /* The close_notify record should be available via poll_output.
+     * Relay it to server — server should process it gracefully. */
+    uint8_t buf[4096];
+    size_t len = 0;
+    int has_output = 0;
+    while (dtls_poll_output(&client, buf, sizeof(buf), &len) == NANORTC_OK && len > 0) {
+        has_output = 1;
+        /* DTLS record: content type 21 = Alert */
+        ASSERT_EQ(buf[0], 21);
+        len = 0;
+    }
+    ASSERT_TRUE(has_output); /* close_notify was generated */
+
+    dtls_destroy(&server);
+    dtls_destroy(&client);
+}
+
+/* ----------------------------------------------------------------
  * Test main
  * ---------------------------------------------------------------- */
 
@@ -376,4 +422,6 @@ RUN(test_dtls_wrong_state);
 RUN(test_dtls_keying_material_length);
 RUN(test_dtls_record_content_type);
 RUN(test_dtls_fingerprint_sha256_format);
+/* close_notify (RFC 6347) */
+RUN(test_dtls_close_notify);
 TEST_MAIN_END

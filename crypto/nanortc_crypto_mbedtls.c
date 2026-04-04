@@ -741,6 +741,18 @@ static int mbed_dtls_set_role(nanortc_crypto_dtls_ctx_t *ctx, int is_server)
     return 0;
 }
 
+static int mbed_dtls_close_notify(nanortc_crypto_dtls_ctx_t *ctx)
+{
+    if (!ctx) {
+        return -1;
+    }
+    /* mbedtls_ssl_close_notify sends the close_notify alert.
+     * Output is written via the BIO send callback (Sans I/O). */
+    int ret = mbedtls_ssl_close_notify(&ctx->ssl);
+    /* MBEDTLS_ERR_SSL_WANT_WRITE is acceptable — data was queued */
+    return (ret == 0 || ret == MBEDTLS_ERR_SSL_WANT_WRITE) ? 0 : -1;
+}
+
 static void mbed_dtls_free(nanortc_crypto_dtls_ctx_t *ctx)
 {
     if (!ctx) {
@@ -864,6 +876,7 @@ static const nanortc_crypto_provider_t mbedtls_provider = {
     .dtls_export_keying_material = mbed_dtls_export_keying_material,
     .dtls_get_fingerprint = mbed_dtls_get_fingerprint,
     .dtls_free = mbed_dtls_free,
+    .dtls_close_notify = mbed_dtls_close_notify,
     .dtls_set_role = mbed_dtls_set_role,
     .hmac_sha1 = mbed_hmac_sha1,
     .random_bytes = mbed_random_bytes,
