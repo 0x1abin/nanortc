@@ -284,7 +284,7 @@
 #endif
 
 #ifndef NANORTC_ICE_CONSENT_TIMEOUT_MS
-#define NANORTC_ICE_CONSENT_TIMEOUT_MS 30000
+#define NANORTC_ICE_CONSENT_TIMEOUT_MS 120000
 #endif
 
 /* ICE credential lengths (chars, excluding NUL) */

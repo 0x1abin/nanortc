@@ -111,8 +111,11 @@ static void usage(const char *prog)
     fprintf(stderr, "  -s HOST:PORT   Signaling server (default: localhost:8765)\n");
     fprintf(stderr, "  -a DIR         Opus frame directory for audio send\n");
     fprintf(stderr, "  -v DIR         H.264 frame directory for video send\n");
-    fprintf(stderr, "  --offer        Act as offerer (CONTROLLING)\n");
-    fprintf(stderr, "  --answer       Act as answerer (CONTROLLED, default)\n");
+    fprintf(stderr, "  --turn-server IP:PORT  TURN relay server\n");
+    fprintf(stderr, "  --turn-user USER       TURN username\n");
+    fprintf(stderr, "  --turn-pass PASS       TURN password/credential\n");
+    fprintf(stderr, "  --offer                Act as offerer (CONTROLLING)\n");
+    fprintf(stderr, "  --answer               Act as answerer (CONTROLLED, default)\n");
 }
 
 /* ----------------------------------------------------------------
@@ -245,6 +248,10 @@ int main(int argc, char *argv[])
     int offer_mode = 0;
     const char *audio_dir = NULL;
     const char *video_dir = NULL;
+    char turn_ip[64] = "";
+    uint16_t turn_port = 3478;
+    const char *turn_user = NULL;
+    const char *turn_pass = NULL;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-p") == 0 && i + 1 < argc) {
@@ -276,6 +283,27 @@ int main(int argc, char *argv[])
             audio_dir = argv[++i];
         } else if (strcmp(argv[i], "-v") == 0 && i + 1 < argc) {
             video_dir = argv[++i];
+        } else if (strcmp(argv[i], "--turn-server") == 0 && i + 1 < argc) {
+            i++;
+            char *colon = strrchr(argv[i], ':');
+            if (colon) {
+                size_t iplen = (size_t)(colon - argv[i]);
+                if (iplen < sizeof(turn_ip)) {
+                    memcpy(turn_ip, argv[i], iplen);
+                    turn_ip[iplen] = '\0';
+                }
+                turn_port = (uint16_t)atoi(colon + 1);
+            } else {
+                size_t len = strlen(argv[i]);
+                if (len < sizeof(turn_ip)) {
+                    memcpy(turn_ip, argv[i], len);
+                    turn_ip[len] = '\0';
+                }
+            }
+        } else if (strcmp(argv[i], "--turn-user") == 0 && i + 1 < argc) {
+            turn_user = argv[++i];
+        } else if (strcmp(argv[i], "--turn-pass") == 0 && i + 1 < argc) {
+            turn_pass = argv[++i];
         } else if (strcmp(argv[i], "--offer") == 0) {
             offer_mode = 1;
         } else if (strcmp(argv[i], "--answer") == 0) {
@@ -315,6 +343,16 @@ int main(int argc, char *argv[])
         fprintf(stderr, "nanortc_init failed: %d\n", rc);
         http_sig_leave(&sig);
         return 1;
+    }
+
+    /* TURN server configuration */
+    if (turn_ip[0] && turn_user && turn_pass) {
+        rc = nanortc_set_turn_server(&rtc, turn_ip, turn_port, turn_user, turn_pass);
+        if (rc == NANORTC_OK) {
+            fprintf(stderr, "TURN server: %s:%u user=%s\n", turn_ip, turn_port, turn_user);
+        } else {
+            fprintf(stderr, "Failed to set TURN server: %d\n", rc);
+        }
     }
 
 #if NANORTC_FEATURE_AUDIO
