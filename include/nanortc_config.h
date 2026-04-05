@@ -356,6 +356,17 @@
 #define NANORTC_SCTP_MAX_GAP_BLOCKS 4
 #endif
 
+/* Maximum out-of-order DATA chunks buffered for gap tracking (RFC 9260 §6.2).
+ * Each slot holds a copy of the payload data in recv_gap_buf. */
+#ifndef NANORTC_SCTP_MAX_RECV_GAP
+#define NANORTC_SCTP_MAX_RECV_GAP 8
+#endif
+
+/* Receive gap buffer size (bytes) for storing out-of-order DATA chunk payloads. */
+#ifndef NANORTC_SCTP_RECV_GAP_BUF_SIZE
+#define NANORTC_SCTP_RECV_GAP_BUF_SIZE 4096
+#endif
+
 /* State cookie maximum size (bytes) */
 #ifndef NANORTC_SCTP_COOKIE_SIZE
 #define NANORTC_SCTP_COOKIE_SIZE 32

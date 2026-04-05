@@ -159,6 +159,30 @@ typedef struct nano_sctp {
     uint32_t cumulative_tsn; /* highest TSN such that all TSN <= this received */
     bool sack_needed;
 
+    /* Gap tracking — buffer out-of-order DATA for reordering (RFC 9260 §6.2) */
+    struct {
+        uint32_t tsn;
+        uint16_t data_offset; /* offset into recv_gap_buf */
+        uint16_t data_len;
+        uint16_t stream_id;
+        uint32_t ppid;
+        uint8_t flags;
+        bool valid;
+    } recv_gap[NANORTC_SCTP_MAX_RECV_GAP];
+    uint8_t recv_gap_count;
+    uint8_t recv_gap_buf[NANORTC_SCTP_RECV_GAP_BUF_SIZE];
+    uint16_t recv_gap_buf_used;
+
+    /* Delivery queue — for delivering multiple messages after gap fill */
+    struct {
+        uint16_t data_offset; /* offset into recv_gap_buf */
+        uint16_t data_len;
+        uint16_t stream_id;
+        uint32_t ppid;
+    } deliver_queue[NANORTC_SCTP_MAX_RECV_GAP];
+    uint8_t dq_head;
+    uint8_t dq_tail;
+
     /* Send queue */
     nsctp_send_entry_t send_queue[NANORTC_SCTP_MAX_SEND_QUEUE];
     uint8_t sq_head;
@@ -251,6 +275,12 @@ size_t nsctp_encode_data(uint8_t *buf, uint32_t tsn, uint16_t stream_id, uint16_
                          uint32_t ppid, uint8_t flags, const uint8_t *payload,
                          uint16_t payload_len);
 size_t nsctp_encode_sack(uint8_t *buf, uint32_t cumulative_tsn, uint32_t a_rwnd);
+size_t nsctp_encode_sack_with_gaps(uint8_t *buf, uint32_t cumulative_tsn, uint32_t a_rwnd,
+                                   const nano_sctp_t *sctp);
+
+/** Poll for next delivered message (from gap tracking reorder buffer).
+ *  Returns NANORTC_OK if a message was dequeued, NANORTC_ERR_WOULD_BLOCK if empty. */
+int nsctp_poll_delivery(nano_sctp_t *sctp);
 size_t nsctp_encode_heartbeat(uint8_t *buf, const uint8_t *info, uint16_t info_len);
 size_t nsctp_encode_heartbeat_ack(uint8_t *buf, const uint8_t *info, uint16_t info_len);
 size_t nsctp_encode_forward_tsn(uint8_t *buf, uint32_t new_cumulative_tsn);

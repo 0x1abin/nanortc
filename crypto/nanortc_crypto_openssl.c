@@ -389,6 +389,18 @@ static int ossl_dtls_get_fingerprint(nanortc_crypto_dtls_ctx_t *ctx, char *buf, 
     return 0;
 }
 
+static int ossl_dtls_close_notify(nanortc_crypto_dtls_ctx_t *ctx)
+{
+    if (!ctx || !ctx->ssl) {
+        return -1;
+    }
+    /* SSL_shutdown writes close_notify alert to bio_out.
+     * Drain it through the BIO send callback (Sans I/O pattern). */
+    SSL_shutdown(ctx->ssl);
+    ossl_drain_bio_out(ctx);
+    return 0;
+}
+
 static void ossl_dtls_free(nanortc_crypto_dtls_ctx_t *ctx)
 {
     if (!ctx) {
@@ -479,6 +491,7 @@ static const nanortc_crypto_provider_t openssl_provider = {
     .dtls_export_keying_material = ossl_dtls_export_keying_material,
     .dtls_get_fingerprint = ossl_dtls_get_fingerprint,
     .dtls_free = ossl_dtls_free,
+    .dtls_close_notify = ossl_dtls_close_notify,
     .dtls_set_role = ossl_dtls_set_role,
     .hmac_sha1 = ossl_hmac_sha1,
     .random_bytes = ossl_random_bytes,

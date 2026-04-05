@@ -22,8 +22,8 @@ Per-module quality grades for NanoRTC. Updated as implementation progresses.
 | Main FSM | `nano_rtc.c` | **B** | 25 e2e tests: init, demux, ICE→DTLS→SCTP→DC pipeline, offer/answer roundtrip, DC create/close/label, graceful close, state transitions, ICE multi-candidate, IPv6 candidates | RFC 7983 demux, full pipeline integration, all public API implemented. Refactored: `direction_complement()`, `rtc_apply_negotiated_media()` helpers. IPv6 candidate parsing via `nano_addr`. Video send path: H.264 FU-A → RTP → SRTP → per-slot pkt_ring. Audio+Video PT applied in both accept_offer and accept_answer. |
 | STUN codec | `nano_stun.c` | **B** | 40 tests (RFC 5769 vectors, str0m, roundtrip, edge cases) | Full parser/encoder, MI (HMAC-SHA1), FP (CRC-32), ERROR-CODE. Safe byte access. |
 | ICE | `nano_ice.c` | **B** | 17 tests (§7.1.1, §7.2.1, §7.3, §8, credentials) | Dual-role FSM, controlled + controlling, pacing, nomination |
-| DTLS | `nano_dtls.c` | **B** | 9 tests (handshake loopback, encrypt/decrypt, keying material, fingerprint) | Sans I/O BIO adapter, ECDSA P-256 self-signed cert, RFC 5764 key export |
-| SCTP-Lite | `nano_sctp.c` | **B-** | 27 tests (codec, CRC, handshake, data exchange, SACK, FORWARD-TSN, output queue) | Full codec + 4-way handshake FSM + send queue + SACK + retransmit + heartbeat + ring output queue. Missing: gap tracking, RECONFIG, SHUTDOWN-ACK. |
+| DTLS | `nano_dtls.c` | **B** | 10 tests (handshake loopback, encrypt/decrypt, keying material, fingerprint, close_notify) | Sans I/O BIO adapter, ECDSA P-256 self-signed cert, RFC 5764 key export, close_notify alert (RFC 6347 §4.1.2.1) |
+| SCTP-Lite | `nano_sctp.c` | **B** | 34 tests (codec, CRC, handshake, data exchange, SACK, FORWARD-TSN, output queue, gap tracking) | Full codec + 4-way handshake FSM + send queue + SACK + retransmit + heartbeat + ring output queue + gap tracking with reorder buffer + gap ack blocks in SACK. Missing: RECONFIG, SHUTDOWN-ACK. |
 | DataChannel | `nano_datachannel.c` | **B** | DCEP codec + FSM tested via SCTP e2e | DCEP OPEN/ACK codec, channel management, bidirectional FSM. Idempotent OPEN handling (re-ACK on retransmit, no duplicate events). Missing: partial reliability, RECONFIG. |
 | SDP | `nano_sdp.c` | **B** | 28 tests (Chrome/Firefox/Safari offers, generator, roundtrip, accept_offer, video PT, direction, IPv6 c=/o= lines) | Parser + generator with helper functions. Chrome/Firefox/Safari SDP compat. IPv6-aware `c=IN IP6 ::`/`o=` lines when local candidate is IPv6. Audio m-line with Opus/ptime:20. Video m-line: H264 PT via rtpmap+fmtp cross-validation (packetization-mode=1), prefers profile-level-id=42e01f match over first-match fallback (fixes Chrome VP8-first PT ordering). M-line ordering matches offer (RFC 8829). Direction complement (RFC 3264 §6). Codec negotiation: `remote_audio_pt` separates parsed PT from local config PT (RFC 3264 §6.1). Video PT negotiation uses fmtp-selected PT (not m-line first PT) in `rtc_apply_negotiated_media()`. Debug logging at PT selection points. |
 | CRC-32c | `nano_crc32c.c` | **B** | test vector verified | 100% — Castagnoli polynomial for SCTP checksums |
@@ -50,9 +50,9 @@ Per-module quality grades for NanoRTC. Updated as implementation progresses.
 
 | Component | Grade | Notes |
 |-----------|-------|-------|
-| Crypto provider interface | **B** | Interface complete; HMAC-SHA1 + CSPRNG + DTLS + AES-128-CM + HMAC-SHA1-80 (both backends). DTLS-SRTP extension (RFC 5764 `use_srtp`) in both backends. mbedTLS 3-tier compat: 2.x (legacy), 3.6+ (PSA keygen + `set_serial_raw`), 4.x (full PSA). |
+| Crypto provider interface | **B** | Interface complete; HMAC-SHA1 + CSPRNG + DTLS + AES-128-CM + HMAC-SHA1-80 + `dtls_close_notify` (both backends). DTLS-SRTP extension (RFC 5764 `use_srtp`) in both backends. mbedTLS 3-tier compat: 2.x (legacy), 3.6+ (PSA keygen + `set_serial_raw`), 4.x (full PSA). |
 | Build system (CMake) | **B** | 3 profiles, 2 crypto backends, ESP-IDF detection, `-fvisibility=hidden`, `-Wall -Wextra -Werror` (no warning suppressions) |
-| Test infrastructure | **B** | Shared macros (`nano_test.h`), 339 tests across 14 suites, RFC 5769/3711/4291 vectors, e2e ICE+DTLS loopback, full public API coverage |
+| Test infrastructure | **B** | Shared macros (`nano_test.h`), 347+ tests across 14 suites, RFC 5769/3711/4291 vectors, e2e ICE+DTLS loopback, full public API coverage |
 | Interop test framework | **B** | libdatachannel v0.22.5 as reference peer, 5 interop tests all pass (handshake, DC open, text/binary). SDP compat fixed (commit `4d143f2`). |
 | CI pipeline | **B** | GitHub Actions: 3-profile × 2-crypto matrix, constraints, ASan. Local: `scripts/ci-check.sh` |
 | Examples | **B** | Linux datachannel + media_send + browser interop (HTTP signaling + `signaling_server.py`). Browser audio+video verified: Opus → Chrome (0% concealed), H.264 → Chrome video playback. Shared `h264_utils.h` for Annex-B NAL parsing. Includes opus_verify + opus_gen_tone tools. ESP32 DataChannel example verified (WiFi + Discovery + ICE/DTLS/SCTP/DC echo, ESP32-S3). ESP32 Audio example verified (Opus sine wave → Chrome, ESP32-S3). |
@@ -83,4 +83,4 @@ Per-module quality grades for NanoRTC. Updated as implementation progresses.
 1. No fuzz testing yet (Phase 4)
 2. ~~No ESP32 hardware validation yet~~ **DONE** (see gap #8)
 3. No code coverage measurement (Phase 4)
-4. SCTP gap tracking / RECONFIG not yet implemented (needed for robust browser interop)
+4. ~~SCTP gap tracking~~ **DONE** — reorder buffer + gap ack blocks + delivery queue. RECONFIG still not implemented.

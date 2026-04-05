@@ -124,7 +124,7 @@ Per-module audit of NanoRTC against authoritative RFC specifications.
 | 7 | Client/server key split | RFC 5764 §4.2 | Y | Y | Via SRTP key direction test |
 | 8 | Encrypt/decrypt after handshake | RFC 6347 §4.1 | Y | Y | `test_dtls_encrypt_decrypt` |
 | 9 | State machine (INIT→HANDSHAKING→ESTABLISHED→CLOSED) | — | Y | Y | `test_dtls_wrong_state` |
-| 10 | close_notify on shutdown | RFC 6347 §4.1.2.1 | N | N | TODO in source (line 258) |
+| 10 | close_notify on shutdown | RFC 6347 §4.1.2.1 | Y | Y | `test_dtls_close_notify` — both OpenSSL and mbedTLS backends |
 
 ---
 
@@ -172,10 +172,10 @@ Per-module audit of NanoRTC against authoritative RFC specifications.
 | # | Requirement | RFC | Impl | Test | Gap |
 |---|-------------|-----|------|------|-----|
 | 21 | TSN tracking (cumulative) | §6.2.1 | Y | Y | `test_two_instance_data_exchange` |
-| 22 | Gap ack blocks for out-of-order | §6.2.1 | N | N | **TODO in source (line 593)** |
+| 22 | Gap ack blocks for out-of-order | §6.2.1 | Y | Y | `test_sctp_gap_*` — reorder buffer + gap ack blocks + delivery queue |
 | 23 | SACK generation | §6.2 | Y | Y | `test_sack_drains_send_queue` |
 | 24 | Retransmission on timeout | §6.3 | Y | Y | Via RTO mechanism |
-| 25 | Selective ACK gap block parsing | §3.3.4 | N | N | Not implemented |
+| 25 | Selective ACK gap block encoding | §3.3.4 | Y | Y | `test_sctp_sack_with_gaps` — `nsctp_encode_sack_with_gaps()` |
 | 26 | Stream Sequence Numbers (SSN) | §6.6 | P | P | Only with DC_ORDERED feature |
 
 ### Fault Management (RFC 4960 §8)

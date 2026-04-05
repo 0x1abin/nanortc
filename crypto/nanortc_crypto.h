@@ -64,6 +64,11 @@ struct nanortc_crypto_provider {
     int (*dtls_get_fingerprint)(nanortc_crypto_dtls_ctx_t *ctx, char *buf, size_t buf_len);
     void (*dtls_free)(nanortc_crypto_dtls_ctx_t *ctx);
 
+    /* Send DTLS close_notify alert (RFC 5246 §7.2.1).
+     * Generates the close_notify record via the BIO send callback.
+     * Returns NANORTC_OK on success. Optional; may be NULL. */
+    int (*dtls_close_notify)(nanortc_crypto_dtls_ctx_t *ctx);
+
     /* Switch DTLS role after context is created (for SDP actpass negotiation).
      * is_server: 1 = DTLS server, 0 = DTLS client. Optional; may be NULL. */
     int (*dtls_set_role)(nanortc_crypto_dtls_ctx_t *ctx, int is_server);
