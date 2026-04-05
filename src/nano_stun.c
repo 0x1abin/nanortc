@@ -50,8 +50,8 @@ static void write_u32(uint8_t *p, uint32_t v)
 /* Decode XOR-encoded address (RFC 8489 §14.2, reused for RELAYED/PEER).
  * val points to the attribute value (starts with reserved byte + family). */
 static int stun_decode_xor_addr(const uint8_t *val, size_t attr_len,
-                                const uint8_t txid[STUN_TXID_SIZE],
-                                uint8_t *out_addr, uint16_t *out_port, uint8_t *out_family)
+                                const uint8_t txid[STUN_TXID_SIZE], uint8_t *out_addr,
+                                uint16_t *out_port, uint8_t *out_family)
 {
     if (attr_len < 8) {
         return -1;
@@ -186,25 +186,22 @@ int stun_parse(const uint8_t *data, size_t len, stun_msg_t *msg)
             break;
 
         case STUN_ATTR_XOR_MAPPED_ADDRESS:
-            if (stun_decode_xor_addr(val, attr_len, msg->transaction_id,
-                                     msg->mapped_addr, &msg->mapped_port,
-                                     &msg->mapped_family) != 0) {
+            if (stun_decode_xor_addr(val, attr_len, msg->transaction_id, msg->mapped_addr,
+                                     &msg->mapped_port, &msg->mapped_family) != 0) {
                 return NANORTC_ERR_PARSE;
             }
             break;
 
         case STUN_ATTR_XOR_RELAYED_ADDRESS:
-            if (stun_decode_xor_addr(val, attr_len, msg->transaction_id,
-                                     msg->relayed_addr, &msg->relayed_port,
-                                     &msg->relayed_family) != 0) {
+            if (stun_decode_xor_addr(val, attr_len, msg->transaction_id, msg->relayed_addr,
+                                     &msg->relayed_port, &msg->relayed_family) != 0) {
                 return NANORTC_ERR_PARSE;
             }
             break;
 
         case STUN_ATTR_XOR_PEER_ADDRESS:
-            if (stun_decode_xor_addr(val, attr_len, msg->transaction_id,
-                                     msg->peer_addr, &msg->peer_port,
-                                     &msg->peer_family) != 0) {
+            if (stun_decode_xor_addr(val, attr_len, msg->transaction_id, msg->peer_addr,
+                                     &msg->peer_port, &msg->peer_family) != 0) {
                 return NANORTC_ERR_PARSE;
             }
             break;

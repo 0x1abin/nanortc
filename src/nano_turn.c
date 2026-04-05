@@ -50,8 +50,8 @@ static size_t stun_write_attr(uint8_t *buf, uint16_t type, const void *val, uint
 }
 
 /* Encode XOR address attribute (RFC 8489 §14.2) */
-static size_t stun_encode_xor_addr(uint8_t *buf, uint16_t attr_type,
-                                   const uint8_t *addr, uint8_t family, uint16_t port,
+static size_t stun_encode_xor_addr(uint8_t *buf, uint16_t attr_type, const uint8_t *addr,
+                                   uint8_t family, uint16_t port,
                                    const uint8_t txid[STUN_TXID_SIZE])
 {
     uint8_t val[20]; /* max: 4-byte header + 16-byte IPv6 */
@@ -79,8 +79,7 @@ static size_t stun_encode_xor_addr(uint8_t *buf, uint16_t attr_type,
 }
 
 /* Write STUN header. Caller fills in length after building attributes. */
-static void stun_write_header(uint8_t *buf, uint16_t type,
-                              const uint8_t txid[STUN_TXID_SIZE])
+static void stun_write_header(uint8_t *buf, uint16_t type, const uint8_t txid[STUN_TXID_SIZE])
 {
     nanortc_write_u16be(buf, type);
     nanortc_write_u16be(buf + 2, 0); /* length placeholder */
@@ -96,7 +95,7 @@ static void stun_finalize_length(uint8_t *buf, size_t total_len)
 
 /* Append MESSAGE-INTEGRITY (RFC 8489 §14.5) using the TURN HMAC key. */
 static size_t stun_append_integrity(uint8_t *buf, size_t msg_len,
-                                    const uint8_t key[16],
+                                    const uint8_t key[NANORTC_TURN_HMAC_KEY_SIZE],
                                     stun_hmac_sha1_fn hmac_sha1)
 {
     /* Temporarily set length to include MI attr (24 bytes: 4 header + 20 HMAC) */
@@ -171,8 +170,7 @@ int turn_configure(nano_turn_t *turn, const uint8_t *server_addr, uint8_t server
     if (!turn || !server_addr || !username || !password) {
         return NANORTC_ERR_INVALID_PARAM;
     }
-    if (username_len >= NANORTC_TURN_USERNAME_SIZE ||
-        password_len >= NANORTC_TURN_PASSWORD_SIZE) {
+    if (username_len >= NANORTC_TURN_USERNAME_SIZE || password_len >= NANORTC_TURN_PASSWORD_SIZE) {
         return NANORTC_ERR_BUFFER_TOO_SMALL;
     }
 
@@ -193,8 +191,8 @@ int turn_configure(nano_turn_t *turn, const uint8_t *server_addr, uint8_t server
     return NANORTC_OK;
 }
 
-int turn_start_allocate(nano_turn_t *turn, const nanortc_crypto_provider_t *crypto,
-                        uint8_t *buf, size_t buf_len, size_t *out_len)
+int turn_start_allocate(nano_turn_t *turn, const nanortc_crypto_provider_t *crypto, uint8_t *buf,
+                        size_t buf_len, size_t *out_len)
 {
     if (!turn || !crypto || !buf || !out_len) {
         return NANORTC_ERR_INVALID_PARAM;
@@ -229,12 +227,10 @@ int turn_start_allocate(nano_turn_t *turn, const nanortc_crypto_provider_t *cryp
 
     if (turn->state == NANORTC_TURN_CHALLENGED && turn->hmac_key_valid) {
         /* Authenticated retry after 401: add USERNAME, REALM, NONCE, MI */
-        pos += stun_write_attr(buf + pos, STUN_ATTR_USERNAME,
-                               turn->username, (uint16_t)turn->username_len);
-        pos += stun_write_attr(buf + pos, STUN_ATTR_REALM,
-                               turn->realm, (uint16_t)turn->realm_len);
-        pos += stun_write_attr(buf + pos, STUN_ATTR_NONCE,
-                               turn->nonce, (uint16_t)turn->nonce_len);
+        pos += stun_write_attr(buf + pos, STUN_ATTR_USERNAME, turn->username,
+                               (uint16_t)turn->username_len);
+        pos += stun_write_attr(buf + pos, STUN_ATTR_REALM, turn->realm, (uint16_t)turn->realm_len);
+        pos += stun_write_attr(buf + pos, STUN_ATTR_NONCE, turn->nonce, (uint16_t)turn->nonce_len);
 
         stun_finalize_length(buf, pos);
         pos = stun_append_integrity(buf, pos, turn->hmac_key, crypto->hmac_sha1);
@@ -293,14 +289,14 @@ int turn_handle_response(nano_turn_t *turn, const uint8_t *data, size_t len,
             }
 
             /* Store realm and nonce */
-            size_t rlen = msg.realm_len < NANORTC_TURN_REALM_SIZE - 1
-                              ? msg.realm_len : NANORTC_TURN_REALM_SIZE - 1;
+            size_t rlen = msg.realm_len < NANORTC_TURN_REALM_SIZE - 1 ? msg.realm_len
+                                                                      : NANORTC_TURN_REALM_SIZE - 1;
             memcpy(turn->realm, msg.realm, rlen);
             turn->realm[rlen] = '\0';
             turn->realm_len = rlen;
 
-            size_t nlen = msg.nonce_len < NANORTC_TURN_NONCE_SIZE - 1
-                              ? msg.nonce_len : NANORTC_TURN_NONCE_SIZE - 1;
+            size_t nlen = msg.nonce_len < NANORTC_TURN_NONCE_SIZE - 1 ? msg.nonce_len
+                                                                      : NANORTC_TURN_NONCE_SIZE - 1;
             memcpy(turn->nonce, msg.nonce, nlen);
             turn->nonce[nlen] = '\0';
             turn->nonce_len = nlen;
@@ -320,7 +316,8 @@ int turn_handle_response(nano_turn_t *turn, const uint8_t *data, size_t len,
             /* 438 Stale Nonce: update nonce, retry */
             if (msg.nonce && msg.nonce_len > 0) {
                 size_t nlen = msg.nonce_len < NANORTC_TURN_NONCE_SIZE - 1
-                                  ? msg.nonce_len : NANORTC_TURN_NONCE_SIZE - 1;
+                                  ? msg.nonce_len
+                                  : NANORTC_TURN_NONCE_SIZE - 1;
                 memcpy(turn->nonce, msg.nonce, nlen);
                 turn->nonce[nlen] = '\0';
                 turn->nonce_len = nlen;
@@ -345,8 +342,8 @@ int turn_handle_response(nano_turn_t *turn, const uint8_t *data, size_t len,
     } else if (msg.type == STUN_REFRESH_ERROR) {
         if (msg.error_code == 438 && msg.nonce) {
             /* Stale nonce on refresh — update and retry */
-            size_t nlen = msg.nonce_len < NANORTC_TURN_NONCE_SIZE - 1
-                              ? msg.nonce_len : NANORTC_TURN_NONCE_SIZE - 1;
+            size_t nlen = msg.nonce_len < NANORTC_TURN_NONCE_SIZE - 1 ? msg.nonce_len
+                                                                      : NANORTC_TURN_NONCE_SIZE - 1;
             memcpy(turn->nonce, msg.nonce, nlen);
             turn->nonce[nlen] = '\0';
             turn->nonce_len = nlen;
@@ -370,8 +367,8 @@ int turn_handle_response(nano_turn_t *turn, const uint8_t *data, size_t len,
 }
 
 int turn_generate_refresh(nano_turn_t *turn, uint32_t now_ms,
-                          const nanortc_crypto_provider_t *crypto,
-                          uint8_t *buf, size_t buf_len, size_t *out_len)
+                          const nanortc_crypto_provider_t *crypto, uint8_t *buf, size_t buf_len,
+                          size_t *out_len)
 {
     if (!turn || !crypto || !buf || !out_len) {
         return NANORTC_ERR_INVALID_PARAM;
@@ -403,12 +400,10 @@ int turn_generate_refresh(nano_turn_t *turn, uint32_t now_ms,
     pos += stun_write_attr(buf + pos, STUN_ATTR_LIFETIME, lifetime_val, 4);
 
     /* Authentication */
-    pos += stun_write_attr(buf + pos, STUN_ATTR_USERNAME,
-                           turn->username, (uint16_t)turn->username_len);
-    pos += stun_write_attr(buf + pos, STUN_ATTR_REALM,
-                           turn->realm, (uint16_t)turn->realm_len);
-    pos += stun_write_attr(buf + pos, STUN_ATTR_NONCE,
-                           turn->nonce, (uint16_t)turn->nonce_len);
+    pos += stun_write_attr(buf + pos, STUN_ATTR_USERNAME, turn->username,
+                           (uint16_t)turn->username_len);
+    pos += stun_write_attr(buf + pos, STUN_ATTR_REALM, turn->realm, (uint16_t)turn->realm_len);
+    pos += stun_write_attr(buf + pos, STUN_ATTR_NONCE, turn->nonce, (uint16_t)turn->nonce_len);
 
     stun_finalize_length(buf, pos);
     pos = stun_append_integrity(buf, pos, turn->hmac_key, crypto->hmac_sha1);
@@ -449,16 +444,14 @@ int turn_create_permission(nano_turn_t *turn, const uint8_t *peer_addr, uint8_t 
     size_t pos = STUN_HEADER_SIZE;
 
     /* XOR-PEER-ADDRESS */
-    pos += stun_encode_xor_addr(buf + pos, STUN_ATTR_XOR_PEER_ADDRESS,
-                                peer_addr, peer_family, peer_port, txid);
+    pos += stun_encode_xor_addr(buf + pos, STUN_ATTR_XOR_PEER_ADDRESS, peer_addr, peer_family,
+                                peer_port, txid);
 
     /* Authentication */
-    pos += stun_write_attr(buf + pos, STUN_ATTR_USERNAME,
-                           turn->username, (uint16_t)turn->username_len);
-    pos += stun_write_attr(buf + pos, STUN_ATTR_REALM,
-                           turn->realm, (uint16_t)turn->realm_len);
-    pos += stun_write_attr(buf + pos, STUN_ATTR_NONCE,
-                           turn->nonce, (uint16_t)turn->nonce_len);
+    pos += stun_write_attr(buf + pos, STUN_ATTR_USERNAME, turn->username,
+                           (uint16_t)turn->username_len);
+    pos += stun_write_attr(buf + pos, STUN_ATTR_REALM, turn->realm, (uint16_t)turn->realm_len);
+    pos += stun_write_attr(buf + pos, STUN_ATTR_NONCE, turn->nonce, (uint16_t)turn->nonce_len);
 
     stun_finalize_length(buf, pos);
     pos = stun_append_integrity(buf, pos, turn->hmac_key, crypto->hmac_sha1);
@@ -480,8 +473,8 @@ int turn_create_permission(nano_turn_t *turn, const uint8_t *peer_addr, uint8_t 
 }
 
 int turn_wrap_send(const uint8_t *peer_addr, uint8_t peer_family, uint16_t peer_port,
-                   const uint8_t *payload, size_t payload_len,
-                   uint8_t *buf, size_t buf_len, size_t *out_len)
+                   const uint8_t *payload, size_t payload_len, uint8_t *buf, size_t buf_len,
+                   size_t *out_len)
 {
     if (!peer_addr || !payload || !buf || !out_len) {
         return NANORTC_ERR_INVALID_PARAM;
@@ -502,8 +495,8 @@ int turn_wrap_send(const uint8_t *peer_addr, uint8_t peer_family, uint16_t peer_
     size_t pos = STUN_HEADER_SIZE;
 
     /* XOR-PEER-ADDRESS */
-    pos += stun_encode_xor_addr(buf + pos, STUN_ATTR_XOR_PEER_ADDRESS,
-                                peer_addr, peer_family, peer_port, txid);
+    pos += stun_encode_xor_addr(buf + pos, STUN_ATTR_XOR_PEER_ADDRESS, peer_addr, peer_family,
+                                peer_port, txid);
 
     /* DATA */
     pos += stun_write_attr(buf + pos, STUN_ATTR_DATA, payload, (uint16_t)payload_len);
@@ -513,9 +506,8 @@ int turn_wrap_send(const uint8_t *peer_addr, uint8_t peer_family, uint16_t peer_
     return NANORTC_OK;
 }
 
-int turn_unwrap_data(const uint8_t *data, size_t len,
-                     uint8_t *peer_addr, uint8_t *peer_family, uint16_t *peer_port,
-                     const uint8_t **payload, size_t *payload_len)
+int turn_unwrap_data(const uint8_t *data, size_t len, uint8_t *peer_addr, uint8_t *peer_family,
+                     uint16_t *peer_port, const uint8_t **payload, size_t *payload_len)
 {
     if (!data || !peer_addr || !peer_family || !peer_port || !payload || !payload_len) {
         return NANORTC_ERR_INVALID_PARAM;
@@ -544,8 +536,8 @@ int turn_unwrap_data(const uint8_t *data, size_t len,
     return NANORTC_OK;
 }
 
-bool turn_is_from_server(const nano_turn_t *turn, const uint8_t *src_addr,
-                         uint8_t src_family, uint16_t src_port)
+bool turn_is_from_server(const nano_turn_t *turn, const uint8_t *src_addr, uint8_t src_family,
+                         uint16_t src_port)
 {
     if (!turn || !turn->configured) {
         return false;

@@ -41,7 +41,7 @@ typedef enum {
 
 /** @brief ICE candidate type (RFC 8445 §5.1.2.1). */
 typedef enum {
-    NANORTC_ICE_CAND_HOST  = 0, /**< Local host address. */
+    NANORTC_ICE_CAND_HOST = 0,  /**< Local host address. */
     NANORTC_ICE_CAND_SRFLX = 1, /**< Server-reflexive (from STUN). */
     NANORTC_ICE_CAND_RELAY = 2, /**< Relay (from TURN). */
 } nano_ice_cand_type_t;
@@ -86,10 +86,10 @@ typedef struct nano_ice {
     uint8_t generation;     /**< ICE generation counter (bumped on restart). */
 
     /* Consent freshness (RFC 7675) */
-    uint32_t consent_next_ms;    /**< When to send next consent check. */
-    uint32_t consent_expiry_ms;  /**< Consent fails if no response by this time. */
+    uint32_t consent_next_ms;             /**< When to send next consent check. */
+    uint32_t consent_expiry_ms;           /**< Consent fails if no response by this time. */
     uint8_t consent_txid[STUN_TXID_SIZE]; /**< Transaction ID of last consent request. */
-    bool consent_pending;        /**< True if a consent check is awaiting response. */
+    bool consent_pending;                 /**< True if a consent check is awaiting response. */
 } nano_ice_t;
 
 int ice_init(nano_ice_t *ice, int is_controlling);
@@ -119,8 +119,7 @@ int ice_restart(nano_ice_t *ice);
  * Called periodically after ICE is CONNECTED to verify path liveness.
  * Returns NANORTC_OK with *out_len=0 if not time to send yet.
  */
-int ice_generate_consent(nano_ice_t *ice, uint32_t now_ms,
-                         const nanortc_crypto_provider_t *crypto,
+int ice_generate_consent(nano_ice_t *ice, uint32_t now_ms, const nanortc_crypto_provider_t *crypto,
                          uint8_t *buf, size_t buf_len, size_t *out_len);
 
 /**

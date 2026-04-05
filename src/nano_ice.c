@@ -348,8 +348,7 @@ int ice_restart(nano_ice_t *ice)
  * that the remote endpoint still consents to receive traffic.
  * ---------------------------------------------------------------- */
 
-int ice_generate_consent(nano_ice_t *ice, uint32_t now_ms,
-                         const nanortc_crypto_provider_t *crypto,
+int ice_generate_consent(nano_ice_t *ice, uint32_t now_ms, const nanortc_crypto_provider_t *crypto,
                          uint8_t *buf, size_t buf_len, size_t *out_len)
 {
     if (!ice || !crypto || !buf || !out_len) {
@@ -388,9 +387,8 @@ int ice_generate_consent(nano_ice_t *ice, uint32_t now_ms,
     /* Consent check = Binding Request without USE-CANDIDATE (RFC 7675 §5.1) */
     int rc = stun_encode_binding_request(
         username, ulen, ICE_HOST_PRIORITY, false, /* no use_candidate for consent */
-        ice->is_controlling, ice->tie_breaker, ice->consent_txid,
-        (const uint8_t *)ice->remote_pwd, ice->remote_pwd_len,
-        crypto->hmac_sha1, buf, buf_len, out_len);
+        ice->is_controlling, ice->tie_breaker, ice->consent_txid, (const uint8_t *)ice->remote_pwd,
+        ice->remote_pwd_len, crypto->hmac_sha1, buf, buf_len, out_len);
     if (rc != NANORTC_OK) {
         return rc;
     }

@@ -767,8 +767,8 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
             uint16_t peer_port = 0;
             const uint8_t *payload = NULL;
             size_t payload_len = 0;
-            int urc = turn_unwrap_data(data, len, peer_addr, &peer_family,
-                                       &peer_port, &payload, &payload_len);
+            int urc = turn_unwrap_data(data, len, peer_addr, &peer_family, &peer_port, &payload,
+                                       &payload_len);
             if (urc == NANORTC_OK && payload_len > 0) {
                 /* Re-dispatch unwrapped inner packet with peer's address */
                 nanortc_addr_t peer_src;
@@ -785,14 +785,12 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
             (void)trc;
 
             /* On fresh allocation: create permission for remote candidates */
-            if (prev_state != NANORTC_TURN_ALLOCATED &&
-                rtc->turn.state == NANORTC_TURN_ALLOCATED &&
+            if (prev_state != NANORTC_TURN_ALLOCATED && rtc->turn.state == NANORTC_TURN_ALLOCATED &&
                 rtc->ice.remote_candidate_count > 0) {
                 nano_ice_candidate_t *c = &rtc->ice.remote_candidates[0];
                 size_t perm_len = 0;
-                turn_create_permission(&rtc->turn, c->addr, c->family, c->port,
-                                       rtc->config.crypto, rtc->stun_buf,
-                                       sizeof(rtc->stun_buf), &perm_len);
+                turn_create_permission(&rtc->turn, c->addr, c->family, c->port, rtc->config.crypto,
+                                       rtc->stun_buf, sizeof(rtc->stun_buf), &perm_len);
                 if (perm_len > 0) {
                     nanortc_output_t out;
                     memset(&out, 0, sizeof(out));
@@ -1325,8 +1323,8 @@ static int rtc_process_timers(nanortc_t *rtc, uint32_t now_ms)
         } else if (rtc->turn.state == NANORTC_TURN_ALLOCATED) {
             /* Periodic Refresh */
             size_t ref_len = 0;
-            int trc = turn_generate_refresh(&rtc->turn, now_ms, rtc->config.crypto,
-                                            rtc->stun_buf, sizeof(rtc->stun_buf), &ref_len);
+            int trc = turn_generate_refresh(&rtc->turn, now_ms, rtc->config.crypto, rtc->stun_buf,
+                                            sizeof(rtc->stun_buf), &ref_len);
             if (trc == NANORTC_OK && ref_len > 0) {
                 nanortc_output_t out;
                 memset(&out, 0, sizeof(out));
@@ -1672,8 +1670,8 @@ int nanortc_ice_restart(nanortc_t *rtc)
  * TURN API
  * ---------------------------------------------------------------- */
 
-int nanortc_set_turn_server(nanortc_t *rtc, const char *ip, uint16_t port,
-                            const char *username, const char *password)
+int nanortc_set_turn_server(nanortc_t *rtc, const char *ip, uint16_t port, const char *username,
+                            const char *password)
 {
     if (!rtc || !ip || !username || !password) {
         return NANORTC_ERR_INVALID_PARAM;
@@ -1699,8 +1697,7 @@ int nanortc_set_turn_server(nanortc_t *rtc, const char *ip, uint16_t port,
     while (password[plen]) /* NANORTC_SAFE: API boundary */
         plen++;
 
-    rc = turn_configure(&rtc->turn, server_addr, family, port,
-                        username, ulen, password, plen);
+    rc = turn_configure(&rtc->turn, server_addr, family, port, username, ulen, password, plen);
     if (rc != NANORTC_OK) {
         return rc;
     }
