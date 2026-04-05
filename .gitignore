@@ -2,6 +2,7 @@
 build/
 build-*/
 cmake-build-*/
+*.cache
 
 # Compiled objects
 *.o

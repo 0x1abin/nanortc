@@ -25,29 +25,29 @@ Always pass `(buffer, buffer_length)` as a pair. Output functions take an additi
 ## Struct Layout
 
 - Wire-format structs: use fixed-size fields (`uint8_t`, `uint16_t`, `uint32_t`)
-- Use `nano_htons` / `nano_htonl` for encoding; never assume host byte order
+- Use `nanortc_htons` / `nanortc_htonl` for encoding; never assume host byte order
 - State structs: group related fields, keep frequently-accessed fields near top
 
 ## Naming
 
-- Public symbols: `nano_` prefix (e.g., `nano_rtc_init`)
+- Public symbols: `nano_` prefix (e.g., `nanortc_init`)
 - Internal functions: module prefix (e.g., `stun_parse`, `sctp_handle_data`)
 - Static (file-local) helpers: no prefix required
 - Types: `nano_*_t` (public), `*_t` (internal)
-- Enums: `NANO_*` (public), `*_STATE_*` / `*_TYPE_*` (internal)
-- Macros: `NANO_*` (public), `STUN_*` / `SCTP_*` etc. (internal, module-prefixed)
+- Enums: `NANORTC_*` (public), `*_STATE_*` / `*_TYPE_*` (internal)
+- Macros: `NANORTC_*` (public), `STUN_*` / `SCTP_*` etc. (internal, module-prefixed)
 - **No ad-hoc abbreviations.** Prefer full names over self-invented abbreviations that other developers may not recognize. For example, use `libdatachannel` not `libdc`, use `datachannel` not `dc` (except in established protocol terms like DCEP). Well-known abbreviations from RFCs and standards (STUN, SCTP, DTLS, SDP, SRTP, ICE, RTP, RTCP, BWE, DCEP) are acceptable. When in doubt, spell it out.
 
 ## Error Handling
 
 ```c
 int result = some_function(args);
-if (result != NANO_OK) {
+if (result != NANORTC_OK) {
     return result;  // propagate error
 }
 ```
 
-- Never use `assert()` in `src/` — return `NANO_ERR_*` codes
+- Never use `assert()` in `src/` — return `NANORTC_ERR_*` codes
 - `assert()` is allowed in `tests/` for test assertions
 - Check all pointer parameters for NULL at public API boundaries
 
@@ -68,31 +68,31 @@ All public headers in `include/` use Doxygen `/** */` format. Internal code in `
  *
  * @param rtc   Caller-allocated state (must be zeroed).
  * @param cfg   Configuration (pointer must stay valid during init).
- * @return NANO_OK on success.
- * @retval NANO_ERR_INVALID_PARAM  rtc or cfg is NULL.
+ * @return NANORTC_OK on success.
+ * @retval NANORTC_ERR_INVALID_PARAM  rtc or cfg is NULL.
  */
-NANO_API int nano_rtc_init(nano_rtc_t *rtc, const nano_rtc_config_t *cfg);
+NANORTC_API int nanortc_init(nanortc_t *rtc, const nanortc_config_t *cfg);
 ```
 
 **Types / structs:**
 ```c
 /** @brief Network-agnostic socket address (IPv4 / IPv6). */
-typedef struct nano_addr { ... } nano_addr_t;
+typedef struct nanortc_addr { ... } nanortc_addr_t;
 ```
 
 **Struct fields / enum values** (trailing comment):
 ```c
 typedef enum {
-    NANO_LOG_ERROR = 0, /**< Unrecoverable errors. */
-    NANO_LOG_WARN  = 1, /**< Unusual but recoverable. */
-} nano_log_level_t;
+    NANORTC_LOG_ERROR = 0, /**< Unrecoverable errors. */
+    NANORTC_LOG_WARN  = 1, /**< Unusual but recoverable. */
+} nanortc_log_level_t;
 ```
 
 **Macros (config):**
 ```c
 /** @brief Maximum number of DataChannels. */
-#ifndef NANO_MAX_DATACHANNELS
-#define NANO_MAX_DATACHANNELS 8
+#ifndef NANORTC_MAX_DATACHANNELS
+#define NANORTC_MAX_DATACHANNELS 8
 #endif
 ```
 
@@ -104,12 +104,12 @@ Every struct array member must use a named macro for its size — never a bare i
 
 | Category | Defined in | Example |
 |----------|-----------|---------|
-| Configurable buffer | `nanortc_config.h` (`#ifndef` guard) | `NANO_ICE_UFRAG_SIZE`, `NANO_STUN_BUF_SIZE` |
-| Protocol-fixed constant | Module header (`#define`) | `STUN_TXID_SIZE`, `NANO_SRTP_KEY_SIZE` |
+| Configurable buffer | `nanortc_config.h` (`#ifndef` guard) | `NANORTC_ICE_UFRAG_SIZE`, `NANORTC_STUN_BUF_SIZE` |
+| Protocol-fixed constant | Module header (`#define`) | `STUN_TXID_SIZE`, `NANORTC_SRTP_KEY_SIZE` |
 
 ```c
 /* Good */
-char local_ufrag[NANO_ICE_UFRAG_SIZE];
+char local_ufrag[NANORTC_ICE_UFRAG_SIZE];
 uint8_t transaction_id[STUN_TXID_SIZE];
 
 /* Bad */
@@ -121,32 +121,32 @@ Boundary checks in `.c` files must reference the same macro:
 
 ```c
 /* Good */
-if (addr_len >= NANO_IPV6_STR_SIZE) { return NANO_ERR_PARSE; }
+if (addr_len >= NANORTC_IPV6_STR_SIZE) { return NANORTC_ERR_PARSE; }
 
 /* Bad */
-if (addr_len > 45) { return NANO_ERR_PARSE; }
+if (addr_len > 45) { return NANORTC_ERR_PARSE; }
 ```
 
 ## Return Value Convention
 
 All `nano_*` public API functions return `int` as a status code:
 
-- `NANO_OK` (0) = success
-- `NANO_ERR_*` (negative) = failure
+- `NANORTC_OK` (0) = success
+- `NANORTC_ERR_*` (negative) = failure
 
-**Never return positive values.** Output lengths are passed via `size_t *out_len` parameters. Use `nano_err_to_name()` to convert error codes to human-readable strings for diagnostics.
+**Never return positive values.** Output lengths are passed via `size_t *out_len` parameters. Use `nanortc_err_name()` to convert error codes to human-readable strings for diagnostics.
 
 ```c
 /* Good: status code + out_len */
 size_t answer_len = 0;
-int rc = nano_accept_offer(&rtc, offer, answer, sizeof(answer), &answer_len);
-if (rc != NANO_OK) {
-    fprintf(stderr, "failed: %s\n", nano_err_to_name(rc));
+int rc = nanortc_accept_offer(&rtc, offer, answer, sizeof(answer), &answer_len);
+if (rc != NANORTC_OK) {
+    fprintf(stderr, "failed: %s\n", nanortc_err_name(rc));
     return rc;
 }
 
 /* Bad: using return value as length */
-int len = nano_accept_offer(&rtc, offer, answer, sizeof(answer), NULL);
+int len = nanortc_accept_offer(&rtc, offer, answer, sizeof(answer), NULL);
 if (len > 0) { ... }  // WRONG — rc is always 0 or negative
 ```
 

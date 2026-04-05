@@ -34,7 +34,7 @@ TEST(test_jitter_pop_empty)
     uint8_t buf[256];
     size_t out_len;
     uint32_t ts;
-    ASSERT_EQ(jitter_pop(&jb, 1000, buf, sizeof(buf), &out_len, &ts), NANO_ERR_NO_DATA);
+    ASSERT_EQ(jitter_pop(&jb, 1000, buf, sizeof(buf), &out_len, &ts), NANORTC_ERR_NO_DATA);
 }
 
 /* ================================================================
@@ -57,7 +57,7 @@ TEST(test_jitter_sequential)
     uint8_t buf[256];
     size_t out_len;
     uint32_t ts;
-    ASSERT_EQ(jitter_pop(&jb, 110, buf, sizeof(buf), &out_len, &ts), NANO_ERR_NO_DATA);
+    ASSERT_EQ(jitter_pop(&jb, 110, buf, sizeof(buf), &out_len, &ts), NANORTC_ERR_NO_DATA);
 
     /* Pop at time 120 (100 + 20ms depth) */
     ASSERT_OK(jitter_pop(&jb, 120, buf, sizeof(buf), &out_len, &ts));
@@ -71,7 +71,7 @@ TEST(test_jitter_sequential)
     ASSERT_EQ(ts, 480);
 
     /* Empty again */
-    ASSERT_EQ(jitter_pop(&jb, 120, buf, sizeof(buf), &out_len, &ts), NANO_ERR_NO_DATA);
+    ASSERT_EQ(jitter_pop(&jb, 120, buf, sizeof(buf), &out_len, &ts), NANORTC_ERR_NO_DATA);
 }
 
 /* ================================================================
@@ -174,13 +174,13 @@ TEST(test_jitter_overflow)
 
     uint8_t payload[] = {0xFF};
 
-    /* Fill buffer with NANO_JITTER_SLOTS packets */
-    for (uint16_t i = 0; i < NANO_JITTER_SLOTS; i++) {
+    /* Fill buffer with NANORTC_JITTER_SLOTS packets */
+    for (uint16_t i = 0; i < NANORTC_JITTER_SLOTS; i++) {
         ASSERT_OK(jitter_push(&jb, i, i * 160, payload, 1, 100));
     }
 
     /* Push one more — should force advance of head_seq */
-    ASSERT_OK(jitter_push(&jb, NANO_JITTER_SLOTS, NANO_JITTER_SLOTS * 160, payload, 1, 100));
+    ASSERT_OK(jitter_push(&jb, NANORTC_JITTER_SLOTS, NANORTC_JITTER_SLOTS * 160, payload, 1, 100));
 
     /* head_seq should have advanced, old packets discarded */
     uint8_t buf[256];
@@ -198,7 +198,7 @@ TEST(test_jitter_push_too_large)
     nano_jitter_t jb;
     jitter_init(&jb, 20);
 
-    uint8_t big[NANO_JITTER_SLOT_DATA_SIZE + 1];
+    uint8_t big[NANORTC_JITTER_SLOT_DATA_SIZE + 1];
     memset(big, 0, sizeof(big));
     ASSERT_FAIL(jitter_push(&jb, 0, 0, big, sizeof(big), 100));
 }

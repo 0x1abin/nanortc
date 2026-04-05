@@ -1,5 +1,6 @@
 /*
  * nanortc — SCTP-Lite internal interface (RFC 4960, RFC 3758)
+ * @internal Not part of the public API.
  *
  * Minimal SCTP for WebRTC DataChannel over DTLS.
  * Reference: str0m sctp/mod.rs (Sans I/O).
@@ -7,8 +8,8 @@
  * SPDX-License-Identifier: MIT
  */
 
-#ifndef NANO_SCTP_H_
-#define NANO_SCTP_H_
+#ifndef NANORTC_SCTP_H_
+#define NANORTC_SCTP_H_
 
 #include "nanortc_config.h"
 
@@ -17,9 +18,9 @@
 #include <stdint.h>
 
 /* Forward-declare crypto provider */
-#ifndef NANO_CRYPTO_PROVIDER_T_DECLARED
-#define NANO_CRYPTO_PROVIDER_T_DECLARED
-typedef struct nano_crypto_provider nano_crypto_provider_t;
+#ifndef NANORTC_CRYPTO_PROVIDER_T_DECLARED
+#define NANORTC_CRYPTO_PROVIDER_T_DECLARED
+typedef struct nanortc_crypto_provider nanortc_crypto_provider_t;
 #endif
 
 /* ----------------------------------------------------------------
@@ -110,7 +111,7 @@ typedef struct {
     uint32_t ppid;
     uint16_t data_offset; /* offset into send_buf */
     uint16_t data_len;
-#if NANO_FEATURE_DC_RELIABLE
+#if NANORTC_FEATURE_DC_RELIABLE
     uint32_t sent_at_ms; /* timestamp of last send (for RTO) */
     uint8_t retransmit_count;
 #endif
@@ -124,12 +125,12 @@ typedef struct {
  * ---------------------------------------------------------------- */
 
 typedef enum {
-    NANO_SCTP_STATE_CLOSED,
-    NANO_SCTP_STATE_COOKIE_WAIT,
-    NANO_SCTP_STATE_COOKIE_ECHOED,
-    NANO_SCTP_STATE_ESTABLISHED,
-    NANO_SCTP_STATE_SHUTDOWN_PENDING,
-    NANO_SCTP_STATE_SHUTDOWN_SENT,
+    NANORTC_SCTP_STATE_CLOSED,
+    NANORTC_SCTP_STATE_COOKIE_WAIT,
+    NANORTC_SCTP_STATE_COOKIE_ECHOED,
+    NANORTC_SCTP_STATE_ESTABLISHED,
+    NANORTC_SCTP_STATE_SHUTDOWN_PENDING,
+    NANORTC_SCTP_STATE_SHUTDOWN_SENT,
 } nano_sctp_state_t;
 
 /* ----------------------------------------------------------------
@@ -149,23 +150,47 @@ typedef struct nano_sctp {
     uint32_t next_tsn; /* next TSN to assign to outbound DATA */
     uint32_t peer_initial_tsn;
 
-#if NANO_FEATURE_DC_ORDERED
+#if NANORTC_FEATURE_DC_ORDERED
     /* Stream sequence numbers (per outbound stream) */
-    uint16_t next_ssn[NANO_MAX_DATACHANNELS];
+    uint16_t next_ssn[NANORTC_MAX_DATACHANNELS];
 #endif
 
     /* Receive state */
     uint32_t cumulative_tsn; /* highest TSN such that all TSN <= this received */
     bool sack_needed;
 
+    /* Gap tracking — buffer out-of-order DATA for reordering (RFC 9260 §6.2) */
+    struct {
+        uint32_t tsn;
+        uint16_t data_offset; /* offset into recv_gap_buf */
+        uint16_t data_len;
+        uint16_t stream_id;
+        uint32_t ppid;
+        uint8_t flags;
+        bool valid;
+    } recv_gap[NANORTC_SCTP_MAX_RECV_GAP];
+    uint8_t recv_gap_count;
+    uint8_t recv_gap_buf[NANORTC_SCTP_RECV_GAP_BUF_SIZE];
+    uint16_t recv_gap_buf_used;
+
+    /* Delivery queue — for delivering multiple messages after gap fill */
+    struct {
+        uint16_t data_offset; /* offset into recv_gap_buf */
+        uint16_t data_len;
+        uint16_t stream_id;
+        uint32_t ppid;
+    } deliver_queue[NANORTC_SCTP_MAX_RECV_GAP];
+    uint8_t dq_head;
+    uint8_t dq_tail;
+
     /* Send queue */
-    nsctp_send_entry_t send_queue[NANO_SCTP_MAX_SEND_QUEUE];
+    nsctp_send_entry_t send_queue[NANORTC_SCTP_MAX_SEND_QUEUE];
     uint8_t sq_head;
     uint8_t sq_tail;
-    uint8_t send_buf[NANO_SCTP_SEND_BUF_SIZE];
+    uint8_t send_buf[NANORTC_SCTP_SEND_BUF_SIZE];
     uint16_t send_buf_used;
 
-#if NANO_FEATURE_DC_RELIABLE
+#if NANORTC_FEATURE_DC_RELIABLE
     /* Retransmission */
     uint32_t rto_ms;
     uint32_t last_send_ms;
@@ -177,7 +202,7 @@ typedef struct nano_sctp {
     uint8_t heartbeat_nonce[NSCTP_NONCE_SIZE];
 
     /* Handshake cookie storage */
-    uint8_t cookie[NANO_SCTP_COOKIE_SIZE];
+    uint8_t cookie[NANORTC_SCTP_COOKIE_SIZE];
     uint16_t cookie_len;
     uint8_t cookie_secret[NSCTP_SECRET_SIZE]; /* HMAC key for cookie generation (server) */
 
@@ -187,8 +212,8 @@ typedef struct nano_sctp {
     uint16_t peer_num_ostreams;
 
     /* Output ring buffer (assembled SCTP packets for poll_output) */
-    uint8_t out_bufs[NANO_SCTP_OUT_QUEUE_SIZE][NANO_SCTP_MTU];
-    uint16_t out_lens[NANO_SCTP_OUT_QUEUE_SIZE];
+    uint8_t out_bufs[NANORTC_SCTP_OUT_QUEUE_SIZE][NANORTC_SCTP_MTU];
+    uint16_t out_lens[NANORTC_SCTP_OUT_QUEUE_SIZE];
     uint8_t out_head;
     uint8_t out_tail;
     bool has_output; /* compat: true when out_head != out_tail */
@@ -201,7 +226,7 @@ typedef struct nano_sctp {
     bool has_delivered;
 
     /* Crypto provider (for cookie HMAC + random) */
-    const nano_crypto_provider_t *crypto;
+    const nanortc_crypto_provider_t *crypto;
 } nano_sctp_t;
 
 /* ----------------------------------------------------------------
@@ -250,9 +275,15 @@ size_t nsctp_encode_data(uint8_t *buf, uint32_t tsn, uint16_t stream_id, uint16_
                          uint32_t ppid, uint8_t flags, const uint8_t *payload,
                          uint16_t payload_len);
 size_t nsctp_encode_sack(uint8_t *buf, uint32_t cumulative_tsn, uint32_t a_rwnd);
+size_t nsctp_encode_sack_with_gaps(uint8_t *buf, uint32_t cumulative_tsn, uint32_t a_rwnd,
+                                   const nano_sctp_t *sctp);
+
+/** Poll for next delivered message (from gap tracking reorder buffer).
+ *  Returns NANORTC_OK if a message was dequeued, NANORTC_ERR_WOULD_BLOCK if empty. */
+int nsctp_poll_delivery(nano_sctp_t *sctp);
 size_t nsctp_encode_heartbeat(uint8_t *buf, const uint8_t *info, uint16_t info_len);
 size_t nsctp_encode_heartbeat_ack(uint8_t *buf, const uint8_t *info, uint16_t info_len);
 size_t nsctp_encode_forward_tsn(uint8_t *buf, uint32_t new_cumulative_tsn);
 size_t nsctp_encode_shutdown(uint8_t *buf, uint32_t cumulative_tsn);
 
-#endif /* NANO_SCTP_H_ */
+#endif /* NANORTC_SCTP_H_ */

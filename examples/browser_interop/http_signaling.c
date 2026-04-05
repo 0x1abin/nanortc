@@ -12,12 +12,21 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 #include <errno.h>
+
+#ifdef ESP_PLATFORM
+#include <lwip/sockets.h>
+#include <lwip/netdb.h>
+#ifndef MSG_NOSIGNAL
+#define MSG_NOSIGNAL 0
+#endif
+#else
+#include <unistd.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
+#endif
 
 /* ----------------------------------------------------------------
  * TCP helper
@@ -287,10 +296,13 @@ int http_sig_send(http_sig_t *sig, const char *type, const char *payload,
     return (status == 200) ? 0 : -1;
 }
 
-int http_sig_recv(http_sig_t *sig, char *type_out, size_t type_len,
-                  char *payload_out, size_t payload_len, int timeout_ms)
+int http_sig_recv_from(http_sig_t *sig, char *type_out, size_t type_len,
+                       char *payload_out, size_t payload_len,
+                       int *from_out, int timeout_ms)
 {
     if (!sig || sig->peer_id < 0) return -1;
+
+    if (from_out) *from_out = -1;
 
     int timeout_sec = timeout_ms / 1000;
     if (timeout_sec < 1 && timeout_ms > 0) timeout_sec = 1;
@@ -298,7 +310,6 @@ int http_sig_recv(http_sig_t *sig, char *type_out, size_t type_len,
     int fd = tcp_connect(sig->host, sig->port);
     if (fd < 0) return -1;
 
-    /* Set socket recv timeout slightly longer than server timeout */
     struct timeval tv = {
         .tv_sec = timeout_sec + 2,
         .tv_usec = 0,
@@ -319,12 +330,16 @@ int http_sig_recv(http_sig_t *sig, char *type_out, size_t type_len,
     const char *body = http_read_response(fd, resp, sizeof(resp), &status, &blen);
     close(fd);
 
-    if (status == 204) return -2; /* timeout, no message */
+    if (status == 204) return -2;
     if (status != 200 || !body || blen == 0) return -1;
 
-    /* Parse JSON body */
     if (json_extract_string(body, blen, "type", type_out, type_len) < 0) {
         return -1;
+    }
+
+    /* Extract "from" integer from raw JSON body */
+    if (from_out) {
+        *from_out = http_sig_json_get_int(body, "from");
     }
 
     if (json_extract_string(body, blen, "sdp", payload_out, payload_len) >= 0) {
@@ -336,6 +351,13 @@ int http_sig_recv(http_sig_t *sig, char *type_out, size_t type_len,
 
     payload_out[0] = '\0';
     return 0;
+}
+
+int http_sig_recv(http_sig_t *sig, char *type_out, size_t type_len,
+                  char *payload_out, size_t payload_len, int timeout_ms)
+{
+    return http_sig_recv_from(sig, type_out, type_len, payload_out, payload_len,
+                              NULL, timeout_ms);
 }
 
 void http_sig_leave(http_sig_t *sig)
@@ -361,4 +383,111 @@ void http_sig_leave(http_sig_t *sig)
     close(fd);
 
     sig->peer_id = -1;
+}
+
+int http_sig_join_as_host(http_sig_t *sig, const char *host, uint16_t port)
+{
+    if (!sig || !host) return -1;
+
+    memset(sig, 0, sizeof(*sig));
+    sig->peer_id = -1;
+
+    size_t hlen = strlen(host);
+    if (hlen >= sizeof(sig->host)) hlen = sizeof(sig->host) - 1;
+    memcpy(sig->host, host, hlen);
+    sig->host[hlen] = '\0';
+    sig->port = port;
+
+    int fd = tcp_connect(host, port);
+    if (fd < 0) {
+        fprintf(stderr, "[sig] Cannot connect to %s:%u\n", host, port);
+        return -1;
+    }
+
+    char req[256];
+    int rlen = snprintf(req, sizeof(req),
+        "POST /join?role=host HTTP/1.0\r\n"
+        "Host: %s:%u\r\n"
+        "Content-Length: 0\r\n"
+        "\r\n",
+        host, port);
+    send(fd, req, (size_t)rlen, MSG_NOSIGNAL);
+
+    char resp[1024];
+    int status;
+    size_t blen;
+    const char *body = http_read_response(fd, resp, sizeof(resp), &status, &blen);
+    close(fd);
+
+    if (status != 200 || !body) {
+        fprintf(stderr, "[sig] Join as host failed (status=%d)\n", status);
+        return -1;
+    }
+
+    const char *id_pos = strstr(body, "\"id\"");
+    if (!id_pos) return -1;
+    id_pos += 4;
+    while (*id_pos == ' ' || *id_pos == ':' || *id_pos == '\t') id_pos++;
+    sig->peer_id = atoi(id_pos);
+
+    fprintf(stderr, "[sig] Joined as host (peer %d, server %s:%u)\n",
+            sig->peer_id, host, port);
+    return 0;
+}
+
+int http_sig_send_to(http_sig_t *sig, int to_id, const char *type,
+                     const char *payload, const char *payload_key)
+{
+    if (!sig || sig->peer_id < 0) return -1;
+
+    char json[HTTP_SIG_BUF_SIZE];
+    int jlen = json_build_message(json, sizeof(json), type, payload_key, payload);
+    if (jlen < 0) return -1;
+
+    int fd = tcp_connect(sig->host, sig->port);
+    if (fd < 0) return -1;
+
+    char header[256];
+    int hlen = snprintf(header, sizeof(header),
+        "POST /send?id=%d&to=%d HTTP/1.0\r\n"
+        "Host: %s:%u\r\n"
+        "Content-Type: application/json\r\n"
+        "Content-Length: %d\r\n"
+        "\r\n",
+        sig->peer_id, to_id, sig->host, sig->port, jlen);
+
+    send(fd, header, (size_t)hlen, MSG_NOSIGNAL);
+    send(fd, json, (size_t)jlen, MSG_NOSIGNAL);
+
+    char resp[512];
+    int status;
+    size_t blen;
+    http_read_response(fd, resp, sizeof(resp), &status, &blen);
+    close(fd);
+
+    return (status == 200) ? 0 : -1;
+}
+
+int http_sig_json_get_int(const char *json, const char *key)
+{
+    if (!json || !key) return -1;
+
+    /* Search for "key": N */
+    char needle[64];
+    int nlen = snprintf(needle, sizeof(needle), "\"%s\"", key);
+    if (nlen < 0 || (size_t)nlen >= sizeof(needle)) return -1;
+
+    const char *p = strstr(json, needle);
+    if (!p) return -1;
+
+    p += nlen;
+    while (*p == ' ' || *p == '\t') p++;
+    if (*p != ':') return -1;
+    p++;
+    while (*p == ' ' || *p == '\t') p++;
+
+    if (*p == '-' || (*p >= '0' && *p <= '9')) {
+        return atoi(p);
+    }
+    return -1;
 }

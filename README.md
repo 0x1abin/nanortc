@@ -13,7 +13,7 @@ NanoRTC is a WebRTC protocol stack designed from the ground up for resource-cons
 ```
                      ┌─────────────────────────┐
   UDP bytes ────────►│                         │──────► bytes to send
-  monotonic time ───►│  nano_rtc_t             │──────► application events
+  monotonic time ───►│  nanortc_t              │──────► application events
   user commands ────►│  (pure state machine)   │──────► next timeout (ms)
                      │                         │
                      │  No sockets. No threads.│
@@ -25,11 +25,17 @@ NanoRTC is a WebRTC protocol stack designed from the ground up for resource-cons
 
 - **Orthogonal feature flags** — Include only what you need:
 
-| Flag | What it adds | Flash | RAM (1 conn) |
-|------|-------------|-------|-------------|
-| `NANO_FEATURE_DATACHANNEL` | SCTP + DCEP DataChannels | ~80 KB | ~60 KB |
-| `+ NANO_FEATURE_AUDIO` | RTP/SRTP, jitter buffer | ~130 KB | ~100 KB |
-| `+ NANO_FEATURE_VIDEO` | H.264/VP8, bandwidth estimation | ~180 KB | ~160 KB |
+| Configuration | Flash (.text) | RAM (sizeof) | Flags |
+|--------------|---------------|-------------|-------|
+| Core only | 16.5 KB | 10.0 KB | DC=OFF AUDIO=OFF VIDEO=OFF |
+| DataChannel | 27.9 KB | 19.7 KB | DC=ON |
+| Audio only | 25.1 KB | 32.7 KB | DC=OFF AUDIO=ON |
+| DataChannel + Audio | 36.4 KB | 42.4 KB | DC=ON AUDIO=ON |
+| Media only (no DC) | 27.4 KB | 74.1 KB | DC=OFF AUDIO=ON VIDEO=ON |
+| Full media | 38.7 KB | 83.8 KB | DC=ON AUDIO=ON VIDEO=ON |
+
+> Measured on ESP32-P4 (RISC-V HP), mbedTLS, -O2.
+> `sizeof(nanortc_t)` is the full per-connection RAM — no heap allocation.
 
 Any combination works — audio without DataChannel, video without audio, etc.
 
@@ -50,14 +56,14 @@ cmake --build build -j$(nproc)
 ctest --test-dir build --output-on-failure
 
 # Enable audio + video
-cmake -B build -DNANO_FEATURE_AUDIO=ON -DNANO_FEATURE_VIDEO=ON
+cmake -B build -DNANORTC_FEATURE_AUDIO=ON -DNANORTC_FEATURE_VIDEO=ON
 
 # With OpenSSL (for Linux host development)
 cmake -B build -DNANORTC_CRYPTO=openssl
 
 # Build examples (full media)
-cmake -B build -DNANO_FEATURE_DATACHANNEL=ON -DNANO_FEATURE_AUDIO=ON \
-      -DNANO_FEATURE_VIDEO=ON -DNANORTC_CRYPTO=openssl -DNANORTC_BUILD_EXAMPLES=ON
+cmake -B build -DNANORTC_FEATURE_DATACHANNEL=ON -DNANORTC_FEATURE_AUDIO=ON \
+      -DNANORTC_FEATURE_VIDEO=ON -DNANORTC_CRYPTO=openssl -DNANORTC_BUILD_EXAMPLES=ON
 cmake --build build
 
 # ESP-IDF
@@ -66,35 +72,73 @@ idf.py build
 
 ## Usage
 
+### Answerer (Controlled)
+
 ```c
 #include "nanortc.h"
 
-nano_rtc_t rtc;
-nano_rtc_config_t cfg = {
-    .crypto = nano_crypto_mbedtls(),
-    .role   = NANO_ROLE_CONTROLLED,
-};
-nano_rtc_init(&rtc, &cfg);
+nanortc_t rtc;
+nanortc_config_t cfg = {0};
+cfg.crypto = nanortc_crypto_mbedtls();  // or nanortc_crypto_openssl()
+cfg.role   = NANORTC_ROLE_CONTROLLED;
+nanortc_init(&rtc, &cfg);
 
-// Exchange SDP via your signaling channel
-char answer[2048];
-nano_accept_offer(&rtc, remote_offer, answer, sizeof(answer), NULL);
+nanortc_add_local_candidate(&rtc, "192.168.1.100", 9999);
 
-// Event loop (your application drives this)
+char answer[4096];
+nanortc_accept_offer(&rtc, remote_offer, answer, sizeof(answer), NULL);
+// send answer back via signaling
+```
+
+### Offerer (Controlling)
+
+```c
+nanortc_config_t cfg = {0};
+cfg.crypto = nanortc_crypto_mbedtls();
+cfg.role   = NANORTC_ROLE_CONTROLLING;
+nanortc_init(&rtc, &cfg);
+
+nanortc_add_local_candidate(&rtc, "192.168.1.200", 9999);
+nanortc_create_datachannel(&rtc, "chat", NULL);  // register DataChannel before offer
+
+char offer[4096];
+nanortc_create_offer(&rtc, offer, sizeof(offer), NULL);
+// send offer, receive answer via signaling
+nanortc_accept_answer(&rtc, remote_answer);
+```
+
+### Event Loop
+
+Your application drives the event loop — NanoRTC never touches sockets or clocks:
+
+```c
 for (;;) {
-    nano_output_t out;
-    while (nano_poll_output(&rtc, &out) == NANO_OK) {
-        if (out.type == NANO_OUTPUT_TRANSMIT)
+    nanortc_output_t out;
+    while (nanortc_poll_output(&rtc, &out) == NANORTC_OK) {
+        switch (out.type) {
+        case NANORTC_OUTPUT_TRANSMIT:
             sendto(fd, out.transmit.data, out.transmit.len, ...);
-        else if (out.type == NANO_OUTPUT_EVENT)
-            handle_event(&out.event);
+            break;
+        case NANORTC_OUTPUT_EVENT:
+            if (out.event.type == NANORTC_EV_DATACHANNEL_DATA && !out.event.datachannel_data.binary) {
+                nanortc_datachannel_send_string(&rtc, out.event.datachannel_data.id,
+                                               (const char *)out.event.datachannel_data.data);
+            } else if (out.event.type == NANORTC_EV_DISCONNECTED) {
+                goto done;
+            }
+            break;
+        case NANORTC_OUTPUT_TIMEOUT:
+            break;  // set select()/poll() timeout to out.timeout_ms
+        }
     }
 
     // Wait for network data or timeout, then:
-    nano_handle_receive(&rtc, now_ms, buf, len, &src);
-    // or on timeout:
-    nano_handle_timeout(&rtc, now_ms);
+    nanortc_handle_input(&rtc, now_ms, buf, len, &src);   // got data
+    nanortc_handle_input(&rtc, now_ms, NULL, 0, NULL);     // timeout only
 }
+done:
+nanortc_disconnect(&rtc);
+nanortc_destroy(&rtc);
 ```
 
 ## Platform Support
@@ -116,12 +160,11 @@ src/                        Protocol modules (Sans I/O, no platform deps)
 crypto/                     Pluggable crypto providers (mbedtls, openssl)
 tests/                      Unit tests + end-to-end tests (no network needed)
 tests/interop/              Interop tests against libdatachannel (C++)
-examples/                   Linux application templates
+examples/                   Application templates
   common/                   Reusable event loop, signaling, media source
-  linux_datachannel/        DataChannel echo server
-  linux_media_send/         H.264/Opus sender from sample files
+  browser_interop/          Browser-based interop test harness
+  macos_camera/             macOS camera/mic → browser streaming (multi-viewer)
   sample_data/              Media samples (git submodule)
-browser_interop/            Browser-based interop test harness
 docs/                       Design docs, execution plans, engineering standards
 ```
 
@@ -155,7 +198,7 @@ The repository structure itself is designed for agent legibility: [AGENTS.md](AG
 
 ## Contributing
 
-NanoRTC is in active development — Phase 1 code complete (DataChannel: 130+ unit tests, 5/5 interop pass with libdatachannel), Phase 2 audio in progress.
+NanoRTC is in active development — Phase 1 (DataChannel) and Phase 2 (Audio) complete, Phase 3 (Video/H.264) in progress. All features interop-tested against libdatachannel and browser WebRTC.
 
 Contributions welcome. Please read [AGENTS.md](AGENTS.md) for build instructions and mandatory rules before submitting changes.
 

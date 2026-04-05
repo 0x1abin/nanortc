@@ -4,25 +4,56 @@
 <meta charset="utf-8">
 <title>nanortc Browser Interop</title>
 <style>
-  body { font-family: monospace; max-width: 720px; margin: 2em auto; }
-  h1 { font-size: 1.2em; }
-  .row { margin: 0.5em 0; display: flex; gap: 0.5em; align-items: center; }
-  label { min-width: 60px; }
-  input[type=text] { flex: 1; padding: 4px; font-family: monospace; }
-  button { padding: 4px 12px; cursor: pointer; }
-  #log { border: 1px solid #ccc; padding: 8px; height: 300px; overflow-y: auto;
-         white-space: pre-wrap; font-size: 0.85em; background: #f8f8f8; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: monospace; max-width: 800px; margin: 2em auto; padding: 0 1em; }
+  h1 { font-size: 1.2em; margin-bottom: 1em; }
+
+  /* Controls bar */
+  .controls { display: flex; gap: 0.5em; align-items: center; flex-wrap: wrap; }
+  .controls input[type=text] { flex: 1; min-width: 120px; padding: 4px; font-family: monospace; }
+  .controls select, .controls button { padding: 4px 12px; cursor: pointer; }
+
+  .status-bar { margin: 0.5em 0; }
   .status { font-weight: bold; }
   .ok { color: green; }
   .err { color: red; }
   .info { color: #666; }
+
+  /* Sections with top labels */
+  .section { margin: 1em 0; }
+  .section-title { font-weight: bold; font-size: 0.9em; color: #333; margin-bottom: 0.3em; }
+
+  /* Video: aspect-ratio container */
+  .video-wrap {
+    width: 100%; max-width: 640px;
+    background: #000; border-radius: 4px; overflow: hidden;
+  }
+  .video-wrap video {
+    display: block; width: 100%; height: auto;
+    object-fit: contain; background: #000;
+    cursor: pointer;
+  }
+
+  /* Audio */
+  .section audio { width: 100%; max-width: 400px; }
+
+  /* Message input */
+  .msg-row { display: flex; gap: 0.5em; }
+  .msg-row input[type=text] { flex: 1; padding: 4px; font-family: monospace; }
+  .msg-row button { padding: 4px 12px; cursor: pointer; }
+
+  /* Log */
+  #log {
+    border: 1px solid #ccc; padding: 8px; height: 240px; overflow-y: auto;
+    white-space: pre-wrap; font-size: 0.85em; background: #f8f8f8;
+    border-radius: 4px;
+  }
 </style>
 </head>
 <body>
-<h1>nanortc Browser Interop Test</h1>
+<h1>nanortc Browser Interop</h1>
 
-<div class="row">
-  <label>Server:</label>
+<div class="controls">
   <input type="text" id="sigUrl" value="">
   <select id="role">
     <option value="offerer">Offerer (browser creates DC)</option>
@@ -31,17 +62,29 @@
   <button id="btnConnect" onclick="start()">Connect</button>
 </div>
 
-<div class="row">
-  <label>Status:</label>
+<div class="status-bar">
   <span id="status" class="status info">Not connected</span>
 </div>
 
-<div class="row">
-  <input type="text" id="msgInput" placeholder="Type a message..." disabled>
-  <button id="btnSend" onclick="sendMsg()" disabled>Send</button>
+<div class="section">
+  <div class="section-title">Video</div>
+  <div class="video-wrap">
+    <video id="remoteVideo" autoplay playsinline muted controls></video>
+  </div>
 </div>
 
-<div id="log"></div>
+<div class="section">
+  <div class="section-title">DataChannel</div>
+  <div class="msg-row">
+    <input type="text" id="msgInput" placeholder="Type a message..." disabled>
+    <button id="btnSend" onclick="sendMsg()" disabled>Send</button>
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-title">Log</div>
+  <div id="log"></div>
+</div>
 
 <script>
 // Auto-detect signaling server URL (same origin)
@@ -51,6 +94,7 @@ let peerId = -1;
 let pc = null;
 let dc = null;
 let pollTimer = null;
+let pollAbort = null;
 
 function log(cls, msg) {
   const el = document.getElementById('log');
@@ -84,8 +128,9 @@ async function sigSend(base, id, msg) {
   });
 }
 
-async function sigRecv(base, id, timeout) {
-  const r = await fetch(base + '/recv?id=' + id + '&timeout=' + timeout);
+async function sigRecv(base, id, timeout, signal) {
+  const r = await fetch(base + '/recv?id=' + id + '&timeout=' + timeout,
+                        signal ? {signal} : undefined);
   if (r.status === 204) return null;
   if (!r.ok) throw new Error('recv error: ' + r.status);
   return await r.json();
@@ -101,9 +146,14 @@ function startPolling(base) {
   if (pollTimer) return;
   async function poll() {
     try {
-      const msg = await sigRecv(base, peerId, 2);
-      if (msg) handleSignalingMessage(msg);
+      pollAbort = new AbortController();
+      const msg = await sigRecv(base, peerId, 2, pollAbort.signal);
+      if (msg) {
+        log('info', 'Poll got: type=' + msg.type);
+        await handleSignalingMessage(msg);
+      }
     } catch(e) {
+      if (e.name === 'AbortError') return; /* stopPolling() called */
       log('err', 'Poll error: ' + e.message);
     }
     if (pollTimer !== null) pollTimer = setTimeout(poll, 100);
@@ -112,6 +162,7 @@ function startPolling(base) {
 }
 
 function stopPolling() {
+  if (pollAbort) { pollAbort.abort(); pollAbort = null; }
   if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
 }
 
@@ -185,6 +236,22 @@ async function start() {
     }
   };
 
+  pc.ontrack = (e) => {
+    log('ok', 'Got remote track: ' + e.track.kind);
+    const video = document.getElementById('remoteVideo');
+    if (e.streams && e.streams[0]) {
+      // Use the WebRTC-associated stream (proper timing/sync)
+      video.srcObject = e.streams[0];
+    } else {
+      // Fallback: manual stream for tracks without stream association
+      if (!video.srcObject) {
+        video.srcObject = new MediaStream();
+      }
+      video.srcObject.addTrack(e.track);
+    }
+    log('info', e.track.kind + ' track attached to player');
+  };
+
   pc.onicecandidate = async (e) => {
     if (e.candidate) {
       let c = e.candidate.candidate;
@@ -206,6 +273,20 @@ async function start() {
     dc = pc.createDataChannel('test');
     setupDC(dc);
     log('info', 'Created DataChannel "test"');
+
+    // Add audio: try sendrecv with microphone, fall back to recvonly
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({audio: true});
+      stream.getAudioTracks().forEach(t => pc.addTrack(t, stream));
+      log('info', 'Added audio track (sendrecv via microphone)');
+    } catch (e) {
+      pc.addTransceiver('audio', {direction: 'recvonly'});
+      log('warn', 'Microphone unavailable, audio recvonly: ' + e.message);
+    }
+
+    // Add video transceiver for receiving remote video
+    pc.addTransceiver('video', {direction: 'recvonly'});
+    log('info', 'Added video transceiver (recvonly)');
 
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);

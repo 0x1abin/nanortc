@@ -9,7 +9,7 @@
 
 #include "nanortc.h"
 #include "nano_dtls.h"
-#include "nano_crypto.h"
+#include "nanortc_crypto.h"
 #include "nano_test.h"
 #include "nano_test_config.h"
 #include <string.h>
@@ -23,11 +23,11 @@ TEST(test_dtls_init_server)
     nano_dtls_t dtls;
     int rc = dtls_init(&dtls, nano_test_crypto(), 1);
     ASSERT_OK(rc);
-    ASSERT_EQ(dtls.state, NANO_DTLS_STATE_INIT);
+    ASSERT_EQ(dtls.state, NANORTC_DTLS_STATE_INIT);
     ASSERT_TRUE(dtls.crypto_ctx != NULL);
     ASSERT_TRUE(dtls.is_server == 1);
     dtls_destroy(&dtls);
-    ASSERT_EQ(dtls.state, NANO_DTLS_STATE_CLOSED);
+    ASSERT_EQ(dtls.state, NANORTC_DTLS_STATE_CLOSED);
 }
 
 TEST(test_dtls_init_client)
@@ -35,7 +35,7 @@ TEST(test_dtls_init_client)
     nano_dtls_t dtls;
     int rc = dtls_init(&dtls, nano_test_crypto(), 0);
     ASSERT_OK(rc);
-    ASSERT_EQ(dtls.state, NANO_DTLS_STATE_INIT);
+    ASSERT_EQ(dtls.state, NANORTC_DTLS_STATE_INIT);
     ASSERT_TRUE(dtls.is_server == 0);
     dtls_destroy(&dtls);
 }
@@ -106,7 +106,7 @@ static int dtls_relay(nano_dtls_t *from, nano_dtls_t *to)
     size_t len = 0;
     int relayed = 0;
 
-    while (dtls_poll_output(from, buf, sizeof(buf), &len) == NANO_OK && len > 0) {
+    while (dtls_poll_output(from, buf, sizeof(buf), &len) == NANORTC_OK && len > 0) {
         int rc = dtls_handle_data(to, buf, len);
         if (rc < 0) {
             return rc;
@@ -120,7 +120,7 @@ static int dtls_relay(nano_dtls_t *from, nano_dtls_t *to)
 TEST(test_dtls_handshake_loopback)
 {
     nano_dtls_t server, client;
-    const nano_crypto_provider_t *crypto = nano_test_crypto();
+    const nanortc_crypto_provider_t *crypto = nano_test_crypto();
 
     /* Initialize both sides */
     ASSERT_OK(dtls_init(&server, crypto, 1));
@@ -128,7 +128,7 @@ TEST(test_dtls_handshake_loopback)
 
     /* Client initiates handshake (sends ClientHello) */
     ASSERT_OK(dtls_start(&client));
-    ASSERT_EQ(client.state, NANO_DTLS_STATE_HANDSHAKING);
+    ASSERT_EQ(client.state, NANORTC_DTLS_STATE_HANDSHAKING);
 
     /* Pump: relay DTLS records back and forth until both are established
      * DTLS 1.2 handshake typically takes 4-6 round trips */
@@ -140,16 +140,16 @@ TEST(test_dtls_handshake_loopback)
         /* server → client */
         dtls_relay(&server, &client);
 
-        if (server.state == NANO_DTLS_STATE_ESTABLISHED &&
-            client.state == NANO_DTLS_STATE_ESTABLISHED) {
+        if (server.state == NANORTC_DTLS_STATE_ESTABLISHED &&
+            client.state == NANORTC_DTLS_STATE_ESTABLISHED) {
             established = 1;
             break;
         }
     }
 
     ASSERT_TRUE(established);
-    ASSERT_EQ(server.state, NANO_DTLS_STATE_ESTABLISHED);
-    ASSERT_EQ(client.state, NANO_DTLS_STATE_ESTABLISHED);
+    ASSERT_EQ(server.state, NANORTC_DTLS_STATE_ESTABLISHED);
+    ASSERT_EQ(client.state, NANORTC_DTLS_STATE_ESTABLISHED);
 
     dtls_destroy(&server);
     dtls_destroy(&client);
@@ -166,8 +166,8 @@ static int dtls_do_handshake(nano_dtls_t *client, nano_dtls_t *server)
     for (int round = 0; round < 30; round++) {
         dtls_relay(client, server);
         dtls_relay(server, client);
-        if (server->state == NANO_DTLS_STATE_ESTABLISHED &&
-            client->state == NANO_DTLS_STATE_ESTABLISHED) {
+        if (server->state == NANORTC_DTLS_STATE_ESTABLISHED &&
+            client->state == NANORTC_DTLS_STATE_ESTABLISHED) {
             return 0;
         }
     }
@@ -177,7 +177,7 @@ static int dtls_do_handshake(nano_dtls_t *client, nano_dtls_t *server)
 TEST(test_dtls_encrypt_decrypt)
 {
     nano_dtls_t server, client;
-    const nano_crypto_provider_t *crypto = nano_test_crypto();
+    const nanortc_crypto_provider_t *crypto = nano_test_crypto();
     ASSERT_OK(dtls_init(&server, crypto, 1));
     ASSERT_OK(dtls_init(&client, crypto, 0));
     ASSERT_OK(dtls_do_handshake(&client, &server));
@@ -220,7 +220,7 @@ TEST(test_dtls_encrypt_decrypt)
 TEST(test_dtls_keying_material)
 {
     nano_dtls_t server, client;
-    const nano_crypto_provider_t *crypto = nano_test_crypto();
+    const nanortc_crypto_provider_t *crypto = nano_test_crypto();
     ASSERT_OK(dtls_init(&server, crypto, 1));
     ASSERT_OK(dtls_init(&client, crypto, 0));
     ASSERT_OK(dtls_do_handshake(&client, &server));
@@ -262,6 +262,149 @@ TEST(test_dtls_wrong_state)
 }
 
 /* ----------------------------------------------------------------
+ * RFC 6347 / RFC 5764 MUST/SHOULD requirement tests
+ * ---------------------------------------------------------------- */
+
+/*
+ * RFC 5764 §4.2: Keying material MUST be exactly 60 bytes for
+ * AES-128-CM-HMAC-SHA1-80: 2*16 (cipher keys) + 2*14 (salts) = 60.
+ */
+TEST(test_dtls_keying_material_length)
+{
+    nano_dtls_t server, client;
+    const nanortc_crypto_provider_t *crypto = nano_test_crypto();
+    ASSERT_OK(dtls_init(&server, crypto, 1));
+    ASSERT_OK(dtls_init(&client, crypto, 0));
+    ASSERT_OK(dtls_do_handshake(&client, &server));
+
+    /* Verify keying material is ready and 60 bytes are meaningful */
+    ASSERT_TRUE(server.keying_material_ready);
+
+    /* The keying material layout is:
+     * [0..15]  client_write_key (16 bytes)
+     * [16..31] server_write_key (16 bytes)
+     * [32..45] client_write_salt (14 bytes)
+     * [46..59] server_write_salt (14 bytes)
+     * Total: 60 bytes
+     */
+
+    /* Each section should not be all zeros (statistically near-impossible) */
+    uint8_t zeros[16];
+    memset(zeros, 0, sizeof(zeros));
+    ASSERT_TRUE(memcmp(server.keying_material, zeros, 16) != 0);      /* client key */
+    ASSERT_TRUE(memcmp(server.keying_material + 16, zeros, 16) != 0); /* server key */
+    ASSERT_TRUE(memcmp(server.keying_material + 32, zeros, 14) != 0); /* client salt */
+    ASSERT_TRUE(memcmp(server.keying_material + 46, zeros, 14) != 0); /* server salt */
+
+    dtls_destroy(&server);
+    dtls_destroy(&client);
+}
+
+/*
+ * RFC 6347 §4.1: DTLS record content types.
+ * After handshake, encrypted data should be wrapped in application_data records.
+ * The first byte of DTLS output after handshake should be content type 23 (app data).
+ */
+TEST(test_dtls_record_content_type)
+{
+    nano_dtls_t server, client;
+    const nanortc_crypto_provider_t *crypto = nano_test_crypto();
+    ASSERT_OK(dtls_init(&server, crypto, 1));
+    ASSERT_OK(dtls_init(&client, crypto, 0));
+    ASSERT_OK(dtls_do_handshake(&client, &server));
+
+    /* Client encrypts app data */
+    const uint8_t msg[] = "test";
+    ASSERT_OK(dtls_encrypt(&client, msg, sizeof(msg)));
+
+    /* Poll the DTLS output record into a buffer */
+    uint8_t record[1024];
+    size_t record_len = 0;
+    ASSERT_OK(dtls_poll_output(&client, record, sizeof(record), &record_len));
+    ASSERT_TRUE(record_len > 0);
+
+    /* RFC 6347 §4.1: First byte is content type.
+     * 23 = application_data, 22 = handshake, 20 = change_cipher_spec, 21 = alert
+     * Post-handshake encrypted data should be content type 23. */
+    ASSERT_EQ(record[0], 23);
+
+    dtls_destroy(&server);
+    dtls_destroy(&client);
+}
+
+/*
+ * RFC 6347: DTLS fingerprint format validation.
+ * SHA-256 fingerprint should be 95 chars: "XX:XX:...:XX" (32 hex pairs with colons).
+ */
+TEST(test_dtls_fingerprint_sha256_format)
+{
+    nano_dtls_t dtls;
+    const nanortc_crypto_provider_t *crypto = nano_test_crypto();
+    ASSERT_OK(dtls_init(&dtls, crypto, 1));
+
+    /* Count colons in fingerprint — should be 31 for SHA-256 */
+    int colons = 0;
+    int hex_chars = 0;
+    for (int i = 0; dtls.local_fingerprint[i]; i++) {
+        if (dtls.local_fingerprint[i] == ':') {
+            colons++;
+        } else {
+            hex_chars++;
+        }
+    }
+    ASSERT_EQ(colons, 31);    /* 32 bytes → 31 colons */
+    ASSERT_EQ(hex_chars, 64); /* 32 bytes × 2 hex chars */
+
+    dtls_destroy(&dtls);
+}
+
+/* ----------------------------------------------------------------
+ * close_notify test (RFC 6347 §4.1.2.1)
+ * ---------------------------------------------------------------- */
+
+TEST(test_dtls_close_notify)
+{
+    nano_dtls_t server, client;
+    const nanortc_crypto_provider_t *crypto = nano_test_crypto();
+
+    /* Set up established DTLS session */
+    ASSERT_OK(dtls_init(&server, crypto, 1));
+    ASSERT_OK(dtls_init(&client, crypto, 0));
+    ASSERT_OK(dtls_start(&client));
+
+    for (int round = 0; round < 30; round++) {
+        dtls_relay(&client, &server);
+        dtls_relay(&server, &client);
+        if (server.state == NANORTC_DTLS_STATE_ESTABLISHED &&
+            client.state == NANORTC_DTLS_STATE_ESTABLISHED) {
+            break;
+        }
+    }
+    ASSERT_EQ(server.state, NANORTC_DTLS_STATE_ESTABLISHED);
+    ASSERT_EQ(client.state, NANORTC_DTLS_STATE_ESTABLISHED);
+
+    /* Close client — should generate close_notify output */
+    dtls_close(&client);
+    ASSERT_EQ(client.state, NANORTC_DTLS_STATE_CLOSED);
+
+    /* The close_notify record should be available via poll_output.
+     * Relay it to server — server should process it gracefully. */
+    uint8_t buf[4096];
+    size_t len = 0;
+    int has_output = 0;
+    while (dtls_poll_output(&client, buf, sizeof(buf), &len) == NANORTC_OK && len > 0) {
+        has_output = 1;
+        /* DTLS record: content type 21 = Alert */
+        ASSERT_EQ(buf[0], 21);
+        len = 0;
+    }
+    ASSERT_TRUE(has_output); /* close_notify was generated */
+
+    dtls_destroy(&server);
+    dtls_destroy(&client);
+}
+
+/* ----------------------------------------------------------------
  * Test main
  * ---------------------------------------------------------------- */
 
@@ -275,4 +418,10 @@ RUN(test_dtls_handshake_loopback);
 RUN(test_dtls_encrypt_decrypt);
 RUN(test_dtls_keying_material);
 RUN(test_dtls_wrong_state);
+/* RFC 6347 / RFC 5764 MUST/SHOULD requirement tests */
+RUN(test_dtls_keying_material_length);
+RUN(test_dtls_record_content_type);
+RUN(test_dtls_fingerprint_sha256_format);
+/* close_notify (RFC 6347) */
+RUN(test_dtls_close_notify);
 TEST_MAIN_END

@@ -15,7 +15,7 @@
  */
 
 #include "nano_dtls.h"
-#include "nano_crypto.h"
+#include "nanortc_crypto.h"
 #include "nanortc.h"
 #include <string.h>
 
@@ -30,7 +30,7 @@
 static int bio_send_cb(void *userdata, const uint8_t *data, size_t len)
 {
     nano_dtls_t *dtls = (nano_dtls_t *)userdata;
-    if (dtls->out_len + len > NANO_DTLS_BUF_SIZE) {
+    if (dtls->out_len + len > NANORTC_DTLS_BUF_SIZE) {
         return -1; /* Buffer full */
     }
     memcpy(dtls->out_buf + dtls->out_len, data, len);
@@ -64,22 +64,22 @@ static int bio_recv_cb(void *userdata, uint8_t *buf, size_t buf_len)
  * Public API
  * ---------------------------------------------------------------- */
 
-int dtls_init(nano_dtls_t *dtls, const nano_crypto_provider_t *crypto, int is_server)
+int dtls_init(nano_dtls_t *dtls, const nanortc_crypto_provider_t *crypto, int is_server)
 {
     if (!dtls || !crypto || !crypto->dtls_ctx_new) {
-        return NANO_ERR_INVALID_PARAM;
+        return NANORTC_ERR_INVALID_PARAM;
     }
 
     memset(dtls, 0, sizeof(*dtls));
-    dtls->state = NANO_DTLS_STATE_INIT;
+    dtls->state = NANORTC_DTLS_STATE_INIT;
     dtls->crypto = crypto;
     dtls->is_server = is_server;
 
     /* Allocate crypto context (heap-allocated by provider) */
-    nano_crypto_dtls_ctx_t *ctx = crypto->dtls_ctx_new(is_server);
+    nanortc_crypto_dtls_ctx_t *ctx = crypto->dtls_ctx_new(is_server);
     if (!ctx) {
-        dtls->state = NANO_DTLS_STATE_ERROR;
-        return NANO_ERR_CRYPTO;
+        dtls->state = NANORTC_DTLS_STATE_ERROR;
+        return NANORTC_ERR_CRYPTO;
     }
     dtls->crypto_ctx = ctx;
 
@@ -88,75 +88,75 @@ int dtls_init(nano_dtls_t *dtls, const nano_crypto_provider_t *crypto, int is_se
     if (rc != 0) {
         crypto->dtls_free(ctx);
         dtls->crypto_ctx = NULL;
-        dtls->state = NANO_DTLS_STATE_ERROR;
-        return NANO_ERR_CRYPTO;
+        dtls->state = NANORTC_DTLS_STATE_ERROR;
+        return NANORTC_ERR_CRYPTO;
     }
 
     /* Cache local fingerprint */
     crypto->dtls_get_fingerprint(ctx, dtls->local_fingerprint, sizeof(dtls->local_fingerprint));
 
-    return NANO_OK;
+    return NANORTC_OK;
 }
 
 int dtls_start(nano_dtls_t *dtls)
 {
     if (!dtls || !dtls->crypto || !dtls->crypto_ctx) {
-        return NANO_ERR_INVALID_PARAM;
+        return NANORTC_ERR_INVALID_PARAM;
     }
-    if (dtls->state != NANO_DTLS_STATE_INIT) {
-        return NANO_ERR_STATE;
+    if (dtls->state != NANORTC_DTLS_STATE_INIT) {
+        return NANORTC_ERR_STATE;
     }
 
-    dtls->state = NANO_DTLS_STATE_HANDSHAKING;
+    dtls->state = NANORTC_DTLS_STATE_HANDSHAKING;
 
     /* Drive the handshake — for client, this generates ClientHello */
-    int rc = dtls->crypto->dtls_handshake((nano_crypto_dtls_ctx_t *)dtls->crypto_ctx);
+    int rc = dtls->crypto->dtls_handshake((nanortc_crypto_dtls_ctx_t *)dtls->crypto_ctx);
     if (rc < 0) {
-        dtls->state = NANO_DTLS_STATE_ERROR;
-        return NANO_ERR_CRYPTO;
+        dtls->state = NANORTC_DTLS_STATE_ERROR;
+        return NANORTC_ERR_CRYPTO;
     }
     /* rc == 0: handshake done (unlikely on first call)
      * rc == 1: WANT_READ — ClientHello is in out_buf, waiting for ServerHello */
 
     if (rc == 0) {
-        dtls->state = NANO_DTLS_STATE_ESTABLISHED;
+        dtls->state = NANORTC_DTLS_STATE_ESTABLISHED;
     }
 
-    return NANO_OK;
+    return NANORTC_OK;
 }
 
 int dtls_handle_data(nano_dtls_t *dtls, const uint8_t *data, size_t len)
 {
     if (!dtls || !data || len == 0) {
-        return NANO_ERR_INVALID_PARAM;
+        return NANORTC_ERR_INVALID_PARAM;
     }
     if (!dtls->crypto || !dtls->crypto_ctx) {
-        return NANO_ERR_STATE;
+        return NANORTC_ERR_STATE;
     }
 
     /* Buffer incoming data */
-    if (dtls->in_len + len > NANO_DTLS_BUF_SIZE) {
-        return NANO_ERR_BUFFER_TOO_SMALL;
+    if (dtls->in_len + len > NANORTC_DTLS_BUF_SIZE) {
+        return NANORTC_ERR_BUFFER_TOO_SMALL;
     }
     memcpy(dtls->in_buf + dtls->in_len, data, len);
     dtls->in_len += len;
 
-    nano_crypto_dtls_ctx_t *ctx = (nano_crypto_dtls_ctx_t *)dtls->crypto_ctx;
+    nanortc_crypto_dtls_ctx_t *ctx = (nanortc_crypto_dtls_ctx_t *)dtls->crypto_ctx;
 
-    if (dtls->state == NANO_DTLS_STATE_INIT || dtls->state == NANO_DTLS_STATE_HANDSHAKING) {
+    if (dtls->state == NANORTC_DTLS_STATE_INIT || dtls->state == NANORTC_DTLS_STATE_HANDSHAKING) {
         /* Handshake phase: drive the handshake forward */
-        if (dtls->state == NANO_DTLS_STATE_INIT) {
-            dtls->state = NANO_DTLS_STATE_HANDSHAKING;
+        if (dtls->state == NANORTC_DTLS_STATE_INIT) {
+            dtls->state = NANORTC_DTLS_STATE_HANDSHAKING;
         }
 
         int rc = dtls->crypto->dtls_handshake(ctx);
         if (rc < 0) {
-            dtls->state = NANO_DTLS_STATE_ERROR;
-            return NANO_ERR_CRYPTO;
+            dtls->state = NANORTC_DTLS_STATE_ERROR;
+            return NANORTC_ERR_CRYPTO;
         }
         if (rc == 0) {
             /* Handshake complete */
-            dtls->state = NANO_DTLS_STATE_ESTABLISHED;
+            dtls->state = NANORTC_DTLS_STATE_ESTABLISHED;
 
             /* Export keying material (RFC 5764) */
             if (dtls->crypto->dtls_export_keying_material) {
@@ -168,78 +168,78 @@ int dtls_handle_data(nano_dtls_t *dtls, const uint8_t *data, size_t len)
                 }
             }
         }
-        return NANO_OK;
+        return NANORTC_OK;
 
-    } else if (dtls->state == NANO_DTLS_STATE_ESTABLISHED) {
+    } else if (dtls->state == NANORTC_DTLS_STATE_ESTABLISHED) {
         /* Application data: decrypt */
-        dtls->app_len = NANO_DTLS_BUF_SIZE;
+        dtls->app_len = NANORTC_DTLS_BUF_SIZE;
         int rc = dtls->crypto->dtls_decrypt(ctx, NULL, 0, dtls->app_buf, &dtls->app_len);
         if (rc < 0) {
             dtls->app_len = 0;
-            return NANO_ERR_CRYPTO;
+            return NANORTC_ERR_CRYPTO;
         }
         /* rc == 1 means WANT_READ (no app data yet, could be handshake renegotiation) */
         /* Drain any outbound data generated (e.g., close_notify response) */
-        return NANO_OK;
+        return NANORTC_OK;
     }
 
-    return NANO_ERR_STATE;
+    return NANORTC_ERR_STATE;
 }
 
 int dtls_poll_output(nano_dtls_t *dtls, uint8_t *buf, size_t buf_len, size_t *out_len)
 {
     if (!dtls || !buf || !out_len) {
-        return NANO_ERR_INVALID_PARAM;
+        return NANORTC_ERR_INVALID_PARAM;
     }
 
     if (dtls->out_len == 0) {
         *out_len = 0;
-        return NANO_ERR_NO_DATA;
+        return NANORTC_ERR_NO_DATA;
     }
 
     if (buf_len < dtls->out_len) {
         *out_len = 0;
-        return NANO_ERR_BUFFER_TOO_SMALL;
+        return NANORTC_ERR_BUFFER_TOO_SMALL;
     }
 
     memcpy(buf, dtls->out_buf, dtls->out_len);
     *out_len = dtls->out_len;
     dtls->out_len = 0;
-    return NANO_OK;
+    return NANORTC_OK;
 }
 
 int dtls_encrypt(nano_dtls_t *dtls, const uint8_t *in, size_t in_len)
 {
     if (!dtls || !in || in_len == 0) {
-        return NANO_ERR_INVALID_PARAM;
+        return NANORTC_ERR_INVALID_PARAM;
     }
-    if (dtls->state != NANO_DTLS_STATE_ESTABLISHED) {
-        return NANO_ERR_STATE;
+    if (dtls->state != NANORTC_DTLS_STATE_ESTABLISHED) {
+        return NANORTC_ERR_STATE;
     }
 
-    nano_crypto_dtls_ctx_t *ctx = (nano_crypto_dtls_ctx_t *)dtls->crypto_ctx;
+    nanortc_crypto_dtls_ctx_t *ctx = (nanortc_crypto_dtls_ctx_t *)dtls->crypto_ctx;
     int rc = dtls->crypto->dtls_encrypt(ctx, in, in_len, NULL, NULL);
     if (rc < 0) {
-        return NANO_ERR_CRYPTO;
+        return NANORTC_ERR_CRYPTO;
     }
     /* Encrypted DTLS record is now in out_buf via BIO send callback */
-    return NANO_OK;
+    return NANORTC_OK;
 }
 
 int dtls_poll_app_data(nano_dtls_t *dtls, const uint8_t **data, size_t *len)
 {
     if (!dtls || !data || !len) {
-        return NANO_ERR_INVALID_PARAM;
+        return NANORTC_ERR_INVALID_PARAM;
     }
     if (dtls->app_len == 0) {
         *data = NULL;
         *len = 0;
-        return NANO_ERR_NO_DATA;
+        return NANORTC_ERR_NO_DATA;
     }
     *data = dtls->app_buf;
     *len = dtls->app_len;
     dtls->app_len = 0; /* Consumed */
-    return NANO_OK;
+    return NANORTC_OK;
 }
 
 const char *dtls_get_fingerprint(nano_dtls_t *dtls)
@@ -250,14 +250,29 @@ const char *dtls_get_fingerprint(nano_dtls_t *dtls)
     return dtls->local_fingerprint;
 }
 
+void dtls_close(nano_dtls_t *dtls)
+{
+    if (!dtls) {
+        return;
+    }
+    /* Send DTLS close_notify alert (RFC 6347 §4.1.2.1).
+     * The close_notify record is written via the BIO send callback,
+     * which queues it in the DTLS output buffer for poll_output. */
+    if (dtls->crypto && dtls->crypto->dtls_close_notify && dtls->crypto_ctx &&
+        dtls->state == NANORTC_DTLS_STATE_ESTABLISHED) {
+        dtls->crypto->dtls_close_notify((nanortc_crypto_dtls_ctx_t *)dtls->crypto_ctx);
+    }
+    dtls->state = NANORTC_DTLS_STATE_CLOSED;
+}
+
 void dtls_destroy(nano_dtls_t *dtls)
 {
     if (!dtls) {
         return;
     }
     if (dtls->crypto && dtls->crypto_ctx) {
-        dtls->crypto->dtls_free((nano_crypto_dtls_ctx_t *)dtls->crypto_ctx);
+        dtls->crypto->dtls_free((nanortc_crypto_dtls_ctx_t *)dtls->crypto_ctx);
     }
     dtls->crypto_ctx = NULL;
-    dtls->state = NANO_DTLS_STATE_CLOSED;
+    dtls->state = NANORTC_DTLS_STATE_CLOSED;
 }

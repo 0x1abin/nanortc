@@ -12,8 +12,8 @@
  * SPDX-License-Identifier: MIT
  */
 
-#ifndef NANO_MEDIA_SOURCE_H_
-#define NANO_MEDIA_SOURCE_H_
+#ifndef NANORTC_MEDIA_SOURCE_H_
+#define NANORTC_MEDIA_SOURCE_H_
 
 #include <stdint.h>
 #include <stddef.h>
@@ -23,26 +23,29 @@ extern "C" {
 #endif
 
 typedef enum {
-    NANO_MEDIA_H264,
-    NANO_MEDIA_H265,
-    NANO_MEDIA_OPUS,
-} nano_media_type_t;
+    NANORTC_MEDIA_H264,
+    NANORTC_MEDIA_H265,
+    NANORTC_MEDIA_OPUS,
+} nanortc_track_type_t;
 
-#define NANO_MEDIA_MAX_FRAME_SIZE 16384 /* 16 KB max frame */
-#define NANO_MEDIA_MAX_PATH       512
+#define NANORTC_MEDIA_MAX_FRAME_SIZE 16384 /* 16 KB max frame */
+#define NANORTC_MEDIA_MAX_PATH       512
 
 typedef struct nano_media_source {
-    nano_media_type_t type;
-    char sample_dir[NANO_MEDIA_MAX_PATH];
+    nanortc_track_type_t type;
+    char sample_dir[NANORTC_MEDIA_MAX_PATH];
     int frame_index;   /* current frame (1-based for video, 0-based for opus) */
     int frame_count;   /* total frames available */
     uint32_t frame_interval_ms; /* ms between frames */
     uint32_t timestamp_ms;      /* running timestamp */
+    /* Embedded blob source (set before init; NULL = file-based) */
+    const uint8_t *blob;
+    size_t blob_len;
 } nano_media_source_t;
 
 /* Initialize: point to sample data directory */
 int nano_media_source_init(nano_media_source_t *src,
-                           nano_media_type_t type,
+                           nanortc_track_type_t type,
                            const char *sample_dir);
 
 /* Read next frame. Loops when end is reached.
@@ -68,4 +71,4 @@ static inline uint32_t nano_media_source_interval_ms(const nano_media_source_t *
 }
 #endif
 
-#endif /* NANO_MEDIA_SOURCE_H_ */
+#endif /* NANORTC_MEDIA_SOURCE_H_ */

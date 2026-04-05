@@ -10,17 +10,18 @@ NanoRTC is built by AI coding agents. Estimates use **agent sessions** (one focu
 
 | Plan | Phase | Status | Effort | Target |
 |------|-------|--------|--------|--------|
-| [Phase 1: DataChannel E2E](exec-plans/active/phase1-datachannel.md) | 1 | **Code Complete** — 5/5 interop tests pass (commit `4b5f7bb`); browser + ESP32 integration pending (human gate) | 5 sessions | DataChannel working with libdatachannel + browser |
-| [Phase 2: Audio](exec-plans/active/phase2-audio.md) | 2 | **Active** — Session 2 complete (RTCP + Jitter + SDP audio + consistency fixes) | 2-3 sessions | Bidirectional audio with browser |
-| [Phase 3: Video](exec-plans/active/phase3-video.md) | 3 | Queued | 2 sessions | Camera streaming to browser |
+| [Phase 2: Audio](exec-plans/active/phase2-audio.md) | 2 | **Active** — Session 4 complete. Remaining: ESP32 audio intercom | 1 session | Bidirectional audio with browser |
+| [Phase 3: Video](exec-plans/active/phase3-video.md) | 3 | **Active** — Session 2 complete. Remaining: ESP32 camera | 1 session | Camera streaming to browser |
+| Phase 4: Quality | 4 | **Active** — Session 1 complete: SCTP gap tracking (7 tests), DTLS close_notify (1 test), `nano_rtc.c` delivery queue drain. Remaining: fuzz testing, coverage, test framework | 2-3 sessions | All modules A grade |
 
-**Total Phase 1-3:** ~9-12 agent sessions (~1-2 weeks elapsed)
+**Total Phase 1-4:** ~12-15 agent sessions
 
 ## Completed Plans
 
 | Plan | Completed | Effort | Outcome |
 |------|-----------|--------|---------|
 | [Phase 0: Skeleton](exec-plans/completed/phase0-skeleton.md) | 2026-03-26 | 1 session | 75 files, all 3 profiles build, 12 tests pass |
+| [Phase 1: DataChannel E2E](exec-plans/completed/phase1-datachannel.md) | 2026-03-29 | 7 sessions | 5/5 interop tests, browser + ESP32-S3 DC verified, 140+ unit tests |
 
 ## Technical Debt
 

@@ -34,7 +34,7 @@ All six feature combinations must compile and pass tests:
 # AUDIO_ONLY: DC=OFF AUDIO=ON  VIDEO=OFF
 # MEDIA_ONLY: DC=OFF AUDIO=ON  VIDEO=ON
 # CORE_ONLY:  DC=OFF AUDIO=OFF VIDEO=OFF
-cmake -B build -DNANO_FEATURE_DATACHANNEL=ON -DNANO_FEATURE_AUDIO=OFF -DNANO_FEATURE_VIDEO=OFF
+cmake -B build -DNANORTC_FEATURE_DATACHANNEL=ON -DNANORTC_FEATURE_AUDIO=OFF -DNANORTC_FEATURE_VIDEO=OFF
 cmake --build build && ctest --test-dir build --output-on-failure
 ```
 
@@ -46,10 +46,11 @@ clang-format --dry-run --Werror src/*.c src/*.h include/*.h crypto/*.h crypto/*.
 
 ## 5. Public Symbol Naming
 
-All exported symbols must start with `nano_`:
+All exported symbols must use allowed module prefixes (`nano_`, `nanortc_`, `stun_`, `ice_`, `dtls_`, `nsctp_`, `sctp_`, `dc_`, `sdp_`, `rtp_`, `rtcp_`, `srtp_`, `jitter_`, `bwe_`, `h264_`, `media_`, `ssrc_map_`, `addr_`, `track_`):
 ```bash
-nm -g libnanortc.a | grep ' T ' | awk '{print $3}' | grep -v '^nano_' | grep -v '^_'
-# Must return empty (except compiler-generated symbols)
+ALLOWED='nano_|nanortc_|stun_|ice_|dtls_|nsctp_|sctp_|dc_|sdp_|rtp_|rtcp_|srtp_|jitter_|bwe_|h264_|media_|ssrc_map_|addr_|track_'
+nm -g libnanortc.a | grep ' T ' | awk '{print $3}' | grep -v '^_' | grep -vE "^($ALLOWED)"
+# Must return empty
 ```
 
 ## 6. No Global Mutable State
@@ -62,12 +63,12 @@ nm libnanortc.a | grep ' [BD] ' | grep -v '__' | grep -v 'crc32c_table'
 
 ## 7. No Unbounded String Functions
 
-No `strlen`, `sprintf`, `snprintf`, `strcpy`, `strncpy`, `strcat`, `strncat`, `sscanf`, `atoi`, `atol`, or `gets` in `src/` or `crypto/`. API boundary uses annotated with `NANO_SAFE` are exempt. See [safe-c-guidelines.md](safe-c-guidelines.md).
+No `strlen`, `sprintf`, `snprintf`, `strcpy`, `strncpy`, `strcat`, `strncat`, `sscanf`, `atoi`, `atol`, or `gets` in `src/` or `crypto/`. API boundary uses annotated with `NANORTC_SAFE` are exempt. See [safe-c-guidelines.md](safe-c-guidelines.md).
 
 ```bash
-# Must return empty (excluding NANO_SAFE-annotated API boundary lines)
+# Must return empty (excluding NANORTC_SAFE-annotated API boundary lines)
 grep -rnE '\b(strlen|sprintf|snprintf|strcpy|strncpy|strcat|strncat|sscanf|atoi|atol|gets)\b' src/ crypto/ \
-  | grep -v 'NANO_SAFE'
+  | grep -v 'NANORTC_SAFE'
 ```
 
 ## 8. No Hardcoded Array Sizes

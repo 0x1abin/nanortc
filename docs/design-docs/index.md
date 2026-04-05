@@ -13,7 +13,7 @@
 | §1 Project Overview | — | Verified (Phase 0 skeleton matches) |
 | §2 Architecture | Code structure | Verified (module layout matches) |
 | §3 Protocol Stack | Code + RFCs | Updated: ICE supports controlled + controlling roles |
-| §4 Crypto Provider | `crypto/nano_crypto.h` | Verified (mbedtls + OpenSSL dual backend) |
+| §4 Crypto Provider | `crypto/nanortc_crypto.h` | Verified (mbedtls + OpenSSL dual backend) |
 | §5 Platform Integration | `examples/` | Verified (Linux examples: datachannel, media_send) |
 | §6 External Dependencies | `CMakeLists.txt` | Verified (mbedtls default, OpenSSL optional) |
 | §7 Implementation Plan | `docs/exec-plans/` | Phase 1 code complete; Phase 2 active |

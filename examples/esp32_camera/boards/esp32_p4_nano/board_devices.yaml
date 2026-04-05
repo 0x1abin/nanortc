@@ -1,0 +1,74 @@
+version: 1.0.0
+# Device Configuration for ESP32-P4-Nano
+# Camera (OV5647 via MIPI CSI) + Audio (ES8311) + SD card
+devices:
+  - name: audio_dac
+    chip: es8311
+    type: audio_codec
+    version: default
+    config:
+      dac_enabled: true
+      dac_max_channel: 1
+      dac_channel_mask: "1"
+    peripherals:
+      - name: gpio_pa_control
+        gain: 6
+        active_level: 1
+      - name: i2s_audio_out
+      - name: i2c_master
+        address: 0x30
+        frequency: 400000
+
+  - name: audio_adc
+    chip: es8311
+    type: audio_codec
+    version: default
+    config:
+      adc_enabled: true
+      adc_max_channel: 2
+      adc_channel_mask: "11"
+      adc_channel_labels: [RE, FC]
+    peripherals:
+      - name: i2s_audio_in
+      - name: i2c_master
+        address: 0x30
+        frequency: 400000
+
+  - name: fs_sdcard
+    type: fs_fat
+    sub_type: sdmmc
+    version: default
+    config:
+      sub_config:
+        slot: SDMMC_HOST_SLOT_0
+        frequency: SDMMC_FREQ_HIGHSPEED
+        bus_width: 4
+        pins:
+          clk: 0
+          cmd: 0
+          d0: 0
+          d1: 0
+          d2: 0
+          d3: 0
+          d4: 0
+          d5: 0
+          d6: 0
+          d7: 0
+        ldo_chan_id: 4
+
+  - name: camera
+    type: camera
+    version: default
+    sub_type: "csi"
+    config:
+      csi_config:
+        reset_io: -1
+        pwdn_io: -1
+        dont_init_ldo: true
+        xclk_config:
+          xclk_pin: 33
+          xclk_freq_hz: 24000000
+    peripherals:
+      - name: "i2c_master"
+        frequency: 100000
+      - name: ldo_mipi

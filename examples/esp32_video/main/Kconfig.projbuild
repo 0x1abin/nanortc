@@ -1,0 +1,17 @@
+menu "ESP32 Video Example"
+
+    config EXAMPLE_UDP_PORT
+        int "Local UDP port for WebRTC"
+        default 9999
+        range 1024 65535
+        help
+            UDP port for STUN/DTLS/RTP traffic.
+
+    config EXAMPLE_VIDEO_FPS
+        int "Video frame rate (fps)"
+        default 25
+        range 1 60
+        help
+            Playback speed for H.264 sample frames from embedded flash blob.
+
+endmenu

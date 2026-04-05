@@ -18,7 +18,7 @@
 extern "C" {
 #endif
 
-#define HTTP_SIG_BUF_SIZE 4096
+#define HTTP_SIG_BUF_SIZE 16384
 
 typedef struct {
     char host[64];
@@ -58,6 +58,37 @@ int http_sig_recv(http_sig_t *sig, char *type_out, size_t type_len,
  * Leave the signaling session. Sends POST /leave?id=N.
  */
 void http_sig_leave(http_sig_t *sig);
+
+/*
+ * Receive with sender identification (host mode).
+ * Same as http_sig_recv but also extracts "from" field from JSON.
+ * *from_out receives the sender peer ID, or -1 if not present.
+ */
+int http_sig_recv_from(http_sig_t *sig, char *type_out, size_t type_len,
+                       char *payload_out, size_t payload_len,
+                       int *from_out, int timeout_ms);
+
+/*
+ * Join as host (role=host). The host gets pid=0 and enables
+ * multi-viewer mode on the signaling server.
+ * Returns 0 on success, negative on error.
+ */
+int http_sig_join_as_host(http_sig_t *sig, const char *host, uint16_t port);
+
+/*
+ * Send a JSON signaling message to a specific viewer (host mode).
+ * Sends POST /send?id=0&to=to_id.
+ * Returns 0 on success, negative on error.
+ */
+int http_sig_send_to(http_sig_t *sig, int to_id, const char *type,
+                     const char *payload, const char *payload_key);
+
+/*
+ * Extract an integer value from a JSON string.
+ * Searches for "key": N (numeric, not quoted).
+ * Returns the integer value, or -1 if not found.
+ */
+int http_sig_json_get_int(const char *json, const char *key);
 
 #ifdef __cplusplus
 }

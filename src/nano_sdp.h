@@ -1,16 +1,16 @@
 /*
  * nanortc — SDP parser/generator internal interface (RFC 8866)
+ * @internal Not part of the public API.
  *
  * Reference: RFC 8829 (WebRTC SDP).
  *
  * SPDX-License-Identifier: MIT
  */
 
-#ifndef NANO_SDP_H_
-#define NANO_SDP_H_
+#ifndef NANORTC_SDP_H_
+#define NANORTC_SDP_H_
 
 #include "nanortc_config.h"
-#include "nanortc.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -18,51 +18,85 @@
 
 /* DTLS setup role */
 typedef enum {
-    NANO_SDP_SETUP_ACTPASS, /* offerer default */
-    NANO_SDP_SETUP_ACTIVE,  /* DTLS client */
-    NANO_SDP_SETUP_PASSIVE, /* DTLS server */
+    NANORTC_SDP_SETUP_ACTPASS, /* offerer default */
+    NANORTC_SDP_SETUP_ACTIVE,  /* DTLS client */
+    NANORTC_SDP_SETUP_PASSIVE, /* DTLS server */
 } nano_sdp_setup_t;
 
 /* ICE candidate parsed from SDP a=candidate: line (RFC 8839 §5.1) */
 typedef struct {
-    char addr[NANO_IPV6_STR_SIZE]; /* IP address string */
+    char addr[NANORTC_IPV6_STR_SIZE]; /* IP address string */
     uint16_t port;
 } nano_sdp_candidate_t;
 
+/* m-line type constants */
+#define SDP_MLINE_NONE        0
+#define SDP_MLINE_APPLICATION 1
+#define SDP_MLINE_AUDIO       2
+#define SDP_MLINE_VIDEO       3
+
+#if NANORTC_HAVE_MEDIA_TRANSPORT
+/**
+ * @brief Per-m-line state for multi-track SDP.
+ *
+ * Each entry corresponds to one audio or video m-line in the SDP.
+ * The MID index is the universal track identifier (matches media[] in nanortc_t).
+ */
+typedef struct nano_sdp_mline {
+    uint8_t kind;                         /**< SDP_MLINE_AUDIO or SDP_MLINE_VIDEO. */
+    uint8_t mid;                          /**< MID index (position in SDP). */
+    uint8_t pt;                           /**< Local payload type number. */
+    uint8_t remote_pt;                    /**< First PT from remote m=line. */
+    uint32_t sample_rate;                 /**< Audio sample rate (0 for video). */
+    uint8_t channels;                     /**< Audio channels (0 for video). */
+    uint8_t codec;                        /**< nanortc_codec_t value. */
+    nanortc_direction_t direction;        /**< Local direction. */
+    nanortc_direction_t remote_direction; /**< Parsed remote direction. */
+    bool active;                          /**< True if this m-line slot is in use. */
+
+    /* H264 cross-validation */
+    uint8_t video_h264_rtpmap_pt; /**< PT confirmed via a=rtpmap H264 (0=not yet). */
+} nano_sdp_mline_t;
+#endif
+
 typedef struct nano_sdp {
     /* Parsed from remote SDP */
-    char remote_ufrag[NANO_ICE_REMOTE_UFRAG_SIZE];
-    char remote_pwd[NANO_ICE_REMOTE_PWD_SIZE];
-    char remote_fingerprint[NANO_SDP_FINGERPRINT_SIZE]; /* "sha-256 AA:BB:CC:..." */
+    char remote_ufrag[NANORTC_ICE_REMOTE_UFRAG_SIZE];
+    char remote_pwd[NANORTC_ICE_REMOTE_PWD_SIZE];
+    char remote_fingerprint[NANORTC_SDP_FINGERPRINT_SIZE]; /* "sha-256 AA:BB:CC:..." */
     uint16_t remote_sctp_port;
     nano_sdp_setup_t remote_setup;
 
     /* Remote ICE candidates embedded in SDP (RFC 8839) */
-    nano_sdp_candidate_t remote_candidates[NANO_SDP_MAX_CANDIDATES];
+    nano_sdp_candidate_t remote_candidates[NANORTC_SDP_MAX_CANDIDATES];
     uint8_t candidate_count;
 
     /* Local SDP fields */
-    char local_ufrag[NANO_ICE_UFRAG_SIZE];
-    char local_pwd[NANO_ICE_PWD_SIZE];
-    char local_fingerprint[NANO_SDP_FINGERPRINT_SIZE];
+    char local_ufrag[NANORTC_ICE_UFRAG_SIZE];
+    char local_pwd[NANORTC_ICE_PWD_SIZE];
+    char local_fingerprint[NANORTC_SDP_FINGERPRINT_SIZE];
     uint16_t local_sctp_port;
     nano_sdp_setup_t local_setup;
 
     /* Local candidate (for SDP answer generation) */
-    char local_candidate_ip[NANO_IPV6_STR_SIZE];
+    char local_candidate_ip[NANORTC_IPV6_STR_SIZE];
     uint16_t local_candidate_port;
     bool has_local_candidate;
 
     bool parsed; /* true after successful parse */
 
-#if NANO_HAVE_MEDIA_TRANSPORT
-    /* Audio m-line fields (parsed from remote / configured locally) */
-    bool has_audio;
-    uint8_t audio_pt;           /* Payload type number (e.g. 111 for Opus) */
-    uint32_t audio_sample_rate; /* e.g. 48000 */
-    uint8_t audio_channels;     /* e.g. 2 for stereo */
-    nano_direction_t audio_direction;
+#if NANORTC_HAVE_MEDIA_TRANSPORT
+    /** Media m-lines (audio + video tracks). */
+    nano_sdp_mline_t mlines[NANORTC_MAX_MEDIA_TRACKS];
+    uint8_t mline_count; /**< Number of active media m-lines. */
 #endif
+
+    /* DataChannel m-line (separate — not a "media track") */
+    bool has_datachannel;
+    uint8_t dc_mid; /**< MID index for datachannel m-line. */
+
+    /** Total MID count (media + DC), used for MID assignment. */
+    uint8_t mid_count;
 } nano_sdp_t;
 
 /** Initialize SDP state. */
@@ -76,19 +110,28 @@ int sdp_init(nano_sdp_t *sdp);
  * @param sdp     SDP state to fill.
  * @param sdp_str SDP string (may or may not be null-terminated).
  * @param len     Length of sdp_str.
- * @return NANO_OK on success.
+ * @return NANORTC_OK on success.
  */
 int sdp_parse(nano_sdp_t *sdp, const char *sdp_str, size_t len);
 
 /**
- * Generate a WebRTC DataChannel SDP answer.
+ * Generate a WebRTC SDP answer (or offer).
  *
  * @param sdp     SDP state (local fields must be set).
  * @param buf     Output buffer.
  * @param buf_len Buffer size.
  * @param out_len Actual output length.
- * @return NANO_OK on success.
+ * @return NANORTC_OK on success.
  */
 int sdp_generate_answer(nano_sdp_t *sdp, char *buf, size_t buf_len, size_t *out_len);
 
-#endif /* NANO_SDP_H_ */
+#if NANORTC_HAVE_MEDIA_TRANSPORT
+/** Find an SDP m-line by MID. Returns NULL if not found. */
+nano_sdp_mline_t *sdp_find_mline(nano_sdp_t *sdp, uint8_t mid);
+
+/** Add a media m-line. Returns the MID on success, or negative error. */
+int sdp_add_mline(nano_sdp_t *sdp, uint8_t kind, uint8_t codec, uint8_t pt, uint32_t sample_rate,
+                  uint8_t channels, nanortc_direction_t direction);
+#endif
+
+#endif /* NANORTC_SDP_H_ */

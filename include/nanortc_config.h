@@ -26,136 +26,148 @@
 /* ----------------------------------------------------------------
  * ESP-IDF Kconfig mapping
  *
- * When built as an ESP-IDF component, sdkconfig.h is auto-included
- * by the toolchain. Map CONFIG_NANO_* to NANO_* macros.
+ * Include sdkconfig.h to access CONFIG_NANORTC_* Kconfig values.
+ * Map CONFIG_NANORTC_* to NANORTC_* macros.
  * ---------------------------------------------------------------- */
 
-#if defined(CONFIG_NANO_MAX_DATACHANNELS) && !defined(NANO_MAX_DATACHANNELS)
-#define NANO_MAX_DATACHANNELS CONFIG_NANO_MAX_DATACHANNELS
+#if defined(IDF_VER) || defined(ESP_PLATFORM)
+#include "sdkconfig.h"
 #endif
 
-#if defined(CONFIG_NANO_MAX_ICE_CANDIDATES) && !defined(NANO_MAX_ICE_CANDIDATES)
-#define NANO_MAX_ICE_CANDIDATES CONFIG_NANO_MAX_ICE_CANDIDATES
+#if defined(CONFIG_NANORTC_MAX_DATACHANNELS) && !defined(NANORTC_MAX_DATACHANNELS)
+#define NANORTC_MAX_DATACHANNELS CONFIG_NANORTC_MAX_DATACHANNELS
 #endif
 
-#if defined(CONFIG_NANO_ICE_MAX_CHECKS) && !defined(NANO_ICE_MAX_CHECKS)
-#define NANO_ICE_MAX_CHECKS CONFIG_NANO_ICE_MAX_CHECKS
+#if defined(CONFIG_NANORTC_MAX_ICE_CANDIDATES) && !defined(NANORTC_MAX_ICE_CANDIDATES)
+#define NANORTC_MAX_ICE_CANDIDATES CONFIG_NANORTC_MAX_ICE_CANDIDATES
 #endif
 
-#if defined(CONFIG_NANO_ICE_CHECK_INTERVAL_MS) && !defined(NANO_ICE_CHECK_INTERVAL_MS)
-#define NANO_ICE_CHECK_INTERVAL_MS CONFIG_NANO_ICE_CHECK_INTERVAL_MS
+#if defined(CONFIG_NANORTC_ICE_MAX_CHECKS) && !defined(NANORTC_ICE_MAX_CHECKS)
+#define NANORTC_ICE_MAX_CHECKS CONFIG_NANORTC_ICE_MAX_CHECKS
 #endif
 
-#if defined(CONFIG_NANO_DTLS_BUF_SIZE) && !defined(NANO_DTLS_BUF_SIZE)
-#define NANO_DTLS_BUF_SIZE CONFIG_NANO_DTLS_BUF_SIZE
+#if defined(CONFIG_NANORTC_ICE_CHECK_INTERVAL_MS) && !defined(NANORTC_ICE_CHECK_INTERVAL_MS)
+#define NANORTC_ICE_CHECK_INTERVAL_MS CONFIG_NANORTC_ICE_CHECK_INTERVAL_MS
 #endif
 
-#if defined(CONFIG_NANO_SDP_BUF_SIZE) && !defined(NANO_SDP_BUF_SIZE)
-#define NANO_SDP_BUF_SIZE CONFIG_NANO_SDP_BUF_SIZE
+#if defined(CONFIG_NANORTC_DTLS_BUF_SIZE) && !defined(NANORTC_DTLS_BUF_SIZE)
+#define NANORTC_DTLS_BUF_SIZE CONFIG_NANORTC_DTLS_BUF_SIZE
 #endif
 
-#if defined(CONFIG_NANO_SCTP_SEND_BUF_SIZE) && !defined(NANO_SCTP_SEND_BUF_SIZE)
-#define NANO_SCTP_SEND_BUF_SIZE CONFIG_NANO_SCTP_SEND_BUF_SIZE
+#if defined(CONFIG_NANORTC_SDP_BUF_SIZE) && !defined(NANORTC_SDP_BUF_SIZE)
+#define NANORTC_SDP_BUF_SIZE CONFIG_NANORTC_SDP_BUF_SIZE
 #endif
 
-#if defined(CONFIG_NANO_SCTP_RECV_BUF_SIZE) && !defined(NANO_SCTP_RECV_BUF_SIZE)
-#define NANO_SCTP_RECV_BUF_SIZE CONFIG_NANO_SCTP_RECV_BUF_SIZE
+#if defined(CONFIG_NANORTC_SCTP_SEND_BUF_SIZE) && !defined(NANORTC_SCTP_SEND_BUF_SIZE)
+#define NANORTC_SCTP_SEND_BUF_SIZE CONFIG_NANORTC_SCTP_SEND_BUF_SIZE
 #endif
 
-#if defined(CONFIG_NANO_OUT_QUEUE_SIZE) && !defined(NANO_OUT_QUEUE_SIZE)
-#define NANO_OUT_QUEUE_SIZE CONFIG_NANO_OUT_QUEUE_SIZE
+#if defined(CONFIG_NANORTC_SCTP_RECV_BUF_SIZE) && !defined(NANORTC_SCTP_RECV_BUF_SIZE)
+#define NANORTC_SCTP_RECV_BUF_SIZE CONFIG_NANORTC_SCTP_RECV_BUF_SIZE
 #endif
 
-#if defined(CONFIG_NANO_JITTER_SLOTS) && !defined(NANO_JITTER_SLOTS)
-#define NANO_JITTER_SLOTS CONFIG_NANO_JITTER_SLOTS
+#if defined(CONFIG_NANORTC_OUT_QUEUE_SIZE) && !defined(NANORTC_OUT_QUEUE_SIZE)
+#define NANORTC_OUT_QUEUE_SIZE CONFIG_NANORTC_OUT_QUEUE_SIZE
 #endif
 
-#if defined(CONFIG_NANO_JITTER_SLOT_DATA_SIZE) && !defined(NANO_JITTER_SLOT_DATA_SIZE)
-#define NANO_JITTER_SLOT_DATA_SIZE CONFIG_NANO_JITTER_SLOT_DATA_SIZE
+#if defined(CONFIG_NANORTC_JITTER_SLOTS) && !defined(NANORTC_JITTER_SLOTS)
+#define NANORTC_JITTER_SLOTS CONFIG_NANORTC_JITTER_SLOTS
 #endif
 
-#if defined(CONFIG_NANO_MEDIA_BUF_SIZE) && !defined(NANO_MEDIA_BUF_SIZE)
-#define NANO_MEDIA_BUF_SIZE CONFIG_NANO_MEDIA_BUF_SIZE
+#if defined(CONFIG_NANORTC_JITTER_SLOT_DATA_SIZE) && !defined(NANORTC_JITTER_SLOT_DATA_SIZE)
+#define NANORTC_JITTER_SLOT_DATA_SIZE CONFIG_NANORTC_JITTER_SLOT_DATA_SIZE
 #endif
 
-#if defined(CONFIG_NANO_RTCP_INTERVAL_MS) && !defined(NANO_RTCP_INTERVAL_MS)
-#define NANO_RTCP_INTERVAL_MS CONFIG_NANO_RTCP_INTERVAL_MS
+#if defined(CONFIG_NANORTC_MEDIA_BUF_SIZE) && !defined(NANORTC_MEDIA_BUF_SIZE)
+#define NANORTC_MEDIA_BUF_SIZE CONFIG_NANORTC_MEDIA_BUF_SIZE
 #endif
 
-#if defined(CONFIG_NANO_ICE_UFRAG_SIZE) && !defined(NANO_ICE_UFRAG_SIZE)
-#define NANO_ICE_UFRAG_SIZE CONFIG_NANO_ICE_UFRAG_SIZE
+#if defined(CONFIG_NANORTC_RTCP_INTERVAL_MS) && !defined(NANORTC_RTCP_INTERVAL_MS)
+#define NANORTC_RTCP_INTERVAL_MS CONFIG_NANORTC_RTCP_INTERVAL_MS
 #endif
 
-#if defined(CONFIG_NANO_ICE_PWD_SIZE) && !defined(NANO_ICE_PWD_SIZE)
-#define NANO_ICE_PWD_SIZE CONFIG_NANO_ICE_PWD_SIZE
+#if defined(CONFIG_NANORTC_ICE_UFRAG_SIZE) && !defined(NANORTC_ICE_UFRAG_SIZE)
+#define NANORTC_ICE_UFRAG_SIZE CONFIG_NANORTC_ICE_UFRAG_SIZE
 #endif
 
-#if defined(CONFIG_NANO_ICE_REMOTE_UFRAG_SIZE) && !defined(NANO_ICE_REMOTE_UFRAG_SIZE)
-#define NANO_ICE_REMOTE_UFRAG_SIZE CONFIG_NANO_ICE_REMOTE_UFRAG_SIZE
+#if defined(CONFIG_NANORTC_ICE_PWD_SIZE) && !defined(NANORTC_ICE_PWD_SIZE)
+#define NANORTC_ICE_PWD_SIZE CONFIG_NANORTC_ICE_PWD_SIZE
 #endif
 
-#if defined(CONFIG_NANO_ICE_REMOTE_PWD_SIZE) && !defined(NANO_ICE_REMOTE_PWD_SIZE)
-#define NANO_ICE_REMOTE_PWD_SIZE CONFIG_NANO_ICE_REMOTE_PWD_SIZE
+#if defined(CONFIG_NANORTC_ICE_REMOTE_UFRAG_SIZE) && !defined(NANORTC_ICE_REMOTE_UFRAG_SIZE)
+#define NANORTC_ICE_REMOTE_UFRAG_SIZE CONFIG_NANORTC_ICE_REMOTE_UFRAG_SIZE
 #endif
 
-#if defined(CONFIG_NANO_SDP_FINGERPRINT_SIZE) && !defined(NANO_SDP_FINGERPRINT_SIZE)
-#define NANO_SDP_FINGERPRINT_SIZE CONFIG_NANO_SDP_FINGERPRINT_SIZE
+#if defined(CONFIG_NANORTC_ICE_REMOTE_PWD_SIZE) && !defined(NANORTC_ICE_REMOTE_PWD_SIZE)
+#define NANORTC_ICE_REMOTE_PWD_SIZE CONFIG_NANORTC_ICE_REMOTE_PWD_SIZE
 #endif
 
-#if defined(CONFIG_NANO_SDP_MIN_BUF_SIZE) && !defined(NANO_SDP_MIN_BUF_SIZE)
-#define NANO_SDP_MIN_BUF_SIZE CONFIG_NANO_SDP_MIN_BUF_SIZE
+#if defined(CONFIG_NANORTC_SDP_FINGERPRINT_SIZE) && !defined(NANORTC_SDP_FINGERPRINT_SIZE)
+#define NANORTC_SDP_FINGERPRINT_SIZE CONFIG_NANORTC_SDP_FINGERPRINT_SIZE
 #endif
 
-#if defined(CONFIG_NANO_DC_LABEL_SIZE) && !defined(NANO_DC_LABEL_SIZE)
-#define NANO_DC_LABEL_SIZE CONFIG_NANO_DC_LABEL_SIZE
+#if defined(CONFIG_NANORTC_SDP_MIN_BUF_SIZE) && !defined(NANORTC_SDP_MIN_BUF_SIZE)
+#define NANORTC_SDP_MIN_BUF_SIZE CONFIG_NANORTC_SDP_MIN_BUF_SIZE
 #endif
 
-#if defined(CONFIG_NANO_DC_OUT_BUF_SIZE) && !defined(NANO_DC_OUT_BUF_SIZE)
-#define NANO_DC_OUT_BUF_SIZE CONFIG_NANO_DC_OUT_BUF_SIZE
+#if defined(CONFIG_NANORTC_DC_LABEL_SIZE) && !defined(NANORTC_DC_LABEL_SIZE)
+#define NANORTC_DC_LABEL_SIZE CONFIG_NANORTC_DC_LABEL_SIZE
 #endif
 
-#if defined(CONFIG_NANO_STUN_BUF_SIZE) && !defined(NANO_STUN_BUF_SIZE)
-#define NANO_STUN_BUF_SIZE CONFIG_NANO_STUN_BUF_SIZE
+#if defined(CONFIG_NANORTC_DC_OUT_BUF_SIZE) && !defined(NANORTC_DC_OUT_BUF_SIZE)
+#define NANORTC_DC_OUT_BUF_SIZE CONFIG_NANORTC_DC_OUT_BUF_SIZE
+#endif
+
+#if defined(CONFIG_NANORTC_STUN_BUF_SIZE) && !defined(NANORTC_STUN_BUF_SIZE)
+#define NANORTC_STUN_BUF_SIZE CONFIG_NANORTC_STUN_BUF_SIZE
 #endif
 
 /* Feature flag Kconfig mapping (ESP-IDF booleans) */
-#if defined(IDF_VER) && !defined(NANO_FEATURE_DATACHANNEL)
-#ifdef CONFIG_NANO_FEATURE_DATACHANNEL
-#define NANO_FEATURE_DATACHANNEL 1
+#if defined(IDF_VER) && !defined(NANORTC_FEATURE_DATACHANNEL)
+#ifdef CONFIG_NANORTC_FEATURE_DATACHANNEL
+#define NANORTC_FEATURE_DATACHANNEL 1
 #else
-#define NANO_FEATURE_DATACHANNEL 0
+#define NANORTC_FEATURE_DATACHANNEL 0
 #endif
 #endif
 
-#if defined(IDF_VER) && !defined(NANO_FEATURE_DC_RELIABLE)
-#ifdef CONFIG_NANO_FEATURE_DC_RELIABLE
-#define NANO_FEATURE_DC_RELIABLE 1
+#if defined(IDF_VER) && !defined(NANORTC_FEATURE_DC_RELIABLE)
+#ifdef CONFIG_NANORTC_FEATURE_DC_RELIABLE
+#define NANORTC_FEATURE_DC_RELIABLE 1
 #else
-#define NANO_FEATURE_DC_RELIABLE 0
+#define NANORTC_FEATURE_DC_RELIABLE 0
 #endif
 #endif
 
-#if defined(IDF_VER) && !defined(NANO_FEATURE_DC_ORDERED)
-#ifdef CONFIG_NANO_FEATURE_DC_ORDERED
-#define NANO_FEATURE_DC_ORDERED 1
+#if defined(IDF_VER) && !defined(NANORTC_FEATURE_DC_ORDERED)
+#ifdef CONFIG_NANORTC_FEATURE_DC_ORDERED
+#define NANORTC_FEATURE_DC_ORDERED 1
 #else
-#define NANO_FEATURE_DC_ORDERED 0
+#define NANORTC_FEATURE_DC_ORDERED 0
 #endif
 #endif
 
-#if defined(IDF_VER) && !defined(NANO_FEATURE_AUDIO)
-#ifdef CONFIG_NANO_FEATURE_AUDIO
-#define NANO_FEATURE_AUDIO 1
+#if defined(IDF_VER) && !defined(NANORTC_FEATURE_AUDIO)
+#ifdef CONFIG_NANORTC_FEATURE_AUDIO
+#define NANORTC_FEATURE_AUDIO 1
 #else
-#define NANO_FEATURE_AUDIO 0
+#define NANORTC_FEATURE_AUDIO 0
 #endif
 #endif
 
-#if defined(IDF_VER) && !defined(NANO_FEATURE_VIDEO)
-#ifdef CONFIG_NANO_FEATURE_VIDEO
-#define NANO_FEATURE_VIDEO 1
+#if defined(IDF_VER) && !defined(NANORTC_FEATURE_VIDEO)
+#ifdef CONFIG_NANORTC_FEATURE_VIDEO
+#define NANORTC_FEATURE_VIDEO 1
 #else
-#define NANO_FEATURE_VIDEO 0
+#define NANORTC_FEATURE_VIDEO 0
+#endif
+#endif
+
+#if defined(IDF_VER) && !defined(NANORTC_FEATURE_IPV6)
+#ifdef CONFIG_NANORTC_FEATURE_IPV6
+#define NANORTC_FEATURE_IPV6 1
+#else
+#define NANORTC_FEATURE_IPV6 0
 #endif
 #endif
 
@@ -163,237 +175,308 @@
  * Feature flags (orthogonal, user-configurable)
  *
  * Each flag enables a set of modules independently:
- *   NANO_FEATURE_DATACHANNEL  — SCTP + DCEP
- *   NANO_FEATURE_DC_RELIABLE  — retransmission (sub-feature of DC)
- *   NANO_FEATURE_DC_ORDERED   — SSN-based ordered delivery (sub-feature of DC)
- *   NANO_FEATURE_AUDIO        — Audio (RTP/SRTP/Jitter)
- *   NANO_FEATURE_VIDEO        — Video (RTP/SRTP/BWE)
+ *   NANORTC_FEATURE_DATACHANNEL  — SCTP + DCEP
+ *   NANORTC_FEATURE_DC_RELIABLE  — retransmission (sub-feature of DC)
+ *   NANORTC_FEATURE_DC_ORDERED   — SSN-based ordered delivery (sub-feature of DC)
+ *   NANORTC_FEATURE_AUDIO        — Audio (RTP/SRTP/Jitter)
+ *   NANORTC_FEATURE_VIDEO        — Video (RTP/SRTP/BWE)
+ *   NANORTC_FEATURE_IPV6         — IPv6 address parsing/generation
  * ---------------------------------------------------------------- */
 
 /** @brief Enable DataChannel (SCTP + DCEP). Default: 1. */
-#ifndef NANO_FEATURE_DATACHANNEL
-#define NANO_FEATURE_DATACHANNEL 1
+#ifndef NANORTC_FEATURE_DATACHANNEL
+#define NANORTC_FEATURE_DATACHANNEL 1
 #endif
 
 /** @brief Enable SCTP retransmission. Sub-feature of DataChannel. */
-#ifndef NANO_FEATURE_DC_RELIABLE
-#define NANO_FEATURE_DC_RELIABLE NANO_FEATURE_DATACHANNEL
+#ifndef NANORTC_FEATURE_DC_RELIABLE
+#define NANORTC_FEATURE_DC_RELIABLE NANORTC_FEATURE_DATACHANNEL
 #endif
 
 /** @brief Enable SSN-based ordered delivery. Sub-feature of DataChannel. */
-#ifndef NANO_FEATURE_DC_ORDERED
-#define NANO_FEATURE_DC_ORDERED NANO_FEATURE_DATACHANNEL
+#ifndef NANORTC_FEATURE_DC_ORDERED
+#define NANORTC_FEATURE_DC_ORDERED NANORTC_FEATURE_DATACHANNEL
 #endif
 
 /** @brief Enable audio transport (RTP/SRTP + jitter buffer). Default: 0. */
-#ifndef NANO_FEATURE_AUDIO
-#define NANO_FEATURE_AUDIO 0
+#ifndef NANORTC_FEATURE_AUDIO
+#define NANORTC_FEATURE_AUDIO 0
 #endif
 
 /** @brief Enable video transport (RTP/SRTP + BWE). Default: 0. */
-#ifndef NANO_FEATURE_VIDEO
-#define NANO_FEATURE_VIDEO 0
+#ifndef NANORTC_FEATURE_VIDEO
+#define NANORTC_FEATURE_VIDEO 0
+#endif
+
+/** @brief Enable IPv6 address support. Default: 1.
+ *  When disabled, IPv6 candidates are silently rejected, saving ~300 bytes. */
+#ifndef NANORTC_FEATURE_IPV6
+#define NANORTC_FEATURE_IPV6 1
 #endif
 
 /* Derived (internal): true when any media transport is needed */
-#if NANO_FEATURE_AUDIO || NANO_FEATURE_VIDEO
-#define NANO_HAVE_MEDIA_TRANSPORT 1
+#if NANORTC_FEATURE_AUDIO || NANORTC_FEATURE_VIDEO
+#define NANORTC_HAVE_MEDIA_TRANSPORT 1
 #else
-#define NANO_HAVE_MEDIA_TRANSPORT 0
+#define NANORTC_HAVE_MEDIA_TRANSPORT 0
+#endif
+
+/* ----------------------------------------------------------------
+ * Media track limits
+ * ---------------------------------------------------------------- */
+
+/** @brief Maximum number of media tracks (audio + video combined). Default: 2. */
+#ifndef NANORTC_MAX_MEDIA_TRACKS
+#define NANORTC_MAX_MEDIA_TRACKS 2
+#endif
+
+/** @brief Maximum SSRC map entries for RTP demuxing. Default: 2 * MAX_MEDIA_TRACKS. */
+#ifndef NANORTC_MAX_SSRC_MAP
+#define NANORTC_MAX_SSRC_MAP (NANORTC_MAX_MEDIA_TRACKS * 2)
 #endif
 
 /* ----------------------------------------------------------------
  * DataChannel limits
  * ---------------------------------------------------------------- */
 
-#ifndef NANO_MAX_DATACHANNELS
-#define NANO_MAX_DATACHANNELS 8
+#ifndef NANORTC_MAX_DATACHANNELS
+#define NANORTC_MAX_DATACHANNELS 8
 #endif
 
-#ifndef NANO_DC_LABEL_SIZE
-#define NANO_DC_LABEL_SIZE 32
+#ifndef NANORTC_DC_LABEL_SIZE
+#define NANORTC_DC_LABEL_SIZE 32
 #endif
 
-#ifndef NANO_DC_OUT_BUF_SIZE
-#define NANO_DC_OUT_BUF_SIZE 128
+#ifndef NANORTC_DC_OUT_BUF_SIZE
+#define NANORTC_DC_OUT_BUF_SIZE 128
 #endif
 
 /* ----------------------------------------------------------------
  * ICE limits
  * ---------------------------------------------------------------- */
 
-#ifndef NANO_MAX_ICE_CANDIDATES
-#define NANO_MAX_ICE_CANDIDATES 4
+#ifndef NANORTC_MAX_ICE_CANDIDATES
+#define NANORTC_MAX_ICE_CANDIDATES 4
 #endif
 
-#ifndef NANO_ICE_MAX_CHECKS
-#define NANO_ICE_MAX_CHECKS 25
+#ifndef NANORTC_ICE_MAX_CHECKS
+#define NANORTC_ICE_MAX_CHECKS 25
 #endif
 
 /* ICE connectivity check pacing interval in milliseconds (RFC 8445) */
-#ifndef NANO_ICE_CHECK_INTERVAL_MS
-#define NANO_ICE_CHECK_INTERVAL_MS 50
+#ifndef NANORTC_ICE_CHECK_INTERVAL_MS
+#define NANORTC_ICE_CHECK_INTERVAL_MS 50
 #endif
 
 /* ICE credential lengths (chars, excluding NUL) */
-#define NANO_ICE_UFRAG_LEN 8  /* 4 random bytes → 8 hex chars */
-#define NANO_ICE_PWD_LEN   22 /* 11 random bytes → 22 hex chars */
+#define NANORTC_ICE_UFRAG_LEN 8  /* 4 random bytes → 8 hex chars */
+#define NANORTC_ICE_PWD_LEN   22 /* 11 random bytes → 22 hex chars */
 
 /* ICE credential buffer sizes (must fit LEN + NUL) */
 
-#ifndef NANO_ICE_UFRAG_SIZE
-#define NANO_ICE_UFRAG_SIZE (NANO_ICE_UFRAG_LEN + 1)
+#ifndef NANORTC_ICE_UFRAG_SIZE
+#define NANORTC_ICE_UFRAG_SIZE (NANORTC_ICE_UFRAG_LEN + 1)
 #endif
 
-#ifndef NANO_ICE_PWD_SIZE
-#define NANO_ICE_PWD_SIZE (NANO_ICE_PWD_LEN + 2) /* +1 NUL +1 pad for alignment */
+#ifndef NANORTC_ICE_PWD_SIZE
+#define NANORTC_ICE_PWD_SIZE (NANORTC_ICE_PWD_LEN + 2) /* +1 NUL +1 pad for alignment */
 #endif
 
-#ifndef NANO_ICE_REMOTE_UFRAG_SIZE
-#define NANO_ICE_REMOTE_UFRAG_SIZE 32
+#ifndef NANORTC_ICE_REMOTE_UFRAG_SIZE
+#define NANORTC_ICE_REMOTE_UFRAG_SIZE 32
 #endif
 
-#ifndef NANO_ICE_REMOTE_PWD_SIZE
-#define NANO_ICE_REMOTE_PWD_SIZE 128
+#ifndef NANORTC_ICE_REMOTE_PWD_SIZE
+#define NANORTC_ICE_REMOTE_PWD_SIZE 128
 #endif
 
 /* ----------------------------------------------------------------
  * DTLS buffer size
  * ---------------------------------------------------------------- */
 
-#ifndef NANO_DTLS_BUF_SIZE
-#define NANO_DTLS_BUF_SIZE 2048
+#ifndef NANORTC_DTLS_BUF_SIZE
+#define NANORTC_DTLS_BUF_SIZE 2048
 #endif
 
 /* ----------------------------------------------------------------
  * SDP buffer size
  * ---------------------------------------------------------------- */
 
-#ifndef NANO_SDP_BUF_SIZE
-#define NANO_SDP_BUF_SIZE 2048
+#ifndef NANORTC_SDP_BUF_SIZE
+#define NANORTC_SDP_BUF_SIZE 2048
 #endif
 
 /* Maximum ICE candidates parsed from a single SDP offer/answer */
-#ifndef NANO_SDP_MAX_CANDIDATES
-#define NANO_SDP_MAX_CANDIDATES 8
+#ifndef NANORTC_SDP_MAX_CANDIDATES
+#define NANORTC_SDP_MAX_CANDIDATES 8
 #endif
 
 /* SDP field sizes */
 
-#ifndef NANO_SDP_FINGERPRINT_SIZE
-#define NANO_SDP_FINGERPRINT_SIZE 128
+#ifndef NANORTC_SDP_FINGERPRINT_SIZE
+#define NANORTC_SDP_FINGERPRINT_SIZE 128
 #endif
 
-#ifndef NANO_SDP_MIN_BUF_SIZE
-#define NANO_SDP_MIN_BUF_SIZE 256
+#ifndef NANORTC_SDP_MIN_BUF_SIZE
+#define NANORTC_SDP_MIN_BUF_SIZE 256
 #endif
 
 /* ----------------------------------------------------------------
  * STUN scratch buffer size
  * ---------------------------------------------------------------- */
 
-#ifndef NANO_STUN_BUF_SIZE
-#define NANO_STUN_BUF_SIZE 256
+#ifndef NANORTC_STUN_BUF_SIZE
+#define NANORTC_STUN_BUF_SIZE 256
 #endif
 
 /* ----------------------------------------------------------------
  * SCTP configuration (RFC 4960)
  * ---------------------------------------------------------------- */
 
-#ifndef NANO_SCTP_SEND_BUF_SIZE
-#define NANO_SCTP_SEND_BUF_SIZE 4096
+#ifndef NANORTC_SCTP_SEND_BUF_SIZE
+#define NANORTC_SCTP_SEND_BUF_SIZE 4096
 #endif
 
-#ifndef NANO_SCTP_RECV_BUF_SIZE
-#define NANO_SCTP_RECV_BUF_SIZE 4096
+#ifndef NANORTC_SCTP_RECV_BUF_SIZE
+#define NANORTC_SCTP_RECV_BUF_SIZE 4096
 #endif
 
 /* Maximum SCTP packet size over DTLS */
-#ifndef NANO_SCTP_MTU
-#define NANO_SCTP_MTU 1200
+#ifndef NANORTC_SCTP_MTU
+#define NANORTC_SCTP_MTU 1200
 #endif
 
 /* Pending outbound DATA chunk queue depth */
-#ifndef NANO_SCTP_MAX_SEND_QUEUE
-#define NANO_SCTP_MAX_SEND_QUEUE 16
+#ifndef NANORTC_SCTP_MAX_SEND_QUEUE
+#define NANORTC_SCTP_MAX_SEND_QUEUE 16
 #endif
 
 /* Maximum gap ack blocks in SACK */
-#ifndef NANO_SCTP_MAX_GAP_BLOCKS
-#define NANO_SCTP_MAX_GAP_BLOCKS 4
+#ifndef NANORTC_SCTP_MAX_GAP_BLOCKS
+#define NANORTC_SCTP_MAX_GAP_BLOCKS 4
+#endif
+
+/* Maximum out-of-order DATA chunks buffered for gap tracking (RFC 9260 §6.2).
+ * Each slot holds a copy of the payload data in recv_gap_buf. */
+#ifndef NANORTC_SCTP_MAX_RECV_GAP
+#define NANORTC_SCTP_MAX_RECV_GAP 8
+#endif
+
+/* Receive gap buffer size (bytes) for storing out-of-order DATA chunk payloads. */
+#ifndef NANORTC_SCTP_RECV_GAP_BUF_SIZE
+#define NANORTC_SCTP_RECV_GAP_BUF_SIZE 4096
 #endif
 
 /* State cookie maximum size (bytes) */
-#ifndef NANO_SCTP_COOKIE_SIZE
-#define NANO_SCTP_COOKIE_SIZE 32
+#ifndef NANORTC_SCTP_COOKIE_SIZE
+#define NANORTC_SCTP_COOKIE_SIZE 32
 #endif
 
 /* Retransmission timer defaults (RFC 4960 §6.3.1) */
-#ifndef NANO_SCTP_RTO_INITIAL_MS
-#define NANO_SCTP_RTO_INITIAL_MS 1000
+#ifndef NANORTC_SCTP_RTO_INITIAL_MS
+#define NANORTC_SCTP_RTO_INITIAL_MS 1000
 #endif
 
-#ifndef NANO_SCTP_RTO_MIN_MS
-#define NANO_SCTP_RTO_MIN_MS 200
+#ifndef NANORTC_SCTP_RTO_MIN_MS
+#define NANORTC_SCTP_RTO_MIN_MS 200
 #endif
 
-#ifndef NANO_SCTP_RTO_MAX_MS
-#define NANO_SCTP_RTO_MAX_MS 10000
+#ifndef NANORTC_SCTP_RTO_MAX_MS
+#define NANORTC_SCTP_RTO_MAX_MS 10000
 #endif
 
 /* Maximum DATA chunk retransmissions before error */
-#ifndef NANO_SCTP_MAX_RETRANSMITS
-#define NANO_SCTP_MAX_RETRANSMITS 10
+#ifndef NANORTC_SCTP_MAX_RETRANSMITS
+#define NANORTC_SCTP_MAX_RETRANSMITS 10
 #endif
 
 /* Maximum INIT retransmissions (RFC 4960 §5.1) */
-#ifndef NANO_SCTP_MAX_INIT_RETRANSMITS
-#define NANO_SCTP_MAX_INIT_RETRANSMITS 8
+#ifndef NANORTC_SCTP_MAX_INIT_RETRANSMITS
+#define NANORTC_SCTP_MAX_INIT_RETRANSMITS 8
 #endif
 
 /* HEARTBEAT interval in milliseconds (RFC 4960 §8.3) */
-#ifndef NANO_SCTP_HEARTBEAT_INTERVAL_MS
-#define NANO_SCTP_HEARTBEAT_INTERVAL_MS 30000
+#ifndef NANORTC_SCTP_HEARTBEAT_INTERVAL_MS
+#define NANORTC_SCTP_HEARTBEAT_INTERVAL_MS 30000
 #endif
 
 /* SCTP output queue depth (number of buffered outgoing packets, power of 2) */
-#ifndef NANO_SCTP_OUT_QUEUE_SIZE
-#define NANO_SCTP_OUT_QUEUE_SIZE 4
+#ifndef NANORTC_SCTP_OUT_QUEUE_SIZE
+#define NANORTC_SCTP_OUT_QUEUE_SIZE 4
 #endif
 
 /* ----------------------------------------------------------------
  * Output queue depth (must be power of 2 for ring buffer masking)
  * ---------------------------------------------------------------- */
 
-#ifndef NANO_OUT_QUEUE_SIZE
-#define NANO_OUT_QUEUE_SIZE 8
+/* 32 slots needed for video: a single H.264 frame may produce up to ~20
+ * FU-A fragments at 1200-byte MTU (for a ~24KB IDR NAL), and each fragment
+ * occupies one output queue slot until dispatch. 8 slots suffice for
+ * DataChannel-only or audio-only configurations.
+ * For HD video (720p/1080p), override to 128 via NANORTC_CONFIG_FILE. */
+#ifndef NANORTC_OUT_QUEUE_SIZE
+#define NANORTC_OUT_QUEUE_SIZE 32
 #endif
 
 /* ----------------------------------------------------------------
  * Media transport configuration
  * ---------------------------------------------------------------- */
 
-/* Media scratch buffer size (for RTP/SRTP processing) */
-#ifndef NANO_MEDIA_BUF_SIZE
-#define NANO_MEDIA_BUF_SIZE 1500
+/** @brief RTP payload MTU for H.264 FU-A fragmentation (bytes). */
+#ifndef NANORTC_VIDEO_MTU
+#define NANORTC_VIDEO_MTU 1200
+#endif
+
+/* Media scratch buffer size (for RTP/SRTP processing).
+ * Must hold: RTP header (12) + max payload (NANORTC_VIDEO_MTU) + SRTP tag (10).
+ * Formula: NANORTC_VIDEO_MTU + 80 provides sufficient headroom. */
+#ifndef NANORTC_MEDIA_BUF_SIZE
+#define NANORTC_MEDIA_BUF_SIZE (NANORTC_VIDEO_MTU + 80)
 #endif
 
 /* RTCP send interval in milliseconds (RFC 3550 §6.2) */
-#ifndef NANO_RTCP_INTERVAL_MS
-#define NANO_RTCP_INTERVAL_MS 5000
+#ifndef NANORTC_RTCP_INTERVAL_MS
+#define NANORTC_RTCP_INTERVAL_MS 5000
+#endif
+
+/* ----------------------------------------------------------------
+ * Bandwidth estimation configuration (VIDEO feature only)
+ * ---------------------------------------------------------------- */
+
+/** @brief BWE event threshold (percent). Emit NANORTC_EV_BITRATE_ESTIMATE
+ *  only when the estimate changes by more than this percentage. Default: 15. */
+#ifndef NANORTC_BWE_EVENT_THRESHOLD_PCT
+#define NANORTC_BWE_EVENT_THRESHOLD_PCT 15
+#endif
+
+/* ----------------------------------------------------------------
+ * Video configuration (VIDEO feature only)
+ * ---------------------------------------------------------------- */
+
+/** @brief Maximum reassembled NAL unit size for FU-A depacketizer (bytes). */
+#ifndef NANORTC_VIDEO_NAL_BUF_SIZE
+#define NANORTC_VIDEO_NAL_BUF_SIZE 32768
+#endif
+
+/** @brief Default dynamic Payload Type for H.264 (RFC 6184). */
+#ifndef NANORTC_VIDEO_DEFAULT_PT
+#define NANORTC_VIDEO_DEFAULT_PT 96
 #endif
 
 /* ----------------------------------------------------------------
  * Jitter buffer slots (AUDIO feature only)
  * ---------------------------------------------------------------- */
 
-#ifndef NANO_JITTER_SLOTS
-#define NANO_JITTER_SLOTS 64
+#ifndef NANORTC_JITTER_SLOTS
+#define NANORTC_JITTER_SLOTS 64
 #endif
 
-/* Maximum RTP packet data per jitter slot (bytes) */
-#ifndef NANO_JITTER_SLOT_DATA_SIZE
-#define NANO_JITTER_SLOT_DATA_SIZE 1500
+/* Maximum RTP payload data per jitter slot (bytes).
+ * 640 covers Opus 20ms @ 510 kbps (extreme) and all common audio codecs.
+ * Opus 20ms @ 128 kbps ≈ 320 B, G.711 20ms = 160 B.
+ * Increase for wideband video-over-jitter or unusually large audio frames. */
+#ifndef NANORTC_JITTER_SLOT_DATA_SIZE
+#define NANORTC_JITTER_SLOT_DATA_SIZE 640
 #endif
 
 /* ----------------------------------------------------------------
@@ -404,55 +487,87 @@
  * @brief Maximum compile-time log level.
  *
  * Messages above this level are eliminated by the preprocessor.
- * Set via compiler flag: -DNANO_LOG_LEVEL=0 (errors only).
+ * Set via compiler flag: -DNANORTC_LOG_LEVEL=0 (errors only).
  * Values: 0=ERROR, 1=WARN, 2=INFO, 3=DEBUG, 4=TRACE.
  */
-#ifndef NANO_LOG_LEVEL
-#define NANO_LOG_LEVEL 4 /* TRACE — all messages compiled in */
+#ifndef NANORTC_LOG_LEVEL
+#define NANORTC_LOG_LEVEL 4 /* TRACE — all messages compiled in */
 #endif
 
 /**
  * @brief Define to compile out all logging code entirely.
  */
-/* #define NANO_LOG_DISABLED */
+/* #define NANORTC_LOG_DISABLED */
 
 /**
  * @brief Define to omit source file/line/function from log messages.
  *
  * Reduces code size on very constrained targets.
  */
-/* #define NANO_LOG_NO_LOC */
+/* #define NANORTC_LOG_NO_LOC */
+
+/* ----------------------------------------------------------------
+ * Protocol-fixed address sizes
+ *
+ * Defined here (not nanortc.h) so internal headers can use them
+ * without creating a circular include with nanortc.h.
+ * ---------------------------------------------------------------- */
+
+#define NANORTC_ADDR_SIZE     16 /**< IPv6 binary address length (RFC 4291). */
+#define NANORTC_IPV6_STR_SIZE 46 /**< Max IPv6 string length (INET6_ADDRSTRLEN). */
+
+/* ----------------------------------------------------------------
+ * SDP media direction
+ *
+ * Defined here so nano_sdp.h can embed it without including nanortc.h.
+ * ---------------------------------------------------------------- */
+
+/** @brief SDP media direction attribute. */
+typedef enum {
+    NANORTC_DIR_SENDRECV, /**< Send and receive. */
+    NANORTC_DIR_SENDONLY, /**< Send only. */
+    NANORTC_DIR_RECVONLY, /**< Receive only. */
+    NANORTC_DIR_INACTIVE, /**< Neither send nor receive. */
+} nanortc_direction_t;
 
 /* ----------------------------------------------------------------
  * Compile-time validation
  * ---------------------------------------------------------------- */
 
-#if (NANO_OUT_QUEUE_SIZE & (NANO_OUT_QUEUE_SIZE - 1)) != 0
-#error "NANO_OUT_QUEUE_SIZE must be a power of 2"
+#if (NANORTC_OUT_QUEUE_SIZE & (NANORTC_OUT_QUEUE_SIZE - 1)) != 0
+#error "NANORTC_OUT_QUEUE_SIZE must be a power of 2"
 #endif
 
-#if NANO_FEATURE_DATACHANNEL && NANO_MAX_DATACHANNELS < 1
-#error "NANO_MAX_DATACHANNELS must be at least 1"
+#if NANORTC_FEATURE_DATACHANNEL && NANORTC_MAX_DATACHANNELS < 1
+#error "NANORTC_MAX_DATACHANNELS must be at least 1"
 #endif
 
-#if NANO_DTLS_BUF_SIZE < 256
-#error "NANO_DTLS_BUF_SIZE must be at least 256"
+#if NANORTC_DTLS_BUF_SIZE < 256
+#error "NANORTC_DTLS_BUF_SIZE must be at least 256"
 #endif
 
-#if NANO_ICE_UFRAG_SIZE < (NANO_ICE_UFRAG_LEN + 1)
-#error "NANO_ICE_UFRAG_SIZE must be at least NANO_ICE_UFRAG_LEN + 1"
+#if NANORTC_ICE_UFRAG_SIZE < (NANORTC_ICE_UFRAG_LEN + 1)
+#error "NANORTC_ICE_UFRAG_SIZE must be at least NANORTC_ICE_UFRAG_LEN + 1"
 #endif
 
-#if NANO_ICE_PWD_SIZE < (NANO_ICE_PWD_LEN + 1)
-#error "NANO_ICE_PWD_SIZE must be at least NANO_ICE_PWD_LEN + 1"
+#if NANORTC_ICE_PWD_SIZE < (NANORTC_ICE_PWD_LEN + 1)
+#error "NANORTC_ICE_PWD_SIZE must be at least NANORTC_ICE_PWD_LEN + 1"
 #endif
 
-#if NANO_STUN_BUF_SIZE < 128
-#error "NANO_STUN_BUF_SIZE must be at least 128"
+#if NANORTC_STUN_BUF_SIZE < 128
+#error "NANORTC_STUN_BUF_SIZE must be at least 128"
 #endif
 
-#if NANO_SDP_MIN_BUF_SIZE < 128
-#error "NANO_SDP_MIN_BUF_SIZE must be at least 128"
+#if NANORTC_SDP_MIN_BUF_SIZE < 128
+#error "NANORTC_SDP_MIN_BUF_SIZE must be at least 128"
+#endif
+
+#if NANORTC_MAX_MEDIA_TRACKS < 1
+#error "NANORTC_MAX_MEDIA_TRACKS must be at least 1"
+#endif
+
+#if NANORTC_MAX_SSRC_MAP < NANORTC_MAX_MEDIA_TRACKS
+#error "NANORTC_MAX_SSRC_MAP must be at least NANORTC_MAX_MEDIA_TRACKS"
 #endif
 
 #endif /* NANORTC_CONFIG_H_ */

@@ -30,9 +30,9 @@ jobs:
       - name: Configure
         run: |
           cmake -B build \
-            -DNANO_FEATURE_DATACHANNEL=${{ matrix.combo.dc }} \
-            -DNANO_FEATURE_AUDIO=${{ matrix.combo.audio }} \
-            -DNANO_FEATURE_VIDEO=${{ matrix.combo.video }} \
+            -DNANORTC_FEATURE_DATACHANNEL=${{ matrix.combo.dc }} \
+            -DNANORTC_FEATURE_AUDIO=${{ matrix.combo.audio }} \
+            -DNANORTC_FEATURE_VIDEO=${{ matrix.combo.video }} \
             -DNANORTC_CRYPTO=${{ matrix.crypto }} \
             -DCMAKE_BUILD_TYPE=Debug
 
@@ -65,17 +65,26 @@ jobs:
           ! grep -rn '\bcalloc\b' src/
           ! grep -rn '\brealloc\b' src/
 
+      - name: "Check: no unbounded string functions in src/+crypto/"
+        run: |
+          BANNED='strlen|sprintf|snprintf|strcpy|strncpy|strcat|strncat|sscanf|atoi|atol|gets'
+          ! grep -rnE "\b($BANNED)\b" src/ crypto/ | grep -v "NANORTC_SAFE"
+
+      - name: "Check: no hardcoded array sizes in struct headers"
+        run: |
+          ! grep -rnE '\b(uint8_t|char|int8_t|uint16_t|uint32_t)\s+\w+\[\s*[0-9]+\s*\];' src/*.h include/nanortc.h | grep -v '//'
+
       - name: "Check: code formatting"
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq clang-format
+          pip install clang-format==22.1.2
           clang-format --dry-run --Werror src/*.c src/*.h include/*.h crypto/*.h crypto/*.c
 
       - name: "Check: symbol naming"
         run: |
-          cmake -B build -DNANO_FEATURE_DATACHANNEL=ON -DNANO_FEATURE_AUDIO=ON -DNANO_FEATURE_VIDEO=ON -DCMAKE_BUILD_TYPE=Debug
+          cmake -B build -DNANORTC_FEATURE_DATACHANNEL=ON -DNANORTC_FEATURE_AUDIO=ON -DNANORTC_FEATURE_VIDEO=ON -DCMAKE_BUILD_TYPE=Debug
           cmake --build build -j$(nproc)
-          # All symbols must start with nano_ (public API) or a known module prefix (internal)
-          ALLOWED='nano_|stun_|ice_|dtls_|nsctp_|sctp_|dc_|sdp_|rtp_|rtcp_|srtp_|jitter_|bwe_'
+          # All symbols must start with nano_/nanortc_ (public API) or a known module prefix (internal)
+          ALLOWED='nano_|nanortc_|stun_|ice_|dtls_|nsctp_|sctp_|dc_|sdp_|rtp_|rtcp_|srtp_|jitter_|bwe_|h264_|media_|ssrc_map_|addr_|track_'
           violations=$(nm -g build/libnanortc.a 2>/dev/null | grep ' T ' | awk '{print $3}' | grep -v '^_' | grep -vE "^($ALLOWED)" || true)
           if [ -n "$violations" ]; then
             echo "Symbols with unknown prefix (expected nano_ or module prefix):"
@@ -95,7 +104,7 @@ jobs:
 
       - name: "Check: DC-OFF has no SCTP symbols"
         run: |
-          cmake -B build-nodc -DNANO_FEATURE_DATACHANNEL=OFF -DNANO_FEATURE_AUDIO=ON -DCMAKE_BUILD_TYPE=Debug
+          cmake -B build-nodc -DNANORTC_FEATURE_DATACHANNEL=OFF -DNANORTC_FEATURE_AUDIO=ON -DCMAKE_BUILD_TYPE=Debug
           cmake --build build-nodc -j$(nproc)
           violations=$(nm build-nodc/libnanortc.a 2>/dev/null | grep ' T ' | grep 'nsctp_' || true)
           if [ -n "$violations" ]; then
@@ -114,7 +123,7 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y -qq libmbedtls-dev
 
       - name: Configure (MEDIA + ASan)
-        run: cmake -B build -DNANO_FEATURE_DATACHANNEL=ON -DNANO_FEATURE_AUDIO=ON -DNANO_FEATURE_VIDEO=ON -DCMAKE_BUILD_TYPE=Debug -DADDRESS_SANITIZER=ON
+        run: cmake -B build -DNANORTC_FEATURE_DATACHANNEL=ON -DNANORTC_FEATURE_AUDIO=ON -DNANORTC_FEATURE_VIDEO=ON -DCMAKE_BUILD_TYPE=Debug -DADDRESS_SANITIZER=ON
 
       - name: Build
         run: cmake --build build -j$(nproc)

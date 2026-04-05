@@ -27,8 +27,8 @@ static void write_header(uint8_t *buf, uint8_t rc_fmt, uint8_t pt, uint16_t leng
 {
     buf[0] = (RTCP_VERSION << 6) | (rc_fmt & 0x1F);
     buf[1] = pt;
-    nano_write_u16be(buf + 2, length_words);
-    nano_write_u32be(buf + 4, ssrc);
+    nanortc_write_u16be(buf + 2, length_words);
+    nanortc_write_u32be(buf + 4, ssrc);
 }
 
 /* ================================================================
@@ -38,12 +38,12 @@ static void write_header(uint8_t *buf, uint8_t rc_fmt, uint8_t pt, uint16_t leng
 int rtcp_init(nano_rtcp_t *rtcp, uint32_t ssrc)
 {
     if (!rtcp) {
-        return NANO_ERR_INVALID_PARAM;
+        return NANORTC_ERR_INVALID_PARAM;
     }
     memset(rtcp, 0, sizeof(*rtcp));
     rtcp->ssrc = ssrc;
-    NANO_LOGI("RTCP", "init ok");
-    return NANO_OK;
+    NANORTC_LOGI("RTCP", "init ok");
+    return NANORTC_OK;
 }
 
 /* ================================================================
@@ -63,24 +63,24 @@ int rtcp_generate_sr(nano_rtcp_t *rtcp, uint32_t ntp_sec, uint32_t ntp_frac, uin
                      uint8_t *buf, size_t buf_len, size_t *out_len)
 {
     if (!rtcp || !buf || !out_len) {
-        return NANO_ERR_INVALID_PARAM;
+        return NANORTC_ERR_INVALID_PARAM;
     }
     if (buf_len < RTCP_SR_SIZE) {
-        return NANO_ERR_BUFFER_TOO_SMALL;
+        return NANORTC_ERR_BUFFER_TOO_SMALL;
     }
 
     /* RC=0 (no report blocks), PT=200, length=6 words */
     write_header(buf, 0, RTCP_SR, 6, rtcp->ssrc);
 
     /* Sender info (20 bytes at offset 8) */
-    nano_write_u32be(buf + 8, ntp_sec);
-    nano_write_u32be(buf + 12, ntp_frac);
-    nano_write_u32be(buf + 16, rtp_ts);
-    nano_write_u32be(buf + 20, rtcp->packets_sent);
-    nano_write_u32be(buf + 24, rtcp->octets_sent);
+    nanortc_write_u32be(buf + 8, ntp_sec);
+    nanortc_write_u32be(buf + 12, ntp_frac);
+    nanortc_write_u32be(buf + 16, rtp_ts);
+    nanortc_write_u32be(buf + 20, rtcp->packets_sent);
+    nanortc_write_u32be(buf + 24, rtcp->octets_sent);
 
     *out_len = RTCP_SR_SIZE;
-    return NANO_OK;
+    return NANORTC_OK;
 }
 
 /* ================================================================
@@ -100,17 +100,17 @@ int rtcp_generate_rr(nano_rtcp_t *rtcp, uint32_t remote_ssrc, uint8_t *buf, size
                      size_t *out_len)
 {
     if (!rtcp || !buf || !out_len) {
-        return NANO_ERR_INVALID_PARAM;
+        return NANORTC_ERR_INVALID_PARAM;
     }
     if (buf_len < RTCP_RR_SIZE) {
-        return NANO_ERR_BUFFER_TOO_SMALL;
+        return NANORTC_ERR_BUFFER_TOO_SMALL;
     }
 
     /* RC=1 (one report block), PT=201, length=7 words */
     write_header(buf, 1, RTCP_RR, 7, rtcp->ssrc);
 
     /* Report block (24 bytes at offset 8) */
-    nano_write_u32be(buf + 8, remote_ssrc);
+    nanortc_write_u32be(buf + 8, remote_ssrc);
 
     /* Fraction lost (8 bits) + cumulative lost (24 bits) */
     uint8_t fraction_lost = 0;
@@ -128,19 +128,19 @@ int rtcp_generate_rr(nano_rtcp_t *rtcp, uint32_t remote_ssrc, uint8_t *buf, size
 
     /* Extended highest sequence number received:
      * high 16 bits = cycles (0 for now), low 16 bits = max_seq */
-    nano_write_u32be(buf + 16, (uint32_t)rtcp->max_seq);
+    nanortc_write_u32be(buf + 16, (uint32_t)rtcp->max_seq);
 
     /* Interarrival jitter */
-    nano_write_u32be(buf + 20, rtcp->jitter);
+    nanortc_write_u32be(buf + 20, rtcp->jitter);
 
     /* Last SR (LSR): middle 32 bits of NTP timestamp from last SR */
-    nano_write_u32be(buf + 24, rtcp->last_sr_ntp);
+    nanortc_write_u32be(buf + 24, rtcp->last_sr_ntp);
 
     /* Delay since last SR (DLSR): 0 if no SR received */
-    nano_write_u32be(buf + 28, 0);
+    nanortc_write_u32be(buf + 28, 0);
 
     *out_len = RTCP_RR_SIZE;
-    return NANO_OK;
+    return NANORTC_OK;
 }
 
 /* ================================================================
@@ -159,24 +159,54 @@ int rtcp_generate_nack(uint32_t ssrc, uint32_t media_ssrc, uint16_t seq, uint8_t
                        size_t buf_len, size_t *out_len)
 {
     if (!buf || !out_len) {
-        return NANO_ERR_INVALID_PARAM;
+        return NANORTC_ERR_INVALID_PARAM;
     }
     if (buf_len < RTCP_NACK_SIZE) {
-        return NANO_ERR_BUFFER_TOO_SMALL;
+        return NANORTC_ERR_BUFFER_TOO_SMALL;
     }
 
     /* FMT=1, PT=205(RTPFB), length=3 */
     write_header(buf, 1, RTCP_RTPFB, 3, ssrc);
 
     /* SSRC of media source */
-    nano_write_u32be(buf + 8, media_ssrc);
+    nanortc_write_u32be(buf + 8, media_ssrc);
 
     /* FCI: PID + BLP (single lost packet, no bitmask) */
-    nano_write_u16be(buf + 12, seq);
-    nano_write_u16be(buf + 14, 0); /* BLP=0: only the single packet */
+    nanortc_write_u16be(buf + 12, seq);
+    nanortc_write_u16be(buf + 14, 0); /* BLP=0: only the single packet */
 
     *out_len = RTCP_NACK_SIZE;
-    return NANO_OK;
+    return NANORTC_OK;
+}
+
+/* ================================================================
+ * PLI — Picture Loss Indication (RFC 4585 §6.3.1)
+ *
+ *  PSFB header (4 bytes): V=2, P=0, FMT=1, PT=206, length=2
+ *  Sender SSRC (4 bytes)
+ *  Media SSRC (4 bytes) = SSRC of the video source to request keyframe from
+ *
+ *  Total: 12 bytes
+ * ================================================================ */
+
+int rtcp_generate_pli(uint32_t sender_ssrc, uint32_t media_ssrc, uint8_t *buf, size_t buf_len,
+                      size_t *out_len)
+{
+    if (!buf || !out_len) {
+        return NANORTC_ERR_INVALID_PARAM;
+    }
+    if (buf_len < RTCP_PLI_SIZE) {
+        return NANORTC_ERR_BUFFER_TOO_SMALL;
+    }
+
+    /* FMT=1, PT=206(PSFB), length=2 words (12 bytes / 4 - 1) */
+    write_header(buf, 1, RTCP_PSFB, 2, sender_ssrc);
+
+    /* Media source SSRC */
+    nanortc_write_u32be(buf + 8, media_ssrc);
+
+    *out_len = RTCP_PLI_SIZE;
+    return NANORTC_OK;
 }
 
 /* ================================================================
@@ -188,7 +218,7 @@ int rtcp_generate_nack(uint32_t ssrc, uint32_t media_ssrc, uint16_t seq, uint8_t
 int rtcp_parse(const uint8_t *data, size_t len, nano_rtcp_info_t *info)
 {
     if (!data || !info || len < RTCP_HEADER_SIZE) {
-        return NANO_ERR_INVALID_PARAM;
+        return NANORTC_ERR_INVALID_PARAM;
     }
 
     memset(info, 0, sizeof(*info));
@@ -196,31 +226,31 @@ int rtcp_parse(const uint8_t *data, size_t len, nano_rtcp_info_t *info)
     /* Validate version */
     uint8_t version = (data[0] >> 6) & 0x03;
     if (version != RTCP_VERSION) {
-        NANO_LOGW("RTCP", "bad version in RTCP packet");
-        return NANO_ERR_PARSE;
+        NANORTC_LOGW("RTCP", "bad version in RTCP packet");
+        return NANORTC_ERR_PARSE;
     }
 
     info->type = data[1];
-    uint16_t length_words = nano_read_u16be(data + 2);
+    uint16_t length_words = nanortc_read_u16be(data + 2);
     uint32_t pkt_size = ((uint32_t)length_words + 1) * 4;
     if (pkt_size > len) {
-        NANO_LOGW("RTCP", "truncated RTCP packet");
-        return NANO_ERR_PARSE;
+        NANORTC_LOGW("RTCP", "truncated RTCP packet");
+        return NANORTC_ERR_PARSE;
     }
 
-    info->ssrc = nano_read_u32be(data + 4);
+    info->ssrc = nanortc_read_u32be(data + 4);
 
     switch (info->type) {
     case RTCP_SR:
         /* Sender Report: need at least 28 bytes */
         if (pkt_size < RTCP_SR_SIZE) {
-            return NANO_ERR_PARSE;
+            return NANORTC_ERR_PARSE;
         }
-        info->ntp_sec = nano_read_u32be(data + 8);
-        info->ntp_frac = nano_read_u32be(data + 12);
-        info->rtp_ts = nano_read_u32be(data + 16);
-        info->sr_packets = nano_read_u32be(data + 20);
-        info->sr_octets = nano_read_u32be(data + 24);
+        info->ntp_sec = nanortc_read_u32be(data + 8);
+        info->ntp_frac = nanortc_read_u32be(data + 12);
+        info->rtp_ts = nanortc_read_u32be(data + 16);
+        info->sr_packets = nanortc_read_u32be(data + 20);
+        info->sr_octets = nanortc_read_u32be(data + 24);
         break;
 
     case RTCP_RR:
@@ -230,14 +260,14 @@ int rtcp_parse(const uint8_t *data, size_t len, nano_rtcp_info_t *info)
     case RTCP_RTPFB: {
         /* Generic NACK: need at least 16 bytes */
         if (pkt_size < RTCP_NACK_SIZE) {
-            return NANO_ERR_PARSE;
+            return NANORTC_ERR_PARSE;
         }
         /* FMT field */
         uint8_t fmt = data[0] & 0x1F;
         if (fmt == 1) {
             /* media SSRC at offset 8, FCI at offset 12 */
-            info->nack_pid = nano_read_u16be(data + 12);
-            info->nack_blp = nano_read_u16be(data + 14);
+            info->nack_pid = nanortc_read_u16be(data + 12);
+            info->nack_blp = nanortc_read_u16be(data + 14);
         }
         break;
     }
@@ -251,5 +281,5 @@ int rtcp_parse(const uint8_t *data, size_t len, nano_rtcp_info_t *info)
         break;
     }
 
-    return NANO_OK;
+    return NANORTC_OK;
 }
