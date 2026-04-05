@@ -1,6 +1,6 @@
 # Phase 5: Network Traversal
 
-**Status:** Active — Session 1 in progress
+**Status:** Active — Sessions 1-3 complete. Remaining: E2E interop test with coturn
 **Estimated effort:** 3 agent sessions
 **Goal:** Trickle ICE, ICE restart, TURN relay for production NAT traversal
 

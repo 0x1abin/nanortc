@@ -51,6 +51,11 @@ Dependencies flow strictly downward. No cycles allowed.
                               └──────────┘ └────────┘ └────────┘ └──────────┘
                                             ↑ AUDIO    ↑ VIDEO    ↑ VIDEO
 
+  TURN relay (optional):
+  ┌──────────┐
+  │nano_turn │  (TURN client: Allocate/Refresh/Permission/Send/Data)
+  └──────────┘
+
   Cross-cutting:
   ┌──────────────────┐   ┌──────────────┐   ┌────────────┐
   │ nanortc_crypto.h │   │ nano_crc32c  │   │ nano_addr  │

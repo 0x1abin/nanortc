@@ -757,6 +757,55 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
     /* RFC 7983 §3: demultiplexing by first byte */
     if (first <= 3) {
         /* STUN [0x00-0x03] */
+
+        /* TURN: intercept packets from the TURN server */
+        if (rtc->turn.configured &&
+            turn_is_from_server(&rtc->turn, src->addr, src->family, src->port)) {
+            /* Try Data indication first (relayed peer data) */
+            uint8_t peer_addr[NANORTC_ADDR_SIZE];
+            uint8_t peer_family = 0;
+            uint16_t peer_port = 0;
+            const uint8_t *payload = NULL;
+            size_t payload_len = 0;
+            int urc = turn_unwrap_data(data, len, peer_addr, &peer_family,
+                                       &peer_port, &payload, &payload_len);
+            if (urc == NANORTC_OK && payload_len > 0) {
+                /* Re-dispatch unwrapped inner packet with peer's address */
+                nanortc_addr_t peer_src;
+                memset(&peer_src, 0, sizeof(peer_src));
+                peer_src.family = (peer_family == STUN_FAMILY_IPV4) ? 4 : 6;
+                memcpy(peer_src.addr, peer_addr, NANORTC_ADDR_SIZE);
+                peer_src.port = peer_port;
+                return rtc_process_receive(rtc, payload, payload_len, &peer_src);
+            }
+
+            /* Not a Data indication — try as TURN response */
+            nano_turn_state_t prev_state = rtc->turn.state;
+            int trc = turn_handle_response(&rtc->turn, data, len, rtc->config.crypto);
+            (void)trc;
+
+            /* On fresh allocation: create permission for remote candidates */
+            if (prev_state != NANORTC_TURN_ALLOCATED &&
+                rtc->turn.state == NANORTC_TURN_ALLOCATED &&
+                rtc->ice.remote_candidate_count > 0) {
+                nano_ice_candidate_t *c = &rtc->ice.remote_candidates[0];
+                size_t perm_len = 0;
+                turn_create_permission(&rtc->turn, c->addr, c->family, c->port,
+                                       rtc->config.crypto, rtc->stun_buf,
+                                       sizeof(rtc->stun_buf), &perm_len);
+                if (perm_len > 0) {
+                    nanortc_output_t out;
+                    memset(&out, 0, sizeof(out));
+                    out.type = NANORTC_OUTPUT_TRANSMIT;
+                    out.transmit.data = rtc->stun_buf;
+                    out.transmit.len = perm_len;
+                    out.transmit.dest = *src;
+                    rtc_enqueue_output(rtc, &out);
+                }
+            }
+            return NANORTC_OK;
+        }
+
         bool was_consent_pending = rtc->ice.consent_pending;
         size_t resp_len = 0;
         int rc = ice_handle_stun(&rtc->ice, data, len, src, rtc->config.crypto, rtc->stun_buf,
@@ -1237,6 +1286,59 @@ static int rtc_process_timers(nanortc_t *rtc, uint32_t now_ms)
         }
     }
 
+    /* TURN: Allocate / Refresh / CreatePermission lifecycle */
+    if (rtc->turn.configured) {
+        nanortc_addr_t turn_dest;
+        memset(&turn_dest, 0, sizeof(turn_dest));
+        turn_dest.family = rtc->turn.server_family;
+        memcpy(turn_dest.addr, rtc->turn.server_addr, NANORTC_ADDR_SIZE);
+        turn_dest.port = rtc->turn.server_port;
+
+        if (rtc->turn.state == NANORTC_TURN_IDLE) {
+            /* Start Allocate when we begin ICE checking */
+            size_t alloc_len = 0;
+            int trc = turn_start_allocate(&rtc->turn, rtc->config.crypto, rtc->stun_buf,
+                                          sizeof(rtc->stun_buf), &alloc_len);
+            if (trc == NANORTC_OK && alloc_len > 0) {
+                nanortc_output_t out;
+                memset(&out, 0, sizeof(out));
+                out.type = NANORTC_OUTPUT_TRANSMIT;
+                out.transmit.data = rtc->stun_buf;
+                out.transmit.len = alloc_len;
+                out.transmit.dest = turn_dest;
+                rtc_enqueue_output(rtc, &out);
+            }
+        } else if (rtc->turn.state == NANORTC_TURN_CHALLENGED) {
+            /* Retry Allocate with credentials after 401 */
+            size_t alloc_len = 0;
+            int trc = turn_start_allocate(&rtc->turn, rtc->config.crypto, rtc->stun_buf,
+                                          sizeof(rtc->stun_buf), &alloc_len);
+            if (trc == NANORTC_OK && alloc_len > 0) {
+                nanortc_output_t out;
+                memset(&out, 0, sizeof(out));
+                out.type = NANORTC_OUTPUT_TRANSMIT;
+                out.transmit.data = rtc->stun_buf;
+                out.transmit.len = alloc_len;
+                out.transmit.dest = turn_dest;
+                rtc_enqueue_output(rtc, &out);
+            }
+        } else if (rtc->turn.state == NANORTC_TURN_ALLOCATED) {
+            /* Periodic Refresh */
+            size_t ref_len = 0;
+            int trc = turn_generate_refresh(&rtc->turn, now_ms, rtc->config.crypto,
+                                            rtc->stun_buf, sizeof(rtc->stun_buf), &ref_len);
+            if (trc == NANORTC_OK && ref_len > 0) {
+                nanortc_output_t out;
+                memset(&out, 0, sizeof(out));
+                out.type = NANORTC_OUTPUT_TRANSMIT;
+                out.transmit.data = rtc->stun_buf;
+                out.transmit.len = ref_len;
+                out.transmit.dest = turn_dest;
+                rtc_enqueue_output(rtc, &out);
+            }
+        }
+    }
+
 #if NANORTC_FEATURE_DATACHANNEL
     /* SCTP: retransmission + heartbeat timers */
     if (rtc->sctp.state == NANORTC_SCTP_STATE_ESTABLISHED) {
@@ -1563,6 +1665,47 @@ int nanortc_ice_restart(nanortc_t *rtc)
     ice_evt.ice_state = (uint16_t)NANORTC_ICE_STATE_NEW;
     rtc_emit_event_full(rtc, &ice_evt);
 
+    return NANORTC_OK;
+}
+
+/* ----------------------------------------------------------------
+ * TURN API
+ * ---------------------------------------------------------------- */
+
+int nanortc_set_turn_server(nanortc_t *rtc, const char *ip, uint16_t port,
+                            const char *username, const char *password)
+{
+    if (!rtc || !ip || !username || !password) {
+        return NANORTC_ERR_INVALID_PARAM;
+    }
+
+    /* Parse server IP address */
+    size_t ip_len = 0;
+    while (ip[ip_len]) /* NANORTC_SAFE: API boundary */
+        ip_len++;
+
+    uint8_t server_addr[NANORTC_ADDR_SIZE] = {0};
+    uint8_t family = 0;
+    int rc = addr_parse_auto(ip, ip_len, server_addr, &family);
+    if (rc != NANORTC_OK) {
+        return rc;
+    }
+
+    /* Measure credential lengths */
+    size_t ulen = 0;
+    while (username[ulen]) /* NANORTC_SAFE: API boundary */
+        ulen++;
+    size_t plen = 0;
+    while (password[plen]) /* NANORTC_SAFE: API boundary */
+        plen++;
+
+    rc = turn_configure(&rtc->turn, server_addr, family, port,
+                        username, ulen, password, plen);
+    if (rc != NANORTC_OK) {
+        return rc;
+    }
+
+    NANORTC_LOGI("RTC", "TURN server configured");
     return NANORTC_OK;
 }
 
