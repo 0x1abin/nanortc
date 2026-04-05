@@ -25,6 +25,14 @@
 #define STUN_ATTR_USERNAME           0x0006
 #define STUN_ATTR_MESSAGE_INTEGRITY  0x0008
 #define STUN_ATTR_ERROR_CODE         0x0009
+#define STUN_ATTR_CHANNEL_NUMBER     0x000C
+#define STUN_ATTR_LIFETIME           0x000D
+#define STUN_ATTR_XOR_PEER_ADDRESS   0x0012
+#define STUN_ATTR_DATA               0x0013
+#define STUN_ATTR_REALM              0x0014
+#define STUN_ATTR_NONCE              0x0015
+#define STUN_ATTR_XOR_RELAYED_ADDRESS 0x0016
+#define STUN_ATTR_REQUESTED_TRANSPORT 0x0019
 #define STUN_ATTR_XOR_MAPPED_ADDRESS 0x0020
 #define STUN_ATTR_PRIORITY           0x0024
 #define STUN_ATTR_USE_CANDIDATE      0x0025
@@ -32,6 +40,19 @@
 #define STUN_ATTR_ICE_CONTROLLED     0x8029
 #define STUN_ATTR_ICE_CONTROLLING    0x802A
 #define STUN_ATTR_FINGERPRINT        0x8028
+
+/* TURN method types (RFC 5766 §13) */
+#define STUN_ALLOCATE_REQUEST          0x0003
+#define STUN_ALLOCATE_RESPONSE         0x0103
+#define STUN_ALLOCATE_ERROR            0x0113
+#define STUN_REFRESH_REQUEST           0x0004
+#define STUN_REFRESH_RESPONSE          0x0104
+#define STUN_REFRESH_ERROR             0x0114
+#define STUN_SEND_INDICATION           0x0016
+#define STUN_DATA_INDICATION           0x0017
+#define STUN_CREATE_PERMISSION_REQUEST 0x0008
+#define STUN_CREATE_PERMISSION_RESPONSE 0x0108
+#define STUN_CREATE_PERMISSION_ERROR   0x0118
 
 #define STUN_HEADER_SIZE  20
 #define STUN_MAGIC_COOKIE 0x2112A442
@@ -82,6 +103,21 @@ typedef struct stun_msg {
 
     /* ERROR-CODE (RFC 8489 §14.8) — 0 = not present */
     uint16_t error_code;
+
+    /* TURN attributes (RFC 5766) — populated when present */
+    uint32_t lifetime;        /**< LIFETIME seconds, 0 = not present. */
+    uint8_t relayed_addr[NANORTC_ADDR_SIZE]; /**< XOR-RELAYED-ADDRESS decoded. */
+    uint16_t relayed_port;    /**< Decoded port, 0 = not present. */
+    uint8_t relayed_family;   /**< STUN_FAMILY_IPV4/IPV6, 0 = not present. */
+    const uint8_t *data_attr; /**< DATA attribute payload pointer. */
+    size_t data_attr_len;     /**< DATA attribute length. */
+    const char *realm;        /**< REALM pointer into parsed buffer. */
+    size_t realm_len;         /**< REALM length. */
+    const char *nonce;        /**< NONCE pointer into parsed buffer. */
+    size_t nonce_len;         /**< NONCE length. */
+    uint8_t peer_addr[NANORTC_ADDR_SIZE]; /**< XOR-PEER-ADDRESS decoded. */
+    uint16_t peer_port;       /**< Decoded peer port, 0 = not present. */
+    uint8_t peer_family;      /**< STUN_FAMILY_IPV4/IPV6, 0 = not present. */
 } stun_msg_t;
 
 /* Parse STUN message from wire format. Does NOT validate MI or FP. */

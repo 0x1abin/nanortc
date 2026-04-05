@@ -265,6 +265,7 @@ typedef enum {
 #if NANORTC_FEATURE_VIDEO
     NANORTC_EV_BITRATE_ESTIMATE = 11, /**< BWE: estimated bitrate changed significantly. */
 #endif
+    NANORTC_EV_ICE_CANDIDATE = 12, /**< New local ICE candidate discovered (trickle). */
 } nanortc_event_type_t;
 
 /* Forward declarations needed by event data structures */
@@ -322,6 +323,12 @@ typedef struct {
 } nanortc_ev_bitrate_estimate_t;
 #endif
 
+/** @brief Data for NANORTC_EV_ICE_CANDIDATE (trickle ICE). */
+typedef struct {
+    const char *candidate_str; /**< SDP candidate line (valid until next poll). */
+    bool end_of_candidates;    /**< True = no more local candidates. */
+} nanortc_ev_ice_candidate_t;
+
 /** @brief Data for NANORTC_EV_DATACHANNEL_OPEN. */
 typedef struct {
     uint16_t id;       /**< SCTP stream ID. */
@@ -367,6 +374,7 @@ typedef struct nanortc_event {
         nanortc_ev_datachannel_id_t
             datachannel_id; /**< EV_DATACHANNEL_CLOSE, EV_DATACHANNEL_BUFFERED_LOW */
         uint16_t ice_state; /**< EV_ICE_STATE_CHANGE */
+        nanortc_ev_ice_candidate_t ice_candidate; /**< EV_ICE_CANDIDATE */
     };
 } nanortc_event_t;
 
@@ -443,6 +451,7 @@ typedef struct nanortc_config {
 #include "nano_ice.h"
 #include "nano_dtls.h"
 #include "nano_sdp.h"
+#include "nano_turn.h"
 
 #if NANORTC_FEATURE_DATACHANNEL
 #include "nano_sctp.h"
@@ -493,6 +502,7 @@ struct nanortc {
     nano_ice_t ice;
     nano_dtls_t dtls;
     nano_sdp_t sdp;
+    nano_turn_t turn;
 
 #if NANORTC_FEATURE_DATACHANNEL
     nano_sctp_t sctp;
@@ -621,12 +631,37 @@ NANORTC_API int nanortc_add_local_candidate(nanortc_t *rtc, const char *ip, uint
 /**
  * @brief Add a remote ICE candidate from an SDP candidate attribute.
  *
+ * Can be called at any time (trickle ICE, RFC 8838). If ICE is already in
+ * CHECKING state, the new candidate is immediately included in checks.
+ *
  * @param rtc            Initialized RTC state.
  * @param candidate_str  NUL-terminated SDP candidate line (a=candidate:...).
  * @return NANORTC_OK on success.
  * @retval NANORTC_ERR_PARSE  Malformed candidate string.
  */
 NANORTC_API int nanortc_add_remote_candidate(nanortc_t *rtc, const char *candidate_str);
+
+/**
+ * @brief Signal end of remote ICE candidates (RFC 8838).
+ *
+ * After this call, no more candidates will be accepted. If ICE is checking
+ * and all candidates have been exhausted, ICE transitions to FAILED.
+ *
+ * @param rtc  Initialized RTC state.
+ * @return NANORTC_OK on success.
+ */
+NANORTC_API int nanortc_end_of_candidates(nanortc_t *rtc);
+
+/**
+ * @brief Trigger an ICE restart (RFC 8445 §9).
+ *
+ * Resets ICE state, generates new credentials, and clears remote candidates.
+ * After calling this, exchange a new offer/answer with the updated credentials.
+ *
+ * @param rtc  Initialized RTC state.
+ * @return NANORTC_OK on success.
+ */
+NANORTC_API int nanortc_ice_restart(nanortc_t *rtc);
 
 /* ----------------------------------------------------------------
  * Event loop (Sans I/O core)

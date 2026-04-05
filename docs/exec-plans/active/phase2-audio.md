@@ -1,6 +1,6 @@
 # Phase 2: Audio Support
 
-**Status:** Active — Session 3 complete (browser audio verified)
+**Status:** Active — Session 4 complete. Audio receive path implemented. Remaining: human verification of bidirectional audio + ESP32 intercom example
 **Estimated effort:** 2-3 agent sessions (~1-2 days elapsed)
 **Goal:** Bidirectional audio between NanoRTC (ESP32) and browser
 

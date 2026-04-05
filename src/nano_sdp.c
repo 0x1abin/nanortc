@@ -362,6 +362,8 @@ int sdp_parse(nano_sdp_t *sdp, const char *sdp_str, size_t len)
                         NANORTC_LOGD("SDP", "parsed candidate from SDP");
                     }
                 }
+            } else if (line_starts_with(line, line_len, "a=end-of-candidates")) {
+                sdp->end_of_candidates = true;
             }
 #if !NANORTC_HAVE_MEDIA_TRANSPORT
             /* When media transport is disabled, DC m-lines still need tracking */

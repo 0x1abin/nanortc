@@ -143,6 +143,10 @@ static void rtc_add_sdp_candidates(nanortc_t *rtc)
             nanortc_add_remote_candidate(rtc, cand_str);
         }
     }
+    /* Propagate end-of-candidates from SDP to ICE (RFC 8838) */
+    if (rtc->sdp.end_of_candidates) {
+        rtc->ice.end_of_candidates = true;
+    }
 }
 
 /* A3: Drain DTLS output into the transmit queue */
@@ -753,11 +757,17 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
     /* RFC 7983 §3: demultiplexing by first byte */
     if (first <= 3) {
         /* STUN [0x00-0x03] */
+        bool was_consent_pending = rtc->ice.consent_pending;
         size_t resp_len = 0;
         int rc = ice_handle_stun(&rtc->ice, data, len, src, rtc->config.crypto, rtc->stun_buf,
                                  sizeof(rtc->stun_buf), &resp_len);
         if (rc != NANORTC_OK) {
             return rc;
+        }
+
+        /* Refresh consent expiry if a consent check was acknowledged */
+        if (was_consent_pending && !rtc->ice.consent_pending) {
+            rtc->ice.consent_expiry_ms = rtc->now_ms + NANORTC_ICE_CONSENT_TIMEOUT_MS;
         }
 
         /* Enqueue STUN response for transmission */
@@ -775,6 +785,9 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
         if (rtc->ice.state == NANORTC_ICE_STATE_CONNECTED &&
             rtc->state < NANORTC_STATE_ICE_CONNECTED) {
             rtc->state = NANORTC_STATE_ICE_CONNECTED;
+            /* Arm consent freshness timers (RFC 7675) */
+            rtc->ice.consent_next_ms = rtc->now_ms + NANORTC_ICE_CONSENT_INTERVAL_MS;
+            rtc->ice.consent_expiry_ms = rtc->now_ms + NANORTC_ICE_CONSENT_TIMEOUT_MS;
             /* Emit ICE_STATE_CHANGE (CONNECTED emitted later when fully ready) */
             {
                 nanortc_event_t ice_evt;
@@ -1189,6 +1202,41 @@ static int rtc_process_timers(nanortc_t *rtc, uint32_t now_ms)
         }
     }
 
+    /* Consent freshness (RFC 7675): periodic STUN keepalive on connected path */
+    if (rtc->ice.state == NANORTC_ICE_STATE_CONNECTED) {
+        /* Check for consent timeout */
+        if (ice_consent_expired(&rtc->ice, now_ms)) {
+            rtc->ice.state = NANORTC_ICE_STATE_DISCONNECTED;
+            nanortc_event_t dice;
+            memset(&dice, 0, sizeof(dice));
+            dice.type = NANORTC_EV_ICE_STATE_CHANGE;
+            dice.ice_state = (uint16_t)NANORTC_ICE_STATE_DISCONNECTED;
+            rtc_emit_event_full(rtc, &dice);
+            /* Emit DISCONNECTED application event */
+            nanortc_event_t dev;
+            memset(&dev, 0, sizeof(dev));
+            dev.type = NANORTC_EV_DISCONNECTED;
+            rtc_emit_event_full(rtc, &dev);
+            rtc->state = NANORTC_STATE_CLOSED;
+        } else {
+            /* Generate consent check if due */
+            size_t consent_len = 0;
+            int crc = ice_generate_consent(&rtc->ice, now_ms, rtc->config.crypto, rtc->stun_buf,
+                                           sizeof(rtc->stun_buf), &consent_len);
+            if (crc == NANORTC_OK && consent_len > 0) {
+                nanortc_output_t out;
+                memset(&out, 0, sizeof(out));
+                out.type = NANORTC_OUTPUT_TRANSMIT;
+                out.transmit.data = rtc->stun_buf;
+                out.transmit.len = consent_len;
+                out.transmit.dest.family = rtc->ice.selected_family;
+                memcpy(out.transmit.dest.addr, rtc->ice.selected_addr, NANORTC_ADDR_SIZE);
+                out.transmit.dest.port = rtc->ice.selected_port;
+                rtc_enqueue_output(rtc, &out);
+            }
+        }
+    }
+
 #if NANORTC_FEATURE_DATACHANNEL
     /* SCTP: retransmission + heartbeat timers */
     if (rtc->sctp.state == NANORTC_SCTP_STATE_ESTABLISHED) {
@@ -1441,6 +1489,81 @@ bool nanortc_is_connected(const nanortc_t *rtc)
         return false;
     }
     return rtc->state >= NANORTC_STATE_CONNECTED && rtc->state != NANORTC_STATE_CLOSED;
+}
+
+/* ----------------------------------------------------------------
+ * Trickle ICE + ICE Restart API
+ * ---------------------------------------------------------------- */
+
+int nanortc_end_of_candidates(nanortc_t *rtc)
+{
+    if (!rtc) {
+        return NANORTC_ERR_INVALID_PARAM;
+    }
+    rtc->ice.end_of_candidates = true;
+    /* Also propagate from SDP state */
+    rtc->sdp.end_of_candidates = true;
+    NANORTC_LOGD("RTC", "end-of-candidates signaled");
+    return NANORTC_OK;
+}
+
+int nanortc_ice_restart(nanortc_t *rtc)
+{
+    if (!rtc) {
+        return NANORTC_ERR_INVALID_PARAM;
+    }
+
+    NANORTC_LOGI("RTC", "ICE restart");
+
+    /* Reset ICE state (preserves role + tie_breaker, bumps generation) */
+    int rc = ice_restart(&rtc->ice);
+    if (rc != NANORTC_OK) {
+        return rc;
+    }
+
+    /* Generate new local ICE credentials */
+    uint8_t ufrag_bytes[4];
+    uint8_t pwd_bytes[11];
+    if (rtc->config.crypto->random_bytes(ufrag_bytes, sizeof(ufrag_bytes)) != 0 ||
+        rtc->config.crypto->random_bytes(pwd_bytes, sizeof(pwd_bytes)) != 0) {
+        return NANORTC_ERR_CRYPTO;
+    }
+
+    /* Hex-encode credentials */
+    static const char hex[] = "0123456789abcdef";
+    for (int i = 0; i < 4; i++) {
+        rtc->ice.local_ufrag[i * 2] = hex[ufrag_bytes[i] >> 4];
+        rtc->ice.local_ufrag[i * 2 + 1] = hex[ufrag_bytes[i] & 0x0F];
+    }
+    rtc->ice.local_ufrag[NANORTC_ICE_UFRAG_LEN] = '\0';
+    rtc->ice.local_ufrag_len = NANORTC_ICE_UFRAG_LEN;
+
+    for (int i = 0; i < 11; i++) {
+        rtc->ice.local_pwd[i * 2] = hex[pwd_bytes[i] >> 4];
+        rtc->ice.local_pwd[i * 2 + 1] = hex[pwd_bytes[i] & 0x0F];
+    }
+    rtc->ice.local_pwd[NANORTC_ICE_PWD_LEN] = '\0';
+    rtc->ice.local_pwd_len = NANORTC_ICE_PWD_LEN;
+
+    /* Copy new credentials into SDP state */
+    memcpy(rtc->sdp.local_ufrag, rtc->ice.local_ufrag, NANORTC_ICE_UFRAG_SIZE);
+    memcpy(rtc->sdp.local_pwd, rtc->ice.local_pwd, NANORTC_ICE_PWD_SIZE);
+
+    /* Reset SDP candidate state */
+    rtc->sdp.candidate_count = 0;
+    rtc->sdp.end_of_candidates = false;
+
+    /* Reset connection state to allow re-negotiation */
+    rtc->state = NANORTC_STATE_NEW;
+
+    /* Emit ICE state change */
+    nanortc_event_t ice_evt;
+    memset(&ice_evt, 0, sizeof(ice_evt));
+    ice_evt.type = NANORTC_EV_ICE_STATE_CHANGE;
+    ice_evt.ice_state = (uint16_t)NANORTC_ICE_STATE_NEW;
+    rtc_emit_event_full(rtc, &ice_evt);
+
+    return NANORTC_OK;
 }
 
 void nanortc_disconnect(nanortc_t *rtc)

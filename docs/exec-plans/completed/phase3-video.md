@@ -1,21 +1,21 @@
 # Phase 3: Video Support
 
-**Status:** Active — Session 1 complete (browser video playback verified)
+**Status:** Completed — 2026-04-05
 **Estimated effort:** 2 agent sessions (~1-2 days elapsed)
 **Goal:** ESP32 camera streaming to browser via H.264
 
 ## Acceptance Criteria
 
 - [x] H.264 FU-A packetization (fragmentation of NALUs over RTP)
-- [ ] VP8 RTP packetization (optional, deferred)
+- [~] VP8 RTP packetization (deferred — H.264 sufficient for all targets)
 - [x] RTCP PLI (Picture Loss Indication) generation and handling
-- [ ] RTCP REMB (optional bandwidth feedback)
+- [x] RTCP REMB (bandwidth feedback) — implemented in nano_bwe.c
 - [x] NAL unit reassembly (FU-A depacketizer)
 - [x] Keyframe detection and request mechanism
 - [x] SDP video m-line negotiation (rtpmap+fmtp cross-validation)
-- [ ] Basic bandwidth estimation
+- [x] Basic bandwidth estimation — REMB + EMA smoothing in nano_bwe.c
 - [x] Integration: H.264 stream to browser (verified: sample frames → Chrome video playback)
-- [ ] ESP32 example: camera push
+- [x] ESP32 example: camera push — esp32_camera with H.264 hw encode + Opus audio
 
 ## Implementation Steps
 

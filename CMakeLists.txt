@@ -81,6 +81,7 @@ set(NANORTC_SOURCES
     src/nano_dtls.c
     src/nano_crc32.c
     src/nano_addr.c
+    src/nano_turn.c
 )
 
 # ---- DataChannel sources ----

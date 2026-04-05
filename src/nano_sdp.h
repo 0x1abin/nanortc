@@ -83,7 +83,8 @@ typedef struct nano_sdp {
     uint16_t local_candidate_port;
     bool has_local_candidate;
 
-    bool parsed; /* true after successful parse */
+    bool parsed;            /* true after successful parse */
+    bool end_of_candidates; /* remote signaled a=end-of-candidates (RFC 8838) */
 
 #if NANORTC_HAVE_MEDIA_TRANSPORT
     /** Media m-lines (audio + video tracks). */

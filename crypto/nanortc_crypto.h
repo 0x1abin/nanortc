@@ -80,6 +80,9 @@ struct nanortc_crypto_provider {
     /* ---- CSPRNG (required) ---- */
     int (*random_bytes)(uint8_t *buf, size_t len);
 
+    /* ---- MD5 (optional, required for TURN long-term credentials) ---- */
+    void (*md5)(const uint8_t *data, size_t len, uint8_t out[16]);
+
     /* ---- SRTP (required when media transport is enabled) ---- */
 #if NANORTC_HAVE_MEDIA_TRANSPORT
     int (*aes_128_cm)(const uint8_t key[16], const uint8_t iv[16], const uint8_t *in, size_t len,

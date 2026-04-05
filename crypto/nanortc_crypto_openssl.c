@@ -28,6 +28,14 @@ static void ossl_hmac_sha1(const uint8_t *key, size_t key_len, const uint8_t *da
     HMAC(EVP_sha1(), key, (int)key_len, data, data_len, out, &md_len);
 }
 
+/* ---- MD5 (for TURN long-term credentials, RFC 8489 §9.2.2) ---- */
+
+static void ossl_md5(const uint8_t *data, size_t len, uint8_t out[16])
+{
+    unsigned int md_len = 16;
+    EVP_Digest(data, len, out, &md_len, EVP_md5(), NULL);
+}
+
 /* ---- CSPRNG ---- */
 
 static int ossl_random_bytes(uint8_t *buf, size_t len)
@@ -495,6 +503,7 @@ static const nanortc_crypto_provider_t openssl_provider = {
     .dtls_set_role = ossl_dtls_set_role,
     .hmac_sha1 = ossl_hmac_sha1,
     .random_bytes = ossl_random_bytes,
+    .md5 = ossl_md5,
 #if NANORTC_HAVE_MEDIA_TRANSPORT
     .aes_128_cm = ossl_aes_128_cm,
     .hmac_sha1_80 = ossl_hmac_sha1_80,

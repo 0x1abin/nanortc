@@ -10,9 +10,8 @@ NanoRTC is built by AI coding agents. Estimates use **agent sessions** (one focu
 
 | Plan | Phase | Status | Effort | Target |
 |------|-------|--------|--------|--------|
-| [Phase 2: Audio](exec-plans/active/phase2-audio.md) | 2 | **Active** — Session 4 complete. Remaining: ESP32 audio intercom | 1 session | Bidirectional audio with browser |
-| [Phase 3: Video](exec-plans/active/phase3-video.md) | 3 | **Active** — Session 2 complete. Remaining: ESP32 camera | 1 session | Camera streaming to browser |
-| Phase 5: Network Traversal | 5 | **Planned** — Trickle ICE, TURN, ICE restart | 3 sessions | NAT traversal for production |
+| [Phase 2: Audio](exec-plans/active/phase2-audio.md) | 2 | **Active** — Pending human verification of bidirectional audio + ESP32 intercom | 1 session | Bidirectional audio with browser |
+| [Phase 5: Network Traversal](exec-plans/active/phase5-network-traversal.md) | 5 | **Active** — Session 1 in progress | 3 sessions | NAT traversal for production |
 
 **Total Phase 1-5:** ~15-18 agent sessions
 
@@ -22,6 +21,7 @@ NanoRTC is built by AI coding agents. Estimates use **agent sessions** (one focu
 |------|-----------|--------|---------|
 | [Phase 0: Skeleton](exec-plans/completed/phase0-skeleton.md) | 2026-03-26 | 1 session | 75 files, all 3 profiles build, 12 tests pass |
 | [Phase 1: DataChannel E2E](exec-plans/completed/phase1-datachannel.md) | 2026-03-29 | 7 sessions | 5/5 interop tests, browser + ESP32-S3 DC verified, 140+ unit tests |
+| [Phase 3: Video](exec-plans/completed/phase3-video.md) | 2026-04-05 | 2 sessions | H.264 FU-A + BWE + REMB, ESP32 camera (H.264 hw + Opus), Chrome verified |
 | [Phase 4: Quality](exec-plans/completed/phase4-quality.md) | 2026-04-05 | 4 sessions | All 18 modules A grade, 7 fuzz harnesses (456M+ executions), Unity framework, 80%+ coverage, CI fuzz+coverage jobs |
 
 ## Technical Debt

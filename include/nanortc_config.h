@@ -122,6 +122,14 @@
 #define NANORTC_STUN_BUF_SIZE CONFIG_NANORTC_STUN_BUF_SIZE
 #endif
 
+#if defined(CONFIG_NANORTC_ICE_CONSENT_INTERVAL_MS) && !defined(NANORTC_ICE_CONSENT_INTERVAL_MS)
+#define NANORTC_ICE_CONSENT_INTERVAL_MS CONFIG_NANORTC_ICE_CONSENT_INTERVAL_MS
+#endif
+
+#if defined(CONFIG_NANORTC_ICE_CONSENT_TIMEOUT_MS) && !defined(NANORTC_ICE_CONSENT_TIMEOUT_MS)
+#define NANORTC_ICE_CONSENT_TIMEOUT_MS CONFIG_NANORTC_ICE_CONSENT_TIMEOUT_MS
+#endif
+
 /* Feature flag Kconfig mapping (ESP-IDF booleans) */
 #if defined(IDF_VER) && !defined(NANORTC_FEATURE_DATACHANNEL)
 #ifdef CONFIG_NANORTC_FEATURE_DATACHANNEL
@@ -256,7 +264,7 @@
  * ---------------------------------------------------------------- */
 
 #ifndef NANORTC_MAX_ICE_CANDIDATES
-#define NANORTC_MAX_ICE_CANDIDATES 4
+#define NANORTC_MAX_ICE_CANDIDATES 8
 #endif
 
 #ifndef NANORTC_ICE_MAX_CHECKS
@@ -266,6 +274,17 @@
 /* ICE connectivity check pacing interval in milliseconds (RFC 8445) */
 #ifndef NANORTC_ICE_CHECK_INTERVAL_MS
 #define NANORTC_ICE_CHECK_INTERVAL_MS 50
+#endif
+
+/* Consent freshness interval in milliseconds (RFC 7675 §5.1).
+ * A STUN Binding Request is sent periodically to verify path liveness.
+ * Consent expires after NANORTC_ICE_CONSENT_TIMEOUT_MS without a response. */
+#ifndef NANORTC_ICE_CONSENT_INTERVAL_MS
+#define NANORTC_ICE_CONSENT_INTERVAL_MS 15000
+#endif
+
+#ifndef NANORTC_ICE_CONSENT_TIMEOUT_MS
+#define NANORTC_ICE_CONSENT_TIMEOUT_MS 30000
 #endif
 
 /* ICE credential lengths (chars, excluding NUL) */
@@ -308,7 +327,7 @@
 
 /* Maximum ICE candidates parsed from a single SDP offer/answer */
 #ifndef NANORTC_SDP_MAX_CANDIDATES
-#define NANORTC_SDP_MAX_CANDIDATES 8
+#define NANORTC_SDP_MAX_CANDIDATES 12
 #endif
 
 /* SDP field sizes */
@@ -529,6 +548,35 @@ typedef enum {
     NANORTC_DIR_RECVONLY, /**< Receive only. */
     NANORTC_DIR_INACTIVE, /**< Neither send nor receive. */
 } nanortc_direction_t;
+
+/* ----------------------------------------------------------------
+ * TURN configuration (RFC 5766)
+ * ---------------------------------------------------------------- */
+
+/** @brief Maximum TURN username length (bytes). */
+#ifndef NANORTC_TURN_USERNAME_SIZE
+#define NANORTC_TURN_USERNAME_SIZE 64
+#endif
+
+/** @brief Maximum TURN password/credential length (bytes). */
+#ifndef NANORTC_TURN_PASSWORD_SIZE
+#define NANORTC_TURN_PASSWORD_SIZE 64
+#endif
+
+/** @brief Maximum TURN realm length (bytes). */
+#ifndef NANORTC_TURN_REALM_SIZE
+#define NANORTC_TURN_REALM_SIZE 64
+#endif
+
+/** @brief Maximum TURN nonce length (bytes). */
+#ifndef NANORTC_TURN_NONCE_SIZE
+#define NANORTC_TURN_NONCE_SIZE 128
+#endif
+
+/** @brief Maximum TURN permissions (peer addresses). */
+#ifndef NANORTC_TURN_MAX_PERMISSIONS
+#define NANORTC_TURN_MAX_PERMISSIONS 4
+#endif
 
 /* ----------------------------------------------------------------
  * Compile-time validation
