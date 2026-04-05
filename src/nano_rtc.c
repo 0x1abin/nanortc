@@ -812,7 +812,16 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
             return rc;
         }
 
-        /* Refresh consent expiry if a consent check was acknowledged */
+        /* Refresh consent expiry on any successful STUN from the selected pair.
+         * RFC 7675 §5.1: receiving a valid STUN message on the selected pair
+         * proves the remote endpoint is alive and consents to receive traffic. */
+        if (rtc->ice.state == NANORTC_ICE_STATE_CONNECTED && rtc->ice.consent_expiry_ms > 0 &&
+            src->family == rtc->ice.selected_family &&
+            src->port == rtc->ice.selected_port &&
+            memcmp(src->addr, rtc->ice.selected_addr, NANORTC_ADDR_SIZE) == 0) {
+            rtc->ice.consent_expiry_ms = rtc->now_ms + NANORTC_ICE_CONSENT_TIMEOUT_MS;
+        }
+        /* Also clear pending if our consent check got a response */
         if (was_consent_pending && !rtc->ice.consent_pending) {
             rtc->ice.consent_expiry_ms = rtc->now_ms + NANORTC_ICE_CONSENT_TIMEOUT_MS;
         }
