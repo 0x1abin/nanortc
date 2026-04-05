@@ -488,6 +488,80 @@ TEST(test_h264_keyframe_single_byte)
 }
 
 /* ================================================================
+ * Annex-B NAL finder tests (h264_annex_b_find_nal)
+ * ================================================================ */
+
+TEST(test_h264_annex_b_null_params)
+{
+    size_t offset = 0, nal_len = 0;
+    ASSERT_EQ(h264_annex_b_find_nal(NULL, 10, &offset, &nal_len), NULL);
+    uint8_t data[] = {0, 0, 1, 0x65};
+    ASSERT_EQ(h264_annex_b_find_nal(data, 4, NULL, &nal_len), NULL);
+    ASSERT_EQ(h264_annex_b_find_nal(data, 4, &offset, NULL), NULL);
+}
+
+TEST(test_h264_annex_b_3byte_start_code)
+{
+    /* 00 00 01 <IDR NAL=0x65> */
+    uint8_t data[] = {0x00, 0x00, 0x01, 0x65, 0xAA, 0xBB};
+    size_t offset = 0, nal_len = 0;
+    const uint8_t *nal = h264_annex_b_find_nal(data, sizeof(data), &offset, &nal_len);
+    ASSERT_TRUE(nal != NULL);
+    ASSERT_EQ(nal[0], 0x65);
+    ASSERT_EQ(nal_len, 3); /* 0x65, 0xAA, 0xBB */
+}
+
+TEST(test_h264_annex_b_4byte_start_code)
+{
+    /* 00 00 00 01 <SPS NAL=0x67> <data> */
+    uint8_t data[] = {0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0xC0};
+    size_t offset = 0, nal_len = 0;
+    const uint8_t *nal = h264_annex_b_find_nal(data, sizeof(data), &offset, &nal_len);
+    ASSERT_TRUE(nal != NULL);
+    ASSERT_EQ(nal[0], 0x67);
+    ASSERT_EQ(nal_len, 3); /* 0x67, 0x42, 0xC0 */
+}
+
+TEST(test_h264_annex_b_two_nals)
+{
+    /* NAL1 | 00 00 01 | NAL2 */
+    uint8_t data[] = {0x00, 0x00, 0x01, 0x67, 0x42, /* NAL1 */
+                      0x00, 0x00, 0x01, 0x68, 0xCE}; /* NAL2 */
+    size_t offset = 0, nal_len = 0;
+
+    /* First NAL */
+    const uint8_t *nal1 = h264_annex_b_find_nal(data, sizeof(data), &offset, &nal_len);
+    ASSERT_TRUE(nal1 != NULL);
+    ASSERT_EQ(nal1[0], 0x67);
+    ASSERT_EQ(nal_len, 2); /* 0x67, 0x42 (trailing zeros stripped) */
+
+    /* Second NAL */
+    const uint8_t *nal2 = h264_annex_b_find_nal(data, sizeof(data), &offset, &nal_len);
+    ASSERT_TRUE(nal2 != NULL);
+    ASSERT_EQ(nal2[0], 0x68);
+    ASSERT_EQ(nal_len, 2); /* 0x68, 0xCE */
+}
+
+TEST(test_h264_annex_b_trailing_zeros_stripped)
+{
+    /* NAL followed by zero padding — trailing zeros between NALs should be stripped */
+    uint8_t data[] = {0x00, 0x00, 0x01, 0x65, 0xAA, 0x00, 0x00, 0x00};
+    size_t offset = 0, nal_len = 0;
+    const uint8_t *nal = h264_annex_b_find_nal(data, sizeof(data), &offset, &nal_len);
+    ASSERT_TRUE(nal != NULL);
+    ASSERT_EQ(nal[0], 0x65);
+    ASSERT_EQ(nal_len, 2); /* 0x65, 0xAA — trailing zeros stripped */
+}
+
+TEST(test_h264_annex_b_empty)
+{
+    uint8_t data[] = {0};
+    size_t offset = 0, nal_len = 0;
+    const uint8_t *nal = h264_annex_b_find_nal(data, 0, &offset, &nal_len);
+    ASSERT_EQ(nal, NULL);
+}
+
+/* ================================================================
  * Test runner
  * ================================================================ */
 
@@ -523,4 +597,11 @@ RUN(test_h264_depkt_fua_no_start);
 RUN(test_h264_pack_fua_exact_mtu_plus_one);
 RUN(test_h264_forbidden_bit_passthrough);
 RUN(test_h264_keyframe_single_byte);
+/* Annex-B NAL finder */
+RUN(test_h264_annex_b_null_params);
+RUN(test_h264_annex_b_3byte_start_code);
+RUN(test_h264_annex_b_4byte_start_code);
+RUN(test_h264_annex_b_two_nals);
+RUN(test_h264_annex_b_trailing_zeros_stripped);
+RUN(test_h264_annex_b_empty);
 TEST_MAIN_END

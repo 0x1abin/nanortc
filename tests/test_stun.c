@@ -1456,6 +1456,28 @@ TEST(test_stun_magic_cookie_in_parsed_vectors)
     ASSERT_EQ(magic, STUN_MAGIC_COOKIE);
 }
 
+/* ---- Short/NULL input edge cases ---- */
+
+TEST(test_stun_verify_fingerprint_short)
+{
+    /* stun_verify_fingerprint with len < STUN_HEADER_SIZE + 8 */
+    uint8_t short_data[] = {0, 1, 0, 0};
+    ASSERT_FAIL(stun_verify_fingerprint(short_data, sizeof(short_data)));
+    ASSERT_FAIL(stun_verify_fingerprint(NULL, 100));
+}
+
+TEST(test_stun_verify_integrity_short)
+{
+    /* stun_verify_integrity with short data */
+    stun_msg_t msg;
+    memset(&msg, 0, sizeof(msg));
+    uint8_t key[] = "testkey";
+    ASSERT_FAIL(stun_verify_integrity(NULL, 100, &msg, key, sizeof(key) - 1, NULL));
+    uint8_t short_data[] = {0, 1, 0, 0};
+    ASSERT_FAIL(stun_verify_integrity(short_data, sizeof(short_data), &msg, key,
+                                      sizeof(key) - 1, NULL));
+}
+
 /* ---- Runner ---- */
 
 TEST_MAIN_BEGIN("nanortc STUN tests")
@@ -1513,4 +1535,7 @@ RUN(test_stun_unknown_comprehension_optional_attr);
 RUN(test_stun_error_code_parse);
 RUN(test_stun_length_field_alignment);
 RUN(test_stun_magic_cookie_in_parsed_vectors);
+/* Short/NULL edge cases */
+RUN(test_stun_verify_fingerprint_short);
+RUN(test_stun_verify_integrity_short);
 TEST_MAIN_END

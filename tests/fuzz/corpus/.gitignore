@@ -1,0 +1,3 @@
+# Ignore fuzzer-generated corpus entries (SHA1 hashes)
+# Keep hand-crafted seed files (*.bin, *.sdp, *.txt)
+**/[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]*

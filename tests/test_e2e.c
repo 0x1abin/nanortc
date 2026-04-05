@@ -1283,6 +1283,363 @@ TEST(test_e2e_request_keyframe_bad_params)
     nanortc_destroy(&rtc);
 }
 
+/* ---- Multi-media offer/answer (exercises SDP gen + parse for audio+video) ---- */
+
+TEST(test_e2e_media_offer_answer)
+{
+    nanortc_t offerer, answerer;
+    nanortc_config_t cfg_o = e2e_default_config();
+    nanortc_config_t cfg_a = e2e_default_config();
+    ASSERT_OK(nanortc_init(&offerer, &cfg_o));
+    ASSERT_OK(nanortc_init(&answerer, &cfg_a));
+
+    /* Offerer adds audio + video tracks */
+    int mid_audio = nanortc_add_audio_track(&offerer, NANORTC_DIR_SENDRECV, NANORTC_CODEC_OPUS,
+                                            48000, 2);
+    ASSERT_TRUE(mid_audio >= 0);
+
+#if NANORTC_FEATURE_VIDEO
+    int mid_video = nanortc_add_video_track(&offerer, NANORTC_DIR_SENDRECV, NANORTC_CODEC_H264);
+    ASSERT_TRUE(mid_video >= 0);
+#endif
+
+    nanortc_add_local_candidate(&offerer, "192.168.1.1", 10000);
+
+    /* Create offer */
+    char offer[4096];
+    size_t offer_len = 0;
+    ASSERT_OK(nanortc_create_offer(&offerer, offer, sizeof(offer), &offer_len));
+    ASSERT_TRUE(offer_len > 100);
+
+    /* Answerer adds matching tracks and accepts offer */
+    nanortc_add_audio_track(&answerer, NANORTC_DIR_SENDRECV, NANORTC_CODEC_OPUS, 48000, 2);
+#if NANORTC_FEATURE_VIDEO
+    nanortc_add_video_track(&answerer, NANORTC_DIR_SENDRECV, NANORTC_CODEC_H264);
+#endif
+    nanortc_add_local_candidate(&answerer, "192.168.1.2", 10001);
+
+    char answer[4096];
+    size_t answer_len = 0;
+    ASSERT_OK(nanortc_accept_offer(&answerer, offer, answer, sizeof(answer), &answer_len));
+    ASSERT_TRUE(answer_len > 100);
+
+    /* Offerer accepts answer */
+    ASSERT_OK(nanortc_accept_answer(&offerer, answer));
+
+    /* Both should have progressed beyond NEW */
+    ASSERT_TRUE(nanortc_is_alive(&offerer));
+    ASSERT_TRUE(nanortc_is_alive(&answerer));
+
+    nanortc_destroy(&offerer);
+    nanortc_destroy(&answerer);
+}
+
+/* ---- Additional API coverage tests for nano_rtc.c ---- */
+
+TEST(test_e2e_track_stats_not_connected)
+{
+    nanortc_t rtc;
+    nanortc_config_t cfg = e2e_default_config();
+    ASSERT_OK(nanortc_init(&rtc, &cfg));
+
+    nanortc_track_stats_t stats;
+    memset(&stats, 0, sizeof(stats));
+
+    /* No tracks → invalid param */
+    ASSERT_FAIL(nanortc_get_track_stats(&rtc, 0, &stats));
+    ASSERT_FAIL(nanortc_get_track_stats(NULL, 0, &stats));
+    ASSERT_FAIL(nanortc_get_track_stats(&rtc, 0, NULL));
+
+    nanortc_destroy(&rtc);
+}
+
+TEST(test_e2e_track_stats_with_track)
+{
+    nanortc_t rtc;
+    nanortc_config_t cfg = e2e_default_config();
+    ASSERT_OK(nanortc_init(&rtc, &cfg));
+
+    int mid = nanortc_add_audio_track(&rtc, NANORTC_DIR_SENDRECV, NANORTC_CODEC_OPUS, 48000, 2);
+    ASSERT_TRUE(mid >= 0);
+
+    nanortc_track_stats_t stats;
+    memset(&stats, 0, sizeof(stats));
+    ASSERT_OK(nanortc_get_track_stats(&rtc, (uint8_t)mid, &stats));
+    ASSERT_EQ(stats.packets_sent, 0);
+    ASSERT_EQ(stats.octets_sent, 0);
+
+    nanortc_destroy(&rtc);
+}
+
+TEST(test_e2e_set_direction)
+{
+    nanortc_t rtc;
+    nanortc_config_t cfg = e2e_default_config();
+    ASSERT_OK(nanortc_init(&rtc, &cfg));
+
+    int mid = nanortc_add_audio_track(&rtc, NANORTC_DIR_SENDRECV, NANORTC_CODEC_OPUS, 48000, 2);
+    ASSERT_TRUE(mid >= 0);
+
+    /* Change direction */
+    nanortc_set_direction(&rtc, (uint8_t)mid, NANORTC_DIR_RECVONLY);
+
+    /* Verify via stats (direction doesn't show in stats, but we can verify no crash) */
+    nanortc_track_stats_t stats;
+    ASSERT_OK(nanortc_get_track_stats(&rtc, (uint8_t)mid, &stats));
+
+    /* Change direction on non-existent track should be safe (no crash) */
+    nanortc_set_direction(&rtc, 99, NANORTC_DIR_SENDONLY);
+    nanortc_set_direction(NULL, 0, NANORTC_DIR_SENDONLY);
+
+    nanortc_destroy(&rtc);
+}
+
+TEST(test_e2e_add_track_max)
+{
+    nanortc_t rtc;
+    nanortc_config_t cfg = e2e_default_config();
+    ASSERT_OK(nanortc_init(&rtc, &cfg));
+
+    /* Fill tracks up to NANORTC_MAX_MEDIA_TRACKS */
+    for (int i = 0; i < NANORTC_MAX_MEDIA_TRACKS; i++) {
+        int mid = nanortc_add_audio_track(&rtc, NANORTC_DIR_SENDRECV, NANORTC_CODEC_OPUS, 48000, 2);
+        ASSERT_TRUE(mid >= 0);
+    }
+
+    /* Next should fail */
+    int overflow = nanortc_add_audio_track(&rtc, NANORTC_DIR_SENDRECV, NANORTC_CODEC_OPUS, 48000, 2);
+    ASSERT_TRUE(overflow < 0);
+
+    nanortc_destroy(&rtc);
+}
+
+TEST(test_e2e_add_track_codecs)
+{
+    /* Test PCMU codec (MAX_MEDIA_TRACKS=2, so use separate instances) */
+    nanortc_t rtc1;
+    nanortc_config_t cfg1 = e2e_default_config();
+    ASSERT_OK(nanortc_init(&rtc1, &cfg1));
+    int mid_pcmu = nanortc_add_audio_track(&rtc1, NANORTC_DIR_SENDONLY, NANORTC_CODEC_PCMU, 8000, 1);
+    ASSERT_TRUE(mid_pcmu >= 0);
+    nanortc_destroy(&rtc1);
+
+    /* Test PCMA codec */
+    nanortc_t rtc2;
+    nanortc_config_t cfg2 = e2e_default_config();
+    ASSERT_OK(nanortc_init(&rtc2, &cfg2));
+    int mid_pcma = nanortc_add_audio_track(&rtc2, NANORTC_DIR_SENDONLY, NANORTC_CODEC_PCMA, 8000, 1);
+    ASSERT_TRUE(mid_pcma >= 0);
+    nanortc_destroy(&rtc2);
+
+#if NANORTC_FEATURE_VIDEO
+    /* Test video codec */
+    nanortc_t rtc3;
+    nanortc_config_t cfg3 = e2e_default_config();
+    ASSERT_OK(nanortc_init(&rtc3, &cfg3));
+    int mid_video = nanortc_add_video_track(&rtc3, NANORTC_DIR_SENDONLY, NANORTC_CODEC_H264);
+    ASSERT_TRUE(mid_video >= 0);
+    nanortc_destroy(&rtc3);
+#endif
+}
+
+TEST(test_e2e_add_track_null)
+{
+    ASSERT_TRUE(nanortc_add_audio_track(NULL, NANORTC_DIR_SENDRECV, NANORTC_CODEC_OPUS, 48000, 2) <
+                0);
+#if NANORTC_FEATURE_VIDEO
+    ASSERT_TRUE(nanortc_add_video_track(NULL, NANORTC_DIR_SENDONLY, NANORTC_CODEC_H264) < 0);
+#endif
+}
+
+TEST(test_e2e_accept_offer_bad_sdp)
+{
+    nanortc_t rtc;
+    nanortc_config_t cfg = e2e_default_config();
+    ASSERT_OK(nanortc_init(&rtc, &cfg));
+
+    char answer[4096];
+    size_t answer_len = 0;
+
+    /* NULL params */
+    ASSERT_FAIL(nanortc_accept_offer(NULL, "v=0\r\n", answer, sizeof(answer), &answer_len));
+    ASSERT_FAIL(nanortc_accept_offer(&rtc, NULL, answer, sizeof(answer), &answer_len));
+    ASSERT_FAIL(nanortc_accept_offer(&rtc, "v=0\r\n", NULL, sizeof(answer), &answer_len));
+
+    /* Malformed SDP — will fail during sdp_parse */
+    ASSERT_FAIL(nanortc_accept_offer(&rtc, "garbage", answer, sizeof(answer), &answer_len));
+
+    nanortc_destroy(&rtc);
+}
+
+TEST(test_e2e_create_offer_state_guard)
+{
+    nanortc_t rtc;
+    nanortc_config_t cfg = e2e_default_config();
+    ASSERT_OK(nanortc_init(&rtc, &cfg));
+
+    char buf[4096];
+    size_t len = 0;
+
+    /* NULL params */
+    ASSERT_FAIL(nanortc_create_offer(NULL, buf, sizeof(buf), &len));
+    ASSERT_FAIL(nanortc_create_offer(&rtc, NULL, sizeof(buf), &len));
+
+    /* First create_offer should succeed (state = NEW) */
+    ASSERT_OK(nanortc_create_offer(&rtc, buf, sizeof(buf), &len));
+    ASSERT_TRUE(len > 0);
+
+    nanortc_destroy(&rtc);
+}
+
+TEST(test_e2e_accept_answer_bad)
+{
+    nanortc_t rtc;
+    nanortc_config_t cfg = e2e_default_config();
+    ASSERT_OK(nanortc_init(&rtc, &cfg));
+
+    /* NULL params */
+    ASSERT_FAIL(nanortc_accept_answer(NULL, "v=0\r\n"));
+    ASSERT_FAIL(nanortc_accept_answer(&rtc, NULL));
+
+    /* Malformed answer */
+    ASSERT_FAIL(nanortc_accept_answer(&rtc, "not-sdp"));
+
+    nanortc_destroy(&rtc);
+}
+
+TEST(test_e2e_add_candidate_params)
+{
+    nanortc_t rtc;
+    nanortc_config_t cfg = e2e_default_config();
+    ASSERT_OK(nanortc_init(&rtc, &cfg));
+
+    /* NULL params */
+    ASSERT_FAIL(nanortc_add_local_candidate(NULL, "1.2.3.4", 9999));
+    ASSERT_FAIL(nanortc_add_local_candidate(&rtc, NULL, 9999));
+    ASSERT_FAIL(nanortc_add_remote_candidate(NULL, "candidate:1 1 UDP 1 1.2.3.4 9999 typ host"));
+    ASSERT_FAIL(nanortc_add_remote_candidate(&rtc, NULL));
+
+    /* Valid local candidate */
+    ASSERT_OK(nanortc_add_local_candidate(&rtc, "192.168.1.100", 5000));
+
+    /* Valid remote candidates in various formats */
+    ASSERT_OK(nanortc_add_remote_candidate(&rtc,
+        "candidate:1 1 UDP 2122260223 10.0.0.1 9999 typ host"));
+    ASSERT_OK(nanortc_add_remote_candidate(&rtc, "10.0.0.2 8888"));
+
+    /* Malformed remote candidate */
+    ASSERT_FAIL(nanortc_add_remote_candidate(&rtc, ""));
+    ASSERT_FAIL(nanortc_add_remote_candidate(&rtc, "x"));
+
+    nanortc_destroy(&rtc);
+}
+
+TEST(test_e2e_handle_input_params)
+{
+    nanortc_t rtc;
+    nanortc_config_t cfg = e2e_default_config();
+    ASSERT_OK(nanortc_init(&rtc, &cfg));
+
+    ASSERT_FAIL(nanortc_handle_input(NULL, 0, NULL, 0, NULL));
+
+    /* NULL data is OK — just processes timers */
+    ASSERT_OK(nanortc_handle_input(&rtc, 100, NULL, 0, NULL));
+
+    nanortc_destroy(&rtc);
+}
+
+TEST(test_e2e_is_alive_connected)
+{
+    ASSERT_FALSE(nanortc_is_alive(NULL));
+    ASSERT_FALSE(nanortc_is_connected(NULL));
+
+    nanortc_t rtc;
+    nanortc_config_t cfg = e2e_default_config();
+    ASSERT_OK(nanortc_init(&rtc, &cfg));
+
+    ASSERT_TRUE(nanortc_is_alive(&rtc));
+    ASSERT_FALSE(nanortc_is_connected(&rtc));
+
+    nanortc_destroy(&rtc);
+}
+
+#if NANORTC_FEATURE_DATACHANNEL
+TEST(test_e2e_dc_send_not_connected)
+{
+    nanortc_t rtc;
+    nanortc_config_t cfg = e2e_default_config();
+    ASSERT_OK(nanortc_init(&rtc, &cfg));
+
+    uint8_t data[] = {1, 2, 3};
+    ASSERT_FAIL(nanortc_datachannel_send(&rtc, 0, data, sizeof(data)));
+    ASSERT_FAIL(nanortc_datachannel_send_string(&rtc, 0, "hello"));
+    ASSERT_FAIL(nanortc_datachannel_send(NULL, 0, data, sizeof(data)));
+    ASSERT_FAIL(nanortc_datachannel_send(&rtc, 0, NULL, 1));
+    ASSERT_FAIL(nanortc_datachannel_send_string(NULL, 0, "hello"));
+    ASSERT_FAIL(nanortc_datachannel_send_string(&rtc, 0, NULL));
+
+    nanortc_destroy(&rtc);
+}
+
+TEST(test_e2e_dc_close_params)
+{
+    nanortc_t rtc;
+    nanortc_config_t cfg = e2e_default_config();
+    ASSERT_OK(nanortc_init(&rtc, &cfg));
+
+    ASSERT_FAIL(nanortc_datachannel_close(NULL, 0));
+    /* No channel exists → invalid param */
+    ASSERT_FAIL(nanortc_datachannel_close(&rtc, 0));
+
+    ASSERT_EQ(nanortc_datachannel_get_label(NULL, 0), NULL);
+    ASSERT_EQ(nanortc_datachannel_get_label(&rtc, 0), NULL);
+
+    nanortc_destroy(&rtc);
+}
+
+TEST(test_e2e_dc_create_with_options)
+{
+    nanortc_t rtc;
+    nanortc_config_t cfg = e2e_default_config();
+    ASSERT_OK(nanortc_init(&rtc, &cfg));
+
+    /* Create with default options (reliable, ordered) */
+    int sid1 = nanortc_create_datachannel(&rtc, "ch1", NULL);
+    ASSERT_TRUE(sid1 >= 0);
+
+    /* Create with custom options (unordered, retransmit) */
+    nanortc_datachannel_options_t opts;
+    memset(&opts, 0, sizeof(opts));
+    opts.unordered = true;
+    opts.max_retransmits = 3;
+    int sid2 = nanortc_create_datachannel(&rtc, "ch2", &opts);
+    ASSERT_TRUE(sid2 >= 0);
+    ASSERT_NEQ(sid1, sid2);
+
+    /* Verify labels */
+    ASSERT_TRUE(nanortc_datachannel_get_label(&rtc, (uint16_t)sid1) != NULL);
+    ASSERT_TRUE(nanortc_datachannel_get_label(&rtc, (uint16_t)sid2) != NULL);
+
+    /* Close channel */
+    ASSERT_OK(nanortc_datachannel_close(&rtc, (uint16_t)sid1));
+    /* After close, label should be NULL */
+    ASSERT_EQ(nanortc_datachannel_get_label(&rtc, (uint16_t)sid1), NULL);
+
+    nanortc_destroy(&rtc);
+}
+
+TEST(test_e2e_dc_create_null)
+{
+    ASSERT_TRUE(nanortc_create_datachannel(NULL, "test", NULL) < 0);
+
+    nanortc_t rtc;
+    nanortc_config_t cfg = e2e_default_config();
+    ASSERT_OK(nanortc_init(&rtc, &cfg));
+    ASSERT_TRUE(nanortc_create_datachannel(&rtc, NULL, NULL) < 0);
+    nanortc_destroy(&rtc);
+}
+#endif
+
 #endif /* NANORTC_HAVE_MEDIA_TRANSPORT */
 
 /* ---- Runner ---- */
@@ -1332,5 +1689,26 @@ RUN(test_e2e_send_video_before_connected);
 #endif
 RUN(test_e2e_connected_event_has_mids);
 RUN(test_e2e_request_keyframe_bad_params);
+/* Multi-media offer/answer */
+RUN(test_e2e_media_offer_answer);
+/* API coverage tests */
+RUN(test_e2e_track_stats_not_connected);
+RUN(test_e2e_track_stats_with_track);
+RUN(test_e2e_set_direction);
+RUN(test_e2e_add_track_max);
+RUN(test_e2e_add_track_codecs);
+RUN(test_e2e_add_track_null);
+RUN(test_e2e_accept_offer_bad_sdp);
+RUN(test_e2e_create_offer_state_guard);
+RUN(test_e2e_accept_answer_bad);
+RUN(test_e2e_add_candidate_params);
+RUN(test_e2e_handle_input_params);
+RUN(test_e2e_is_alive_connected);
+#if NANORTC_FEATURE_DATACHANNEL
+RUN(test_e2e_dc_send_not_connected);
+RUN(test_e2e_dc_close_params);
+RUN(test_e2e_dc_create_with_options);
+RUN(test_e2e_dc_create_null);
+#endif
 #endif
 TEST_MAIN_END

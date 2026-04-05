@@ -172,11 +172,24 @@ if(ADDRESS_SANITIZER)
     target_link_options(nanortc PUBLIC -fsanitize=address)
 endif()
 
+# ---- Code coverage (gcov/lcov) ----
+option(NANORTC_COVERAGE "Build with code coverage instrumentation" OFF)
+if(NANORTC_COVERAGE)
+    target_compile_options(nanortc PUBLIC --coverage -fprofile-arcs -ftest-coverage)
+    target_link_options(nanortc PUBLIC --coverage)
+endif()
+
 # ---- Tests ----
 option(NANORTC_BUILD_TESTS "Build tests" ON)
 if(NANORTC_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
+endif()
+
+# ---- Fuzz testing (requires Clang with libFuzzer) ----
+option(NANORTC_BUILD_FUZZ "Build fuzz testing harnesses (requires clang)" OFF)
+if(NANORTC_BUILD_FUZZ)
+    add_subdirectory(tests/fuzz)
 endif()
 
 # ---- Examples (Linux host only, not default) ----

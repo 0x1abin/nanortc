@@ -251,6 +251,43 @@ TEST(test_jitter_zero_depth)
  * Test runner
  * ================================================================ */
 
+TEST(test_jitter_stale_packet)
+{
+    /* Push packets, advance head, then push a packet far behind head → stale discard */
+    nano_jitter_t jb;
+    jitter_init(&jb, 20);
+
+    /* Push sequential packets 0..5 — jitter_push(jb, seq, ts, data, len, now_ms) */
+    uint8_t pkt[10] = {0};
+    for (uint16_t i = 0; i < 6; i++) {
+        jitter_push(&jb, i, i * 160, pkt, sizeof(pkt), 100 + i);
+    }
+
+    /* Pop a few to advance head — jitter_pop(jb, now_ms, buf, buf_len, out_len, ts_out) */
+    uint8_t buf[256];
+    size_t out_len = 0;
+    jitter_pop(&jb, 200, buf, sizeof(buf), &out_len, NULL);
+    jitter_pop(&jb, 200, buf, sizeof(buf), &out_len, NULL);
+
+    /* Now push a packet far behind head */
+    uint16_t stale_seq = (uint16_t)(jb.head_seq - NANORTC_JITTER_SLOTS - 1);
+    ASSERT_FAIL(jitter_push(&jb, stale_seq, 0, pkt, sizeof(pkt), 300));
+}
+
+TEST(test_jitter_pop_buf_too_small)
+{
+    nano_jitter_t jb;
+    jitter_init(&jb, 0); /* Zero depth = immediate playout */
+
+    uint8_t pkt[10] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+    jitter_push(&jb, 0, 0, pkt, sizeof(pkt), 100);
+
+    /* Pop with buffer too small */
+    uint8_t tiny_buf[2];
+    size_t out_len = 0;
+    ASSERT_FAIL(jitter_pop(&jb, 200, tiny_buf, sizeof(tiny_buf), &out_len, NULL));
+}
+
 TEST_MAIN_BEGIN("test_jitter")
 RUN(test_jitter_init);
 RUN(test_jitter_init_null);
@@ -264,4 +301,6 @@ RUN(test_jitter_push_too_large);
 RUN(test_jitter_push_null);
 RUN(test_jitter_pop_null);
 RUN(test_jitter_zero_depth);
+RUN(test_jitter_stale_packet);
+RUN(test_jitter_pop_buf_too_small);
 TEST_MAIN_END

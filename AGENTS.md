@@ -60,6 +60,16 @@ ctest --test-dir build -R interop --output-on-failure
 # With AddressSanitizer
 cmake -B build -DADDRESS_SANITIZER=ON
 
+# Fuzz testing (requires LLVM clang with libFuzzer, not AppleClang)
+./scripts/run-fuzz.sh            # 30s per harness (default)
+./scripts/run-fuzz.sh 300        # 5min per harness
+./scripts/run-fuzz.sh 30 fuzz_stun  # Single harness
+
+# Code coverage (requires gcov + lcov)
+./scripts/coverage.sh              # Generate HTML report
+./scripts/coverage.sh --threshold 80  # Fail if < 80%
+./scripts/coverage.sh --open       # Open report in browser
+
 # ESP-IDF (auto-detected via IDF_PATH; use `idf.py menuconfig` for Kconfig)
 idf.py build
 

@@ -838,6 +838,90 @@ TEST(test_sdp_generate_ipv4_connection_line)
 #endif
 
 /* ================================================================
+ * Media direction parsing (a=sendonly, a=recvonly, a=inactive)
+ * ================================================================ */
+
+#if NANORTC_HAVE_MEDIA_TRANSPORT
+TEST(test_sdp_parse_media_directions)
+{
+    /* SDP with audio m-line using a=sendonly */
+    const char *sdp_sendonly =
+        "v=0\r\n"
+        "o=- 123 1 IN IP4 0.0.0.0\r\n"
+        "s=-\r\n"
+        "t=0 0\r\n"
+        "a=group:BUNDLE 0\r\n"
+        "a=ice-ufrag:dirtestfrag0000\r\n"
+        "a=ice-pwd:dirtestpwd0000000000000\r\n"
+        "a=fingerprint:sha-256 AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:"
+        "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99\r\n"
+        "a=setup:actpass\r\n"
+        "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n"
+        "a=mid:0\r\n"
+        "a=rtpmap:111 opus/48000/2\r\n"
+        "a=sendonly\r\n"
+        "c=IN IP4 0.0.0.0\r\n";
+
+    nano_sdp_t sdp;
+    sdp_init(&sdp);
+    size_t len = 0;
+    while (sdp_sendonly[len]) len++;
+    ASSERT_OK(sdp_parse(&sdp, sdp_sendonly, len));
+    ASSERT_EQ(sdp.mlines[0].remote_direction, NANORTC_DIR_SENDONLY);
+
+    /* SDP with a=recvonly */
+    const char *sdp_recvonly =
+        "v=0\r\n"
+        "o=- 123 1 IN IP4 0.0.0.0\r\n"
+        "s=-\r\n"
+        "t=0 0\r\n"
+        "a=group:BUNDLE 0\r\n"
+        "a=ice-ufrag:dirtestfrag0000\r\n"
+        "a=ice-pwd:dirtestpwd0000000000000\r\n"
+        "a=fingerprint:sha-256 AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:"
+        "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99\r\n"
+        "a=setup:actpass\r\n"
+        "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n"
+        "a=mid:0\r\n"
+        "a=rtpmap:111 opus/48000/2\r\n"
+        "a=recvonly\r\n"
+        "c=IN IP4 0.0.0.0\r\n";
+
+    nano_sdp_t sdp2;
+    sdp_init(&sdp2);
+    len = 0;
+    while (sdp_recvonly[len]) len++;
+    ASSERT_OK(sdp_parse(&sdp2, sdp_recvonly, len));
+    ASSERT_EQ(sdp2.mlines[0].remote_direction, NANORTC_DIR_RECVONLY);
+
+    /* SDP with a=inactive */
+    const char *sdp_inactive =
+        "v=0\r\n"
+        "o=- 123 1 IN IP4 0.0.0.0\r\n"
+        "s=-\r\n"
+        "t=0 0\r\n"
+        "a=group:BUNDLE 0\r\n"
+        "a=ice-ufrag:dirtestfrag0000\r\n"
+        "a=ice-pwd:dirtestpwd0000000000000\r\n"
+        "a=fingerprint:sha-256 AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:"
+        "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99\r\n"
+        "a=setup:actpass\r\n"
+        "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n"
+        "a=mid:0\r\n"
+        "a=rtpmap:111 opus/48000/2\r\n"
+        "a=inactive\r\n"
+        "c=IN IP4 0.0.0.0\r\n";
+
+    nano_sdp_t sdp3;
+    sdp_init(&sdp3);
+    len = 0;
+    while (sdp_inactive[len]) len++;
+    ASSERT_OK(sdp_parse(&sdp3, sdp_inactive, len));
+    ASSERT_EQ(sdp3.mlines[0].remote_direction, NANORTC_DIR_INACTIVE);
+}
+#endif
+
+/* ================================================================
  * Test runner
  * ================================================================ */
 
@@ -870,6 +954,7 @@ RUN(test_sdp_parse_video_offer);
 RUN(test_sdp_parse_full_media_offer);
 RUN(test_sdp_generate_video_answer);
 RUN(test_sdp_video_roundtrip);
+RUN(test_sdp_parse_media_directions);
 #endif
 #if NANORTC_FEATURE_IPV6
 RUN(test_sdp_generate_ipv6_connection_line);
