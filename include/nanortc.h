@@ -477,6 +477,10 @@ typedef struct nanortc_config {
 #endif
 } nanortc_config_t;
 
+/** @brief Default-initialize a nanortc_config_t. Caller must set .crypto before nanortc_init(). */
+#define NANORTC_CONFIG_DEFAULT() \
+    (nanortc_config_t){ .crypto = NULL, .role = NANORTC_ROLE_CONTROLLED }
+
 /* ----------------------------------------------------------------
  * Internal subsystem types (needed for struct layout — do not use directly)
  * ---------------------------------------------------------------- */
