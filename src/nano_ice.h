@@ -67,6 +67,7 @@ typedef struct nano_ice {
     uint8_t selected_addr[NANORTC_ADDR_SIZE];
     uint16_t selected_port;
     uint8_t selected_family;
+    uint8_t selected_type;      /**< nano_ice_cand_type_t of selected pair. */
     uint32_t check_interval_ms; /* for controlling role: STUN check pacing */
     uint32_t next_check_ms;
 

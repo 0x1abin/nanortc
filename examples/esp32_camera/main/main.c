@@ -40,6 +40,7 @@
 #include "esp_board_manager_defs.h"
 
 #include "nanortc.h"
+#include "ice_server_resolve.h"
 #include "nanortc_crypto.h"
 #include "run_loop.h"
 #include "webserver.h"
@@ -141,8 +142,8 @@ static void on_event(nanortc_t *rtc, const nanortc_event_t *evt, void *userdata)
 /* ----------------------------------------------------------------
  * POST /offer handler — full nanortc session lifecycle
  * ---------------------------------------------------------------- */
-static int handle_offer(const char *offer, char *answer, size_t answer_size,
-                        size_t *answer_len, void *userdata)
+static int handle_offer(const char *offer, char *answer, size_t answer_size, size_t *answer_len,
+                        void *userdata)
 {
     (void)userdata;
 
@@ -169,6 +170,18 @@ static int handle_offer(const char *offer, char *answer, size_t answer_size,
     cfg.log.callback = nanortc_log_cb;
     cfg.log.level = NANORTC_LOG_DEBUG;
 
+    /* ICE servers: Google STUN + PeerJS public TURN */
+    static const char *stun_url = "stun:stun.l.google.com:19302";
+    static const char *turn_url = "turn:eu-0.turn.peerjs.com:3478";
+    static char ice_scratch[512];
+    nanortc_ice_server_t ice_servers[] = {
+        {.urls = &stun_url, .url_count = 1},
+        {.urls = &turn_url, .url_count = 1, .username = "peerjs", .credential = "peerjsp"},
+    };
+    nano_resolve_ice_servers(ice_servers, 2, ice_scratch, sizeof(ice_scratch));
+    cfg.ice_servers = ice_servers;
+    cfg.ice_server_count = 2;
+
     int rc = nanortc_init(&s_rtc, &cfg);
     if (rc != NANORTC_OK) {
         ESP_LOGE(TAG, "nanortc_init failed: %d", rc);
@@ -176,8 +189,7 @@ static int handle_offer(const char *offer, char *answer, size_t answer_size,
     }
 
     /* Add tracks: audio first, video second (must match browser SDP m-line order) */
-    s_mic_mid = nanortc_add_audio_track(&s_rtc, NANORTC_DIR_SENDONLY,
-                                         NANORTC_CODEC_OPUS, 48000, 1);
+    s_mic_mid = nanortc_add_audio_track(&s_rtc, NANORTC_DIR_SENDONLY, NANORTC_CODEC_OPUS, 48000, 1);
     if (s_mic_mid < 0) {
         ESP_LOGE(TAG, "nanortc_add_audio_track failed: %d", s_mic_mid);
         return s_mic_mid;
@@ -284,12 +296,14 @@ static void camera_task(void *arg)
         if (rc != 0 || h264_len == 0) {
             enc_err++;
             if (enc_err <= 3 || enc_err % 100 == 0)
-                ESP_LOGW(TAG, "[cam] encode err rc=%d len=%u err#%"PRIu32, rc, (unsigned)h264_len, enc_err);
+                ESP_LOGW(TAG, "[cam] encode err rc=%d len=%u err#%" PRIu32, rc, (unsigned)h264_len,
+                         enc_err);
             continue;
         }
         enc_count++;
         if (enc_count <= 3 || enc_count % 100 == 0)
-            ESP_LOGI(TAG, "[cam] enc#%"PRIu32" h264=%u kf=%d", enc_count, (unsigned)h264_len, is_keyframe);
+            ESP_LOGI(TAG, "[cam] enc#%" PRIu32 " h264=%u kf=%d", enc_count, (unsigned)h264_len,
+                     is_keyframe);
 
         /* Enqueue for WebRTC task */
         uint8_t *copy = heap_caps_malloc(h264_len, MALLOC_CAP_SPIRAM);
@@ -369,8 +383,7 @@ static void webrtc_task(void *arg)
             frame_msg_t msg;
             while (xQueueReceive(s_frame_queue, &msg, 0) == pdTRUE) {
                 if (s_connected) {
-                    nanortc_send_video(&s_rtc, (uint8_t)s_video_mid,
-                                       msg.pts_ms, msg.data, msg.len);
+                    nanortc_send_video(&s_rtc, (uint8_t)s_video_mid, msg.pts_ms, msg.data, msg.len);
                 }
                 heap_caps_free(msg.data);
             }
@@ -379,8 +392,8 @@ static void webrtc_task(void *arg)
             mic_msg_t mic_msg;
             while (xQueueReceive(s_mic_queue, &mic_msg, 0) == pdTRUE) {
                 if (s_connected && s_mic_mid >= 0) {
-                    nanortc_send_audio(&s_rtc, (uint8_t)s_mic_mid,
-                                       mic_msg.pts_ms, mic_msg.data, mic_msg.len);
+                    nanortc_send_audio(&s_rtc, (uint8_t)s_mic_mid, mic_msg.pts_ms, mic_msg.data,
+                                       mic_msg.len);
                 }
                 free(mic_msg.data);
             }
@@ -396,8 +409,7 @@ static void webrtc_task(void *arg)
 void app_main(void)
 {
     ESP_LOGI(TAG, "nanortc ESP32-P4 Camera — live H264 + Opus stream, %dx%d @%dfps",
-             CONFIG_EXAMPLE_VIDEO_WIDTH, CONFIG_EXAMPLE_VIDEO_HEIGHT,
-             CONFIG_EXAMPLE_VIDEO_FPS);
+             CONFIG_EXAMPLE_VIDEO_WIDTH, CONFIG_EXAMPLE_VIDEO_HEIGHT, CONFIG_EXAMPLE_VIDEO_FPS);
 
     /* 1. NVS init */
     esp_err_t ret = nvs_flash_init();

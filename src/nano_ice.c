@@ -160,6 +160,7 @@ int ice_handle_stun(nano_ice_t *ice, const uint8_t *data, size_t len, const nano
             memcpy(ice->selected_addr, src->addr, NANORTC_ADDR_SIZE);
             ice->selected_port = src->port;
             ice->selected_family = src->family;
+            ice->selected_type = NANORTC_ICE_CAND_HOST; /* incoming STUN = host path */
             ice->nominated = true;
             ice->state = NANORTC_ICE_STATE_CONNECTED;
             /* Arm consent freshness (RFC 7675) — caller sets now_ms-based times */
@@ -219,6 +220,7 @@ int ice_handle_stun(nano_ice_t *ice, const uint8_t *data, size_t len, const nano
                    NANORTC_ADDR_SIZE);
             ice->selected_port = ice->remote_candidates[ice->current_candidate].port;
             ice->selected_family = ice->remote_candidates[ice->current_candidate].family;
+            ice->selected_type = ice->remote_candidates[ice->current_candidate].type;
         }
         ice->nominated = true;
         ice->state = NANORTC_ICE_STATE_CONNECTED;

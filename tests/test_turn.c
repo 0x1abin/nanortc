@@ -39,8 +39,7 @@ static void setup_turn(nano_turn_t *turn)
     server_addr[2] = 0;
     server_addr[3] = 100;
 
-    turn_configure(turn, server_addr, 4, 3478,
-                   "testuser", 8, "testpass", 8);
+    turn_configure(turn, server_addr, 4, 3478, "testuser", 8, "testpass", 8);
 }
 
 /* Build a fake Allocate Error Response with 401 + REALM + NONCE */
@@ -289,8 +288,7 @@ static void test_turn_wrap_send(void)
     uint8_t buf[256];
     size_t out_len = 0;
 
-    int rc = turn_wrap_send(peer_addr, 4, 5000, payload, 10,
-                            buf, sizeof(buf), &out_len);
+    int rc = turn_wrap_send(peer_addr, 4, 5000, payload, 10, buf, sizeof(buf), &out_len);
     TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
     TEST_ASSERT_TRUE(out_len > 0);
 
@@ -328,8 +326,8 @@ static void test_turn_unwrap_data(void)
     const uint8_t *out_payload = NULL;
     size_t out_len = 0;
 
-    int rc = turn_unwrap_data(buf, buf_len, out_addr, &out_family, &out_port,
-                              &out_payload, &out_len);
+    int rc =
+        turn_unwrap_data(buf, buf_len, out_addr, &out_family, &out_port, &out_payload, &out_len);
     TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
     TEST_ASSERT_EQUAL_INT(STUN_FAMILY_IPV4, out_family);
     TEST_ASSERT_EQUAL_INT(6000, out_port);
@@ -392,8 +390,7 @@ static void test_turn_create_permission(void)
     uint8_t buf[512];
     size_t out_len = 0;
 
-    int rc = turn_create_permission(&turn, peer, 4, 7000, crypto(),
-                                    buf, sizeof(buf), &out_len);
+    int rc = turn_create_permission(&turn, peer, 4, 7000, crypto(), buf, sizeof(buf), &out_len);
     TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
     TEST_ASSERT_TRUE(out_len > 0);
 
@@ -408,6 +405,312 @@ static void test_turn_create_permission(void)
     /* Permission should be tracked */
     TEST_ASSERT_EQUAL_INT(1, turn.permission_count);
     TEST_ASSERT_TRUE(turn.permissions[0].active);
+}
+
+/* T13: Permission deduplication — same address twice */
+static void test_turn_permission_dedup(void)
+{
+    nano_turn_t turn;
+    setup_turn(&turn);
+    turn.state = NANORTC_TURN_ALLOCATED;
+    turn.hmac_key_valid = true;
+    memset(turn.hmac_key, 0xBB, 16);
+    memcpy(turn.realm, "test.com", 9);
+    turn.realm_len = 8;
+    memcpy(turn.nonce, "nonce456", 9);
+    turn.nonce_len = 8;
+
+    uint8_t peer[NANORTC_ADDR_SIZE] = {172, 16, 0, 1};
+    uint8_t buf[512];
+    size_t out_len = 0;
+
+    int rc = turn_create_permission(&turn, peer, 4, 7000, crypto(), buf, sizeof(buf), &out_len);
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
+    TEST_ASSERT_EQUAL_INT(1, turn.permission_count);
+
+    /* Same address again — should NOT add a second entry */
+    out_len = 0;
+    rc = turn_create_permission(&turn, peer, 4, 7000, crypto(), buf, sizeof(buf), &out_len);
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
+    TEST_ASSERT_EQUAL_INT(1, turn.permission_count);
+    TEST_ASSERT_TRUE(turn.permissions[0].active);
+}
+
+/* T14: Permission distinct addresses */
+static void test_turn_permission_distinct(void)
+{
+    nano_turn_t turn;
+    setup_turn(&turn);
+    turn.state = NANORTC_TURN_ALLOCATED;
+    turn.hmac_key_valid = true;
+    memset(turn.hmac_key, 0xBB, 16);
+    memcpy(turn.realm, "test.com", 9);
+    turn.realm_len = 8;
+    memcpy(turn.nonce, "nonce456", 9);
+    turn.nonce_len = 8;
+
+    uint8_t peer1[NANORTC_ADDR_SIZE] = {172, 16, 0, 1};
+    uint8_t peer2[NANORTC_ADDR_SIZE] = {172, 16, 0, 2};
+    uint8_t buf[512];
+    size_t out_len = 0;
+
+    turn_create_permission(&turn, peer1, 4, 7000, crypto(), buf, sizeof(buf), &out_len);
+    TEST_ASSERT_EQUAL_INT(1, turn.permission_count);
+
+    out_len = 0;
+    turn_create_permission(&turn, peer2, 4, 8000, crypto(), buf, sizeof(buf), &out_len);
+    TEST_ASSERT_EQUAL_INT(2, turn.permission_count);
+}
+
+/* Helper: set up a TURN client in ALLOCATED state with valid HMAC key */
+static void setup_turn_allocated(nano_turn_t *turn)
+{
+    setup_turn(turn);
+    turn->state = NANORTC_TURN_ALLOCATED;
+    turn->hmac_key_valid = true;
+    memset(turn->hmac_key, 0xBB, 16);
+    memcpy(turn->realm, "test.com", 9);
+    turn->realm_len = 8;
+    memcpy(turn->nonce, "nonce456", 9);
+    turn->nonce_len = 8;
+}
+
+/* T15: ChannelBind request encoding */
+static void test_turn_channel_bind_request(void)
+{
+    nano_turn_t turn;
+    setup_turn_allocated(&turn);
+
+    uint8_t peer[NANORTC_ADDR_SIZE] = {192, 168, 1, 50};
+    uint8_t buf[512];
+    size_t out_len = 0;
+
+    int rc = turn_channel_bind(&turn, peer, 4, 9000, crypto(), buf, sizeof(buf), &out_len);
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
+    TEST_ASSERT_TRUE(out_len > 0);
+    TEST_ASSERT_EQUAL_INT(1, turn.channel_count);
+    TEST_ASSERT_EQUAL_HEX16(0x4000, turn.channels[0].channel);
+
+    /* Parse the generated request */
+    stun_msg_t msg;
+    rc = stun_parse(buf, out_len, &msg);
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
+    TEST_ASSERT_EQUAL_HEX16(STUN_CHANNEL_BIND_REQUEST, msg.type);
+    TEST_ASSERT_EQUAL_HEX16(0x4000, msg.channel_number);
+    TEST_ASSERT_EQUAL_INT(STUN_FAMILY_IPV4, msg.peer_family);
+    TEST_ASSERT_TRUE(msg.has_integrity);
+}
+
+/* T16: ChannelBind success response */
+static void test_turn_channel_bind_success(void)
+{
+    nano_turn_t turn;
+    setup_turn_allocated(&turn);
+
+    uint8_t peer[NANORTC_ADDR_SIZE] = {192, 168, 1, 50};
+    uint8_t buf[512];
+    size_t out_len = 0;
+
+    turn_channel_bind(&turn, peer, 4, 9000, crypto(), buf, sizeof(buf), &out_len);
+    TEST_ASSERT_FALSE(turn.channels[0].bound);
+
+    /* Build a ChannelBind success response matching the txid */
+    uint8_t resp[64];
+    nanortc_write_u16be(resp, STUN_CHANNEL_BIND_RESPONSE);
+    nanortc_write_u16be(resp + 2, 0);
+    nanortc_write_u32be(resp + 4, STUN_MAGIC_COOKIE);
+    memcpy(resp + 8, turn.channels[0].txid, STUN_TXID_SIZE);
+
+    int rc = turn_handle_response(&turn, resp, STUN_HEADER_SIZE, crypto());
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
+    TEST_ASSERT_TRUE(turn.channels[0].bound);
+}
+
+/* T17: ChannelData wrap */
+static void test_nano_turn_wrap_channel_data(void)
+{
+    const uint8_t payload[] = "hello channel";
+    uint8_t buf[256];
+    size_t out_len = 0;
+
+    int rc = nano_turn_wrap_channel_data(0x4000, payload, 13, buf, sizeof(buf), &out_len);
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
+    /* Header (4) + payload (13) padded to 16 = 20 total */
+    TEST_ASSERT_EQUAL_size_t(20, out_len);
+    /* Verify header */
+    TEST_ASSERT_EQUAL_HEX16(0x4000, nanortc_read_u16be(buf));
+    TEST_ASSERT_EQUAL_INT(13, nanortc_read_u16be(buf + 2));
+    TEST_ASSERT_EQUAL_MEMORY("hello channel", buf + 4, 13);
+}
+
+/* T18: ChannelData unwrap */
+static void test_turn_unwrap_channel_data(void)
+{
+    /* Build ChannelData: channel 0x4001, "test" (4 bytes) */
+    uint8_t data[8];
+    nanortc_write_u16be(data, 0x4001);
+    nanortc_write_u16be(data + 2, 4);
+    memcpy(data + 4, "test", 4);
+
+    uint16_t channel = 0;
+    const uint8_t *payload = NULL;
+    size_t payload_len = 0;
+
+    int rc = turn_unwrap_channel_data(data, 8, &channel, &payload, &payload_len);
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
+    TEST_ASSERT_EQUAL_HEX16(0x4001, channel);
+    TEST_ASSERT_EQUAL_INT(4, payload_len);
+    TEST_ASSERT_EQUAL_MEMORY("test", payload, 4);
+}
+
+/* T19: Channel lookup (forward + reverse) */
+static void test_turn_channel_lookup(void)
+{
+    nano_turn_t turn;
+    setup_turn_allocated(&turn);
+
+    uint8_t peer[NANORTC_ADDR_SIZE] = {10, 0, 0, 5};
+    uint8_t buf[512];
+    size_t out_len = 0;
+
+    /* Bind and mark as bound */
+    turn_channel_bind(&turn, peer, 4, 5000, crypto(), buf, sizeof(buf), &out_len);
+    turn.channels[0].bound = true;
+
+    /* Forward lookup: peer → channel */
+    uint16_t ch = 0;
+    TEST_ASSERT_TRUE(turn_find_channel_for_peer(&turn, peer, 4, &ch));
+    TEST_ASSERT_EQUAL_HEX16(0x4000, ch);
+
+    /* Reverse lookup: channel → peer */
+    uint8_t out_addr[NANORTC_ADDR_SIZE];
+    uint8_t out_family = 0;
+    uint16_t out_port = 0;
+    TEST_ASSERT_TRUE(turn_find_peer_for_channel(&turn, 0x4000, out_addr, &out_family, &out_port));
+    TEST_ASSERT_EQUAL_INT(4, out_family);
+    TEST_ASSERT_EQUAL_INT(5000, out_port);
+    TEST_ASSERT_EQUAL_INT(10, out_addr[0]);
+
+    /* Lookup unbound peer returns false */
+    uint8_t unknown[NANORTC_ADDR_SIZE] = {99, 99, 99, 99};
+    TEST_ASSERT_FALSE(turn_find_channel_for_peer(&turn, unknown, 4, &ch));
+    TEST_ASSERT_FALSE(turn_find_peer_for_channel(&turn, 0x4FFF, out_addr, &out_family, &out_port));
+}
+
+/* T20: turn_is_channel_data first-byte detection */
+static void test_turn_is_channel_data(void)
+{
+    uint8_t cd[4] = {0x40, 0x00, 0x00, 0x04}; /* channel 0x4000, len 4 */
+    TEST_ASSERT_TRUE(turn_is_channel_data(cd, 4));
+
+    uint8_t cd2[4] = {0x7F, 0xFF, 0x00, 0x00};
+    TEST_ASSERT_TRUE(turn_is_channel_data(cd2, 4));
+
+    uint8_t stun[4] = {0x00, 0x01, 0x00, 0x00}; /* STUN binding request */
+    TEST_ASSERT_FALSE(turn_is_channel_data(stun, 4));
+
+    uint8_t dtls[4] = {0x14, 0x03, 0x01, 0x00};
+    TEST_ASSERT_FALSE(turn_is_channel_data(dtls, 4));
+
+    /* Too short */
+    TEST_ASSERT_FALSE(turn_is_channel_data(cd, 3));
+    TEST_ASSERT_FALSE(turn_is_channel_data(NULL, 0));
+}
+
+/* T21: Channel number allocation — unique sequential */
+static void test_turn_channel_number_allocation(void)
+{
+    nano_turn_t turn;
+    setup_turn_allocated(&turn);
+
+    uint8_t buf[512];
+    size_t out_len = 0;
+
+    uint8_t peer1[NANORTC_ADDR_SIZE] = {10, 0, 0, 1};
+    uint8_t peer2[NANORTC_ADDR_SIZE] = {10, 0, 0, 2};
+    uint8_t peer3[NANORTC_ADDR_SIZE] = {10, 0, 0, 3};
+
+    turn_channel_bind(&turn, peer1, 4, 5001, crypto(), buf, sizeof(buf), &out_len);
+    turn_channel_bind(&turn, peer2, 4, 5002, crypto(), buf, sizeof(buf), &out_len);
+    turn_channel_bind(&turn, peer3, 4, 5003, crypto(), buf, sizeof(buf), &out_len);
+
+    TEST_ASSERT_EQUAL_INT(3, turn.channel_count);
+    TEST_ASSERT_EQUAL_HEX16(0x4000, turn.channels[0].channel);
+    TEST_ASSERT_EQUAL_HEX16(0x4001, turn.channels[1].channel);
+    TEST_ASSERT_EQUAL_HEX16(0x4002, turn.channels[2].channel);
+
+    /* Same peer reuses existing channel */
+    out_len = 0;
+    turn_channel_bind(&turn, peer1, 4, 5001, crypto(), buf, sizeof(buf), &out_len);
+    TEST_ASSERT_EQUAL_INT(3, turn.channel_count); /* no new channel */
+}
+
+/* T22: Permission refresh generates output when due */
+static void test_turn_permission_refresh(void)
+{
+    nano_turn_t turn;
+    setup_turn_allocated(&turn);
+
+    /* Add a permission first */
+    uint8_t peer[NANORTC_ADDR_SIZE] = {172, 16, 0, 1};
+    uint8_t buf[512];
+    size_t out_len = 0;
+    turn_create_permission(&turn, peer, 4, 7000, crypto(), buf, sizeof(buf), &out_len);
+    TEST_ASSERT_EQUAL_INT(1, turn.permission_count);
+
+    /* Force refresh due */
+    turn.permission_at_ms = 0;
+    out_len = 0;
+    int rc = turn_generate_permission_refresh(&turn, 1000, crypto(), buf, sizeof(buf), &out_len);
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
+    TEST_ASSERT_TRUE(out_len > 0);
+    TEST_ASSERT_TRUE(turn.permission_at_ms > 1000);
+}
+
+/* T23: Permission refresh not due yet */
+static void test_turn_permission_refresh_not_due(void)
+{
+    nano_turn_t turn;
+    setup_turn_allocated(&turn);
+
+    uint8_t peer[NANORTC_ADDR_SIZE] = {172, 16, 0, 1};
+    uint8_t buf[512];
+    size_t out_len = 0;
+    turn_create_permission(&turn, peer, 4, 7000, crypto(), buf, sizeof(buf), &out_len);
+
+    turn.permission_at_ms = 999999; /* far future */
+    out_len = 0;
+    int rc = turn_generate_permission_refresh(&turn, 1000, crypto(), buf, sizeof(buf), &out_len);
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
+    TEST_ASSERT_EQUAL_size_t(0, out_len);
+}
+
+/* T24: Channel refresh generates ChannelBind when due */
+static void test_turn_channel_refresh(void)
+{
+    nano_turn_t turn;
+    setup_turn_allocated(&turn);
+
+    uint8_t peer[NANORTC_ADDR_SIZE] = {10, 0, 0, 10};
+    uint8_t buf[512];
+    size_t out_len = 0;
+    turn_channel_bind(&turn, peer, 4, 6000, crypto(), buf, sizeof(buf), &out_len);
+    turn.channels[0].bound = true;
+    turn.channels[0].refresh_at_ms = 0; /* force due */
+
+    out_len = 0;
+    int rc = turn_generate_channel_refresh(&turn, 1000, crypto(), buf, sizeof(buf), &out_len);
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
+    TEST_ASSERT_TRUE(out_len > 0);
+
+    /* Verify it's a ChannelBind request */
+    stun_msg_t msg;
+    rc = stun_parse(buf, out_len, &msg);
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
+    TEST_ASSERT_EQUAL_HEX16(STUN_CHANNEL_BIND_REQUEST, msg.type);
+
+    /* Refresh timer should be updated */
+    TEST_ASSERT_TRUE(turn.channels[0].refresh_at_ms > 1000);
 }
 
 /* ----------------------------------------------------------------
@@ -430,6 +733,18 @@ int main(void)
     RUN_TEST(test_turn_null_params);
     RUN_TEST(test_turn_refresh_not_allocated);
     RUN_TEST(test_turn_create_permission);
+    RUN_TEST(test_turn_permission_dedup);
+    RUN_TEST(test_turn_permission_distinct);
+    RUN_TEST(test_turn_channel_bind_request);
+    RUN_TEST(test_turn_channel_bind_success);
+    RUN_TEST(test_nano_turn_wrap_channel_data);
+    RUN_TEST(test_turn_unwrap_channel_data);
+    RUN_TEST(test_turn_channel_lookup);
+    RUN_TEST(test_turn_is_channel_data);
+    RUN_TEST(test_turn_channel_number_allocation);
+    RUN_TEST(test_turn_permission_refresh);
+    RUN_TEST(test_turn_permission_refresh_not_due);
+    RUN_TEST(test_turn_channel_refresh);
 
     return UNITY_END();
 }

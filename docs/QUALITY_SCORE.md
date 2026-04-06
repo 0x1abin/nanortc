@@ -28,6 +28,7 @@ Per-module quality grades for NanoRTC. Updated as implementation progresses.
 | SDP | `nano_sdp.c` | **A** | 30 tests (Chrome/Firefox/Safari offers, generator, roundtrip, video PT, direction parsing, IPv6, media directions) | Parser + generator. Chrome/Firefox/Safari compat. Fuzz-tested (`fuzz_sdp`): 51M+ executions clean. 79% line coverage. Browser + interop verified. |
 | CRC-32c | `nano_crc32c.c` | **A** | test vector verified | 100% line coverage. Fuzz-tested via `fuzz_sctp` (called by SCTP checksum verify). |
 | CRC-32 | `nano_crc32.c` | **A** | test vector verified | 100% line coverage. Fuzz-tested via `fuzz_stun` (called by STUN FINGERPRINT verify). |
+| TURN client | `nano_turn.c` | **A** | 24 unit tests + 3 interop tests with coturn (handshake/string/echo) | Full RFC 5766: Allocate + 401 challenge + Refresh + CreatePermission + ChannelBind + Send/Data indication + ChannelData framing. Fuzz-tested (`fuzz_turn`). Permission/channel auto-refresh. Interop verified with coturn. |
 | Address utils | `nano_addr.c` | **A** | 48 tests (IPv4/IPv6 parse, format, roundtrip, negative cases, auto-detect) | RFC 4291/5952 IPv6 parsing + formatting. Fuzz-tested (`fuzz_addr`): 70M+ executions clean. 93% line coverage. |
 
 ### Audio (AUDIO/MEDIA profiles)
@@ -53,7 +54,7 @@ Per-module quality grades for NanoRTC. Updated as implementation progresses.
 | Crypto provider interface | **A** | HMAC-SHA1 + CSPRNG + DTLS + AES-128-CM + `dtls_close_notify`. DTLS-SRTP `use_srtp` in both backends. mbedTLS 3-tier compat. Browser + interop verified. |
 | Build system (CMake) | **A** | 6 feature combos, 2 crypto backends, ESP-IDF, fuzz build, coverage build, `-Wall -Wextra -Werror` |
 | Test infrastructure | **A** | Unity test framework (vendored), 400+ tests across 16 suites, RFC vectors, e2e loopback, 80%+ line coverage |
-| Interop test framework | **A** | libdatachannel v0.22.5 reference, 5/5 interop tests pass (DC + audio + video) |
+| Interop test framework | **A** | libdatachannel v0.22.5 reference, 5/5 interop tests pass (DC + audio + video) + 3 TURN interop tests with coturn |
 | CI pipeline | **A** | GitHub Actions: 6-combo × 2-crypto matrix, constraints, ASan, fuzz (30s per harness), coverage (80% threshold) |
 | Examples | **B** | Linux browser interop, ESP32 DC/audio/camera. Browser audio+video verified. |
 | Documentation | **B** | AGENTS.md, ARCHITECTURE.md, exec plans, quality scores |

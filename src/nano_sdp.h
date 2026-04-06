@@ -83,6 +83,16 @@ typedef struct nano_sdp {
     uint16_t local_candidate_port;
     bool has_local_candidate;
 
+    /* Server-reflexive candidate (from STUN server) */
+    char srflx_candidate_ip[NANORTC_IPV6_STR_SIZE];
+    uint16_t srflx_candidate_port;
+    bool has_srflx_candidate;
+
+    /* Relay candidate (from TURN allocation) */
+    char relay_candidate_ip[NANORTC_IPV6_STR_SIZE];
+    uint16_t relay_candidate_port;
+    bool has_relay_candidate;
+
     bool parsed;            /* true after successful parse */
     bool end_of_candidates; /* remote signaled a=end-of-candidates (RFC 8838) */
 

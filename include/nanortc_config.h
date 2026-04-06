@@ -578,6 +578,11 @@ typedef enum {
 #define NANORTC_TURN_MAX_PERMISSIONS 4
 #endif
 
+/** @brief Maximum TURN channel bindings (RFC 5766 §11). */
+#ifndef NANORTC_TURN_MAX_CHANNELS
+#define NANORTC_TURN_MAX_CHANNELS 4
+#endif
+
 /* ----------------------------------------------------------------
  * Compile-time validation
  * ---------------------------------------------------------------- */

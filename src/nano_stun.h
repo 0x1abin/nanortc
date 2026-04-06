@@ -53,6 +53,9 @@
 #define STUN_CREATE_PERMISSION_REQUEST  0x0008
 #define STUN_CREATE_PERMISSION_RESPONSE 0x0108
 #define STUN_CREATE_PERMISSION_ERROR    0x0118
+#define STUN_CHANNEL_BIND_REQUEST       0x0009
+#define STUN_CHANNEL_BIND_RESPONSE      0x0109
+#define STUN_CHANNEL_BIND_ERROR         0x0119
 
 #define STUN_HEADER_SIZE  20
 #define STUN_MAGIC_COOKIE 0x2112A442
@@ -118,6 +121,7 @@ typedef struct stun_msg {
     uint8_t peer_addr[NANORTC_ADDR_SIZE];    /**< XOR-PEER-ADDRESS decoded. */
     uint16_t peer_port;                      /**< Decoded peer port, 0 = not present. */
     uint8_t peer_family;                     /**< STUN_FAMILY_IPV4/IPV6, 0 = not present. */
+    uint16_t channel_number;                 /**< CHANNEL-NUMBER attribute, 0 = not present. */
 } stun_msg_t;
 
 /* Parse STUN message from wire format. Does NOT validate MI or FP. */
@@ -144,5 +148,13 @@ int stun_encode_binding_request(const char *username, size_t username_len, uint3
                                 const uint8_t transaction_id[STUN_TXID_SIZE], const uint8_t *key,
                                 size_t key_len, stun_hmac_sha1_fn hmac_sha1, uint8_t *buf,
                                 size_t buf_len, size_t *out_len);
+
+/**
+ * Encode a simple STUN Binding Request for srflx discovery (RFC 5389 §7.1).
+ * No attributes — just the 20-byte header. Used to query a STUN server for
+ * the XOR-MAPPED-ADDRESS (public IP/port).
+ */
+int stun_encode_simple_binding_request(const uint8_t txid[STUN_TXID_SIZE], uint8_t *buf,
+                                       size_t buf_len, size_t *out_len);
 
 #endif /* NANORTC_STUN_H_ */

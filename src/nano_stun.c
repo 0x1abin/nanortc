@@ -270,6 +270,14 @@ int stun_parse(const uint8_t *data, size_t len, stun_msg_t *msg)
             msg->ice_controlled = read_u64(val);
             break;
 
+        case STUN_ATTR_CHANNEL_NUMBER:
+            if (attr_len != 4) {
+                return NANORTC_ERR_PARSE;
+            }
+            msg->channel_number = read_u16(val);
+            /* val[2..3] are RFFU (reserved) */
+            break;
+
         default:
             /* Skip unknown/unhandled attributes (RFC 8489 §15.1) */
             break;
@@ -559,5 +567,26 @@ int stun_encode_binding_request(const char *username, size_t username_len, uint3
     }
 
     *out_len = (size_t)total;
+    return NANORTC_OK;
+}
+
+/* ----------------------------------------------------------------
+ * stun_encode_simple_binding_request — RFC 5389 §7.1
+ *
+ * Bare Binding Request for srflx discovery: 20-byte header, no attributes.
+ * ---------------------------------------------------------------- */
+
+int stun_encode_simple_binding_request(const uint8_t txid[STUN_TXID_SIZE], uint8_t *buf,
+                                       size_t buf_len, size_t *out_len)
+{
+    if (!txid || !buf || !out_len) {
+        return NANORTC_ERR_INVALID_PARAM;
+    }
+    if (buf_len < STUN_HEADER_SIZE) {
+        return NANORTC_ERR_BUFFER_TOO_SMALL;
+    }
+
+    write_stun_header(buf, STUN_BINDING_REQUEST, 0, txid);
+    *out_len = STUN_HEADER_SIZE;
     return NANORTC_OK;
 }

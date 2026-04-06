@@ -11,7 +11,7 @@ NanoRTC is built by AI coding agents. Estimates use **agent sessions** (one focu
 | Plan | Phase | Status | Effort | Target |
 |------|-------|--------|--------|--------|
 | [Phase 2: Audio](exec-plans/active/phase2-audio.md) | 2 | **Active** — Pending human verification of bidirectional audio + ESP32 intercom | 1 session | Bidirectional audio with browser |
-| [Phase 5: Network Traversal](exec-plans/active/phase5-network-traversal.md) | 5 | **Active** — Sessions 1-3 complete. E2E interop pending | 3 sessions | NAT traversal for production |
+| [Phase 5: Network Traversal](exec-plans/active/phase5-network-traversal.md) | 5 | **Active** — Sessions 1-4 complete. All acceptance criteria met. | 3 sessions | NAT traversal for production |
 
 **Total Phase 1-5:** ~15-18 agent sessions
 

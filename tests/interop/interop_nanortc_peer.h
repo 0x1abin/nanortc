@@ -21,6 +21,15 @@
 extern "C" {
 #endif
 
+/* Optional ICE server configuration for STUN/TURN-aware startup.
+ * Pass NULL to interop_nanortc_start() for localhost-only mode. */
+typedef struct {
+    const nanortc_ice_server_t *ice_servers;
+    size_t ice_server_count;
+    void *resolve_scratch; /* Buffer for DNS resolution (caller-owned) */
+    size_t resolve_scratch_size;
+} interop_nanortc_ice_config_t;
+
 typedef struct {
     /* NanoRTC state */
     nanortc_t rtc;
@@ -46,16 +55,20 @@ typedef struct {
     pthread_t thread;
     atomic_int running;
     uint16_t port;
+    int has_ice; /* True if ICE servers are configured (enables TURN warmup) */
 } interop_nanortc_peer_t;
 
 /*
  * Start the nanortc peer in a background thread.
  *   - sig_fd: our end of the signaling pipe (fd[0])
- *   - port: UDP port to bind (0 for auto)
+ *   - port: UDP port to bind
+ *   - ice_cfg: optional ICE server config (NULL = localhost-only, 127.0.0.1)
+ *              When set, binds on 0.0.0.0, auto-detects real IP, and runs
+ *              a TURN warmup phase before signaling.
  * Returns 0 on success.
  */
-int interop_nanortc_start(interop_nanortc_peer_t *peer, int sig_fd,
-                          uint16_t port);
+int interop_nanortc_start(interop_nanortc_peer_t *peer, int sig_fd, uint16_t port,
+                          const interop_nanortc_ice_config_t *ice_cfg);
 
 /*
  * Stop the peer thread and clean up.

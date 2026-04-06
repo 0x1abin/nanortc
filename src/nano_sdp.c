@@ -448,6 +448,70 @@ static bool sdp_append_candidate(nano_sdp_t *sdp, char *buf, size_t buf_len, siz
     return true;
 }
 
+/** Append server-reflexive ICE candidate (RFC 8839 §5.1).
+ *  Priority 1090519295 = type preference 64 for srflx (RFC 8445 §5.1.2.1). */
+static bool sdp_append_srflx_candidate(nano_sdp_t *sdp, char *buf, size_t buf_len, size_t *pos)
+{
+    if (!sdp->has_srflx_candidate || sdp->srflx_candidate_ip[0] == '\0')
+        return true;
+    if (!sdp_append(buf, buf_len, pos, "a=candidate:3 1 UDP 1090519295 "))
+        return false;
+    if (!sdp_append(buf, buf_len, pos, sdp->srflx_candidate_ip))
+        return false;
+    if (!sdp_append(buf, buf_len, pos, " "))
+        return false;
+    if (!sdp_append_u16(buf, buf_len, pos, sdp->srflx_candidate_port))
+        return false;
+    if (!sdp_append(buf, buf_len, pos, " typ srflx"))
+        return false;
+    /* raddr/rport from host candidate */
+    if (sdp->has_local_candidate && sdp->local_candidate_ip[0] != '\0') {
+        if (!sdp_append(buf, buf_len, pos, " raddr "))
+            return false;
+        if (!sdp_append(buf, buf_len, pos, sdp->local_candidate_ip))
+            return false;
+        if (!sdp_append(buf, buf_len, pos, " rport "))
+            return false;
+        if (!sdp_append_u16(buf, buf_len, pos, sdp->local_candidate_port))
+            return false;
+    }
+    if (!sdp_append(buf, buf_len, pos, "\r\n"))
+        return false;
+    return true;
+}
+
+/** Append relay ICE candidate from TURN allocation (RFC 8839 §5.1).
+ *  Priority 16777215 = type preference 0 for relay (RFC 8445 §5.1.2.1). */
+static bool sdp_append_relay_candidate(nano_sdp_t *sdp, char *buf, size_t buf_len, size_t *pos)
+{
+    if (!sdp->has_relay_candidate || sdp->relay_candidate_ip[0] == '\0')
+        return true;
+    if (!sdp_append(buf, buf_len, pos, "a=candidate:2 1 UDP 16777215 "))
+        return false;
+    if (!sdp_append(buf, buf_len, pos, sdp->relay_candidate_ip))
+        return false;
+    if (!sdp_append(buf, buf_len, pos, " "))
+        return false;
+    if (!sdp_append_u16(buf, buf_len, pos, sdp->relay_candidate_port))
+        return false;
+    if (!sdp_append(buf, buf_len, pos, " typ relay"))
+        return false;
+    /* raddr/rport from host candidate (if available) */
+    if (sdp->has_local_candidate && sdp->local_candidate_ip[0] != '\0') {
+        if (!sdp_append(buf, buf_len, pos, " raddr "))
+            return false;
+        if (!sdp_append(buf, buf_len, pos, sdp->local_candidate_ip))
+            return false;
+        if (!sdp_append(buf, buf_len, pos, " rport "))
+            return false;
+        if (!sdp_append_u16(buf, buf_len, pos, sdp->local_candidate_port))
+            return false;
+    }
+    if (!sdp_append(buf, buf_len, pos, "\r\n"))
+        return false;
+    return true;
+}
+
 /** Return the SDP connection line based on local candidate address family.
  *  IPv6 local candidate (contains ':') → "c=IN IP6 ::\r\n", else IPv4. */
 static const char *sdp_connection_line(const nano_sdp_t *sdp)
@@ -754,6 +818,10 @@ int sdp_generate_answer(nano_sdp_t *sdp, char *buf, size_t buf_len, size_t *out_
             if (i == 0) {
                 if (!sdp_append_candidate(sdp, buf, buf_len, &pos))
                     goto overflow;
+                if (!sdp_append_srflx_candidate(sdp, buf, buf_len, &pos))
+                    goto overflow;
+                if (!sdp_append_relay_candidate(sdp, buf, buf_len, &pos))
+                    goto overflow;
             }
         }
     }
@@ -763,6 +831,10 @@ int sdp_generate_answer(nano_sdp_t *sdp, char *buf, size_t buf_len, size_t *out_
     if (!sdp_append_datachannel_mline(sdp, buf, buf_len, &pos, "0"))
         goto overflow;
     if (!sdp_append_candidate(sdp, buf, buf_len, &pos))
+        goto overflow;
+    if (!sdp_append_srflx_candidate(sdp, buf, buf_len, &pos))
+        goto overflow;
+    if (!sdp_append_relay_candidate(sdp, buf, buf_len, &pos))
         goto overflow;
 #endif
 

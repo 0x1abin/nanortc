@@ -18,6 +18,7 @@
 #include "http_signaling.h"
 #include "media_source.h"
 #include "h264_utils.h"
+#include "ice_server_resolve.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -314,6 +315,16 @@ int main(int argc, char *argv[])
         }
     }
 
+    /* Default TURN: PeerJS public server (if no CLI override) */
+    if (!turn_ip[0]) {
+        memcpy(turn_ip, "eu-0.turn.peerjs.com", 21);
+        turn_port = 3478;
+    }
+    if (!turn_user)
+        turn_user = "peerjs";
+    if (!turn_pass)
+        turn_pass = "peerjsp";
+
     app_ctx_t app_ctx = {.offer_mode = offer_mode, .audio_mid = -1, .video_mid = -1};
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
@@ -338,21 +349,40 @@ int main(int argc, char *argv[])
 #endif
     cfg.role = offer_mode ? NANORTC_ROLE_CONTROLLING : NANORTC_ROLE_CONTROLLED;
 
+    /* ICE servers (WebRTC-style, from CLI args) */
+    static char turn_url[128];
+    static const char *stun_url = "stun:stun.cloudflare.com:3478";
+    static const char *turn_url_ptr;
+    nanortc_ice_server_t ice_servers[2];
+    static char ice_scratch[512];
+    size_t ice_server_count = 0;
+
+    ice_servers[0] = (nanortc_ice_server_t){.urls = &stun_url, .url_count = 1};
+    ice_server_count = 1;
+
+    if (turn_ip[0] && turn_user && turn_pass) {
+        snprintf(turn_url, sizeof(turn_url), "turn:%s:%u", turn_ip, turn_port);
+        turn_url_ptr = turn_url;
+        ice_servers[1] = (nanortc_ice_server_t){
+            .urls = &turn_url_ptr, .url_count = 1, .username = turn_user, .credential = turn_pass};
+        ice_server_count = 2;
+    }
+
+    /* Resolve domain names to IPs */
+    nano_resolve_ice_servers(ice_servers, ice_server_count, ice_scratch, sizeof(ice_scratch));
+    cfg.ice_servers = ice_servers;
+    cfg.ice_server_count = ice_server_count;
+
+    if (turn_ip[0] && turn_user) {
+        fprintf(stderr, "ICE servers: STUN + TURN %s user=%s\n",
+                ice_server_count > 1 ? ice_servers[1].urls[0] : "(none)", turn_user);
+    }
+
     rc = nanortc_init(&rtc, &cfg);
     if (rc != NANORTC_OK) {
         fprintf(stderr, "nanortc_init failed: %d\n", rc);
         http_sig_leave(&sig);
         return 1;
-    }
-
-    /* TURN server configuration */
-    if (turn_ip[0] && turn_user && turn_pass) {
-        rc = nanortc_set_turn_server(&rtc, turn_ip, turn_port, turn_user, turn_pass);
-        if (rc == NANORTC_OK) {
-            fprintf(stderr, "TURN server: %s:%u user=%s\n", turn_ip, turn_port, turn_user);
-        } else {
-            fprintf(stderr, "Failed to set TURN server: %d\n", rc);
-        }
     }
 
 #if NANORTC_FEATURE_AUDIO

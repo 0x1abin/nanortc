@@ -2,8 +2,8 @@
  * nanortc — TURN client internal interface (RFC 5766 / RFC 8656)
  * @internal Not part of the public API.
  *
- * Minimal TURN client: Allocate, Refresh, CreatePermission, Send/Data indication.
- * ChannelBind is deferred (Send/Data indication sufficient for MVP).
+ * Full TURN client: Allocate, Refresh, CreatePermission, ChannelBind,
+ * Send/Data indication, ChannelData framing.
  *
  * SPDX-License-Identifier: MIT
  */
@@ -78,6 +78,19 @@ typedef struct nano_turn {
         bool active;
     } permissions[NANORTC_TURN_MAX_PERMISSIONS];
     uint8_t permission_count;
+
+    /* Channel bindings (RFC 5766 §11) */
+    struct {
+        uint8_t addr[NANORTC_ADDR_SIZE];
+        uint16_t port;
+        uint8_t family;
+        uint16_t channel;             /**< 0x4000-0x4FFF (RFC 5766 §11). */
+        bool bound;                   /**< True after ChannelBind success response. */
+        uint32_t refresh_at_ms;       /**< When to re-send ChannelBind (9 min). */
+        uint8_t txid[STUN_TXID_SIZE]; /**< Last ChannelBind transaction ID. */
+    } channels[NANORTC_TURN_MAX_CHANNELS];
+    uint8_t channel_count;
+    uint16_t next_channel; /**< Next channel number to allocate (starts 0x4000). */
 
     /* Transaction tracking */
     uint8_t last_txid[STUN_TXID_SIZE];
@@ -156,5 +169,56 @@ int turn_unwrap_data(const uint8_t *data, size_t len, uint8_t *peer_addr, uint8_
 /** Check if a STUN message is from the configured TURN server. */
 bool turn_is_from_server(const nano_turn_t *turn, const uint8_t *src_addr, uint8_t src_family,
                          uint16_t src_port);
+
+/**
+ * Generate a ChannelBind request (RFC 5766 §11).
+ * Allocates a channel number (0x4000-0x4FFF) and binds it to the peer address.
+ */
+int turn_channel_bind(nano_turn_t *turn, const uint8_t *peer_addr, uint8_t peer_family,
+                      uint16_t peer_port, const nanortc_crypto_provider_t *crypto, uint8_t *buf,
+                      size_t buf_len, size_t *out_len);
+
+/**
+ * Wrap outgoing data in ChannelData framing (RFC 5766 §11.4).
+ * 4-byte header: [channel_number (2B)] [length (2B)] + payload + padding.
+ */
+int nano_turn_wrap_channel_data(uint16_t channel, const uint8_t *payload, size_t payload_len,
+                                uint8_t *buf, size_t buf_len, size_t *out_len);
+
+/**
+ * Unwrap incoming ChannelData.
+ * @param channel Output: channel number.
+ * @param payload Output: pointer into data buffer.
+ * @param payload_len Output: payload length.
+ */
+int turn_unwrap_channel_data(const uint8_t *data, size_t len, uint16_t *channel,
+                             const uint8_t **payload, size_t *payload_len);
+
+/** Look up a bound channel number for a peer address (outgoing path). */
+bool turn_find_channel_for_peer(const nano_turn_t *turn, const uint8_t *peer_addr,
+                                uint8_t peer_family, uint16_t *channel);
+
+/** Reverse lookup: channel number → peer address (incoming path). */
+bool turn_find_peer_for_channel(const nano_turn_t *turn, uint16_t channel, uint8_t *peer_addr,
+                                uint8_t *peer_family, uint16_t *peer_port);
+
+/** RFC 7983 §3: detect ChannelData by first byte (0x40-0x4F). */
+bool turn_is_channel_data(const uint8_t *data, size_t len);
+
+/**
+ * Generate a permission refresh for active permissions (RFC 5766 §8).
+ * Returns NANORTC_OK with *out_len=0 if not time yet.
+ */
+int turn_generate_permission_refresh(nano_turn_t *turn, uint32_t now_ms,
+                                     const nanortc_crypto_provider_t *crypto, uint8_t *buf,
+                                     size_t buf_len, size_t *out_len);
+
+/**
+ * Generate a ChannelBind refresh for bound channels (RFC 5766 §11).
+ * Returns NANORTC_OK with *out_len=0 if not time yet.
+ */
+int turn_generate_channel_refresh(nano_turn_t *turn, uint32_t now_ms,
+                                  const nanortc_crypto_provider_t *crypto, uint8_t *buf,
+                                  size_t buf_len, size_t *out_len);
 
 #endif /* NANORTC_TURN_H_ */

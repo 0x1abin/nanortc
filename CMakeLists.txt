@@ -9,6 +9,7 @@ if(DEFINED ENV{IDF_PATH})
         src/nano_ice.c
         src/nano_stun.c
         src/nano_addr.c
+        src/nano_turn.c
         src/nano_dtls.c
         src/nano_crc32.c
         crypto/nanortc_crypto_mbedtls.c

@@ -11,7 +11,7 @@
 set(FUZZ_FLAGS -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer)
 
 # Core parsers (always available)
-set(FUZZ_CORE_TARGETS fuzz_stun fuzz_sdp fuzz_addr)
+set(FUZZ_CORE_TARGETS fuzz_stun fuzz_sdp fuzz_addr fuzz_turn)
 
 # DataChannel parsers
 set(FUZZ_DC_TARGETS fuzz_sctp)

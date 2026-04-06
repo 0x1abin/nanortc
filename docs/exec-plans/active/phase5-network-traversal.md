@@ -1,21 +1,28 @@
 # Phase 5: Network Traversal
 
-**Status:** Active — Sessions 1-3 complete. Remaining: E2E interop test with coturn
-**Estimated effort:** 3 agent sessions
+**Status:** Active — Sessions 1-4 complete. All acceptance criteria met.
+**Estimated effort:** 4 agent sessions
 **Goal:** Trickle ICE, ICE restart, TURN relay for production NAT traversal
 
 ## Acceptance Criteria
 
-- [ ] Trickle ICE: candidates can be added after SDP exchange
-- [ ] End-of-candidates signaling (RFC 8838)
-- [ ] ICE restart: new credentials, state reset (RFC 8445 §9)
-- [ ] Consent freshness (RFC 7675): periodic liveness checks
-- [ ] TURN Allocate + Refresh (RFC 5766)
-- [ ] TURN CreatePermission
-- [ ] TURN Send/Data indication relay
-- [ ] Relay candidate in SDP (typ relay)
-- [ ] Integration: TURN-relayed WebRTC session
-- [ ] Unit tests + fuzz harness for TURN
+- [x] Trickle ICE: candidates can be added after SDP exchange
+- [x] End-of-candidates signaling (RFC 8838)
+- [x] ICE restart: new credentials, state reset (RFC 8445 §9)
+- [x] Consent freshness (RFC 7675): periodic liveness checks
+- [x] TURN Allocate + Refresh (RFC 5766)
+- [x] TURN CreatePermission
+- [x] TURN Send/Data indication relay
+- [x] TURN ChannelBind + ChannelData framing (RFC 5766 §11)
+- [x] Relay candidate in SDP (typ relay)
+- [x] STUN srflx candidate discovery (RFC 8445 §5.1.1.1)
+- [x] Srflx candidate in SDP (typ srflx)
+- [x] Outgoing relay path wrapping (ChannelData/Send indication)
+- [x] Incoming ChannelData demux (RFC 7983)
+- [x] Permission + ChannelBind auto-refresh timers
+- [x] Integration: TURN-relayed WebRTC session
+- [x] Unit tests (24 TURN tests) + fuzz harness (fuzz_turn.c)
+- [x] E2E interop test with coturn
 
 ## Session 1: Trickle ICE + ICE Restart
 
@@ -51,10 +58,23 @@
 | Interop test with coturn | `test_interop_turn.c` |
 | Architecture docs update | `ARCHITECTURE.md` |
 
+## Session 4: TURN E2E Interop Test with coturn
+
+| Task | File |
+|------|------|
+| TURN interop test (3 cases: handshake, string, echo) | `test_interop_turn.c` |
+| Unified nanortc peer start with optional ICE config | `interop_nanortc_peer.h/c` |
+| TURN warmup phase (Allocate before signaling) | `interop_nanortc_peer.c` |
+| Fix `turn_wrap_channel_data` symbol conflict with libjuice | `nano_turn.h/c`, `nano_rtc.c` |
+| Environment variable fallback for TURN config | `browser_interop/main.c` |
+| Register TURN test in CMake with `network` label | `tests/interop/CMakeLists.txt` |
+
 ## Decision Log
 
 | # | Decision | Rationale |
 |---|----------|-----------|
 | 1 | No new feature flag for TURN | ~300B overhead acceptable; avoids build matrix expansion |
 | 2 | Pre-computed TURN key (no MD5 in crypto interface) | Keeps crypto interface clean; user derives key externally |
-| 3 | Send/Data indication only (no ChannelBind) | Simpler MVP; ChannelBind deferred as optimization |
+| 3 | ~~Send/Data indication only~~ → ChannelBind fully implemented | Originally deferred; now complete with auto-refresh |
+| 4 | SRFLX via lightweight state in nanortc_t (no separate module) | Only one request/response; ~100 lines, not worth a separate .c |
+| 5 | Outgoing relay wrapping in `rtc_enqueue_transmit()` | Single-point abstraction for all outgoing paths; relay check is one conditional |

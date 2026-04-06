@@ -29,8 +29,8 @@ typedef struct {
     int sig_fd;
 
     /* Observable state */
-    atomic_int connected;  /* PeerConnection connected */
-    atomic_int dc_open;    /* DataChannel open */
+    atomic_int connected; /* PeerConnection connected */
+    atomic_int dc_open;   /* DataChannel open */
 
     /* Last received message */
     pthread_mutex_t msg_mutex;
@@ -57,8 +57,8 @@ typedef struct {
  *
  * Returns 0 on success.
  */
-int interop_libdatachannel_start(interop_libdatachannel_peer_t *peer, int sig_fd,
-                        const char *label, uint16_t remote_port);
+int interop_libdatachannel_start(interop_libdatachannel_peer_t *peer, int sig_fd, const char *label,
+                                 uint16_t remote_port);
 
 /*
  * Send a text message on the DataChannel.
@@ -69,7 +69,7 @@ int interop_libdatachannel_send_string(interop_libdatachannel_peer_t *peer, cons
  * Send a binary message on the DataChannel.
  */
 int interop_libdatachannel_send_binary(interop_libdatachannel_peer_t *peer, const void *data,
-                              size_t len);
+                                       size_t len);
 
 /*
  * Wait until a flag becomes nonzero, or timeout.

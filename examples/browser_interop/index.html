@@ -222,16 +222,13 @@ async function start() {
     return;
   }
 
-  // ICE servers: STUN + optional TURN from URL params (?turn=ip:port&tu=user&tp=pass)
-  const params = new URLSearchParams(window.location.search);
-  const iceServers = [{urls: 'stun:stun.cloudflare.com:3478'}];
-  const turnServer = params.get('turn');
-  const turnUser = params.get('tu');
-  const turnPass = params.get('tp');
-  if (turnServer && turnUser && turnPass) {
-    iceServers.push({urls: 'turn:' + turnServer, username: turnUser, credential: turnPass});
-    log('info', 'TURN: ' + turnServer + ' user=' + turnUser);
-  }
+  // ICE servers: STUN + PeerJS public TURN
+  const iceServers = [
+    {urls: 'stun:stun.l.google.com:19302'},
+    {urls: 'stun:stun.cloudflare.com:3478'},
+    {urls: ['turn:eu-0.turn.peerjs.com:3478', 'turn:us-0.turn.peerjs.com:3478'],
+     username: 'peerjs', credential: 'peerjsp'}
+  ];
   pc = new RTCPeerConnection({iceServers});
 
   pc.oniceconnectionstatechange = () => {
