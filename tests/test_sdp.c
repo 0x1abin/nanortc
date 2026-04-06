@@ -790,9 +790,9 @@ TEST(test_sdp_generate_ipv6_connection_line)
     sdp.mid_count = 1;
 
     /* Set an IPv6 local candidate */
-    sdp.has_local_candidate = true;
-    memcpy(sdp.local_candidate_ip, "2001:db8::1", 12);
-    sdp.local_candidate_port = 5000;
+    memcpy(sdp.local_candidates[0].addr, "2001:db8::1", 12);
+    sdp.local_candidates[0].port = 5000;
+    sdp.local_candidate_count = 1;
 
     char buf[2048];
     size_t out_len = 0;
@@ -822,9 +822,9 @@ TEST(test_sdp_generate_ipv4_connection_line)
     sdp.mid_count = 1;
 
     /* Set an IPv4 local candidate */
-    sdp.has_local_candidate = true;
-    memcpy(sdp.local_candidate_ip, "192.168.1.1", 12);
-    sdp.local_candidate_port = 5000;
+    memcpy(sdp.local_candidates[0].addr, "192.168.1.1", 12);
+    sdp.local_candidates[0].port = 5000;
+    sdp.local_candidate_count = 1;
 
     char buf[2048];
     size_t out_len = 0;

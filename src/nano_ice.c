@@ -15,8 +15,7 @@
 
 /* ICE check interval is now NANORTC_ICE_CHECK_INTERVAL_MS in nanortc_config.h */
 
-/* ICE candidate priority for host candidate, component 1 (RFC 8445 §5.1.2.1) */
-#define ICE_HOST_PRIORITY ((uint32_t)((126 << 24) | (65535 << 8) | 255))
+/* ICE_HOST_PRIORITY(idx) is now in nano_ice.h */
 
 /* ----------------------------------------------------------------
  * ice_init
@@ -214,13 +213,19 @@ int ice_handle_stun(nano_ice_t *ice, const uint8_t *data, size_t len, const nano
             }
         }
 
-        /* ICE connectivity established — record the remote address */
-        if (ice->current_candidate < ice->remote_candidate_count) {
-            memcpy(ice->selected_addr, ice->remote_candidates[ice->current_candidate].addr,
+        /* ICE connectivity established — record the selected pair */
+        if (ice->last_remote_idx < ice->remote_candidate_count) {
+            memcpy(ice->selected_addr, ice->remote_candidates[ice->last_remote_idx].addr,
                    NANORTC_ADDR_SIZE);
-            ice->selected_port = ice->remote_candidates[ice->current_candidate].port;
-            ice->selected_family = ice->remote_candidates[ice->current_candidate].family;
-            ice->selected_type = ice->remote_candidates[ice->current_candidate].type;
+            ice->selected_port = ice->remote_candidates[ice->last_remote_idx].port;
+            ice->selected_family = ice->remote_candidates[ice->last_remote_idx].family;
+            ice->selected_type = ice->remote_candidates[ice->last_remote_idx].type;
+        }
+        if (ice->last_local_idx < ice->local_candidate_count) {
+            memcpy(ice->selected_local_addr, ice->local_candidates[ice->last_local_idx].addr,
+                   NANORTC_ADDR_SIZE);
+            ice->selected_local_port = ice->local_candidates[ice->last_local_idx].port;
+            ice->selected_local_family = ice->local_candidates[ice->last_local_idx].family;
         }
         ice->nominated = true;
         ice->state = NANORTC_ICE_STATE_CONNECTED;
@@ -262,9 +267,9 @@ int ice_generate_check(nano_ice_t *ice, uint32_t now_ms, const nanortc_crypto_pr
         return NANORTC_OK;
     }
 
-    /* No remote candidates yet — wait for trickle */
-    if (ice->remote_candidate_count == 0) {
-        if (ice->end_of_candidates) {
+    /* No candidates yet — wait for trickle / application */
+    if (ice->remote_candidate_count == 0 || ice->local_candidate_count == 0) {
+        if (ice->end_of_candidates && ice->remote_candidate_count == 0) {
             ice->state = NANORTC_ICE_STATE_FAILED;
         }
         return NANORTC_OK;
@@ -295,8 +300,8 @@ int ice_generate_check(nano_ice_t *ice, uint32_t now_ms, const nanortc_crypto_pr
 
     /* Encode Binding Request — sign with remote_pwd (RFC 8445 §7.1.1) */
     int rc = stun_encode_binding_request(
-        username, ulen, ICE_HOST_PRIORITY, true, /* use_candidate (controlling) */
-        true,                                    /* is_controlling */
+        username, ulen, ICE_HOST_PRIORITY(ice->current_local), true, /* use_candidate */
+        true,                                                        /* is_controlling */
         ice->tie_breaker, ice->last_txid, (const uint8_t *)ice->remote_pwd, ice->remote_pwd_len,
         crypto->hmac_sha1, buf, buf_len, out_len);
     if (rc != NANORTC_OK) {
@@ -310,9 +315,18 @@ int ice_generate_check(nano_ice_t *ice, uint32_t now_ms, const nanortc_crypto_pr
         ice->state = NANORTC_ICE_STATE_CHECKING;
     }
 
-    /* Round-robin through remote candidates */
-    if (ice->remote_candidate_count > 1) {
-        ice->current_candidate = (ice->current_candidate + 1) % ice->remote_candidate_count;
+    /* Record which pair this check belongs to (for response matching) */
+    ice->last_local_idx = ice->current_local;
+    ice->last_remote_idx = ice->current_remote;
+
+    /* Advance pair: remote inner loop, local outer loop */
+    ice->current_remote++;
+    if (ice->current_remote >= ice->remote_candidate_count) {
+        ice->current_remote = 0;
+        ice->current_local++;
+        if (ice->current_local >= ice->local_candidate_count) {
+            ice->current_local = 0;
+        }
     }
 
     return NANORTC_OK;
@@ -328,10 +342,14 @@ int ice_restart(nano_ice_t *ice)
         return NANORTC_ERR_INVALID_PARAM;
     }
 
-    /* Reset state but preserve role and tie_breaker */
+    /* Reset state but preserve role, tie_breaker, and local candidates */
     int is_controlling = ice->is_controlling;
     uint64_t tie_breaker = ice->tie_breaker;
     uint8_t generation = ice->generation;
+    /* Save local candidates — they survive restart */
+    nano_ice_candidate_t saved_local[NANORTC_MAX_LOCAL_CANDIDATES];
+    uint8_t saved_local_count = ice->local_candidate_count;
+    memcpy(saved_local, ice->local_candidates, sizeof(saved_local));
 
     memset(ice, 0, sizeof(*ice));
     ice->state = NANORTC_ICE_STATE_NEW;
@@ -339,6 +357,9 @@ int ice_restart(nano_ice_t *ice)
     ice->tie_breaker = tie_breaker;
     ice->generation = generation + 1;
     ice->check_interval_ms = NANORTC_ICE_CHECK_INTERVAL_MS;
+    /* Restore local candidates */
+    memcpy(ice->local_candidates, saved_local, sizeof(saved_local));
+    ice->local_candidate_count = saved_local_count;
 
     return NANORTC_OK;
 }
@@ -388,7 +409,7 @@ int ice_generate_consent(nano_ice_t *ice, uint32_t now_ms, const nanortc_crypto_
 
     /* Consent check = Binding Request without USE-CANDIDATE (RFC 7675 §5.1) */
     int rc = stun_encode_binding_request(
-        username, ulen, ICE_HOST_PRIORITY, false, /* no use_candidate for consent */
+        username, ulen, ICE_HOST_PRIORITY(ice->last_local_idx), false, /* no use_candidate */
         ice->is_controlling, ice->tie_breaker, ice->consent_txid, (const uint8_t *)ice->remote_pwd,
         ice->remote_pwd_len, crypto->hmac_sha1, buf, buf_len, out_len);
     if (rc != NANORTC_OK) {

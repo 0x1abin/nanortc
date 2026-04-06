@@ -306,6 +306,15 @@ TEST(test_e2e_ice_loopback)
     memcpy(offerer.ice.remote_pwd, "answerer-password-5678", 23);
     offerer.ice.remote_pwd_len = 22;
     offerer.ice.tie_breaker = 0x1234567890ABCDEFull;
+    /* Local candidate for offerer */
+    offerer.ice.local_candidates[0].family = 4;
+    offerer.ice.local_candidates[0].addr[0] = 192;
+    offerer.ice.local_candidates[0].addr[1] = 168;
+    offerer.ice.local_candidates[0].addr[2] = 1;
+    offerer.ice.local_candidates[0].addr[3] = 1;
+    offerer.ice.local_candidates[0].port = 4000;
+    offerer.ice.local_candidates[0].type = NANORTC_ICE_CAND_HOST;
+    offerer.ice.local_candidate_count = 1;
 
     memcpy(answerer.ice.local_ufrag, "ANS", 4);
     answerer.ice.local_ufrag_len = 3;
@@ -436,6 +445,15 @@ static void e2e_setup_ice_creds(nanortc_t *offerer, nanortc_t *answerer)
     memcpy(offerer->ice.remote_pwd, "answerer-password-5678", 23);
     offerer->ice.remote_pwd_len = 22;
     offerer->ice.tie_breaker = 0x1234567890ABCDEFull;
+    /* Local candidate for offerer */
+    offerer->ice.local_candidates[0].family = 4;
+    offerer->ice.local_candidates[0].addr[0] = 192;
+    offerer->ice.local_candidates[0].addr[1] = 168;
+    offerer->ice.local_candidates[0].addr[2] = 1;
+    offerer->ice.local_candidates[0].addr[3] = 1;
+    offerer->ice.local_candidates[0].port = 4000;
+    offerer->ice.local_candidates[0].type = NANORTC_ICE_CAND_HOST;
+    offerer->ice.local_candidate_count = 1;
 
     memcpy(answerer->ice.local_ufrag, "ANS", 4);
     answerer->ice.local_ufrag_len = 3;
@@ -639,7 +657,8 @@ TEST(test_e2e_full_sdp_to_dtls)
     ans_cfg.role = NANORTC_ROLE_CONTROLLED;
     ASSERT_OK(nanortc_init(&answerer, &ans_cfg));
 
-    /* Add local candidate on answerer so it appears in answer SDP */
+    /* Add local candidates so they appear in SDP and ICE has local addrs */
+    ASSERT_OK(nanortc_add_local_candidate(&offerer, "192.168.1.1", 4000));
     ASSERT_OK(nanortc_add_local_candidate(&answerer, "192.168.1.2", 5000));
 
 #if NANORTC_FEATURE_DATACHANNEL
@@ -881,6 +900,15 @@ TEST(test_e2e_ice_multi_candidate)
     rtc.ice.remote_pwd_len = 22;
     rtc.ice.tie_breaker = 0xAABBCCDDEEFF0011ull;
 
+    /* Add local candidate */
+    ASSERT_OK(nanortc_add_local_candidate(&rtc, "10.0.0.100", 4000));
+    /* Drain the host candidate event */
+    {
+        nanortc_output_t drain;
+        while (nanortc_poll_output(&rtc, &drain) == NANORTC_OK) {
+        }
+    }
+
     /* Add 3 remote candidates */
     ASSERT_OK(nanortc_add_remote_candidate(&rtc, "10.0.0.1 5001"));
     ASSERT_OK(nanortc_add_remote_candidate(&rtc, "10.0.0.2 5002"));
@@ -1100,6 +1128,14 @@ TEST(test_e2e_ice_connection_timeout)
     memcpy(rtc.ice.remote_pwd, "noresp-password-12345", 21);
     rtc.ice.remote_pwd_len = 21;
     rtc.ice.tie_breaker = 0x1111111111111111ull;
+    /* Local candidate */
+    rtc.ice.local_candidates[0].family = 4;
+    rtc.ice.local_candidates[0].addr[0] = 10;
+    rtc.ice.local_candidates[0].addr[3] = 1;
+    rtc.ice.local_candidates[0].port = 4000;
+    rtc.ice.local_candidates[0].type = NANORTC_ICE_CAND_HOST;
+    rtc.ice.local_candidate_count = 1;
+    /* Remote candidate (unreachable) */
     rtc.ice.remote_candidates[0].family = 4;
     rtc.ice.remote_candidates[0].addr[0] = 10;
     rtc.ice.remote_candidates[0].addr[3] = 99;

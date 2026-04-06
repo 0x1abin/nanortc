@@ -46,6 +46,15 @@ typedef enum {
     NANORTC_ICE_CAND_RELAY = 2, /**< Relay (from TURN). */
 } nano_ice_cand_type_t;
 
+/**
+ * @brief ICE candidate priority (RFC 8445 §5.1.2.1).
+ *
+ * priority = (2^24) * type_pref + (2^8) * local_pref + (2^0) * (256 - component_id)
+ * component_id = 1 (RTP), type_pref: host=126, srflx=100, relay=0.
+ * local_pref differentiates candidates of the same type: 65535 - index.
+ */
+#define ICE_HOST_PRIORITY(idx) ((uint32_t)((126u << 24) | ((uint32_t)(65535u - (idx)) << 8) | 255u))
+
 typedef struct nano_ice_candidate {
     uint8_t addr[NANORTC_ADDR_SIZE];
     uint16_t port;
@@ -77,10 +86,24 @@ typedef struct nano_ice {
     uint8_t check_count;               /* number of checks sent */
     bool nominated;                    /* selected pair nominated */
 
+    /* Local candidates array */
+    nano_ice_candidate_t local_candidates[NANORTC_MAX_LOCAL_CANDIDATES];
+    uint8_t local_candidate_count;
+
+    /* Selected pair — local side */
+    uint8_t selected_local_addr[NANORTC_ADDR_SIZE];
+    uint16_t selected_local_port;
+    uint8_t selected_local_family;
+
     /* Remote candidates array (trickle ICE support) */
     nano_ice_candidate_t remote_candidates[NANORTC_MAX_ICE_CANDIDATES];
     uint8_t remote_candidate_count;
-    uint8_t current_candidate; /* index of candidate currently being checked */
+
+    /* Pair iteration state (controlling role) */
+    uint8_t current_local;   /* index of local candidate being checked */
+    uint8_t current_remote;  /* index of remote candidate being checked */
+    uint8_t last_local_idx;  /* local index used in last outgoing check */
+    uint8_t last_remote_idx; /* remote index used in last outgoing check */
 
     /* Trickle ICE (RFC 8838) */
     bool end_of_candidates; /**< Remote signaled no more candidates. */

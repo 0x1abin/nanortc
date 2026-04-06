@@ -150,9 +150,13 @@ NanoRTC supports all three ICE candidate types (RFC 8445 §5.1.2.1):
 
 | Type | Source | Priority | Discovery |
 |------|--------|----------|-----------|
-| **host** | Local address from `nanortc_add_local_candidate()` | 2122252543 | Caller provides |
+| **host** | Local address from `nanortc_add_local_candidate()` | 2130706431–2130705919 (varies by index) | Caller provides |
 | **srflx** | STUN server Binding Response (XOR-MAPPED-ADDRESS) | 1090519295 | Automatic via `stun:` URL |
 | **relay** | TURN server Allocate Response (XOR-RELAYED-ADDRESS) | 16777215 | Automatic via `turn:` URL |
+
+Multiple local host candidates are supported (`NANORTC_MAX_LOCAL_CANDIDATES`, default 4).
+Each host candidate gets a distinct priority per RFC 8445 §5.1.2.1:
+`priority = (126 << 24) | ((65535 - index) << 8) | 255`.
 
 Timer-driven lifecycle in `rtc_process_timers()`:
 - **STUN srflx**: Simple Binding Request → retry 3× at 500ms → extract mapped address

@@ -7,6 +7,7 @@
  */
 
 #include "nano_sdp.h"
+#include "nano_ice.h"
 #include "nano_log.h"
 #include "nanortc.h"
 #include <string.h>
@@ -44,6 +45,28 @@ static bool sdp_append_u16(char *buf, size_t buf_len, size_t *pos, uint16_t val)
         uint16_t v = val;
         while (v > 0) {
             rev[r++] = '0' + (v % 10);
+            v /= 10;
+        }
+        while (r > 0) {
+            tmp[i++] = rev[--r];
+        }
+    }
+    tmp[i] = '\0';
+    return sdp_append(buf, buf_len, pos, tmp);
+}
+
+static bool sdp_append_u32(char *buf, size_t buf_len, size_t *pos, uint32_t val)
+{
+    char tmp[12];
+    int i = 0;
+    if (val == 0) {
+        tmp[i++] = '0';
+    } else {
+        char rev[12];
+        int r = 0;
+        uint32_t v = val;
+        while (v > 0) {
+            rev[r++] = (char)('0' + (v % 10));
             v /= 10;
         }
         while (r > 0) {
@@ -430,21 +453,33 @@ static bool sdp_append_transport_attrs(nano_sdp_t *sdp, char *buf, size_t buf_le
     return true;
 }
 
-/** Append local ICE candidate (RFC 8839 §5.1). Called once for the BUNDLE anchor m-line. */
-static bool sdp_append_candidate(nano_sdp_t *sdp, char *buf, size_t buf_len, size_t *pos)
+/** Append all local host ICE candidates (RFC 8839 §5.1). */
+static bool sdp_append_host_candidates(nano_sdp_t *sdp, char *buf, size_t buf_len, size_t *pos)
 {
-    if (!sdp->has_local_candidate || sdp->local_candidate_ip[0] == '\0')
-        return true;
-    if (!sdp_append(buf, buf_len, pos, "a=candidate:1 1 UDP 2122252543 "))
-        return false;
-    if (!sdp_append(buf, buf_len, pos, sdp->local_candidate_ip))
-        return false;
-    if (!sdp_append(buf, buf_len, pos, " "))
-        return false;
-    if (!sdp_append_u16(buf, buf_len, pos, sdp->local_candidate_port))
-        return false;
-    if (!sdp_append(buf, buf_len, pos, " typ host\r\n"))
-        return false;
+    for (uint8_t i = 0; i < sdp->local_candidate_count; i++) {
+        if (sdp->local_candidates[i].addr[0] == '\0')
+            continue;
+        /* Foundation = index + 1 (RFC 8445 §5.1.1.3) */
+        if (!sdp_append(buf, buf_len, pos, "a=candidate:"))
+            return false;
+        if (!sdp_append_u16(buf, buf_len, pos, (uint16_t)(i + 1)))
+            return false;
+        if (!sdp_append(buf, buf_len, pos, " 1 UDP "))
+            return false;
+        uint32_t prio = ICE_HOST_PRIORITY(i);
+        if (!sdp_append_u32(buf, buf_len, pos, prio))
+            return false;
+        if (!sdp_append(buf, buf_len, pos, " "))
+            return false;
+        if (!sdp_append(buf, buf_len, pos, sdp->local_candidates[i].addr))
+            return false;
+        if (!sdp_append(buf, buf_len, pos, " "))
+            return false;
+        if (!sdp_append_u16(buf, buf_len, pos, sdp->local_candidates[i].port))
+            return false;
+        if (!sdp_append(buf, buf_len, pos, " typ host\r\n"))
+            return false;
+    }
     return true;
 }
 
@@ -464,15 +499,15 @@ static bool sdp_append_srflx_candidate(nano_sdp_t *sdp, char *buf, size_t buf_le
         return false;
     if (!sdp_append(buf, buf_len, pos, " typ srflx"))
         return false;
-    /* raddr/rport from host candidate */
-    if (sdp->has_local_candidate && sdp->local_candidate_ip[0] != '\0') {
+    /* raddr/rport from first host candidate (base) */
+    if (sdp->local_candidate_count > 0 && sdp->local_candidates[0].addr[0] != '\0') {
         if (!sdp_append(buf, buf_len, pos, " raddr "))
             return false;
-        if (!sdp_append(buf, buf_len, pos, sdp->local_candidate_ip))
+        if (!sdp_append(buf, buf_len, pos, sdp->local_candidates[0].addr))
             return false;
         if (!sdp_append(buf, buf_len, pos, " rport "))
             return false;
-        if (!sdp_append_u16(buf, buf_len, pos, sdp->local_candidate_port))
+        if (!sdp_append_u16(buf, buf_len, pos, sdp->local_candidates[0].port))
             return false;
     }
     if (!sdp_append(buf, buf_len, pos, "\r\n"))
@@ -496,15 +531,15 @@ static bool sdp_append_relay_candidate(nano_sdp_t *sdp, char *buf, size_t buf_le
         return false;
     if (!sdp_append(buf, buf_len, pos, " typ relay"))
         return false;
-    /* raddr/rport from host candidate (if available) */
-    if (sdp->has_local_candidate && sdp->local_candidate_ip[0] != '\0') {
+    /* raddr/rport from first host candidate (base, if available) */
+    if (sdp->local_candidate_count > 0 && sdp->local_candidates[0].addr[0] != '\0') {
         if (!sdp_append(buf, buf_len, pos, " raddr "))
             return false;
-        if (!sdp_append(buf, buf_len, pos, sdp->local_candidate_ip))
+        if (!sdp_append(buf, buf_len, pos, sdp->local_candidates[0].addr))
             return false;
         if (!sdp_append(buf, buf_len, pos, " rport "))
             return false;
-        if (!sdp_append_u16(buf, buf_len, pos, sdp->local_candidate_port))
+        if (!sdp_append_u16(buf, buf_len, pos, sdp->local_candidates[0].port))
             return false;
     }
     if (!sdp_append(buf, buf_len, pos, "\r\n"))
@@ -517,8 +552,8 @@ static bool sdp_append_relay_candidate(nano_sdp_t *sdp, char *buf, size_t buf_le
 static const char *sdp_connection_line(const nano_sdp_t *sdp)
 {
 #if NANORTC_FEATURE_IPV6
-    if (sdp->has_local_candidate) {
-        const char *p = sdp->local_candidate_ip;
+    if (sdp->local_candidate_count > 0) {
+        const char *p = sdp->local_candidates[0].addr;
         while (*p) {
             if (*p == ':') {
                 return "c=IN IP6 ::\r\n";
@@ -536,8 +571,8 @@ static const char *sdp_connection_line(const nano_sdp_t *sdp)
 static const char *sdp_origin_line(const nano_sdp_t *sdp)
 {
 #if NANORTC_FEATURE_IPV6
-    if (sdp->has_local_candidate) {
-        const char *p = sdp->local_candidate_ip;
+    if (sdp->local_candidate_count > 0) {
+        const char *p = sdp->local_candidates[0].addr;
         while (*p) {
             if (*p == ':') {
                 return "o=- 1 1 IN IP6 ::\r\n";
@@ -816,7 +851,7 @@ int sdp_generate_answer(nano_sdp_t *sdp, char *buf, size_t buf_len, size_t *out_
                 break;
             }
             if (i == 0) {
-                if (!sdp_append_candidate(sdp, buf, buf_len, &pos))
+                if (!sdp_append_host_candidates(sdp, buf, buf_len, &pos))
                     goto overflow;
                 if (!sdp_append_srflx_candidate(sdp, buf, buf_len, &pos))
                     goto overflow;
@@ -830,7 +865,7 @@ int sdp_generate_answer(nano_sdp_t *sdp, char *buf, size_t buf_len, size_t *out_
         goto overflow;
     if (!sdp_append_datachannel_mline(sdp, buf, buf_len, &pos, "0"))
         goto overflow;
-    if (!sdp_append_candidate(sdp, buf, buf_len, &pos))
+    if (!sdp_append_host_candidates(sdp, buf, buf_len, &pos))
         goto overflow;
     if (!sdp_append_srflx_candidate(sdp, buf, buf_len, &pos))
         goto overflow;

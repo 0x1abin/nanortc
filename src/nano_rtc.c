@@ -40,6 +40,78 @@ static const char hex_chars[] = "0123456789abcdef";
 
 /* Forward declarations */
 static int rtc_apply_ice_servers(nanortc_t *rtc, const nanortc_ice_server_t *servers, size_t count);
+static int rtc_emit_event_full(nanortc_t *rtc, const nanortc_event_t *event);
+
+/* ----------------------------------------------------------------
+ * Candidate string builder utilities
+ *
+ * Used by all three candidate emission paths (host, srflx, relay)
+ * to avoid duplicating uint-to-decimal + memcpy logic.
+ * ---------------------------------------------------------------- */
+
+/** Append a decimal uint32 to buf at *pos. Returns new pos. */
+static size_t cand_append_u32(char *buf, size_t pos, uint32_t val)
+{
+    char tmp[12];
+    int len = 0;
+    if (val == 0) {
+        tmp[len++] = '0';
+    } else {
+        char rev[12];
+        int ri = 0;
+        while (val > 0) {
+            rev[ri++] = (char)('0' + (val % 10));
+            val /= 10;
+        }
+        while (ri > 0)
+            tmp[len++] = rev[--ri];
+    }
+    memcpy(buf + pos, tmp, (size_t)len);
+    return pos + (size_t)len;
+}
+
+/** Append a literal string to buf at *pos. Returns new pos. */
+static size_t cand_append(char *buf, size_t pos, const char *str, size_t len)
+{
+    memcpy(buf + pos, str, len);
+    return pos + len;
+}
+
+/**
+ * Build an ICE candidate string into buf.
+ *
+ * Format: "candidate:<foundation> 1 UDP <priority> <ip> <port> typ <type>"
+ * Returns the string length (buf is NUL-terminated).
+ */
+static size_t rtc_build_candidate_str(char *buf, uint16_t foundation, uint32_t priority,
+                                      const char *ip, size_t ip_len, uint16_t port,
+                                      const char *type, size_t type_len)
+{
+    size_t pos = 0;
+    pos = cand_append(buf, pos, "candidate:", 10);
+    pos = cand_append_u32(buf, pos, foundation);
+    pos = cand_append(buf, pos, " 1 UDP ", 7);
+    pos = cand_append_u32(buf, pos, priority);
+    buf[pos++] = ' ';
+    pos = cand_append(buf, pos, ip, ip_len);
+    buf[pos++] = ' ';
+    pos = cand_append_u32(buf, pos, port);
+    pos = cand_append(buf, pos, " typ ", 5);
+    pos = cand_append(buf, pos, type, type_len);
+    buf[pos] = '\0';
+    return pos;
+}
+
+/** Emit an NANORTC_EV_ICE_CANDIDATE event. */
+static void rtc_emit_ice_candidate(nanortc_t *rtc, const char *candidate_str)
+{
+    nanortc_event_t evt;
+    memset(&evt, 0, sizeof(evt));
+    evt.type = NANORTC_EV_ICE_CANDIDATE;
+    evt.ice_candidate.candidate_str = candidate_str;
+    evt.ice_candidate.end_of_candidates = false;
+    rtc_emit_event_full(rtc, &evt);
+}
 
 /* Enqueue an output. Returns NANORTC_OK or NANORTC_ERR_BUFFER_TOO_SMALL. */
 static inline int rtc_enqueue_output(nanortc_t *rtc, const nanortc_output_t *out)
@@ -97,6 +169,13 @@ static int rtc_enqueue_transmit(nanortc_t *rtc, const uint8_t *data, size_t len,
         out.transmit.data = data;
         out.transmit.len = len;
         out.transmit.dest = *peer_dest;
+    }
+
+    /* Source: selected local candidate (if available) */
+    if (rtc->ice.selected_local_family != 0) {
+        out.transmit.src.family = rtc->ice.selected_local_family;
+        memcpy(out.transmit.src.addr, rtc->ice.selected_local_addr, NANORTC_ADDR_SIZE);
+        out.transmit.src.port = rtc->ice.selected_local_port;
     }
 
     return rtc_enqueue_output(rtc, &out);
@@ -580,14 +659,40 @@ int nanortc_add_local_candidate(nanortc_t *rtc, const char *ip, uint16_t port)
         return NANORTC_ERR_INVALID_PARAM;
     }
 
-    /* Store in SDP state for answer generation (a=candidate: line) */
-    size_t ip_len = strlen(ip); /* NANORTC_SAFE: API boundary */
-    if (ip_len >= sizeof(rtc->sdp.local_candidate_ip)) {
+    if (rtc->sdp.local_candidate_count >= NANORTC_MAX_LOCAL_CANDIDATES) {
         return NANORTC_ERR_BUFFER_TOO_SMALL;
     }
-    memcpy(rtc->sdp.local_candidate_ip, ip, ip_len + 1);
-    rtc->sdp.local_candidate_port = port;
-    rtc->sdp.has_local_candidate = true;
+
+    uint8_t idx = rtc->sdp.local_candidate_count;
+    size_t ip_len = strlen(ip); /* NANORTC_SAFE: API boundary */
+    if (ip_len >= sizeof(rtc->sdp.local_candidates[idx].addr)) {
+        return NANORTC_ERR_BUFFER_TOO_SMALL;
+    }
+
+    /* Store string form in SDP state for answer/offer generation */
+    memcpy(rtc->sdp.local_candidates[idx].addr, ip, ip_len + 1);
+    rtc->sdp.local_candidates[idx].port = port;
+
+    /* Store binary form in ICE state for connectivity checks */
+    uint8_t parsed_addr[NANORTC_ADDR_SIZE];
+    memset(parsed_addr, 0, sizeof(parsed_addr));
+    uint8_t family = 0;
+    int rc = addr_parse_auto(ip, ip_len, parsed_addr, &family);
+    if (rc != NANORTC_OK) {
+        return rc;
+    }
+    rtc->ice.local_candidates[idx].family = family;
+    memcpy(rtc->ice.local_candidates[idx].addr, parsed_addr, NANORTC_ADDR_SIZE);
+    rtc->ice.local_candidates[idx].port = port;
+    rtc->ice.local_candidates[idx].type = NANORTC_ICE_CAND_HOST;
+
+    rtc->sdp.local_candidate_count = idx + 1;
+    rtc->ice.local_candidate_count = idx + 1;
+
+    /* Emit trickle ICE candidate event (host) */
+    rtc_build_candidate_str(rtc->host_cand_str, (uint16_t)(idx + 1), ICE_HOST_PRIORITY(idx), ip,
+                            ip_len, port, "host", 4);
+    rtc_emit_ice_candidate(rtc, rtc->host_cand_str);
 
     NANORTC_LOGI("RTC", "local candidate added");
     return NANORTC_OK;
@@ -866,50 +971,11 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
                 rtc->sdp.relay_candidate_port = rtc->turn.relay_port;
                 rtc->sdp.has_relay_candidate = true;
 
-                /* Emit trickle ICE candidate event */
-                {
-                    /* Build candidate string in relay_cand_str scratch buffer */
-                    size_t pos = 0;
-                    const char *prefix = "candidate:2 1 UDP 16777215 ";
-                    size_t plen = 0;
-                    while (prefix[plen])
-                        plen++;
-                    memcpy(rtc->relay_cand_str, prefix, plen);
-                    pos = plen;
-                    memcpy(rtc->relay_cand_str + pos, rtc->sdp.relay_candidate_ip, ip_len);
-                    pos += ip_len;
-                    rtc->relay_cand_str[pos++] = ' ';
-                    /* Decimal port */
-                    char port_buf[8];
-                    int pi = 0;
-                    uint16_t pv = rtc->turn.relay_port;
-                    if (pv == 0) {
-                        port_buf[pi++] = '0';
-                    } else {
-                        char rev[8];
-                        int ri = 0;
-                        while (pv > 0) {
-                            rev[ri++] = '0' + (pv % 10);
-                            pv /= 10;
-                        }
-                        while (ri > 0)
-                            port_buf[pi++] = rev[--ri];
-                    }
-                    memcpy(rtc->relay_cand_str + pos, port_buf, (size_t)pi);
-                    pos += (size_t)pi;
-                    const char *suffix = " typ relay";
-                    size_t slen = 10;
-                    memcpy(rtc->relay_cand_str + pos, suffix, slen);
-                    pos += slen;
-                    rtc->relay_cand_str[pos] = '\0';
-
-                    nanortc_event_t evt;
-                    memset(&evt, 0, sizeof(evt));
-                    evt.type = NANORTC_EV_ICE_CANDIDATE;
-                    evt.ice_candidate.candidate_str = rtc->relay_cand_str;
-                    evt.ice_candidate.end_of_candidates = false;
-                    rtc_emit_event_full(rtc, &evt);
-                }
+                /* Emit trickle ICE candidate event (relay) */
+                rtc_build_candidate_str(rtc->relay_cand_str, 2, 16777215,
+                                        rtc->sdp.relay_candidate_ip, ip_len, rtc->turn.relay_port,
+                                        "relay", 5);
+                rtc_emit_ice_candidate(rtc, rtc->relay_cand_str);
 
                 /* Create permission + ChannelBind for remote candidates */
                 if (rtc->ice.remote_candidate_count > 0) {
@@ -972,48 +1038,11 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
                     rtc->sdp.has_srflx_candidate = true;
                     rtc->srflx_discovered = true;
 
-                    /* Emit trickle ICE candidate event */
-                    {
-                        size_t pos = 0;
-                        const char *pfx = "candidate:3 1 UDP 1090519295 ";
-                        size_t plen = 0;
-                        while (pfx[plen])
-                            plen++;
-                        memcpy(rtc->srflx_cand_str, pfx, plen);
-                        pos = plen;
-                        memcpy(rtc->srflx_cand_str + pos, rtc->sdp.srflx_candidate_ip, ip_len);
-                        pos += ip_len;
-                        rtc->srflx_cand_str[pos++] = ' ';
-                        /* Decimal port */
-                        char pbuf[8];
-                        int pi = 0;
-                        uint16_t pv = smsg.mapped_port;
-                        if (pv == 0) {
-                            pbuf[pi++] = '0';
-                        } else {
-                            char rev[8];
-                            int ri = 0;
-                            while (pv > 0) {
-                                rev[ri++] = '0' + (pv % 10);
-                                pv /= 10;
-                            }
-                            while (ri > 0)
-                                pbuf[pi++] = rev[--ri];
-                        }
-                        memcpy(rtc->srflx_cand_str + pos, pbuf, (size_t)pi);
-                        pos += (size_t)pi;
-                        const char *sfx = " typ srflx";
-                        memcpy(rtc->srflx_cand_str + pos, sfx, 10);
-                        pos += 10;
-                        rtc->srflx_cand_str[pos] = '\0';
-
-                        nanortc_event_t evt;
-                        memset(&evt, 0, sizeof(evt));
-                        evt.type = NANORTC_EV_ICE_CANDIDATE;
-                        evt.ice_candidate.candidate_str = rtc->srflx_cand_str;
-                        evt.ice_candidate.end_of_candidates = false;
-                        rtc_emit_event_full(rtc, &evt);
-                    }
+                    /* Emit trickle ICE candidate event (srflx) */
+                    rtc_build_candidate_str(rtc->srflx_cand_str, 3, 1090519295,
+                                            rtc->sdp.srflx_candidate_ip, ip_len, smsg.mapped_port,
+                                            "srflx", 5);
+                    rtc_emit_ice_candidate(rtc, rtc->srflx_cand_str);
 
                     NANORTC_LOGI("RTC", "srflx candidate discovered");
                 }
@@ -1423,7 +1452,8 @@ static int rtc_process_timers(nanortc_t *rtc, uint32_t now_ms)
     if (rtc->ice.is_controlling && rtc->ice.state != NANORTC_ICE_STATE_CONNECTED &&
         rtc->ice.state != NANORTC_ICE_STATE_FAILED) {
         nano_ice_state_t prev_ice = rtc->ice.state;
-        uint8_t ci_before = rtc->ice.current_candidate;
+        uint8_t local_before = rtc->ice.current_local;
+        uint8_t remote_before = rtc->ice.current_remote;
         size_t out_len = 0;
         int rc = ice_generate_check(&rtc->ice, now_ms, rtc->config.crypto, rtc->stun_buf,
                                     sizeof(rtc->stun_buf), &out_len);
@@ -1431,17 +1461,23 @@ static int rtc_process_timers(nanortc_t *rtc, uint32_t now_ms)
             return rc;
         }
 
-        if (out_len > 0 && ci_before < rtc->ice.remote_candidate_count) {
-            uint8_t ci = ci_before;
+        if (out_len > 0 && remote_before < rtc->ice.remote_candidate_count &&
+            local_before < rtc->ice.local_candidate_count) {
             nanortc_output_t out;
             memset(&out, 0, sizeof(out));
             out.type = NANORTC_OUTPUT_TRANSMIT;
             out.transmit.data = rtc->stun_buf;
             out.transmit.len = out_len;
-            /* Destination: current remote candidate */
-            out.transmit.dest.family = rtc->ice.remote_candidates[ci].family;
-            memcpy(out.transmit.dest.addr, rtc->ice.remote_candidates[ci].addr, NANORTC_ADDR_SIZE);
-            out.transmit.dest.port = rtc->ice.remote_candidates[ci].port;
+            /* Destination: remote candidate */
+            out.transmit.dest.family = rtc->ice.remote_candidates[remote_before].family;
+            memcpy(out.transmit.dest.addr, rtc->ice.remote_candidates[remote_before].addr,
+                   NANORTC_ADDR_SIZE);
+            out.transmit.dest.port = rtc->ice.remote_candidates[remote_before].port;
+            /* Source: local candidate */
+            out.transmit.src.family = rtc->ice.local_candidates[local_before].family;
+            memcpy(out.transmit.src.addr, rtc->ice.local_candidates[local_before].addr,
+                   NANORTC_ADDR_SIZE);
+            out.transmit.src.port = rtc->ice.local_candidates[local_before].port;
             rtc_enqueue_output(rtc, &out);
         }
 
@@ -1504,6 +1540,12 @@ static int rtc_process_timers(nanortc_t *rtc, uint32_t now_ms)
                 out.transmit.dest.family = rtc->ice.selected_family;
                 memcpy(out.transmit.dest.addr, rtc->ice.selected_addr, NANORTC_ADDR_SIZE);
                 out.transmit.dest.port = rtc->ice.selected_port;
+                /* Source: selected local candidate */
+                if (rtc->ice.selected_local_family != 0) {
+                    out.transmit.src.family = rtc->ice.selected_local_family;
+                    memcpy(out.transmit.src.addr, rtc->ice.selected_local_addr, NANORTC_ADDR_SIZE);
+                    out.transmit.src.port = rtc->ice.selected_local_port;
+                }
                 rtc_enqueue_output(rtc, &out);
             }
         }
@@ -1617,6 +1659,13 @@ static int rtc_process_timers(nanortc_t *rtc, uint32_t now_ms)
                     out.transmit.dest.family = rtc->stun_server_family;
                     memcpy(out.transmit.dest.addr, rtc->stun_server_addr, NANORTC_ADDR_SIZE);
                     out.transmit.dest.port = rtc->stun_server_port;
+                    /* Source: first local candidate (srflx base) */
+                    if (rtc->ice.local_candidate_count > 0) {
+                        out.transmit.src.family = rtc->ice.local_candidates[0].family;
+                        memcpy(out.transmit.src.addr, rtc->ice.local_candidates[0].addr,
+                               NANORTC_ADDR_SIZE);
+                        out.transmit.src.port = rtc->ice.local_candidates[0].port;
+                    }
                     rtc_enqueue_output(rtc, &out);
                 }
 

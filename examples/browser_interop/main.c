@@ -422,8 +422,8 @@ int main(int argc, char *argv[])
         }
     }
 
-    /* 4. Bind UDP on 0.0.0.0, register real IP as candidate */
-    rc = nano_run_loop_init(&loop, &rtc, NULL, port);
+    /* 4. Bind UDP socket, register real IP as candidate */
+    rc = nano_run_loop_init(&loop, &rtc, port);
     if (rc < 0) {
         fprintf(stderr, "Failed to bind UDP port %d\n", port);
         http_sig_leave(&sig);

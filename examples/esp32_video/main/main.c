@@ -216,7 +216,7 @@ static int handle_offer(const char *offer, char *answer, size_t answer_size, siz
         return s_video_mid;
     }
 
-    rc = nano_run_loop_init(&s_loop, &s_rtc, NULL, CONFIG_EXAMPLE_UDP_PORT);
+    rc = nano_run_loop_init(&s_loop, &s_rtc, CONFIG_EXAMPLE_UDP_PORT);
     if (rc < 0) {
         ESP_LOGE(TAG, "Failed to bind UDP port");
         return rc;
@@ -248,7 +248,7 @@ static esp_err_t http_get_debug(httpd_req_t *req)
                      "running=%d fd=%d connected=%d video_ready=%d video_mid=%d\n"
                      "ice.remote_candidates=%d ice.state=%d\n"
                      "state=%d steps=%lu alive=%lu\n",
-                     s_loop.running, s_loop.fd, s_connected, s_video_ready, s_video_mid,
+                     s_loop.running, s_loop.fds[0], s_connected, s_video_ready, s_video_mid,
                      s_rtc.ice.remote_candidate_count, s_rtc.ice.state, s_rtc.state,
                      (unsigned long)s_step_count, (unsigned long)s_task_alive);
     httpd_resp_set_type(req, "text/plain");
@@ -316,7 +316,6 @@ void app_main(void)
 
     /* 3. Init run loop state (not started until POST /offer) */
     memset(&s_loop, 0, sizeof(s_loop));
-    s_loop.fd = -1;
 
     /* 4. Start HTTP server */
     nano_webserver_config_t wscfg;

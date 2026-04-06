@@ -390,6 +390,8 @@ typedef struct nanortc_output {
             const uint8_t *data; /**< Packet payload. */
             size_t len;          /**< Packet length in bytes. */
             nanortc_addr_t dest; /**< Destination address. */
+            nanortc_addr_t src;  /**< Source address (local interface).
+                                  *   family==0 means "use any" (backward compat). */
         } transmit;              /**< Valid when type == NANORTC_OUTPUT_TRANSMIT. */
         nanortc_event_t event;   /**< Valid when type == NANORTC_OUTPUT_EVENT. */
         uint32_t timeout_ms;     /**< Valid when type == NANORTC_OUTPUT_TIMEOUT. */
@@ -581,6 +583,7 @@ struct nanortc {
     /* Scratch for trickle ICE candidate strings (valid until next poll) */
     char relay_cand_str[NANORTC_IPV6_STR_SIZE + 96];
     char srflx_cand_str[NANORTC_IPV6_STR_SIZE + 96];
+    char host_cand_str[NANORTC_IPV6_STR_SIZE + 96];
 
     /* STUN server for srflx discovery (RFC 8445 §5.1.1.1) */
     uint8_t stun_server_addr[NANORTC_ADDR_SIZE];

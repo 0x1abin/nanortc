@@ -41,6 +41,15 @@ static void setup_ice_controlling(nano_ice_t *ice)
     memcpy(ice->remote_pwd, "peer-password-xyz12345", 23);
     ice->remote_pwd_len = 22;
     ice->tie_breaker = 0x1122334455667788ull;
+    /* Add a default local candidate (192.168.1.100:4000) */
+    ice->local_candidates[0].addr[0] = 192;
+    ice->local_candidates[0].addr[1] = 168;
+    ice->local_candidates[0].addr[2] = 1;
+    ice->local_candidates[0].addr[3] = 100;
+    ice->local_candidates[0].port = 4000;
+    ice->local_candidates[0].family = 4;
+    ice->local_candidates[0].type = NANORTC_ICE_CAND_HOST;
+    ice->local_candidate_count = 1;
 }
 
 static void add_candidate(nano_ice_t *ice, uint8_t a, uint8_t b, uint8_t c, uint8_t d,
@@ -115,8 +124,8 @@ static void test_trickle_add_during_checking(void)
     rc = ice_generate_check(&ice, 100, crypto(), buf, sizeof(buf), &out_len);
     TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
     TEST_ASSERT_TRUE(out_len > 0);
-    /* After round-robin: (0+1) % 2 = 1 */
-    TEST_ASSERT_EQUAL_INT(1, ice.current_candidate);
+    /* After round-robin: remote advances 0→1, local stays 0 */
+    TEST_ASSERT_EQUAL_INT(1, ice.current_remote);
 }
 
 /* T4: Candidate type field defaults to HOST */

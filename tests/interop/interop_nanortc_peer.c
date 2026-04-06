@@ -257,25 +257,21 @@ int interop_nanortc_start(interop_nanortc_peer_t *peer, int sig_fd, uint16_t por
         return -1;
     }
 
-    /* Determine bind address and local candidate IP */
-    const char *bind_addr;
+    /* Determine local candidate IP */
     char local_ip[64];
     if (ice_cfg) {
-        /* ICE mode: bind on 0.0.0.0 so STUN/TURN packets arrive,
-         * but advertise real IP as the candidate */
-        bind_addr = NULL; /* 0.0.0.0 */
+        /* ICE mode: advertise real IP as the candidate */
         detect_local_ip(local_ip, sizeof(local_ip));
     } else {
-        /* Localhost mode: bind and advertise 127.0.0.1 */
-        bind_addr = "127.0.0.1";
+        /* Localhost mode */
         memcpy(local_ip, "127.0.0.1", 10);
     }
 
     nanortc_add_local_candidate(&peer->rtc, local_ip, port);
     fprintf(stderr, "[nanortc] Local candidate: %s:%d\n", local_ip, port);
 
-    /* Init run loop (binds UDP socket) */
-    rc = nano_run_loop_init(&peer->loop, &peer->rtc, bind_addr, port);
+    /* Init run loop (binds UDP socket on INADDR_ANY) */
+    rc = nano_run_loop_init(&peer->loop, &peer->rtc, port);
     if (rc < 0) {
         fprintf(stderr, "[nanortc] Failed to bind UDP port %d\n", port);
         return -1;
