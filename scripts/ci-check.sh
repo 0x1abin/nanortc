@@ -173,7 +173,7 @@ if $HAS_OPENSSL && command -v c++ > /dev/null 2>&1; then
     rm -rf "$interop_dir"
 
     run_check "Build interop (libdatachannel)" \
-        bash -c "cmake -B '$interop_dir' -DNANORTC_BUILD_INTEROP_TESTS=ON -DNANORTC_CRYPTO=openssl -DCMAKE_BUILD_TYPE=Debug > /dev/null 2>&1 && cmake --build '$interop_dir' -j\$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4) > /dev/null 2>&1"
+        bash -c "cmake -B '$interop_dir' -DNANORTC_BUILD_INTEROP_TESTS=ON -DNANORTC_CRYPTO=openssl -DCMAKE_BUILD_TYPE=Debug -DCMAKE_POLICY_VERSION_MINIMUM=3.5 > /dev/null 2>&1 && cmake --build '$interop_dir' -j\$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4) > /dev/null 2>&1"
 
     run_check "Test  interop (libdatachannel)" \
         ctest --test-dir "$interop_dir" -R interop --output-on-failure

@@ -587,7 +587,7 @@ struct nanortc {
     uint16_t stun_server_port;
     uint8_t stun_server_family; /* 4 or 6 */
     bool stun_server_configured;
-    uint8_t stun_txid[12]; /* transaction ID for srflx request */
+    uint8_t stun_txid[NANORTC_STUN_TXID_SIZE]; /* transaction ID for srflx request */
     bool srflx_discovered;
     uint32_t stun_retry_at_ms;
     uint8_t stun_retries;

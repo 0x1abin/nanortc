@@ -532,8 +532,9 @@
  * without creating a circular include with nanortc.h.
  * ---------------------------------------------------------------- */
 
-#define NANORTC_ADDR_SIZE     16 /**< IPv6 binary address length (RFC 4291). */
-#define NANORTC_IPV6_STR_SIZE 46 /**< Max IPv6 string length (INET6_ADDRSTRLEN). */
+#define NANORTC_ADDR_SIZE      16 /**< IPv6 binary address length (RFC 4291). */
+#define NANORTC_IPV6_STR_SIZE  46 /**< Max IPv6 string length (INET6_ADDRSTRLEN). */
+#define NANORTC_STUN_TXID_SIZE 12 /**< STUN transaction ID length (RFC 8489 §6). */
 
 /* ----------------------------------------------------------------
  * SDP media direction
