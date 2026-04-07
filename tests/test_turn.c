@@ -713,6 +713,356 @@ static void test_turn_channel_refresh(void)
     TEST_ASSERT_TRUE(turn.channels[0].refresh_at_ms > 1000);
 }
 
+/* Helper: build a generic error response with error code + optional NONCE */
+static size_t build_error_response(uint8_t *buf, uint16_t msg_type,
+                                   const uint8_t txid[STUN_TXID_SIZE], uint16_t error_code,
+                                   const char *nonce)
+{
+    nanortc_write_u16be(buf, msg_type);
+    nanortc_write_u16be(buf + 2, 0); /* length placeholder */
+    nanortc_write_u32be(buf + 4, STUN_MAGIC_COOKIE);
+    memcpy(buf + 8, txid, STUN_TXID_SIZE);
+    size_t pos = STUN_HEADER_SIZE;
+
+    /* ERROR-CODE */
+    uint8_t ec[4] = {0, 0, (uint8_t)(error_code / 100), (uint8_t)(error_code % 100)};
+    nanortc_write_u16be(buf + pos, STUN_ATTR_ERROR_CODE);
+    nanortc_write_u16be(buf + pos + 2, 4);
+    memcpy(buf + pos + 4, ec, 4);
+    pos += 8;
+
+    /* NONCE (optional) */
+    if (nonce) {
+        size_t nlen = 0;
+        while (nonce[nlen])
+            nlen++;
+        nanortc_write_u16be(buf + pos, STUN_ATTR_NONCE);
+        nanortc_write_u16be(buf + pos + 2, (uint16_t)nlen);
+        memcpy(buf + pos + 4, nonce, nlen);
+        size_t padded = (nlen + 3) & ~3u;
+        if (padded > nlen)
+            memset(buf + pos + 4 + nlen, 0, padded - nlen);
+        pos += 4 + padded;
+    }
+
+    nanortc_write_u16be(buf + 2, (uint16_t)(pos - STUN_HEADER_SIZE));
+    return pos;
+}
+
+/* Helper: build a success response (header only, no attributes) */
+static size_t build_success_response(uint8_t *buf, uint16_t msg_type,
+                                     const uint8_t txid[STUN_TXID_SIZE])
+{
+    nanortc_write_u16be(buf, msg_type);
+    nanortc_write_u16be(buf + 2, 0);
+    nanortc_write_u32be(buf + 4, STUN_MAGIC_COOKIE);
+    memcpy(buf + 8, txid, STUN_TXID_SIZE);
+    return STUN_HEADER_SIZE;
+}
+
+/* T25: 438 Stale Nonce on Allocate — updates nonce and retries */
+static void test_turn_allocate_438_stale_nonce(void)
+{
+    nano_turn_t turn;
+    setup_turn(&turn);
+
+    uint8_t buf[512];
+    size_t out_len = 0;
+    turn_start_allocate(&turn, crypto(), buf, sizeof(buf), &out_len);
+
+    /* Feed 438 with new nonce */
+    uint8_t resp[256];
+    size_t resp_len =
+        build_error_response(resp, STUN_ALLOCATE_ERROR, turn.last_txid, 438, "newnonce99");
+
+    int rc = turn_handle_response(&turn, resp, resp_len, crypto());
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
+    TEST_ASSERT_EQUAL_INT(NANORTC_TURN_CHALLENGED, turn.state);
+    TEST_ASSERT_EQUAL_STRING("newnonce99", turn.nonce);
+}
+
+/* T26: 438 Stale Nonce on Allocate without nonce attr — fails */
+static void test_turn_allocate_438_no_nonce(void)
+{
+    nano_turn_t turn;
+    setup_turn(&turn);
+
+    uint8_t buf[512];
+    size_t out_len = 0;
+    turn_start_allocate(&turn, crypto(), buf, sizeof(buf), &out_len);
+
+    uint8_t resp[256];
+    size_t resp_len =
+        build_error_response(resp, STUN_ALLOCATE_ERROR, turn.last_txid, 438, NULL);
+
+    int rc = turn_handle_response(&turn, resp, resp_len, crypto());
+    TEST_ASSERT_EQUAL_INT(NANORTC_ERR_PROTOCOL, rc);
+    TEST_ASSERT_EQUAL_INT(NANORTC_TURN_FAILED, turn.state);
+}
+
+/* T27: Unknown allocate error (e.g. 500) — fails */
+static void test_turn_allocate_unknown_error(void)
+{
+    nano_turn_t turn;
+    setup_turn(&turn);
+
+    uint8_t buf[512];
+    size_t out_len = 0;
+    turn_start_allocate(&turn, crypto(), buf, sizeof(buf), &out_len);
+
+    uint8_t resp[256];
+    size_t resp_len =
+        build_error_response(resp, STUN_ALLOCATE_ERROR, turn.last_txid, 500, NULL);
+
+    int rc = turn_handle_response(&turn, resp, resp_len, crypto());
+    TEST_ASSERT_EQUAL_INT(NANORTC_ERR_PROTOCOL, rc);
+    TEST_ASSERT_EQUAL_INT(NANORTC_TURN_FAILED, turn.state);
+}
+
+/* T28: Refresh success response */
+static void test_turn_refresh_success_response(void)
+{
+    nano_turn_t turn;
+    setup_turn_allocated(&turn);
+    turn.lifetime_s = 600;
+    turn.refresh_at_ms = 0;
+
+    /* Generate refresh request to set last_txid */
+    uint8_t buf[512];
+    size_t out_len = 0;
+    turn_generate_refresh(&turn, 1000, crypto(), buf, sizeof(buf), &out_len);
+
+    /* Build Refresh Success Response with LIFETIME */
+    uint8_t resp[128];
+    nanortc_write_u16be(resp, STUN_REFRESH_RESPONSE);
+    nanortc_write_u16be(resp + 2, 0);
+    nanortc_write_u32be(resp + 4, STUN_MAGIC_COOKIE);
+    memcpy(resp + 8, turn.last_txid, STUN_TXID_SIZE);
+    size_t pos = STUN_HEADER_SIZE;
+    /* LIFETIME: 900 seconds */
+    nanortc_write_u16be(resp + pos, STUN_ATTR_LIFETIME);
+    nanortc_write_u16be(resp + pos + 2, 4);
+    nanortc_write_u32be(resp + pos + 4, 900);
+    pos += 8;
+    nanortc_write_u16be(resp + 2, (uint16_t)(pos - STUN_HEADER_SIZE));
+
+    int rc = turn_handle_response(&turn, resp, pos, crypto());
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
+    TEST_ASSERT_EQUAL_INT(900, turn.lifetime_s);
+}
+
+/* T29: Refresh error 438 — stale nonce, retry */
+static void test_turn_refresh_438_stale_nonce(void)
+{
+    nano_turn_t turn;
+    setup_turn_allocated(&turn);
+    turn.refresh_at_ms = 0;
+
+    uint8_t buf[512];
+    size_t out_len = 0;
+    turn_generate_refresh(&turn, 1000, crypto(), buf, sizeof(buf), &out_len);
+
+    uint8_t resp[256];
+    size_t resp_len =
+        build_error_response(resp, STUN_REFRESH_ERROR, turn.last_txid, 438, "fresh_nonce");
+
+    int rc = turn_handle_response(&turn, resp, resp_len, crypto());
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
+    TEST_ASSERT_EQUAL_STRING("fresh_nonce", turn.nonce);
+    TEST_ASSERT_EQUAL_UINT32(0, turn.refresh_at_ms); /* retry immediately */
+}
+
+/* T30: Refresh error non-438 — fails */
+static void test_turn_refresh_error_fails(void)
+{
+    nano_turn_t turn;
+    setup_turn_allocated(&turn);
+    turn.refresh_at_ms = 0;
+
+    uint8_t buf[512];
+    size_t out_len = 0;
+    turn_generate_refresh(&turn, 1000, crypto(), buf, sizeof(buf), &out_len);
+
+    uint8_t resp[256];
+    size_t resp_len =
+        build_error_response(resp, STUN_REFRESH_ERROR, turn.last_txid, 403, NULL);
+
+    int rc = turn_handle_response(&turn, resp, resp_len, crypto());
+    TEST_ASSERT_EQUAL_INT(NANORTC_ERR_PROTOCOL, rc);
+    TEST_ASSERT_EQUAL_INT(NANORTC_TURN_FAILED, turn.state);
+}
+
+/* T31: CreatePermission success response */
+static void test_turn_permission_success_response(void)
+{
+    nano_turn_t turn;
+    setup_turn_allocated(&turn);
+
+    uint8_t peer[NANORTC_ADDR_SIZE] = {172, 16, 0, 1};
+    uint8_t buf[512];
+    size_t out_len = 0;
+    turn_create_permission(&turn, peer, 4, 7000, crypto(), buf, sizeof(buf), &out_len);
+
+    /* CreatePermission response uses the permission's txid, not last_txid.
+     * The response just needs to be a valid STUN message. Use a random txid
+     * since permission response matching skips txid check. */
+    uint8_t resp[64];
+    uint8_t fake_txid[STUN_TXID_SIZE] = {0};
+    size_t resp_len = build_success_response(resp, STUN_CREATE_PERMISSION_RESPONSE, fake_txid);
+
+    int rc = turn_handle_response(&turn, resp, resp_len, crypto());
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
+}
+
+/* T32: CreatePermission error 438 — stale nonce */
+static void test_turn_permission_438_stale_nonce(void)
+{
+    nano_turn_t turn;
+    setup_turn_allocated(&turn);
+
+    uint8_t fake_txid[STUN_TXID_SIZE] = {0};
+    uint8_t resp[256];
+    size_t resp_len =
+        build_error_response(resp, STUN_CREATE_PERMISSION_ERROR, fake_txid, 438, "perm_nonce");
+
+    int rc = turn_handle_response(&turn, resp, resp_len, crypto());
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
+    TEST_ASSERT_EQUAL_STRING("perm_nonce", turn.nonce);
+}
+
+/* T33: CreatePermission error non-438 — fails */
+static void test_turn_permission_error_fails(void)
+{
+    nano_turn_t turn;
+    setup_turn_allocated(&turn);
+
+    uint8_t fake_txid[STUN_TXID_SIZE] = {0};
+    uint8_t resp[256];
+    size_t resp_len =
+        build_error_response(resp, STUN_CREATE_PERMISSION_ERROR, fake_txid, 403, NULL);
+
+    int rc = turn_handle_response(&turn, resp, resp_len, crypto());
+    TEST_ASSERT_EQUAL_INT(NANORTC_ERR_PROTOCOL, rc);
+}
+
+/* T34: ChannelBind error 438 — stale nonce */
+static void test_turn_channel_bind_438_stale_nonce(void)
+{
+    nano_turn_t turn;
+    setup_turn_allocated(&turn);
+
+    uint8_t peer[NANORTC_ADDR_SIZE] = {10, 0, 0, 5};
+    uint8_t buf[512];
+    size_t out_len = 0;
+    turn_channel_bind(&turn, peer, 4, 5000, crypto(), buf, sizeof(buf), &out_len);
+
+    uint8_t resp[256];
+    size_t resp_len =
+        build_error_response(resp, STUN_CHANNEL_BIND_ERROR, turn.channels[0].txid, 438,
+                             "chan_nonce");
+
+    int rc = turn_handle_response(&turn, resp, resp_len, crypto());
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
+    TEST_ASSERT_EQUAL_STRING("chan_nonce", turn.nonce);
+}
+
+/* T35: ChannelBind error non-438 — fails */
+static void test_turn_channel_bind_error_fails(void)
+{
+    nano_turn_t turn;
+    setup_turn_allocated(&turn);
+
+    uint8_t peer[NANORTC_ADDR_SIZE] = {10, 0, 0, 5};
+    uint8_t buf[512];
+    size_t out_len = 0;
+    turn_channel_bind(&turn, peer, 4, 5000, crypto(), buf, sizeof(buf), &out_len);
+
+    uint8_t resp[256];
+    size_t resp_len =
+        build_error_response(resp, STUN_CHANNEL_BIND_ERROR, turn.channels[0].txid, 403, NULL);
+
+    int rc = turn_handle_response(&turn, resp, resp_len, crypto());
+    TEST_ASSERT_EQUAL_INT(NANORTC_ERR_PROTOCOL, rc);
+}
+
+/* T36: ChannelData unwrap error paths */
+static void test_turn_unwrap_channel_data_errors(void)
+{
+    uint16_t ch = 0;
+    const uint8_t *payload = NULL;
+    size_t payload_len = 0;
+
+    /* NULL params */
+    TEST_ASSERT_EQUAL_INT(NANORTC_ERR_INVALID_PARAM,
+                          turn_unwrap_channel_data(NULL, 8, &ch, &payload, &payload_len));
+    /* Too short */
+    uint8_t short_data[2] = {0x40, 0x00};
+    TEST_ASSERT_EQUAL_INT(NANORTC_ERR_PARSE,
+                          turn_unwrap_channel_data(short_data, 2, &ch, &payload, &payload_len));
+    /* Invalid channel range (below 0x4000) */
+    uint8_t bad_chan[8] = {0};
+    nanortc_write_u16be(bad_chan, 0x3FFF);
+    nanortc_write_u16be(bad_chan + 2, 4);
+    TEST_ASSERT_EQUAL_INT(NANORTC_ERR_PROTOCOL,
+                          turn_unwrap_channel_data(bad_chan, 8, &ch, &payload, &payload_len));
+    /* Payload length exceeds buffer */
+    uint8_t trunc[6];
+    nanortc_write_u16be(trunc, 0x4000);
+    nanortc_write_u16be(trunc + 2, 100); /* claims 100 bytes but only 2 available */
+    TEST_ASSERT_EQUAL_INT(NANORTC_ERR_PARSE,
+                          turn_unwrap_channel_data(trunc, 6, &ch, &payload, &payload_len));
+}
+
+/* T37: find_channel/find_peer null params */
+static void test_turn_find_null_params(void)
+{
+    uint16_t ch = 0;
+    uint8_t addr[NANORTC_ADDR_SIZE];
+    uint8_t fam = 0;
+    uint16_t port = 0;
+
+    TEST_ASSERT_FALSE(turn_find_channel_for_peer(NULL, addr, 4, &ch));
+    TEST_ASSERT_FALSE(turn_find_peer_for_channel(NULL, 0x4000, addr, &fam, &port));
+}
+
+/* T38: generate_permission_refresh null/state errors */
+static void test_turn_permission_refresh_errors(void)
+{
+    uint8_t buf[512];
+    size_t out_len = 0;
+
+    TEST_ASSERT_EQUAL_INT(NANORTC_ERR_INVALID_PARAM,
+                          turn_generate_permission_refresh(NULL, 0, crypto(), buf, sizeof(buf),
+                                                          &out_len));
+
+    /* Not allocated state */
+    nano_turn_t turn;
+    turn_init(&turn);
+    out_len = 0;
+    int rc = turn_generate_permission_refresh(&turn, 0, crypto(), buf, sizeof(buf), &out_len);
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
+    TEST_ASSERT_EQUAL_size_t(0, out_len);
+}
+
+/* T39: generate_channel_refresh null/state errors */
+static void test_turn_channel_refresh_errors(void)
+{
+    uint8_t buf[512];
+    size_t out_len = 0;
+
+    TEST_ASSERT_EQUAL_INT(NANORTC_ERR_INVALID_PARAM,
+                          turn_generate_channel_refresh(NULL, 0, crypto(), buf, sizeof(buf),
+                                                       &out_len));
+
+    /* Not allocated state */
+    nano_turn_t turn;
+    turn_init(&turn);
+    out_len = 0;
+    int rc = turn_generate_channel_refresh(&turn, 0, crypto(), buf, sizeof(buf), &out_len);
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
+    TEST_ASSERT_EQUAL_size_t(0, out_len);
+}
+
 /* ----------------------------------------------------------------
  * Test runner
  * ---------------------------------------------------------------- */
@@ -745,6 +1095,25 @@ int main(void)
     RUN_TEST(test_turn_permission_refresh);
     RUN_TEST(test_turn_permission_refresh_not_due);
     RUN_TEST(test_turn_channel_refresh);
+
+    /* Response handling */
+    RUN_TEST(test_turn_allocate_438_stale_nonce);
+    RUN_TEST(test_turn_allocate_438_no_nonce);
+    RUN_TEST(test_turn_allocate_unknown_error);
+    RUN_TEST(test_turn_refresh_success_response);
+    RUN_TEST(test_turn_refresh_438_stale_nonce);
+    RUN_TEST(test_turn_refresh_error_fails);
+    RUN_TEST(test_turn_permission_success_response);
+    RUN_TEST(test_turn_permission_438_stale_nonce);
+    RUN_TEST(test_turn_permission_error_fails);
+    RUN_TEST(test_turn_channel_bind_438_stale_nonce);
+    RUN_TEST(test_turn_channel_bind_error_fails);
+
+    /* Error paths */
+    RUN_TEST(test_turn_unwrap_channel_data_errors);
+    RUN_TEST(test_turn_find_null_params);
+    RUN_TEST(test_turn_permission_refresh_errors);
+    RUN_TEST(test_turn_channel_refresh_errors);
 
     return UNITY_END();
 }

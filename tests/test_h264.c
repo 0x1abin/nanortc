@@ -561,6 +561,63 @@ TEST(test_h264_annex_b_empty)
     ASSERT_EQ(nal, NULL);
 }
 
+/* T-extra: depkt_init NULL */
+TEST(test_h264_depkt_init_null)
+{
+    ASSERT_FAIL(h264_depkt_init(NULL));
+}
+
+/* T-extra: Unknown NAL type (e.g. type 30) ignored gracefully */
+TEST(test_h264_depkt_unknown_nal_type)
+{
+    nano_h264_depkt_t d;
+    h264_depkt_init(&d);
+
+    /* NAL type 30 = 0x1E, with NRI=0 → byte = 0x1E */
+    uint8_t payload[] = {0x1E, 0xAA, 0xBB};
+    const uint8_t *out = NULL;
+    size_t out_len = 0;
+    ASSERT_OK(h264_depkt_push(&d, payload, sizeof(payload), 1, &out, &out_len));
+    ASSERT_TRUE(out == NULL); /* Unknown NAL ignored */
+}
+
+/* T-extra: FU-A in progress, then single NAL interrupts reassembly */
+TEST(test_h264_depkt_fua_interrupted_by_single_nal)
+{
+    nano_h264_depkt_t d;
+    h264_depkt_init(&d);
+
+    /* Start FU-A (S=1, E=0) for IDR type 5, NRI=3 → FU indicator: 0x7C, FU header: 0x85 */
+    uint8_t fua_start[] = {0x7C, 0x85, 0x01, 0x02, 0x03};
+    const uint8_t *out = NULL;
+    size_t out_len = 0;
+    ASSERT_OK(h264_depkt_push(&d, fua_start, sizeof(fua_start), 0, &out, &out_len));
+    ASSERT_TRUE(out == NULL); /* Not complete yet */
+
+    /* Now send a single NAL (type 1) — should interrupt FU-A */
+    uint8_t single_nal[] = {0x41, 0xAA}; /* type=1, NRI=2 */
+    ASSERT_OK(h264_depkt_push(&d, single_nal, sizeof(single_nal), 1, &out, &out_len));
+    ASSERT_TRUE(out != NULL); /* Single NAL returned */
+    ASSERT_EQ(out_len, 2);
+    ASSERT_EQ(out[0], 0x41);
+}
+
+/* T-extra: Single NAL exceeds buffer (use impossibly large payload) */
+TEST(test_h264_depkt_single_nal_exceeds_buffer)
+{
+    nano_h264_depkt_t d;
+    h264_depkt_init(&d);
+
+    /* We can't actually allocate NANORTC_VIDEO_NAL_BUF_SIZE+1 on stack.
+     * Instead, lie about length while passing a valid small pointer.
+     * The function checks len > NANORTC_VIDEO_NAL_BUF_SIZE before memcpy. */
+    uint8_t payload[] = {0x65}; /* IDR NAL header */
+    const uint8_t *out = NULL;
+    size_t out_len = 0;
+    int rc = h264_depkt_push(&d, payload, NANORTC_VIDEO_NAL_BUF_SIZE + 1, 1, &out, &out_len);
+    ASSERT_EQ(rc, NANORTC_ERR_BUFFER_TOO_SMALL);
+}
+
 /* ================================================================
  * Test runner
  * ================================================================ */
@@ -604,4 +661,9 @@ RUN(test_h264_annex_b_4byte_start_code);
 RUN(test_h264_annex_b_two_nals);
 RUN(test_h264_annex_b_trailing_zeros_stripped);
 RUN(test_h264_annex_b_empty);
+/* Extra coverage tests */
+RUN(test_h264_depkt_init_null);
+RUN(test_h264_depkt_unknown_nal_type);
+RUN(test_h264_depkt_fua_interrupted_by_single_nal);
+RUN(test_h264_depkt_single_nal_exceeds_buffer);
 TEST_MAIN_END

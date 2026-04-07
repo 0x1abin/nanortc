@@ -1478,6 +1478,42 @@ TEST(test_stun_verify_integrity_short)
                                       sizeof(key) - 1, NULL));
 }
 
+/* T-extra: encode_binding_response null params */
+TEST(test_stun_encode_response_null_params)
+{
+    stun_msg_t req;
+    memset(&req, 0, sizeof(req));
+    uint8_t addr[4] = {10, 0, 0, 1};
+    uint8_t key[] = "testkey";
+    uint8_t buf[256];
+    size_t out_len = 0;
+
+    ASSERT_FAIL(stun_encode_binding_response(NULL, addr, STUN_FAMILY_IPV4, 5000, key, 7,
+                                             crypto()->hmac_sha1, buf, sizeof(buf), &out_len));
+    ASSERT_FAIL(stun_encode_binding_response(&req, NULL, STUN_FAMILY_IPV4, 5000, key, 7,
+                                             crypto()->hmac_sha1, buf, sizeof(buf), &out_len));
+    /* Invalid family */
+    ASSERT_FAIL(stun_encode_binding_response(&req, addr, 99, 5000, key, 7, crypto()->hmac_sha1,
+                                             buf, sizeof(buf), &out_len));
+    /* Buffer too small */
+    ASSERT_FAIL(stun_encode_binding_response(&req, addr, STUN_FAMILY_IPV4, 5000, key, 7,
+                                             crypto()->hmac_sha1, buf, 10, &out_len));
+}
+
+/* T-extra: encode_binding_request null params */
+TEST(test_stun_encode_request_null_params)
+{
+    uint8_t txid[STUN_TXID_SIZE] = {0};
+    uint8_t key[] = "testkey";
+    uint8_t buf[256];
+    size_t out_len = 0;
+
+    ASSERT_FAIL(stun_encode_binding_request(NULL, 4, 100, false, true, 0, txid, key, 7,
+                                            crypto()->hmac_sha1, buf, sizeof(buf), &out_len));
+    ASSERT_FAIL(stun_encode_binding_request("user", 4, 100, false, true, 0, txid, key, 7,
+                                            crypto()->hmac_sha1, buf, 10, &out_len));
+}
+
 /* ---- Runner ---- */
 
 TEST_MAIN_BEGIN("nanortc STUN tests")
@@ -1538,4 +1574,6 @@ RUN(test_stun_magic_cookie_in_parsed_vectors);
 /* Short/NULL edge cases */
 RUN(test_stun_verify_fingerprint_short);
 RUN(test_stun_verify_integrity_short);
+RUN(test_stun_encode_response_null_params);
+RUN(test_stun_encode_request_null_params);
 TEST_MAIN_END
