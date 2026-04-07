@@ -90,7 +90,7 @@ These rules are mechanically enforced. Violations will break the build or CI.
 
 **No dynamic allocation:** No `malloc`/`free` in `src/`. Use caller-provided buffers.
 
-**Naming:** Public API: `nano_` prefix. Internal: module prefix (`stun_`, `sctp_`, etc.). Types: `nano_*_t`. Enums: `NANORTC_*`.
+**Naming:** Public API: `nanortc_` prefix. Internal: module prefix (`stun_`, `sctp_`, etc.). Types: `nano_*_t`. Enums: `NANORTC_*`.
 
 **Error handling:** Return `int` (0 = `NANORTC_OK`, negative = `NANORTC_ERR_*`). No `assert()` in library code.
 
