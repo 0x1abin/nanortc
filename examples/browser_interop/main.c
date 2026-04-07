@@ -18,6 +18,7 @@
 #include "http_signaling.h"
 #include "media_source.h"
 #include "h264_utils.h"
+#include "ice_server_resolve.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -111,8 +112,11 @@ static void usage(const char *prog)
     fprintf(stderr, "  -s HOST:PORT   Signaling server (default: localhost:8765)\n");
     fprintf(stderr, "  -a DIR         Opus frame directory for audio send\n");
     fprintf(stderr, "  -v DIR         H.264 frame directory for video send\n");
-    fprintf(stderr, "  --offer        Act as offerer (CONTROLLING)\n");
-    fprintf(stderr, "  --answer       Act as answerer (CONTROLLED, default)\n");
+    fprintf(stderr, "  --turn-server IP:PORT  TURN relay server\n");
+    fprintf(stderr, "  --turn-user USER       TURN username\n");
+    fprintf(stderr, "  --turn-pass PASS       TURN password/credential\n");
+    fprintf(stderr, "  --offer                Act as offerer (CONTROLLING)\n");
+    fprintf(stderr, "  --answer               Act as answerer (CONTROLLED, default)\n");
 }
 
 /* ----------------------------------------------------------------
@@ -245,6 +249,10 @@ int main(int argc, char *argv[])
     int offer_mode = 0;
     const char *audio_dir = NULL;
     const char *video_dir = NULL;
+    char turn_ip[64] = "";
+    uint16_t turn_port = 3478;
+    const char *turn_user = NULL;
+    const char *turn_pass = NULL;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-p") == 0 && i + 1 < argc) {
@@ -276,6 +284,27 @@ int main(int argc, char *argv[])
             audio_dir = argv[++i];
         } else if (strcmp(argv[i], "-v") == 0 && i + 1 < argc) {
             video_dir = argv[++i];
+        } else if (strcmp(argv[i], "--turn-server") == 0 && i + 1 < argc) {
+            i++;
+            char *colon = strrchr(argv[i], ':');
+            if (colon) {
+                size_t iplen = (size_t)(colon - argv[i]);
+                if (iplen < sizeof(turn_ip)) {
+                    memcpy(turn_ip, argv[i], iplen);
+                    turn_ip[iplen] = '\0';
+                }
+                turn_port = (uint16_t)atoi(colon + 1);
+            } else {
+                size_t len = strlen(argv[i]);
+                if (len < sizeof(turn_ip)) {
+                    memcpy(turn_ip, argv[i], len);
+                    turn_ip[len] = '\0';
+                }
+            }
+        } else if (strcmp(argv[i], "--turn-user") == 0 && i + 1 < argc) {
+            turn_user = argv[++i];
+        } else if (strcmp(argv[i], "--turn-pass") == 0 && i + 1 < argc) {
+            turn_pass = argv[++i];
         } else if (strcmp(argv[i], "--offer") == 0) {
             offer_mode = 1;
         } else if (strcmp(argv[i], "--answer") == 0) {
@@ -285,6 +314,16 @@ int main(int argc, char *argv[])
             return 0;
         }
     }
+
+    /* Default TURN: PeerJS public server (if no CLI override) */
+    if (!turn_ip[0]) {
+        memcpy(turn_ip, "eu-0.turn.peerjs.com", 21);
+        turn_port = 3478;
+    }
+    if (!turn_user)
+        turn_user = "peerjs";
+    if (!turn_pass)
+        turn_pass = "peerjsp";
 
     app_ctx_t app_ctx = {.offer_mode = offer_mode, .audio_mid = -1, .video_mid = -1};
     signal(SIGINT, on_signal);
@@ -309,6 +348,35 @@ int main(int argc, char *argv[])
     cfg.crypto = nanortc_crypto_mbedtls();
 #endif
     cfg.role = offer_mode ? NANORTC_ROLE_CONTROLLING : NANORTC_ROLE_CONTROLLED;
+
+    /* ICE servers (WebRTC-style, from CLI args) */
+    static char turn_url[128];
+    static const char *stun_url = "stun:stun.cloudflare.com:3478";
+    static const char *turn_url_ptr;
+    nanortc_ice_server_t ice_servers[2];
+    static char ice_scratch[512];
+    size_t ice_server_count = 0;
+
+    ice_servers[0] = (nanortc_ice_server_t){.urls = &stun_url, .url_count = 1};
+    ice_server_count = 1;
+
+    if (turn_ip[0] && turn_user && turn_pass) {
+        snprintf(turn_url, sizeof(turn_url), "turn:%s:%u", turn_ip, turn_port);
+        turn_url_ptr = turn_url;
+        ice_servers[1] = (nanortc_ice_server_t){
+            .urls = &turn_url_ptr, .url_count = 1, .username = turn_user, .credential = turn_pass};
+        ice_server_count = 2;
+    }
+
+    /* Resolve domain names to IPs */
+    nano_resolve_ice_servers(ice_servers, ice_server_count, ice_scratch, sizeof(ice_scratch));
+    cfg.ice_servers = ice_servers;
+    cfg.ice_server_count = ice_server_count;
+
+    if (turn_ip[0] && turn_user) {
+        fprintf(stderr, "ICE servers: STUN + TURN %s user=%s\n",
+                ice_server_count > 1 ? ice_servers[1].urls[0] : "(none)", turn_user);
+    }
 
     rc = nanortc_init(&rtc, &cfg);
     if (rc != NANORTC_OK) {
@@ -354,8 +422,8 @@ int main(int argc, char *argv[])
         }
     }
 
-    /* 4. Bind UDP on 0.0.0.0, register real IP as candidate */
-    rc = nano_run_loop_init(&loop, &rtc, NULL, port);
+    /* 4. Bind UDP socket, register real IP as candidate */
+    rc = nano_run_loop_init(&loop, &rtc, port);
     if (rc < 0) {
         fprintf(stderr, "Failed to bind UDP port %d\n", port);
         http_sig_leave(&sig);

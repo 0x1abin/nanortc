@@ -41,6 +41,14 @@ static void setup_ice_pair(nano_ice_t *controlling, nano_ice_t *controlled)
     memcpy(controlling->remote_pwd, "peer-password-123456", 21);
     controlling->remote_pwd_len = 20;
     controlling->tie_breaker = 0xAABBCCDDEEFF0011ull;
+    /* Local candidate for controlling */
+    controlling->local_candidates[0].family = 4;
+    controlling->local_candidates[0].addr[0] = 10;
+    controlling->local_candidates[0].addr[3] = 1;
+    controlling->local_candidates[0].port = 4000;
+    controlling->local_candidates[0].type = NANORTC_ICE_CAND_HOST;
+    controlling->local_candidate_count = 1;
+    /* Remote candidate for controlling */
     controlling->remote_candidates[0].family = 4;
     controlling->remote_candidates[0].addr[0] = 10;
     controlling->remote_candidates[0].addr[3] = 2;
@@ -604,6 +612,16 @@ TEST(test_ice_priority_formula_rfc8445)
     memcpy(ice.remote_pwd, "password-0987654321b", 20);
     ice.remote_pwd_len = 20;
     ice.tie_breaker = 0x1234567890ABCDEFull;
+    /* Local candidate */
+    ice.local_candidates[0].family = 4;
+    ice.local_candidates[0].addr[0] = 192;
+    ice.local_candidates[0].addr[1] = 168;
+    ice.local_candidates[0].addr[2] = 1;
+    ice.local_candidates[0].addr[3] = 100;
+    ice.local_candidates[0].port = 4000;
+    ice.local_candidates[0].type = NANORTC_ICE_CAND_HOST;
+    ice.local_candidate_count = 1;
+    /* Remote candidate */
     ice.remote_candidates[0].family = 4;
     ice.remote_candidates[0].addr[0] = 192;
     ice.remote_candidates[0].addr[1] = 168;
@@ -645,6 +663,16 @@ TEST(test_ice_multiple_candidates_cycling)
     ice.remote_pwd_len = 20;
     ice.tie_breaker = 0x1234567890ABCDEFull;
 
+    /* Add a local candidate */
+    ice.local_candidates[0].family = 4;
+    ice.local_candidates[0].addr[0] = 192;
+    ice.local_candidates[0].addr[1] = 168;
+    ice.local_candidates[0].addr[2] = 1;
+    ice.local_candidates[0].addr[3] = 100;
+    ice.local_candidates[0].port = 4000;
+    ice.local_candidates[0].type = NANORTC_ICE_CAND_HOST;
+    ice.local_candidate_count = 1;
+
     /* Add 2 remote candidates */
     ice.remote_candidates[0].family = 4;
     ice.remote_candidates[0].addr[0] = 192;
@@ -663,7 +691,7 @@ TEST(test_ice_multiple_candidates_cycling)
     len = 0;
     ASSERT_OK(ice_generate_check(&ice, 0, crypto(), buf, sizeof(buf), &len));
     ASSERT_TRUE(len > 0);
-    uint8_t first_candidate = ice.current_candidate;
+    uint8_t first_candidate = ice.current_remote;
 
     /* Advance time past pacing interval and generate second check */
     len = 0;

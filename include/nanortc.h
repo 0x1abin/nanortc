@@ -265,6 +265,7 @@ typedef enum {
 #if NANORTC_FEATURE_VIDEO
     NANORTC_EV_BITRATE_ESTIMATE = 11, /**< BWE: estimated bitrate changed significantly. */
 #endif
+    NANORTC_EV_ICE_CANDIDATE = 12, /**< New local ICE candidate discovered (trickle). */
 } nanortc_event_type_t;
 
 /* Forward declarations needed by event data structures */
@@ -322,6 +323,12 @@ typedef struct {
 } nanortc_ev_bitrate_estimate_t;
 #endif
 
+/** @brief Data for NANORTC_EV_ICE_CANDIDATE (trickle ICE). */
+typedef struct {
+    const char *candidate_str; /**< SDP candidate line (valid until next poll). */
+    bool end_of_candidates;    /**< True = no more local candidates. */
+} nanortc_ev_ice_candidate_t;
+
 /** @brief Data for NANORTC_EV_DATACHANNEL_OPEN. */
 typedef struct {
     uint16_t id;       /**< SCTP stream ID. */
@@ -367,6 +374,7 @@ typedef struct nanortc_event {
         nanortc_ev_datachannel_id_t
             datachannel_id; /**< EV_DATACHANNEL_CLOSE, EV_DATACHANNEL_BUFFERED_LOW */
         uint16_t ice_state; /**< EV_ICE_STATE_CHANGE */
+        nanortc_ev_ice_candidate_t ice_candidate; /**< EV_ICE_CANDIDATE */
     };
 } nanortc_event_t;
 
@@ -382,6 +390,8 @@ typedef struct nanortc_output {
             const uint8_t *data; /**< Packet payload. */
             size_t len;          /**< Packet length in bytes. */
             nanortc_addr_t dest; /**< Destination address. */
+            nanortc_addr_t src;  /**< Source address (local interface).
+                                  *   family==0 means "use any" (backward compat). */
         } transmit;              /**< Valid when type == NANORTC_OUTPUT_TRANSMIT. */
         nanortc_event_t event;   /**< Valid when type == NANORTC_OUTPUT_EVENT. */
         uint32_t timeout_ms;     /**< Valid when type == NANORTC_OUTPUT_TIMEOUT. */
@@ -417,6 +427,31 @@ typedef enum {
 } nanortc_ice_role_t;
 
 /* ----------------------------------------------------------------
+ * ICE Server Configuration (WebRTC RTCIceServer)
+ * ---------------------------------------------------------------- */
+
+/**
+ * @brief ICE server descriptor (matches WebRTC RTCIceServer).
+ *
+ * Each entry may contain one or more URLs. The URL prefix determines
+ * the type: "stun:host:port" or "turn:host:port".
+ *
+ * Supports both single-URL and multi-URL forms:
+ *   - Single: {.urls = (const char*[]){"stun:host:3478"}, .url_count = 1}
+ *   - Multi:  {.urls = (const char*[]){"turn:h:3478", "turn:h:3478?transport=tcp"},
+ *              .url_count = 2, .username = "user", .credential = "pass"}
+ *
+ * Pointer fields must remain valid only during the nanortc_init() call
+ * (contents are copied internally).
+ */
+typedef struct nanortc_ice_server {
+    const char *const *urls; /**< Array of server URLs ("stun:..." or "turn:..."). */
+    size_t url_count;        /**< Number of entries in urls[]. */
+    const char *username;    /**< TURN username (NULL for STUN). */
+    const char *credential;  /**< TURN credential/password (NULL for STUN). */
+} nanortc_ice_server_t;
+
+/* ----------------------------------------------------------------
  * Configuration
  * ---------------------------------------------------------------- */
 
@@ -428,6 +463,11 @@ typedef struct nanortc_config {
     /** @brief Logging configuration (optional, zero-init disables). */
     nanortc_log_config_t log;
 
+    /** @brief ICE servers (STUN/TURN). Matches WebRTC RTCConfiguration.iceServers.
+     *  Pointer fields are copied during nanortc_init(); need not persist after. */
+    const nanortc_ice_server_t *ice_servers; /**< Array of ICE server descriptors (NULL = none). */
+    size_t ice_server_count;                 /**< Number of entries in ice_servers[]. */
+
     /* Memory configuration */
     uint32_t sctp_send_buf_size; /**< SCTP send buffer size (0 = default). */
     uint32_t sctp_recv_buf_size; /**< SCTP receive buffer size (0 = default). */
@@ -437,12 +477,20 @@ typedef struct nanortc_config {
 #endif
 } nanortc_config_t;
 
+/** @brief Default-initialize a nanortc_config_t. Caller must set .crypto before nanortc_init(). */
+#define NANORTC_CONFIG_DEFAULT()                        \
+    (nanortc_config_t)                                  \
+    {                                                   \
+        .crypto = NULL, .role = NANORTC_ROLE_CONTROLLED \
+    }
+
 /* ----------------------------------------------------------------
  * Internal subsystem types (needed for struct layout — do not use directly)
  * ---------------------------------------------------------------- */
 #include "nano_ice.h"
 #include "nano_dtls.h"
 #include "nano_sdp.h"
+#include "nano_turn.h"
 
 #if NANORTC_FEATURE_DATACHANNEL
 #include "nano_sctp.h"
@@ -493,6 +541,7 @@ struct nanortc {
     nano_ice_t ice;
     nano_dtls_t dtls;
     nano_sdp_t sdp;
+    nano_turn_t turn;
 
 #if NANORTC_FEATURE_DATACHANNEL
     nano_sctp_t sctp;
@@ -537,6 +586,21 @@ struct nanortc {
 
     /* Stored remote address for SCTP output routing */
     nanortc_addr_t remote_addr;
+
+    /* Scratch for trickle ICE candidate strings (valid until next poll) */
+    char relay_cand_str[NANORTC_IPV6_STR_SIZE + 96];
+    char srflx_cand_str[NANORTC_IPV6_STR_SIZE + 96];
+    char host_cand_str[NANORTC_IPV6_STR_SIZE + 96];
+
+    /* STUN server for srflx discovery (RFC 8445 §5.1.1.1) */
+    uint8_t stun_server_addr[NANORTC_ADDR_SIZE];
+    uint16_t stun_server_port;
+    uint8_t stun_server_family; /* 4 or 6 */
+    bool stun_server_configured;
+    uint8_t stun_txid[NANORTC_STUN_TXID_SIZE]; /* transaction ID for srflx request */
+    bool srflx_discovered;
+    uint32_t stun_retry_at_ms;
+    uint8_t stun_retries;
 };
 
 /* ----------------------------------------------------------------
@@ -621,12 +685,52 @@ NANORTC_API int nanortc_add_local_candidate(nanortc_t *rtc, const char *ip, uint
 /**
  * @brief Add a remote ICE candidate from an SDP candidate attribute.
  *
+ * Can be called at any time (trickle ICE, RFC 8838). If ICE is already in
+ * CHECKING state, the new candidate is immediately included in checks.
+ *
  * @param rtc            Initialized RTC state.
  * @param candidate_str  NUL-terminated SDP candidate line (a=candidate:...).
  * @return NANORTC_OK on success.
  * @retval NANORTC_ERR_PARSE  Malformed candidate string.
  */
 NANORTC_API int nanortc_add_remote_candidate(nanortc_t *rtc, const char *candidate_str);
+
+/**
+ * @brief Set ICE servers after initialization.
+ *
+ * Alternative to nanortc_config_t.ice_servers for cases where ICE server
+ * info is obtained after init (e.g., from signaling server response).
+ * Call before nanortc_create_offer() / nanortc_accept_offer().
+ *
+ * @param rtc      Initialized RTC state.
+ * @param servers  Array of ICE server descriptors (copied internally).
+ * @param count    Number of entries in @p servers.
+ * @return NANORTC_OK on success.
+ */
+NANORTC_API int nanortc_set_ice_servers(nanortc_t *rtc, const nanortc_ice_server_t *servers,
+                                        size_t count);
+
+/**
+ * @brief Signal end of remote ICE candidates (RFC 8838).
+ *
+ * After this call, no more candidates will be accepted. If ICE is checking
+ * and all candidates have been exhausted, ICE transitions to FAILED.
+ *
+ * @param rtc  Initialized RTC state.
+ * @return NANORTC_OK on success.
+ */
+NANORTC_API int nanortc_end_of_candidates(nanortc_t *rtc);
+
+/**
+ * @brief Trigger an ICE restart (RFC 8445 §9).
+ *
+ * Resets ICE state, generates new credentials, and clears remote candidates.
+ * After calling this, exchange a new offer/answer with the updated credentials.
+ *
+ * @param rtc  Initialized RTC state.
+ * @return NANORTC_OK on success.
+ */
+NANORTC_API int nanortc_ice_restart(nanortc_t *rtc);
 
 /* ----------------------------------------------------------------
  * Event loop (Sans I/O core)

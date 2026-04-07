@@ -84,7 +84,7 @@ jobs:
           cmake -B build -DNANORTC_FEATURE_DATACHANNEL=ON -DNANORTC_FEATURE_AUDIO=ON -DNANORTC_FEATURE_VIDEO=ON -DCMAKE_BUILD_TYPE=Debug
           cmake --build build -j$(nproc)
           # All symbols must start with nano_/nanortc_ (public API) or a known module prefix (internal)
-          ALLOWED='nano_|nanortc_|stun_|ice_|dtls_|nsctp_|sctp_|dc_|sdp_|rtp_|rtcp_|srtp_|jitter_|bwe_|h264_|media_|ssrc_map_|addr_|track_'
+          ALLOWED='nano_|nanortc_|stun_|ice_|dtls_|nsctp_|sctp_|dc_|sdp_|rtp_|rtcp_|srtp_|jitter_|bwe_|h264_|media_|ssrc_map_|addr_|track_|turn_'
           violations=$(nm -g build/libnanortc.a 2>/dev/null | grep ' T ' | awk '{print $3}' | grep -v '^_' | grep -vE "^($ALLOWED)" || true)
           if [ -n "$violations" ]; then
             echo "Symbols with unknown prefix (expected nano_ or module prefix):"
@@ -131,6 +131,79 @@ jobs:
       - name: Test
         run: ctest --test-dir build --output-on-failure
 
+  fuzz:
+    name: Fuzz Testing
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libmbedtls-dev clang
+
+      - name: Configure (Fuzz + MEDIA)
+        run: |
+          CC=clang cmake -B build \
+            -DNANORTC_BUILD_FUZZ=ON \
+            -DNANORTC_BUILD_TESTS=OFF \
+            -DNANORTC_FEATURE_DATACHANNEL=ON \
+            -DNANORTC_FEATURE_AUDIO=ON \
+            -DNANORTC_FEATURE_VIDEO=ON \
+            -DCMAKE_C_COMPILER=clang \
+            -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        run: cmake --build build -j$(nproc)
+
+      - name: Fuzz (30s per harness)
+        run: |
+          mkdir -p tests/fuzz/corpus/{stun,sctp,sdp,rtp,h264,addr,bwe}
+          for t in fuzz_stun fuzz_sctp fuzz_sdp fuzz_rtp fuzz_h264 fuzz_addr fuzz_bwe; do
+            echo "=== $t ==="
+            CORPUS_DIR="tests/fuzz/corpus/${t#fuzz_}"
+            ./build/tests/fuzz/$t "$CORPUS_DIR" \
+              -max_total_time=30 -max_len=4096 -print_final_stats=1 2>&1 | tail -5
+          done
+
+  coverage:
+    name: Code Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libmbedtls-dev lcov
+
+      - name: Configure (Coverage + MEDIA)
+        run: |
+          cmake -B build \
+            -DNANORTC_COVERAGE=ON \
+            -DNANORTC_FEATURE_DATACHANNEL=ON \
+            -DNANORTC_FEATURE_AUDIO=ON \
+            -DNANORTC_FEATURE_VIDEO=ON \
+            -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        run: cmake --build build -j$(nproc)
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Capture coverage
+        run: |
+          lcov --capture --directory build --output-file coverage-raw.info \
+            --ignore-errors inconsistent,inconsistent --quiet
+          lcov --extract coverage-raw.info '*/src/*.c' '*/crypto/*.c' \
+            --output-file coverage.info --ignore-errors unused,unused --quiet
+          lcov --summary coverage.info 2>&1 | tee coverage-summary.txt
+          # Check 80% threshold
+          LINE_COV=$(grep "lines" coverage-summary.txt | grep -oE '[0-9]+\.[0-9]+' | head -1)
+          LINE_INT=${LINE_COV%.*}
+          echo "Line coverage: ${LINE_COV}%"
+          if [ "$LINE_INT" -lt 80 ]; then
+            echo "FAIL: coverage ${LINE_COV}% < 80%"
+            exit 1
+          fi
+
   interop:
     name: Interop (libdatachannel)
     runs-on: ubuntu-latest
@@ -151,4 +224,4 @@ jobs:
         run: cmake --build build -j$(nproc)
 
       - name: Test
-        run: ctest --test-dir build -R interop --output-on-failure
+        run: ctest --test-dir build -R interop -LE network --output-on-failure

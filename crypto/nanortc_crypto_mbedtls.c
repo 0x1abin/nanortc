@@ -149,6 +149,26 @@ static void mbed_hmac_sha1(const uint8_t *key, size_t key_len, const uint8_t *da
 }
 
 /* ================================================================
+ * MD5 (for TURN long-term credentials, RFC 8489 §9.2.2)
+ * ================================================================ */
+
+static void mbed_md5(const uint8_t *data, size_t len, uint8_t out[16])
+{
+#ifdef NANORTC_MBEDTLS_4
+    /* PSA one-shot hash */
+    if (mbed_psa_init() != 0) {
+        nanortc_memzero(out, 16);
+        return;
+    }
+    size_t hash_len = 0;
+    psa_hash_compute(PSA_ALG_MD5, data, len, out, 16, &hash_len);
+#else
+    const mbedtls_md_info_t *info = mbedtls_md_info_from_type(MBEDTLS_MD_MD5);
+    mbedtls_md(info, data, len, out);
+#endif
+}
+
+/* ================================================================
  * CSPRNG
  * ================================================================ */
 
@@ -880,6 +900,7 @@ static const nanortc_crypto_provider_t mbedtls_provider = {
     .dtls_set_role = mbed_dtls_set_role,
     .hmac_sha1 = mbed_hmac_sha1,
     .random_bytes = mbed_random_bytes,
+    .md5 = mbed_md5,
 #if NANORTC_HAVE_MEDIA_TRANSPORT
     .aes_128_cm = mbed_aes_128_cm,
     .hmac_sha1_80 = mbed_hmac_sha1_80,

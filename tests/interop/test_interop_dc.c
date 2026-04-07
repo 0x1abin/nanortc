@@ -46,7 +46,7 @@ static int setup_connected_pair(interop_sig_pipe_t *pipe, interop_nanortc_peer_t
     }
 
     /* Start nanortc peer first (it waits for offer) */
-    if (interop_nanortc_start(nano, pipe->fd[0], port) != 0) {
+    if (interop_nanortc_start(nano, pipe->fd[0], port, NULL) != 0) {
         fprintf(stderr, "[test] Failed to start nanortc peer\n");
         interop_sig_destroy(pipe);
         return -1;

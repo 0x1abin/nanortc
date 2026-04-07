@@ -214,7 +214,7 @@ static int handle_offer(const char *offer, char *answer, size_t answer_size, siz
         return s_audio_mid;
     }
 
-    rc = nano_run_loop_init(&s_loop, &s_rtc, NULL, CONFIG_EXAMPLE_UDP_PORT);
+    rc = nano_run_loop_init(&s_loop, &s_rtc, CONFIG_EXAMPLE_UDP_PORT);
     if (rc < 0) {
         ESP_LOGE(TAG, "Failed to bind UDP port");
         return rc;
@@ -335,7 +335,6 @@ void app_main(void)
 
     /* 4. Init run loop state (not started until POST /offer) */
     memset(&s_loop, 0, sizeof(s_loop));
-    s_loop.fd = -1;
 
     /* 5. Start HTTP server */
     nano_webserver_config_t wscfg;

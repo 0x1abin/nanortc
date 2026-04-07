@@ -1456,6 +1456,64 @@ TEST(test_stun_magic_cookie_in_parsed_vectors)
     ASSERT_EQ(magic, STUN_MAGIC_COOKIE);
 }
 
+/* ---- Short/NULL input edge cases ---- */
+
+TEST(test_stun_verify_fingerprint_short)
+{
+    /* stun_verify_fingerprint with len < STUN_HEADER_SIZE + 8 */
+    uint8_t short_data[] = {0, 1, 0, 0};
+    ASSERT_FAIL(stun_verify_fingerprint(short_data, sizeof(short_data)));
+    ASSERT_FAIL(stun_verify_fingerprint(NULL, 100));
+}
+
+TEST(test_stun_verify_integrity_short)
+{
+    /* stun_verify_integrity with short data */
+    stun_msg_t msg;
+    memset(&msg, 0, sizeof(msg));
+    uint8_t key[] = "testkey";
+    ASSERT_FAIL(stun_verify_integrity(NULL, 100, &msg, key, sizeof(key) - 1, NULL));
+    uint8_t short_data[] = {0, 1, 0, 0};
+    ASSERT_FAIL(stun_verify_integrity(short_data, sizeof(short_data), &msg, key,
+                                      sizeof(key) - 1, NULL));
+}
+
+/* T-extra: encode_binding_response null params */
+TEST(test_stun_encode_response_null_params)
+{
+    stun_msg_t req;
+    memset(&req, 0, sizeof(req));
+    uint8_t addr[4] = {10, 0, 0, 1};
+    uint8_t key[] = "testkey";
+    uint8_t buf[256];
+    size_t out_len = 0;
+
+    ASSERT_FAIL(stun_encode_binding_response(NULL, addr, STUN_FAMILY_IPV4, 5000, key, 7,
+                                             crypto()->hmac_sha1, buf, sizeof(buf), &out_len));
+    ASSERT_FAIL(stun_encode_binding_response(&req, NULL, STUN_FAMILY_IPV4, 5000, key, 7,
+                                             crypto()->hmac_sha1, buf, sizeof(buf), &out_len));
+    /* Invalid family */
+    ASSERT_FAIL(stun_encode_binding_response(&req, addr, 99, 5000, key, 7, crypto()->hmac_sha1,
+                                             buf, sizeof(buf), &out_len));
+    /* Buffer too small */
+    ASSERT_FAIL(stun_encode_binding_response(&req, addr, STUN_FAMILY_IPV4, 5000, key, 7,
+                                             crypto()->hmac_sha1, buf, 10, &out_len));
+}
+
+/* T-extra: encode_binding_request null params */
+TEST(test_stun_encode_request_null_params)
+{
+    uint8_t txid[STUN_TXID_SIZE] = {0};
+    uint8_t key[] = "testkey";
+    uint8_t buf[256];
+    size_t out_len = 0;
+
+    ASSERT_FAIL(stun_encode_binding_request(NULL, 4, 100, false, true, 0, txid, key, 7,
+                                            crypto()->hmac_sha1, buf, sizeof(buf), &out_len));
+    ASSERT_FAIL(stun_encode_binding_request("user", 4, 100, false, true, 0, txid, key, 7,
+                                            crypto()->hmac_sha1, buf, 10, &out_len));
+}
+
 /* ---- Runner ---- */
 
 TEST_MAIN_BEGIN("nanortc STUN tests")
@@ -1513,4 +1571,9 @@ RUN(test_stun_unknown_comprehension_optional_attr);
 RUN(test_stun_error_code_parse);
 RUN(test_stun_length_field_alignment);
 RUN(test_stun_magic_cookie_in_parsed_vectors);
+/* Short/NULL edge cases */
+RUN(test_stun_verify_fingerprint_short);
+RUN(test_stun_verify_integrity_short);
+RUN(test_stun_encode_response_null_params);
+RUN(test_stun_encode_request_null_params);
 TEST_MAIN_END

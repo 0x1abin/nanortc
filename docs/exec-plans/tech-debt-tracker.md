@@ -6,7 +6,7 @@ Track known debt, prioritize by impact, pay down continuously.
 
 | ID | Category | Description | Impact | Priority | Plan to Resolve |
 |----|----------|-------------|--------|----------|-----------------|
-| TD-002 | Test | No test framework — manual macros only (333 tests, exceeds 50 threshold) | Medium | Phase 4 | Evaluate Unity (embedded C test framework) — threshold reached |
+| ~~TD-002~~ | ~~Test~~ | ~~No test framework — manual macros only (333 tests, exceeds 50 threshold)~~ | ~~Medium~~ | ~~Phase 4~~ | ~~Resolved~~ |
 | ~~TD-001~~ | ~~Build~~ | ~~`-Wno-unused-parameter` suppresses useful warnings~~ | ~~Low~~ | ~~Phase 3~~ | ~~Resolved~~ |
 | ~~TD-008~~ | ~~CI~~ | ~~`scripts/ci-check.sh` uses `declare -A` (bash 4+)~~ | ~~Low~~ | ~~Phase 3~~ | ~~Resolved~~ |
 | ~~TD-003~~ | ~~CI~~ | ~~No CI pipeline yet~~ | ~~Medium~~ | ~~Phase 1~~ | ~~Resolved~~ |
@@ -42,6 +42,7 @@ Track known debt, prioritize by impact, pay down continuously.
 | TD-016 | 2026-03-31 | Fixed `browser_interop` and `linux_datachannel` examples to use `nanortc_get_datachannel()` → `nanortc_datachannel_t` handle for send calls, matching the flat send API. Superseded 2026-04-01: removed handle type entirely, DataChannel API simplified to flat `nanortc_datachannel_send(rtc, id, ...)`. |
 | TD-001 | 2026-04-03 | Removed `-Wno-unused-parameter` from CMake — BWE fully implemented (no stubs remain), fixed `nano_h264.c` marker param with `(void)` cast. All 6 feature combos compile warning-free with `-Wall -Wextra -Werror`. |
 | TD-008 | 2026-04-03 | Already resolved: `ci-check.sh` was rewritten to use indexed arrays (bash 3.2 compatible). No `declare -A` or bash 4+ features. |
+| TD-002 | 2026-04-05 | Migrated to Unity test framework (ThrowTheSwitch/Unity). Vendored in `third_party/unity/`. Compatibility shim in `nano_test.h` maps existing macros to Unity — zero changes to 14 test files, all 357+ tests pass across 6 feature combos × 2 crypto backends. |
 
 ## Principles
 

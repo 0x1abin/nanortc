@@ -223,7 +223,7 @@ int interop_nanortc_media_start(interop_nanortc_media_peer_t *peer, int sig_fd, 
     nanortc_add_local_candidate(&peer->rtc, "127.0.0.1", port);
 
     /* Init run loop (binds UDP socket) */
-    rc = nano_run_loop_init(&peer->loop, &peer->rtc, "127.0.0.1", port);
+    rc = nano_run_loop_init(&peer->loop, &peer->rtc, port);
     if (rc < 0) {
         fprintf(stderr, "[nanortc-media] Failed to bind UDP port %d\n", port);
         return -1;

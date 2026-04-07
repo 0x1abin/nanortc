@@ -51,6 +51,11 @@ Dependencies flow strictly downward. No cycles allowed.
                               └──────────┘ └────────┘ └────────┘ └──────────┘
                                             ↑ AUDIO    ↑ VIDEO    ↑ VIDEO
 
+  TURN relay (always compiled, ~300B overhead):
+  ┌──────────┐
+  │nano_turn │  (TURN client: Allocate/Refresh/Permission/ChannelBind/Send/Data)
+  └──────────┘
+
   Cross-cutting:
   ┌──────────────────┐   ┌──────────────┐   ┌────────────┐
   │ nanortc_crypto.h │   │ nano_crc32c  │   │ nano_addr  │
@@ -105,12 +110,18 @@ Six CI-tested combinations: DATA, AUDIO, MEDIA, AUDIO_ONLY, MEDIA_ONLY, CORE_ONL
 ```
 nanortc_handle_input(rtc, now_ms, data, len, src)
   │
-  ├── byte[0] ∈ [0x00-0x03] → nano_stun → nano_ice
-  │                                          ├── (controlled) respond with Binding Response
-  │                                          ├── (controlling) process Binding Response
-  │                                          └── ICE connected event
+  ├── byte[0] ∈ [0x40-0x7F] → nano_turn ChannelData unwrap
+  │                              └── re-dispatch inner packet with peer address
   │
-  ├── byte[0] ∈ [0x14-0x40] → nano_dtls
+  ├── byte[0] ∈ [0x00-0x03] → STUN demux:
+  │   ├── from TURN server → nano_turn (Data indication unwrap / response handling)
+  │   ├── from STUN server → srflx discovery (XOR-MAPPED-ADDRESS → trickle candidate)
+  │   └── from peer        → nano_ice
+  │                            ├── (controlled) respond with Binding Response
+  │                            ├── (controlling) process Binding Response
+  │                            └── ICE connected event
+  │
+  ├── byte[0] ∈ [0x14-0x3F] → nano_dtls
   │                              ├── handshake → DTLS connected event
   │                              └── app data → nano_sctp
   │                                               └── nano_datachannel
@@ -127,9 +138,29 @@ nanortc_handle_input(rtc, now_ms, data, len, src)
 nanortc_poll_output(rtc, &out)
   │
   ├── NANORTC_OUTPUT_TRANSMIT → caller does sendto()
+  │     (if ICE selected relay pair: wrapped in ChannelData/Send indication,
+  │      dest = TURN server; otherwise dest = peer directly)
   ├── NANORTC_OUTPUT_EVENT    → caller processes event
   └── NANORTC_OUTPUT_TIMEOUT  → caller sets select() timeout
 ```
+
+### NAT Traversal (ICE candidate types)
+
+NanoRTC supports all three ICE candidate types (RFC 8445 §5.1.2.1):
+
+| Type | Source | Priority | Discovery |
+|------|--------|----------|-----------|
+| **host** | Local address from `nanortc_add_local_candidate()` | 2130706431–2130705919 (varies by index) | Caller provides |
+| **srflx** | STUN server Binding Response (XOR-MAPPED-ADDRESS) | 1090519295 | Automatic via `stun:` URL |
+| **relay** | TURN server Allocate Response (XOR-RELAYED-ADDRESS) | 16777215 | Automatic via `turn:` URL |
+
+Multiple local host candidates are supported (`NANORTC_MAX_LOCAL_CANDIDATES`, default 4).
+Each host candidate gets a distinct priority per RFC 8445 §5.1.2.1:
+`priority = (126 << 24) | ((65535 - index) << 8) | 255`.
+
+Timer-driven lifecycle in `rtc_process_timers()`:
+- **STUN srflx**: Simple Binding Request → retry 3× at 500ms → extract mapped address
+- **TURN relay**: Allocate → 401 challenge → authenticated retry → Refresh (10min) + CreatePermission (5min) + ChannelBind (10min)
 
 ## Key Files
 

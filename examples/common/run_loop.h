@@ -20,7 +20,9 @@ typedef void (*nano_event_cb)(nanortc_t *rtc, const nanortc_event_t *evt, void *
 
 typedef struct nano_run_loop {
     nanortc_t *rtc;
-    int fd;               /* UDP socket */
+    int fds[NANORTC_MAX_LOCAL_CANDIDATES];               /* one UDP socket per local candidate */
+    nanortc_addr_t local_addrs[NANORTC_MAX_LOCAL_CANDIDATES]; /* binary addr for fd matching */
+    uint8_t fd_count;
     uint16_t port;
     volatile int running;
     nano_event_cb event_cb;
@@ -28,9 +30,14 @@ typedef struct nano_run_loop {
     uint32_t max_poll_ms; /* max select timeout (0 = default 100ms) */
 } nano_run_loop_t;
 
-/* Initialize: bind UDP socket, associate with nanortc_t */
-int nano_run_loop_init(nano_run_loop_t *loop, nanortc_t *rtc,
-                       const char *bind_ip, uint16_t port);
+/* Initialize: bind a single UDP socket on INADDR_ANY, associate with nanortc_t.
+ * Does NOT register ICE candidates — call nanortc_add_local_candidate() after.
+ * With NANORTC_FEATURE_IPV6: uses AF_INET6 dual-stack socket. */
+int nano_run_loop_init(nano_run_loop_t *loop, nanortc_t *rtc, uint16_t port);
+
+/* Auto-detect local interfaces and bind one socket per non-loopback IPv4 address.
+ * Calls nanortc_add_local_candidate() for each. Linux/macOS only (uses getifaddrs). */
+int nano_run_loop_auto_candidates(nano_run_loop_t *loop, nanortc_t *rtc, uint16_t port);
 
 /* Set application event callback */
 void nano_run_loop_set_event_cb(nano_run_loop_t *loop,

@@ -488,6 +488,137 @@ TEST(test_h264_keyframe_single_byte)
 }
 
 /* ================================================================
+ * Annex-B NAL finder tests (h264_annex_b_find_nal)
+ * ================================================================ */
+
+TEST(test_h264_annex_b_null_params)
+{
+    size_t offset = 0, nal_len = 0;
+    ASSERT_EQ(h264_annex_b_find_nal(NULL, 10, &offset, &nal_len), NULL);
+    uint8_t data[] = {0, 0, 1, 0x65};
+    ASSERT_EQ(h264_annex_b_find_nal(data, 4, NULL, &nal_len), NULL);
+    ASSERT_EQ(h264_annex_b_find_nal(data, 4, &offset, NULL), NULL);
+}
+
+TEST(test_h264_annex_b_3byte_start_code)
+{
+    /* 00 00 01 <IDR NAL=0x65> */
+    uint8_t data[] = {0x00, 0x00, 0x01, 0x65, 0xAA, 0xBB};
+    size_t offset = 0, nal_len = 0;
+    const uint8_t *nal = h264_annex_b_find_nal(data, sizeof(data), &offset, &nal_len);
+    ASSERT_TRUE(nal != NULL);
+    ASSERT_EQ(nal[0], 0x65);
+    ASSERT_EQ(nal_len, 3); /* 0x65, 0xAA, 0xBB */
+}
+
+TEST(test_h264_annex_b_4byte_start_code)
+{
+    /* 00 00 00 01 <SPS NAL=0x67> <data> */
+    uint8_t data[] = {0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0xC0};
+    size_t offset = 0, nal_len = 0;
+    const uint8_t *nal = h264_annex_b_find_nal(data, sizeof(data), &offset, &nal_len);
+    ASSERT_TRUE(nal != NULL);
+    ASSERT_EQ(nal[0], 0x67);
+    ASSERT_EQ(nal_len, 3); /* 0x67, 0x42, 0xC0 */
+}
+
+TEST(test_h264_annex_b_two_nals)
+{
+    /* NAL1 | 00 00 01 | NAL2 */
+    uint8_t data[] = {0x00, 0x00, 0x01, 0x67, 0x42, /* NAL1 */
+                      0x00, 0x00, 0x01, 0x68, 0xCE}; /* NAL2 */
+    size_t offset = 0, nal_len = 0;
+
+    /* First NAL */
+    const uint8_t *nal1 = h264_annex_b_find_nal(data, sizeof(data), &offset, &nal_len);
+    ASSERT_TRUE(nal1 != NULL);
+    ASSERT_EQ(nal1[0], 0x67);
+    ASSERT_EQ(nal_len, 2); /* 0x67, 0x42 (trailing zeros stripped) */
+
+    /* Second NAL */
+    const uint8_t *nal2 = h264_annex_b_find_nal(data, sizeof(data), &offset, &nal_len);
+    ASSERT_TRUE(nal2 != NULL);
+    ASSERT_EQ(nal2[0], 0x68);
+    ASSERT_EQ(nal_len, 2); /* 0x68, 0xCE */
+}
+
+TEST(test_h264_annex_b_trailing_zeros_stripped)
+{
+    /* NAL followed by zero padding — trailing zeros between NALs should be stripped */
+    uint8_t data[] = {0x00, 0x00, 0x01, 0x65, 0xAA, 0x00, 0x00, 0x00};
+    size_t offset = 0, nal_len = 0;
+    const uint8_t *nal = h264_annex_b_find_nal(data, sizeof(data), &offset, &nal_len);
+    ASSERT_TRUE(nal != NULL);
+    ASSERT_EQ(nal[0], 0x65);
+    ASSERT_EQ(nal_len, 2); /* 0x65, 0xAA — trailing zeros stripped */
+}
+
+TEST(test_h264_annex_b_empty)
+{
+    uint8_t data[] = {0};
+    size_t offset = 0, nal_len = 0;
+    const uint8_t *nal = h264_annex_b_find_nal(data, 0, &offset, &nal_len);
+    ASSERT_EQ(nal, NULL);
+}
+
+/* T-extra: depkt_init NULL */
+TEST(test_h264_depkt_init_null)
+{
+    ASSERT_FAIL(h264_depkt_init(NULL));
+}
+
+/* T-extra: Unknown NAL type (e.g. type 30) ignored gracefully */
+TEST(test_h264_depkt_unknown_nal_type)
+{
+    nano_h264_depkt_t d;
+    h264_depkt_init(&d);
+
+    /* NAL type 30 = 0x1E, with NRI=0 → byte = 0x1E */
+    uint8_t payload[] = {0x1E, 0xAA, 0xBB};
+    const uint8_t *out = NULL;
+    size_t out_len = 0;
+    ASSERT_OK(h264_depkt_push(&d, payload, sizeof(payload), 1, &out, &out_len));
+    ASSERT_TRUE(out == NULL); /* Unknown NAL ignored */
+}
+
+/* T-extra: FU-A in progress, then single NAL interrupts reassembly */
+TEST(test_h264_depkt_fua_interrupted_by_single_nal)
+{
+    nano_h264_depkt_t d;
+    h264_depkt_init(&d);
+
+    /* Start FU-A (S=1, E=0) for IDR type 5, NRI=3 → FU indicator: 0x7C, FU header: 0x85 */
+    uint8_t fua_start[] = {0x7C, 0x85, 0x01, 0x02, 0x03};
+    const uint8_t *out = NULL;
+    size_t out_len = 0;
+    ASSERT_OK(h264_depkt_push(&d, fua_start, sizeof(fua_start), 0, &out, &out_len));
+    ASSERT_TRUE(out == NULL); /* Not complete yet */
+
+    /* Now send a single NAL (type 1) — should interrupt FU-A */
+    uint8_t single_nal[] = {0x41, 0xAA}; /* type=1, NRI=2 */
+    ASSERT_OK(h264_depkt_push(&d, single_nal, sizeof(single_nal), 1, &out, &out_len));
+    ASSERT_TRUE(out != NULL); /* Single NAL returned */
+    ASSERT_EQ(out_len, 2);
+    ASSERT_EQ(out[0], 0x41);
+}
+
+/* T-extra: Single NAL exceeds buffer (use impossibly large payload) */
+TEST(test_h264_depkt_single_nal_exceeds_buffer)
+{
+    nano_h264_depkt_t d;
+    h264_depkt_init(&d);
+
+    /* We can't actually allocate NANORTC_VIDEO_NAL_BUF_SIZE+1 on stack.
+     * Instead, lie about length while passing a valid small pointer.
+     * The function checks len > NANORTC_VIDEO_NAL_BUF_SIZE before memcpy. */
+    uint8_t payload[] = {0x65}; /* IDR NAL header */
+    const uint8_t *out = NULL;
+    size_t out_len = 0;
+    int rc = h264_depkt_push(&d, payload, NANORTC_VIDEO_NAL_BUF_SIZE + 1, 1, &out, &out_len);
+    ASSERT_EQ(rc, NANORTC_ERR_BUFFER_TOO_SMALL);
+}
+
+/* ================================================================
  * Test runner
  * ================================================================ */
 
@@ -523,4 +654,16 @@ RUN(test_h264_depkt_fua_no_start);
 RUN(test_h264_pack_fua_exact_mtu_plus_one);
 RUN(test_h264_forbidden_bit_passthrough);
 RUN(test_h264_keyframe_single_byte);
+/* Annex-B NAL finder */
+RUN(test_h264_annex_b_null_params);
+RUN(test_h264_annex_b_3byte_start_code);
+RUN(test_h264_annex_b_4byte_start_code);
+RUN(test_h264_annex_b_two_nals);
+RUN(test_h264_annex_b_trailing_zeros_stripped);
+RUN(test_h264_annex_b_empty);
+/* Extra coverage tests */
+RUN(test_h264_depkt_init_null);
+RUN(test_h264_depkt_unknown_nal_type);
+RUN(test_h264_depkt_fua_interrupted_by_single_nal);
+RUN(test_h264_depkt_single_nal_exceeds_buffer);
 TEST_MAIN_END

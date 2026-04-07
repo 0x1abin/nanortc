@@ -24,18 +24,15 @@ static void on_state_change(int pc, rtcState state, void *ptr)
     interop_libdatachannel_peer_t *peer = (interop_libdatachannel_peer_t *)ptr;
     (void)pc;
 
-    const char *names[] = {"New", "Connecting", "Connected",
-                           "Disconnected", "Failed", "Closed"};
-    fprintf(stderr, "[libdatachannel] State: %s\n",
-            (int)state < 6 ? names[(int)state] : "?");
+    const char *names[] = {"New", "Connecting", "Connected", "Disconnected", "Failed", "Closed"};
+    fprintf(stderr, "[libdatachannel] State: %s\n", (int)state < 6 ? names[(int)state] : "?");
 
     if (state == RTC_CONNECTED) {
         atomic_store(&peer->connected, 1);
     }
 }
 
-static void on_gathering_state_change(int pc, rtcGatheringState state,
-                                      void *ptr)
+static void on_gathering_state_change(int pc, rtcGatheringState state, void *ptr)
 {
     interop_libdatachannel_peer_t *peer = (interop_libdatachannel_peer_t *)ptr;
     (void)pc;
@@ -46,22 +43,20 @@ static void on_gathering_state_change(int pc, rtcGatheringState state,
     }
 }
 
-static void on_local_description(int pc, const char *sdp, const char *type,
-                                 void *ptr)
+static void on_local_description(int pc, const char *sdp, const char *type, void *ptr)
 {
     interop_libdatachannel_peer_t *peer = (interop_libdatachannel_peer_t *)ptr;
     (void)pc;
     (void)type;
 
-    fprintf(stderr, "[libdatachannel] Local description ready (%s, %zu bytes)\n",
-            type, strlen(sdp));
+    fprintf(stderr, "[libdatachannel] Local description ready (%s, %zu bytes)\n", type,
+            strlen(sdp));
 
     /* Send the SDP offer through the signaling pipe */
     interop_sig_send(peer->sig_fd, SIG_MSG_SDP_OFFER, sdp, strlen(sdp));
 }
 
-static void on_local_candidate(int pc, const char *cand, const char *mid,
-                                void *ptr)
+static void on_local_candidate(int pc, const char *cand, const char *mid, void *ptr)
 {
     interop_libdatachannel_peer_t *peer = (interop_libdatachannel_peer_t *)ptr;
     (void)pc;
@@ -69,8 +64,7 @@ static void on_local_candidate(int pc, const char *cand, const char *mid,
 
     if (cand && strlen(cand) > 0) {
         fprintf(stderr, "[libdatachannel] Local ICE candidate: %s\n", cand);
-        interop_sig_send(peer->sig_fd, SIG_MSG_ICE_CANDIDATE, cand,
-                         strlen(cand));
+        interop_sig_send(peer->sig_fd, SIG_MSG_ICE_CANDIDATE, cand, strlen(cand));
     }
 }
 
@@ -105,8 +99,7 @@ static void on_dc_message(int dc, const char *message, int size, void *ptr)
     int is_string = (size < 0); /* libdatachannel: size < 0 means string */
     size_t actual_len = is_string ? strlen(message) : (size_t)size;
 
-    fprintf(stderr, "[libdatachannel] DC message (%zu bytes, string=%d)\n",
-            actual_len, is_string);
+    fprintf(stderr, "[libdatachannel] DC message (%zu bytes, string=%d)\n", actual_len, is_string);
 
     pthread_mutex_lock(&peer->msg_mutex);
     if (actual_len < sizeof(peer->last_msg)) {
@@ -130,8 +123,7 @@ static int libdatachannel_recv_answer(interop_libdatachannel_peer_t *peer)
     char buf[8192];
     uint8_t msg_type;
 
-    int len = interop_sig_recv(peer->sig_fd, &msg_type, buf, sizeof(buf) - 1,
-                               INTEROP_TIMEOUT_MS);
+    int len = interop_sig_recv(peer->sig_fd, &msg_type, buf, sizeof(buf) - 1, INTEROP_TIMEOUT_MS);
     if (len < 0 || msg_type != SIG_MSG_SDP_ANSWER) {
         fprintf(stderr, "[libdatachannel] Failed to receive SDP answer\n");
         return -1;
@@ -148,8 +140,7 @@ static int libdatachannel_recv_answer(interop_libdatachannel_peer_t *peer)
     /* Explicitly add nanortc's candidate as fallback (RFC 8839 §5.1) */
     if (peer->remote_port > 0) {
         char cand[128];
-        snprintf(cand, sizeof(cand),
-                 "candidate:1 1 UDP 2122252543 127.0.0.1 %d typ host",
+        snprintf(cand, sizeof(cand), "candidate:1 1 UDP 2122252543 127.0.0.1 %d typ host",
                  peer->remote_port);
         rtcAddRemoteCandidate(peer->pc, cand, "0");
     }
@@ -161,8 +152,8 @@ static int libdatachannel_recv_answer(interop_libdatachannel_peer_t *peer)
  * Public API
  * ---------------------------------------------------------------- */
 
-int interop_libdatachannel_start(interop_libdatachannel_peer_t *peer, int sig_fd,
-                        const char *label, uint16_t remote_port)
+int interop_libdatachannel_start(interop_libdatachannel_peer_t *peer, int sig_fd, const char *label,
+                                 uint16_t remote_port)
 {
     if (!peer || !label) {
         return -1;
@@ -186,8 +177,7 @@ int interop_libdatachannel_start(interop_libdatachannel_peer_t *peer, int sig_fd
 
     peer->pc = rtcCreatePeerConnection(&config);
     if (peer->pc < 0) {
-        fprintf(stderr, "[libdatachannel] rtcCreatePeerConnection failed: %d\n",
-                peer->pc);
+        fprintf(stderr, "[libdatachannel] rtcCreatePeerConnection failed: %d\n", peer->pc);
         return -1;
     }
 
@@ -201,8 +191,7 @@ int interop_libdatachannel_start(interop_libdatachannel_peer_t *peer, int sig_fd
     /* Create DataChannel (triggers SDP offer generation) */
     peer->dc = rtcCreateDataChannel(peer->pc, label);
     if (peer->dc < 0) {
-        fprintf(stderr, "[libdatachannel] rtcCreateDataChannel failed: %d\n",
-                peer->dc);
+        fprintf(stderr, "[libdatachannel] rtcCreateDataChannel failed: %d\n", peer->dc);
         rtcDeletePeerConnection(peer->pc);
         return -1;
     }
@@ -250,7 +239,7 @@ int interop_libdatachannel_send_string(interop_libdatachannel_peer_t *peer, cons
 }
 
 int interop_libdatachannel_send_binary(interop_libdatachannel_peer_t *peer, const void *data,
-                              size_t len)
+                                       size_t len)
 {
     if (!peer || peer->dc < 0 || !data) {
         return -1;

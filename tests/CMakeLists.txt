@@ -1,16 +1,26 @@
 # nanortc test targets
 # Each test_*.c file becomes its own executable
+# Uses Unity test framework (vendored in third_party/unity/)
 
+# ---- Unity library ----
+add_library(unity STATIC ${CMAKE_SOURCE_DIR}/third_party/unity/src/unity.c)
+target_include_directories(unity PUBLIC ${CMAKE_SOURCE_DIR}/third_party/unity/src)
+set_target_properties(unity PROPERTIES C_STANDARD 99)
+
+# ---- Test targets ----
 file(GLOB TEST_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/test_*.c")
 
 # Tests that require media transport (AUDIO or VIDEO enabled)
-set(MEDIA_TESTS test_rtp test_srtp test_rtcp)
+set(MEDIA_TESTS test_rtp test_srtp test_rtcp test_media)
 
 # Tests that require AUDIO specifically
 set(AUDIO_TESTS test_jitter)
 
 # Tests that require VIDEO specifically
 set(VIDEO_TESTS test_h264 test_bwe)
+
+# Tests that require DataChannel
+set(DC_TESTS test_datachannel)
 
 foreach(test_source ${TEST_SOURCES})
     get_filename_component(test_name ${test_source} NAME_WE)
@@ -33,8 +43,14 @@ foreach(test_source ${TEST_SOURCES})
         continue()
     endif()
 
+    # Skip DC-only tests when DATACHANNEL is not enabled
+    list(FIND DC_TESTS ${test_name} _is_dc_test)
+    if(_is_dc_test GREATER -1 AND NOT NANORTC_FEATURE_DATACHANNEL)
+        continue()
+    endif()
+
     add_executable(${test_name} ${test_source})
-    target_link_libraries(${test_name} PRIVATE nanortc)
+    target_link_libraries(${test_name} PRIVATE nanortc unity)
     target_include_directories(${test_name} PRIVATE
         ${CMAKE_SOURCE_DIR}/src
         ${CMAKE_SOURCE_DIR}/crypto

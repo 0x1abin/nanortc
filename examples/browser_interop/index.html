@@ -222,10 +222,14 @@ async function start() {
     return;
   }
 
-  // STUN server to get real IP candidates (mDNS candidates can't be parsed by nanortc)
-  pc = new RTCPeerConnection({
-    iceServers: [{urls: 'stun:stun.l.google.com:19302'}]
-  });
+  // ICE servers: STUN + PeerJS public TURN
+  const iceServers = [
+    {urls: 'stun:stun.l.google.com:19302'},
+    {urls: 'stun:stun.cloudflare.com:3478'},
+    {urls: ['turn:eu-0.turn.peerjs.com:3478', 'turn:us-0.turn.peerjs.com:3478'],
+     username: 'peerjs', credential: 'peerjsp'}
+  ];
+  pc = new RTCPeerConnection({iceServers});
 
   pc.oniceconnectionstatechange = () => {
     log('info', 'ICE: ' + pc.iceConnectionState);

@@ -42,6 +42,10 @@
 #define NANORTC_MAX_ICE_CANDIDATES CONFIG_NANORTC_MAX_ICE_CANDIDATES
 #endif
 
+#if defined(CONFIG_NANORTC_MAX_LOCAL_CANDIDATES) && !defined(NANORTC_MAX_LOCAL_CANDIDATES)
+#define NANORTC_MAX_LOCAL_CANDIDATES CONFIG_NANORTC_MAX_LOCAL_CANDIDATES
+#endif
+
 #if defined(CONFIG_NANORTC_ICE_MAX_CHECKS) && !defined(NANORTC_ICE_MAX_CHECKS)
 #define NANORTC_ICE_MAX_CHECKS CONFIG_NANORTC_ICE_MAX_CHECKS
 #endif
@@ -120,6 +124,14 @@
 
 #if defined(CONFIG_NANORTC_STUN_BUF_SIZE) && !defined(NANORTC_STUN_BUF_SIZE)
 #define NANORTC_STUN_BUF_SIZE CONFIG_NANORTC_STUN_BUF_SIZE
+#endif
+
+#if defined(CONFIG_NANORTC_ICE_CONSENT_INTERVAL_MS) && !defined(NANORTC_ICE_CONSENT_INTERVAL_MS)
+#define NANORTC_ICE_CONSENT_INTERVAL_MS CONFIG_NANORTC_ICE_CONSENT_INTERVAL_MS
+#endif
+
+#if defined(CONFIG_NANORTC_ICE_CONSENT_TIMEOUT_MS) && !defined(NANORTC_ICE_CONSENT_TIMEOUT_MS)
+#define NANORTC_ICE_CONSENT_TIMEOUT_MS CONFIG_NANORTC_ICE_CONSENT_TIMEOUT_MS
 #endif
 
 /* Feature flag Kconfig mapping (ESP-IDF booleans) */
@@ -256,7 +268,11 @@
  * ---------------------------------------------------------------- */
 
 #ifndef NANORTC_MAX_ICE_CANDIDATES
-#define NANORTC_MAX_ICE_CANDIDATES 4
+#define NANORTC_MAX_ICE_CANDIDATES 8
+#endif
+
+#ifndef NANORTC_MAX_LOCAL_CANDIDATES
+#define NANORTC_MAX_LOCAL_CANDIDATES 4
 #endif
 
 #ifndef NANORTC_ICE_MAX_CHECKS
@@ -266,6 +282,17 @@
 /* ICE connectivity check pacing interval in milliseconds (RFC 8445) */
 #ifndef NANORTC_ICE_CHECK_INTERVAL_MS
 #define NANORTC_ICE_CHECK_INTERVAL_MS 50
+#endif
+
+/* Consent freshness interval in milliseconds (RFC 7675 §5.1).
+ * A STUN Binding Request is sent periodically to verify path liveness.
+ * Consent expires after NANORTC_ICE_CONSENT_TIMEOUT_MS without a response. */
+#ifndef NANORTC_ICE_CONSENT_INTERVAL_MS
+#define NANORTC_ICE_CONSENT_INTERVAL_MS 15000
+#endif
+
+#ifndef NANORTC_ICE_CONSENT_TIMEOUT_MS
+#define NANORTC_ICE_CONSENT_TIMEOUT_MS 30000
 #endif
 
 /* ICE credential lengths (chars, excluding NUL) */
@@ -308,7 +335,7 @@
 
 /* Maximum ICE candidates parsed from a single SDP offer/answer */
 #ifndef NANORTC_SDP_MAX_CANDIDATES
-#define NANORTC_SDP_MAX_CANDIDATES 8
+#define NANORTC_SDP_MAX_CANDIDATES 12
 #endif
 
 /* SDP field sizes */
@@ -513,8 +540,9 @@
  * without creating a circular include with nanortc.h.
  * ---------------------------------------------------------------- */
 
-#define NANORTC_ADDR_SIZE     16 /**< IPv6 binary address length (RFC 4291). */
-#define NANORTC_IPV6_STR_SIZE 46 /**< Max IPv6 string length (INET6_ADDRSTRLEN). */
+#define NANORTC_ADDR_SIZE      16 /**< IPv6 binary address length (RFC 4291). */
+#define NANORTC_IPV6_STR_SIZE  46 /**< Max IPv6 string length (INET6_ADDRSTRLEN). */
+#define NANORTC_STUN_TXID_SIZE 12 /**< STUN transaction ID length (RFC 8489 §6). */
 
 /* ----------------------------------------------------------------
  * SDP media direction
@@ -529,6 +557,40 @@ typedef enum {
     NANORTC_DIR_RECVONLY, /**< Receive only. */
     NANORTC_DIR_INACTIVE, /**< Neither send nor receive. */
 } nanortc_direction_t;
+
+/* ----------------------------------------------------------------
+ * TURN configuration (RFC 5766)
+ * ---------------------------------------------------------------- */
+
+/** @brief Maximum TURN username length (bytes). */
+#ifndef NANORTC_TURN_USERNAME_SIZE
+#define NANORTC_TURN_USERNAME_SIZE 64
+#endif
+
+/** @brief Maximum TURN password/credential length (bytes). */
+#ifndef NANORTC_TURN_PASSWORD_SIZE
+#define NANORTC_TURN_PASSWORD_SIZE 64
+#endif
+
+/** @brief Maximum TURN realm length (bytes). */
+#ifndef NANORTC_TURN_REALM_SIZE
+#define NANORTC_TURN_REALM_SIZE 64
+#endif
+
+/** @brief Maximum TURN nonce length (bytes). */
+#ifndef NANORTC_TURN_NONCE_SIZE
+#define NANORTC_TURN_NONCE_SIZE 128
+#endif
+
+/** @brief Maximum TURN permissions (peer addresses). */
+#ifndef NANORTC_TURN_MAX_PERMISSIONS
+#define NANORTC_TURN_MAX_PERMISSIONS 4
+#endif
+
+/** @brief Maximum TURN channel bindings (RFC 5766 §11). */
+#ifndef NANORTC_TURN_MAX_CHANNELS
+#define NANORTC_TURN_MAX_CHANNELS 4
+#endif
 
 /* ----------------------------------------------------------------
  * Compile-time validation
@@ -560,6 +622,10 @@ typedef enum {
 
 #if NANORTC_SDP_MIN_BUF_SIZE < 128
 #error "NANORTC_SDP_MIN_BUF_SIZE must be at least 128"
+#endif
+
+#if NANORTC_MAX_LOCAL_CANDIDATES < 1
+#error "NANORTC_MAX_LOCAL_CANDIDATES must be at least 1"
 #endif
 
 #if NANORTC_MAX_MEDIA_TRACKS < 1

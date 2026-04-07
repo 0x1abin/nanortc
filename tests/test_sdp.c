@@ -790,9 +790,9 @@ TEST(test_sdp_generate_ipv6_connection_line)
     sdp.mid_count = 1;
 
     /* Set an IPv6 local candidate */
-    sdp.has_local_candidate = true;
-    memcpy(sdp.local_candidate_ip, "2001:db8::1", 12);
-    sdp.local_candidate_port = 5000;
+    memcpy(sdp.local_candidates[0].addr, "2001:db8::1", 12);
+    sdp.local_candidates[0].port = 5000;
+    sdp.local_candidate_count = 1;
 
     char buf[2048];
     size_t out_len = 0;
@@ -822,9 +822,9 @@ TEST(test_sdp_generate_ipv4_connection_line)
     sdp.mid_count = 1;
 
     /* Set an IPv4 local candidate */
-    sdp.has_local_candidate = true;
-    memcpy(sdp.local_candidate_ip, "192.168.1.1", 12);
-    sdp.local_candidate_port = 5000;
+    memcpy(sdp.local_candidates[0].addr, "192.168.1.1", 12);
+    sdp.local_candidates[0].port = 5000;
+    sdp.local_candidate_count = 1;
 
     char buf[2048];
     size_t out_len = 0;
@@ -836,6 +836,139 @@ TEST(test_sdp_generate_ipv4_connection_line)
     ASSERT_TRUE(strstr(buf, "o=- 1 1 IN IP4 0.0.0.0") != NULL);
 }
 #endif
+
+/* ================================================================
+ * Media direction parsing (a=sendonly, a=recvonly, a=inactive)
+ * ================================================================ */
+
+#if NANORTC_HAVE_MEDIA_TRANSPORT
+TEST(test_sdp_parse_media_directions)
+{
+    /* SDP with audio m-line using a=sendonly */
+    const char *sdp_sendonly =
+        "v=0\r\n"
+        "o=- 123 1 IN IP4 0.0.0.0\r\n"
+        "s=-\r\n"
+        "t=0 0\r\n"
+        "a=group:BUNDLE 0\r\n"
+        "a=ice-ufrag:dirtestfrag0000\r\n"
+        "a=ice-pwd:dirtestpwd0000000000000\r\n"
+        "a=fingerprint:sha-256 AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:"
+        "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99\r\n"
+        "a=setup:actpass\r\n"
+        "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n"
+        "a=mid:0\r\n"
+        "a=rtpmap:111 opus/48000/2\r\n"
+        "a=sendonly\r\n"
+        "c=IN IP4 0.0.0.0\r\n";
+
+    nano_sdp_t sdp;
+    sdp_init(&sdp);
+    size_t len = 0;
+    while (sdp_sendonly[len]) len++;
+    ASSERT_OK(sdp_parse(&sdp, sdp_sendonly, len));
+    ASSERT_EQ(sdp.mlines[0].remote_direction, NANORTC_DIR_SENDONLY);
+
+    /* SDP with a=recvonly */
+    const char *sdp_recvonly =
+        "v=0\r\n"
+        "o=- 123 1 IN IP4 0.0.0.0\r\n"
+        "s=-\r\n"
+        "t=0 0\r\n"
+        "a=group:BUNDLE 0\r\n"
+        "a=ice-ufrag:dirtestfrag0000\r\n"
+        "a=ice-pwd:dirtestpwd0000000000000\r\n"
+        "a=fingerprint:sha-256 AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:"
+        "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99\r\n"
+        "a=setup:actpass\r\n"
+        "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n"
+        "a=mid:0\r\n"
+        "a=rtpmap:111 opus/48000/2\r\n"
+        "a=recvonly\r\n"
+        "c=IN IP4 0.0.0.0\r\n";
+
+    nano_sdp_t sdp2;
+    sdp_init(&sdp2);
+    len = 0;
+    while (sdp_recvonly[len]) len++;
+    ASSERT_OK(sdp_parse(&sdp2, sdp_recvonly, len));
+    ASSERT_EQ(sdp2.mlines[0].remote_direction, NANORTC_DIR_RECVONLY);
+
+    /* SDP with a=inactive */
+    const char *sdp_inactive =
+        "v=0\r\n"
+        "o=- 123 1 IN IP4 0.0.0.0\r\n"
+        "s=-\r\n"
+        "t=0 0\r\n"
+        "a=group:BUNDLE 0\r\n"
+        "a=ice-ufrag:dirtestfrag0000\r\n"
+        "a=ice-pwd:dirtestpwd0000000000000\r\n"
+        "a=fingerprint:sha-256 AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:"
+        "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99\r\n"
+        "a=setup:actpass\r\n"
+        "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n"
+        "a=mid:0\r\n"
+        "a=rtpmap:111 opus/48000/2\r\n"
+        "a=inactive\r\n"
+        "c=IN IP4 0.0.0.0\r\n";
+
+    nano_sdp_t sdp3;
+    sdp_init(&sdp3);
+    len = 0;
+    while (sdp_inactive[len]) len++;
+    ASSERT_OK(sdp_parse(&sdp3, sdp_inactive, len));
+    ASSERT_EQ(sdp3.mlines[0].remote_direction, NANORTC_DIR_INACTIVE);
+}
+#endif
+
+/* T-extra: SDP generation with host + srflx + relay candidates */
+TEST(test_sdp_generate_with_candidates)
+{
+    nano_sdp_t sdp;
+    sdp_init(&sdp);
+
+    memcpy(sdp.local_ufrag, "user1234", 8);
+    memcpy(sdp.local_pwd, "password0123456789ab", 20);
+    memcpy(sdp.local_fingerprint, "sha-256 AA:BB:CC:DD", 20);
+    sdp.local_sctp_port = 5000;
+    sdp.local_setup = NANORTC_SDP_SETUP_ACTPASS;
+    sdp.has_datachannel = true;
+    sdp.dc_mid = 0;
+    sdp.mid_count = 1;
+
+    /* Add a host candidate */
+    memcpy(sdp.local_candidates[0].addr, "192.168.1.100", 14);
+    sdp.local_candidates[0].port = 4000;
+    sdp.local_candidate_count = 1;
+
+    /* Add server-reflexive candidate */
+    sdp.has_srflx_candidate = true;
+    memcpy(sdp.srflx_candidate_ip, "203.0.113.5", 12);
+    sdp.srflx_candidate_port = 49152;
+
+    /* Add relay candidate */
+    sdp.has_relay_candidate = true;
+    memcpy(sdp.relay_candidate_ip, "198.51.100.1", 13);
+    sdp.relay_candidate_port = 50000;
+
+    char buf[2048];
+    size_t out_len = 0;
+    ASSERT_OK(sdp_generate_answer(&sdp, buf, sizeof(buf), &out_len));
+    ASSERT_TRUE(out_len > 0);
+
+    /* Verify host candidate */
+    ASSERT_TRUE(strstr(buf, "a=candidate:1 1 UDP") != NULL);
+    ASSERT_TRUE(strstr(buf, "192.168.1.100 4000 typ host") != NULL);
+    /* Verify srflx candidate */
+    ASSERT_TRUE(strstr(buf, "203.0.113.5 49152 typ srflx") != NULL);
+    ASSERT_TRUE(strstr(buf, "raddr 192.168.1.100 rport 4000") != NULL);
+    /* Verify relay candidate */
+    ASSERT_TRUE(strstr(buf, "198.51.100.1 50000 typ relay") != NULL);
+    /* Verify transport attrs */
+    ASSERT_TRUE(strstr(buf, "a=ice-ufrag:user1234") != NULL);
+    ASSERT_TRUE(strstr(buf, "a=fingerprint:sha-256 AA:BB:CC:DD") != NULL);
+    ASSERT_TRUE(strstr(buf, "a=setup:actpass") != NULL);
+}
 
 /* ================================================================
  * Test runner
@@ -850,6 +983,7 @@ RUN(test_sdp_parse_firefox_offer);
 RUN(test_sdp_parse_safari_offer);
 RUN(test_sdp_parse_minimal);
 RUN(test_sdp_generate_answer);
+RUN(test_sdp_generate_with_candidates);
 RUN(test_sdp_generate_overflow);
 RUN(test_sdp_roundtrip);
 RUN(test_sdp_parse_libdatachannel_offer);
@@ -870,6 +1004,7 @@ RUN(test_sdp_parse_video_offer);
 RUN(test_sdp_parse_full_media_offer);
 RUN(test_sdp_generate_video_answer);
 RUN(test_sdp_video_roundtrip);
+RUN(test_sdp_parse_media_directions);
 #endif
 #if NANORTC_FEATURE_IPV6
 RUN(test_sdp_generate_ipv6_connection_line);

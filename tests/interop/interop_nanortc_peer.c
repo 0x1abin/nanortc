@@ -7,12 +7,15 @@
 #include "interop_nanortc_peer.h"
 #include "interop_common.h"
 #include "nanortc_crypto.h"
+#include "ice_server_resolve.h"
 
 #include <stdio.h>
 #include <string.h>
 #include <poll.h>
 #include <unistd.h>
 #include <arpa/inet.h>
+#include <ifaddrs.h>
+#include <net/if.h>
 #include <sys/socket.h>
 
 /* ----------------------------------------------------------------
@@ -139,12 +142,33 @@ static int nanortc_do_signaling(interop_nanortc_peer_t *peer)
 }
 
 /* ----------------------------------------------------------------
- * Thread entry
+ * Thread entry — unified for both localhost and ICE modes.
+ * When has_ice is set, runs a TURN warmup phase before signaling.
  * ---------------------------------------------------------------- */
 
 static void *nanortc_thread_fn(void *arg)
 {
     interop_nanortc_peer_t *peer = (interop_nanortc_peer_t *)arg;
+
+    /* Optional TURN warmup: pump event loop to complete TURN allocation
+     * (Allocate → 401 → auth Allocate → success) before signaling. */
+    if (peer->has_ice) {
+        fprintf(stderr, "[nanortc] TURN warmup: waiting for relay candidate...\n");
+        uint32_t warmup_start = interop_get_millis();
+        while (atomic_load(&peer->running)) {
+            nano_run_loop_step(&peer->loop);
+            if (peer->rtc.sdp.has_relay_candidate) {
+                fprintf(stderr, "[nanortc] TURN warmup: relay candidate ready (%u ms)\n",
+                        interop_get_millis() - warmup_start);
+                break;
+            }
+            if (interop_get_millis() - warmup_start > 5000) {
+                fprintf(stderr,
+                        "[nanortc] TURN warmup: timeout after 5s (continuing without relay)\n");
+                break;
+            }
+        }
+    }
 
     /* Signaling phase (blocking) */
     if (nanortc_do_signaling(peer) != 0) {
@@ -164,10 +188,36 @@ static void *nanortc_thread_fn(void *arg)
 }
 
 /* ----------------------------------------------------------------
+ * Auto-detect first non-loopback IPv4 address
+ * ---------------------------------------------------------------- */
+
+static void detect_local_ip(char *ip_out, size_t ip_size)
+{
+    ip_out[0] = '\0';
+    struct ifaddrs *ifas, *ifa;
+    if (getifaddrs(&ifas) == 0) {
+        for (ifa = ifas; ifa; ifa = ifa->ifa_next) {
+            if (!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_INET)
+                continue;
+            if (ifa->ifa_flags & IFF_LOOPBACK)
+                continue;
+            struct sockaddr_in *sa = (struct sockaddr_in *)ifa->ifa_addr;
+            inet_ntop(AF_INET, &sa->sin_addr, ip_out, (socklen_t)ip_size);
+            break;
+        }
+        freeifaddrs(ifas);
+    }
+    if (ip_out[0] == '\0') {
+        memcpy(ip_out, "127.0.0.1", 10);
+    }
+}
+
+/* ----------------------------------------------------------------
  * Public API
  * ---------------------------------------------------------------- */
 
-int interop_nanortc_start(interop_nanortc_peer_t *peer, int sig_fd, uint16_t port)
+int interop_nanortc_start(interop_nanortc_peer_t *peer, int sig_fd, uint16_t port,
+                          const interop_nanortc_ice_config_t *ice_cfg)
 {
     if (!peer) {
         return -1;
@@ -176,7 +226,16 @@ int interop_nanortc_start(interop_nanortc_peer_t *peer, int sig_fd, uint16_t por
     memset(peer, 0, sizeof(*peer));
     peer->sig_fd = sig_fd;
     peer->port = port;
+    peer->has_ice = (ice_cfg != NULL);
     pthread_mutex_init(&peer->msg_mutex, NULL);
+
+    /* Resolve ICE server domain names to IPs */
+    if (ice_cfg && ice_cfg->ice_servers && ice_cfg->ice_server_count > 0 &&
+        ice_cfg->resolve_scratch) {
+        nano_resolve_ice_servers((nanortc_ice_server_t *)ice_cfg->ice_servers,
+                                 ice_cfg->ice_server_count, ice_cfg->resolve_scratch,
+                                 ice_cfg->resolve_scratch_size);
+    }
 
     /* Init nanortc */
     nanortc_config_t cfg;
@@ -187,6 +246,10 @@ int interop_nanortc_start(interop_nanortc_peer_t *peer, int sig_fd, uint16_t por
     cfg.crypto = nanortc_crypto_mbedtls();
 #endif
     cfg.role = NANORTC_ROLE_CONTROLLED; /* answerer */
+    if (ice_cfg) {
+        cfg.ice_servers = ice_cfg->ice_servers;
+        cfg.ice_server_count = ice_cfg->ice_server_count;
+    }
 
     int rc = nanortc_init(&peer->rtc, &cfg);
     if (rc != NANORTC_OK) {
@@ -194,11 +257,21 @@ int interop_nanortc_start(interop_nanortc_peer_t *peer, int sig_fd, uint16_t por
         return -1;
     }
 
-    /* Add local candidate so SDP answer includes a=candidate: line */
-    nanortc_add_local_candidate(&peer->rtc, "127.0.0.1", port);
+    /* Determine local candidate IP */
+    char local_ip[64];
+    if (ice_cfg) {
+        /* ICE mode: advertise real IP as the candidate */
+        detect_local_ip(local_ip, sizeof(local_ip));
+    } else {
+        /* Localhost mode */
+        memcpy(local_ip, "127.0.0.1", 10);
+    }
 
-    /* Init run loop (binds UDP socket) */
-    rc = nano_run_loop_init(&peer->loop, &peer->rtc, "127.0.0.1", port);
+    nanortc_add_local_candidate(&peer->rtc, local_ip, port);
+    fprintf(stderr, "[nanortc] Local candidate: %s:%d\n", local_ip, port);
+
+    /* Init run loop (binds UDP socket on INADDR_ANY) */
+    rc = nano_run_loop_init(&peer->loop, &peer->rtc, port);
     if (rc < 0) {
         fprintf(stderr, "[nanortc] Failed to bind UDP port %d\n", port);
         return -1;

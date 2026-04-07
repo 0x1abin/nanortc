@@ -49,8 +49,7 @@ int interop_sig_send(int fd, uint8_t type, const void *data, size_t len);
  * Writes type into *out_type, payload into buf (up to buf_len).
  * Returns payload length on success, -1 on error/timeout.
  */
-int interop_sig_recv(int fd, uint8_t *out_type, void *buf, size_t buf_len,
-                     int timeout_ms);
+int interop_sig_recv(int fd, uint8_t *out_type, void *buf, size_t buf_len, int timeout_ms);
 
 /* ----------------------------------------------------------------
  * Timing helpers
@@ -69,8 +68,14 @@ void interop_sleep_ms(int ms);
 /* Overall timeout per test (ms) */
 #define INTEROP_TIMEOUT_MS 10000
 
+/* TURN tests need longer timeout (multiple network round-trips to remote server) */
+#define INTEROP_TURN_TIMEOUT_MS 30000
+
 /* Port range for nanortc UDP binding (auto-selected) */
 #define INTEROP_PORT_BASE 19000
+
+/* Separate port range for TURN tests to avoid conflicts with DC tests */
+#define INTEROP_TURN_PORT_BASE 19200
 
 #ifdef __cplusplus
 }

@@ -78,12 +78,22 @@ typedef struct nano_sdp {
     uint16_t local_sctp_port;
     nano_sdp_setup_t local_setup;
 
-    /* Local candidate (for SDP answer generation) */
-    char local_candidate_ip[NANORTC_IPV6_STR_SIZE];
-    uint16_t local_candidate_port;
-    bool has_local_candidate;
+    /* Local host candidates (for SDP answer/offer generation) */
+    nano_sdp_candidate_t local_candidates[NANORTC_MAX_LOCAL_CANDIDATES];
+    uint8_t local_candidate_count;
 
-    bool parsed; /* true after successful parse */
+    /* Server-reflexive candidate (from STUN server) */
+    char srflx_candidate_ip[NANORTC_IPV6_STR_SIZE];
+    uint16_t srflx_candidate_port;
+    bool has_srflx_candidate;
+
+    /* Relay candidate (from TURN allocation) */
+    char relay_candidate_ip[NANORTC_IPV6_STR_SIZE];
+    uint16_t relay_candidate_port;
+    bool has_relay_candidate;
+
+    bool parsed;            /* true after successful parse */
+    bool end_of_candidates; /* remote signaled a=end-of-candidates (RFC 8838) */
 
 #if NANORTC_HAVE_MEDIA_TRANSPORT
     /** Media m-lines (audio + video tracks). */
