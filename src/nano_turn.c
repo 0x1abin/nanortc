@@ -740,7 +740,7 @@ int turn_unwrap_channel_data(const uint8_t *data, size_t len, uint16_t *channel,
     if (*channel < 0x4000 || *channel > 0x7FFF) {
         return NANORTC_ERR_PROTOCOL;
     }
-    if (4 + plen > len) {
+    if ((size_t)4 + plen > len) {
         return NANORTC_ERR_PARSE;
     }
 

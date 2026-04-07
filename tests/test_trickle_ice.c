@@ -56,6 +56,7 @@ static void add_candidate(nano_ice_t *ice, uint8_t a, uint8_t b, uint8_t c, uint
                            uint16_t port)
 {
     uint8_t idx = ice->remote_candidate_count;
+    TEST_ASSERT_TRUE_MESSAGE(idx < NANORTC_MAX_ICE_CANDIDATES, "candidate array full");
     ice->remote_candidates[idx].family = 4;
     ice->remote_candidates[idx].addr[0] = a;
     ice->remote_candidates[idx].addr[1] = b;
@@ -137,7 +138,7 @@ static void test_candidate_type_default(void)
     TEST_ASSERT_EQUAL_INT(NANORTC_ICE_CAND_HOST, ice.remote_candidates[0].type);
 }
 
-/* T5: Max candidates limit respected */
+/* T5: Max candidates limit — fill to max, then verify overflow is rejected via public API */
 static void test_trickle_max_candidates(void)
 {
     nano_ice_t ice;
@@ -147,6 +148,34 @@ static void test_trickle_max_candidates(void)
         add_candidate(&ice, 10, 0, 0, (uint8_t)(i + 1), (uint16_t)(5000 + i));
     }
     TEST_ASSERT_EQUAL_INT(NANORTC_MAX_ICE_CANDIDATES, ice.remote_candidate_count);
+
+    /* Overflow: directly attempt one more — count must not exceed max */
+    uint8_t prev_count = ice.remote_candidate_count;
+    if (ice.remote_candidate_count >= NANORTC_MAX_ICE_CANDIDATES) {
+        /* Simulate what a well-behaved caller should check */
+        TEST_ASSERT_EQUAL_INT(NANORTC_MAX_ICE_CANDIDATES, prev_count);
+    }
+    /* Verify the public API rejects overflow (nanortc_add_remote_candidate checks bounds) */
+    nanortc_t rtc;
+    memset(&rtc, 0, sizeof(rtc));
+    nanortc_config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.crypto = crypto();
+    cfg.role = NANORTC_ROLE_CONTROLLING;
+    nanortc_init(&rtc, &cfg);
+    /* Fill via public API */
+    for (int i = 0; i < NANORTC_MAX_ICE_CANDIDATES; i++) {
+        char cand[32];
+        int len = snprintf(cand, sizeof(cand), "10.0.0.%d %d", i + 1, 5000 + i);
+        (void)len;
+        nanortc_add_remote_candidate(&rtc, cand);
+    }
+    TEST_ASSERT_EQUAL_INT(NANORTC_MAX_ICE_CANDIDATES, rtc.ice.remote_candidate_count);
+    /* One more must fail */
+    TEST_ASSERT_EQUAL_INT(NANORTC_ERR_BUFFER_TOO_SMALL,
+                          nanortc_add_remote_candidate(&rtc, "10.0.0.99 6000"));
+    TEST_ASSERT_EQUAL_INT(NANORTC_MAX_ICE_CANDIDATES, rtc.ice.remote_candidate_count);
+    nanortc_destroy(&rtc);
 }
 
 /* ----------------------------------------------------------------
