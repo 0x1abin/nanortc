@@ -208,6 +208,12 @@ if(NANORTC_BUILD_EXAMPLES)
     add_subdirectory(examples)
 endif()
 
+# ---- Benchmarks (not default) ----
+option(NANORTC_BUILD_BENCHMARKS "Build benchmark suite" OFF)
+if(NANORTC_BUILD_BENCHMARKS)
+    add_subdirectory(benchmarks)
+endif()
+
 # ---- Interop tests (requires network + C++ compiler, not default) ----
 option(NANORTC_BUILD_INTEROP_TESTS "Build interop tests against libdatachannel" OFF)
 if(NANORTC_BUILD_INTEROP_TESTS)
