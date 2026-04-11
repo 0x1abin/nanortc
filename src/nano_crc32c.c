@@ -41,11 +41,29 @@ static const uint32_t crc32c_table[256] = {
     0x79B737BA, 0x8BDCB4B9, 0x988C474D, 0x6AE7C44E, 0xBE2DA0A5, 0x4C4623A6, 0x5F16D052, 0xAD7D5351,
 };
 
-uint32_t nano_crc32c(const uint8_t *data, size_t len)
+/* --- Incremental API --- */
+
+uint32_t nano_crc32c_init(void)
 {
-    uint32_t crc = 0xFFFFFFFF;
+    return 0xFFFFFFFF;
+}
+
+uint32_t nano_crc32c_update(uint32_t crc, const uint8_t *data, size_t len)
+{
     for (size_t i = 0; i < len; i++) {
         crc = (crc >> 8) ^ crc32c_table[(crc ^ data[i]) & 0xFF];
     }
+    return crc;
+}
+
+uint32_t nano_crc32c_final(uint32_t crc)
+{
     return crc ^ 0xFFFFFFFF;
+}
+
+/* --- Convenience wrapper --- */
+
+uint32_t nano_crc32c(const uint8_t *data, size_t len)
+{
+    return nano_crc32c_final(nano_crc32c_update(nano_crc32c_init(), data, len));
 }

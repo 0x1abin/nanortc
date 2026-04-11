@@ -56,16 +56,16 @@ int nsctp_verify_checksum(const uint8_t *data, size_t len)
     uint32_t stored;
     memcpy(&stored, data + 8, 4);
 
-    /* We need to compute CRC with checksum field zeroed.
-     * Copy the packet to a scratch buffer so we don't mutate input. */
-    uint8_t scratch[NANORTC_SCTP_MTU];
-    if (len > sizeof(scratch)) {
-        return NANORTC_ERR_BUFFER_TOO_SMALL;
-    }
-    memcpy(scratch, data, len);
-    memset(scratch + 8, 0, 4);
+    /* Compute CRC with checksum field treated as zero using segmented API.
+     * Avoids copying the entire packet to a scratch buffer (saves ~1200B
+     * stack allocation + memcpy on every SCTP packet received). */
+    static const uint8_t zeros[4] = {0, 0, 0, 0};
+    uint32_t crc = nano_crc32c_init();
+    crc = nano_crc32c_update(crc, data, 8);            /* [0..8)  src+dst port, vtag */
+    crc = nano_crc32c_update(crc, zeros, 4);            /* [8..12) checksum as zero  */
+    crc = nano_crc32c_update(crc, data + 12, len - 12); /* [12..len) chunk data      */
+    uint32_t computed = nano_crc32c_final(crc);
 
-    uint32_t computed = nano_crc32c(scratch, len);
     if (computed != stored) {
         return NANORTC_ERR_PROTOCOL;
     }
