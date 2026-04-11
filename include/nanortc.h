@@ -490,7 +490,9 @@ typedef struct nanortc_config {
 #include "nano_ice.h"
 #include "nano_dtls.h"
 #include "nano_sdp.h"
+#if NANORTC_FEATURE_TURN
 #include "nano_turn.h"
+#endif
 
 #if NANORTC_FEATURE_DATACHANNEL
 #include "nano_sctp.h"
@@ -541,7 +543,9 @@ struct nanortc {
     nano_ice_t ice;
     nano_dtls_t dtls;
     nano_sdp_t sdp;
+#if NANORTC_FEATURE_TURN
     nano_turn_t turn;
+#endif
 
 #if NANORTC_FEATURE_DATACHANNEL
     nano_sctp_t sctp;
@@ -588,7 +592,9 @@ struct nanortc {
     nanortc_addr_t remote_addr;
 
     /* Scratch for trickle ICE candidate strings (valid until next poll) */
+#if NANORTC_FEATURE_TURN
     char relay_cand_str[NANORTC_IPV6_STR_SIZE + 96];
+#endif
     char srflx_cand_str[NANORTC_IPV6_STR_SIZE + 96];
     char host_cand_str[NANORTC_IPV6_STR_SIZE + 96];
 

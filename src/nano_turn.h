@@ -45,15 +45,15 @@ typedef struct nano_turn {
 
     /* Credentials (passed by application) */
     char username[NANORTC_TURN_USERNAME_SIZE];
-    size_t username_len;
+    uint16_t username_len;
     char password[NANORTC_TURN_PASSWORD_SIZE];
-    size_t password_len;
+    uint16_t password_len;
 
     /* From 401 challenge */
     char realm[NANORTC_TURN_REALM_SIZE];
-    size_t realm_len;
+    uint16_t realm_len;
     char nonce[NANORTC_TURN_NONCE_SIZE];
-    size_t nonce_len;
+    uint16_t nonce_len;
 
     /* Derived HMAC key: MD5(username:realm:password) — RFC 8489 §9.2.2 */
 #define NANORTC_TURN_HMAC_KEY_SIZE 16 /* MD5 output size */

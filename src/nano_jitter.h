@@ -18,7 +18,7 @@
 
 typedef struct nano_jitter_slot {
     uint8_t data[NANORTC_JITTER_SLOT_DATA_SIZE];
-    size_t len;
+    uint16_t len; /* max payload is NANORTC_JITTER_SLOT_DATA_SIZE (≤ 640) */
     uint16_t seq;
     uint32_t timestamp;
     uint32_t arrival_ms; /* Local time when packet arrived */
