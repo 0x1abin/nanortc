@@ -23,6 +23,7 @@ NanoRTC is built by AI coding agents. Estimates use **agent sessions** (one focu
 | [Phase 1: DataChannel E2E](exec-plans/completed/phase1-datachannel.md) | 2026-03-29 | 7 sessions | 5/5 interop tests, browser + ESP32-S3 DC verified, 140+ unit tests |
 | [Phase 3: Video](exec-plans/completed/phase3-video.md) | 2026-04-05 | 2 sessions | H.264 FU-A + BWE + REMB, ESP32 camera (H.264 hw + Opus), Chrome verified |
 | [Phase 4: Quality](exec-plans/completed/phase4-quality.md) | 2026-04-05 | 4 sessions | All 18 modules A grade, 7 fuzz harnesses (456M+ executions), Unity framework, 80%+ coverage, CI fuzz+coverage jobs |
+| Phase 6: Resource Optimization | 2026-04-11 | 1 session | 34% RAM reduction (full-media 157→103 KB). Zero-copy CRC-32c, struct padding elimination, config default tuning, `NANORTC_FEATURE_TURN` flag, sizeof regression tests. SDP parser hardened (trailing whitespace trim). |
 
 ## Technical Debt
 

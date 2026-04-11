@@ -26,7 +26,7 @@ Per-module quality grades for NanoRTC. Updated as implementation progresses.
 | SCTP-Lite | `nano_sctp.c` | **A** | 34 tests (codec, CRC, handshake, data exchange, SACK, FORWARD-TSN, output queue, gap tracking) | Full codec + 4-way handshake FSM + send queue + SACK + retransmit + heartbeat + gap tracking. Fuzz-tested (`fuzz_sctp`): 63M+ executions clean. 84% line coverage. Browser + interop verified. |
 | DataChannel | `nano_datachannel.c` | **A** | 18 unit tests + e2e (DCEP codec, channel mgmt, open/ack/idempotent, max channels, malformed input, all error paths) | DCEP OPEN/ACK codec, channel management, bidirectional FSM. Idempotent OPEN handling. 94% line coverage. Browser + interop verified. |
 | SDP | `nano_sdp.c` | **A** | 30 tests (Chrome/Firefox/Safari offers, generator, roundtrip, video PT, direction parsing, IPv6, media directions) | Parser + generator. Chrome/Firefox/Safari compat. Fuzz-tested (`fuzz_sdp`): 51M+ executions clean. 79% line coverage. Browser + interop verified. |
-| CRC-32c | `nano_crc32c.c` | **A** | test vector verified | 100% line coverage. Fuzz-tested via `fuzz_sctp` (called by SCTP checksum verify). |
+| CRC-32c | `nano_crc32c.c` | **A** | test vector verified | 100% line coverage. Incremental API (`init/update/final`) for zero-copy SCTP checksum verification. Fuzz-tested via `fuzz_sctp`. |
 | CRC-32 | `nano_crc32.c` | **A** | test vector verified | 100% line coverage. Fuzz-tested via `fuzz_stun` (called by STUN FINGERPRINT verify). |
 | TURN client | `nano_turn.c` | **A** | 24 unit tests + 3 interop tests with coturn (handshake/string/echo) | Full RFC 5766: Allocate + 401 challenge + Refresh + CreatePermission + ChannelBind + Send/Data indication + ChannelData framing. Fuzz-tested (`fuzz_turn`). Permission/channel auto-refresh. Interop verified with coturn. |
 | Address utils | `nano_addr.c` | **A** | 48 tests (IPv4/IPv6 parse, format, roundtrip, negative cases, auto-detect) | RFC 4291/5952 IPv6 parsing + formatting. Fuzz-tested (`fuzz_addr`): 70M+ executions clean. 93% line coverage. |
@@ -57,7 +57,8 @@ Per-module quality grades for NanoRTC. Updated as implementation progresses.
 | Interop test framework | **A** | libdatachannel v0.22.5 reference, 5/5 interop tests pass (DC + audio + video) + 3 TURN interop tests with coturn |
 | CI pipeline | **A** | GitHub Actions: 6-combo × 2-crypto matrix, constraints, ASan, fuzz (30s per harness), coverage (80% threshold) |
 | Examples | **B** | Linux browser interop, ESP32 DC/audio/camera. Browser audio+video verified. |
-| Documentation | **B** | AGENTS.md, ARCHITECTURE.md, exec plans, quality scores |
+| Documentation | **A** | AGENTS.md, ARCHITECTURE.md, exec plans, quality scores, memory profiles, safe-C guide, coding standards |
+| Resource optimization | **A** | 34% RAM reduction, zero-copy CRC, struct padding elimination, TURN feature flag, sizeof regression tests |
 
 ## Quality Targets
 
@@ -78,3 +79,13 @@ All 18 library modules promoted from **B** to **A** grade:
 - **Test count**: 400+ tests across 16 suites (up from 347 across 14)
 - **Test framework**: Unity (ThrowTheSwitch), replacing manual macros
 - **CI**: 6-combo × 2-crypto build matrix + ASan + fuzz + coverage threshold
+
+## Phase 6 Summary (Resource Optimization)
+
+Full-media `sizeof(nanortc_t)` reduced from 157 KB to 103 KB (**34% reduction**):
+- **Config defaults**: Jitter buffer 64→32 slots, slot data 640→320B, NAL buffer 32→16 KB
+- **Zero-copy CRC**: Segmented CRC-32c API eliminates 1200B stack allocation per SCTP packet
+- **Struct optimization**: Field reordering eliminates padding; `size_t`→`uint16_t` for credential lengths
+- **TURN feature flag**: `NANORTC_FEATURE_TURN` saves 700B RAM + 13KB code when disabled
+- **SDP hardening**: `extract_value()` strips trailing whitespace, protecting exact-fit buffers
+- **Regression guard**: `test_sizeof.c` prevents accidental struct growth in CI

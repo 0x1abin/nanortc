@@ -29,22 +29,25 @@ NanoRTC is a WebRTC protocol stack designed from the ground up for resource-cons
 |--------------|---------------|-------------|-------|
 | Core only | 16.5 KB | 10.0 KB | DC=OFF AUDIO=OFF VIDEO=OFF |
 | DataChannel | 27.9 KB | 19.7 KB | DC=ON |
-| Audio only | 25.1 KB | 32.7 KB | DC=OFF AUDIO=ON |
-| DataChannel + Audio | 36.4 KB | 42.4 KB | DC=ON AUDIO=ON |
-| Media only (no DC) | 27.4 KB | 74.1 KB | DC=OFF AUDIO=ON VIDEO=ON |
-| Full media | 38.7 KB | 83.8 KB | DC=ON AUDIO=ON VIDEO=ON |
+| Audio only | 25.1 KB | 21.5 KB | DC=OFF AUDIO=ON |
+| DataChannel + Audio | 36.4 KB | 31.2 KB | DC=ON AUDIO=ON |
+| Media only (no DC) | 27.4 KB | 42.7 KB | DC=OFF AUDIO=ON VIDEO=ON |
+| Full media | 38.7 KB | 52.4 KB | DC=ON AUDIO=ON VIDEO=ON |
 
 > Measured on ESP32-P4 (RISC-V HP), mbedTLS, -O2.
 > `sizeof(nanortc_t)` is the full per-connection RAM — no heap allocation.
+> Sizes reflect optimized defaults (v0.1). Tune further via [`NANORTC_CONFIG_FILE`](docs/engineering/memory-profiles.md).
 
 Any combination works — audio without DataChannel, video without audio, etc.
 
-- **ICE** — Controlled (answerer) and controlling (offerer) roles
+- **ICE** — Controlled (answerer) and controlling (offerer) roles, trickle ICE, ICE restart
 - **DTLS 1.2** — Via pluggable crypto provider (mbedtls or OpenSSL)
-- **SCTP** — Minimal subset for WebRTC DataChannels
+- **SCTP** — Minimal subset for WebRTC DataChannels (reliable + unreliable)
 - **DataChannel** — DCEP protocol, reliable and unreliable modes
-- **RTP/RTCP/SRTP** — Audio and video media transport
-- **SDP** — Offer/answer negotiation
+- **RTP/RTCP/SRTP** — Audio and video media transport, H.264 FU-A packetization
+- **SDP** — Offer/answer negotiation, multi-track media
+- **NAT traversal** — STUN server-reflexive discovery + TURN relay client (optional, `NANORTC_FEATURE_TURN`)
+- **Bandwidth estimation** — REMB-based receiver BWE for adaptive video
 - **Single external dependency** — Only mbedtls (built-in on ESP-IDF, Zephyr, RT-Thread, STM32)
 
 ## Quick Start
@@ -194,11 +197,14 @@ The repository structure itself is designed for agent legibility: [AGENTS.md](AG
 | [Core Beliefs](docs/design-docs/core-beliefs.md) | Non-negotiable design principles |
 | [Execution Plans](docs/PLANS.md) | Active and completed implementation plans |
 | [Quality Score](docs/QUALITY_SCORE.md) | Per-module quality grades |
+| [Memory Profiles](docs/engineering/memory-profiles.md) | RAM usage by configuration, tuning guide |
+| [Coding Standards](docs/engineering/coding-standards.md) | Naming, style, RFC testing requirements |
+| [Safe C Guidelines](docs/engineering/safe-c-guidelines.md) | Banned functions, buffer safety rules |
 | [RFC Index](docs/references/rfc-index.md) | Protocol specification references |
 
 ## Contributing
 
-NanoRTC is in active development — Phase 1 (DataChannel) and Phase 2 (Audio) complete, Phase 3 (Video/H.264) in progress. All features interop-tested against libdatachannel and browser WebRTC.
+NanoRTC is in active development. Phases 1-5 complete (DataChannel, Audio, Video, Quality, Network Traversal). All 18 modules at A grade — fuzz-tested, browser-verified, interop-verified, 80%+ coverage. Resource optimization pass reduces full-media RAM by 34%.
 
 Contributions welcome. Please read [AGENTS.md](AGENTS.md) for build instructions and mandatory rules before submitting changes.
 

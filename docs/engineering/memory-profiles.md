@@ -43,10 +43,30 @@ overrides in your `NANORTC_CONFIG_FILE` header:
 #define NANORTC_SDP_BUF_SIZE        1024
 ```
 
+## Optimization Techniques Applied
+
+The following techniques were used to reduce RAM by 34% (full-media: 157→103 KB):
+
+1. **Config default tuning** (~49 KB saved) — Jitter buffer slots 64→32, slot data 640→320B, H.264 NAL buffer 32→16 KB. All `#ifndef` guarded; override via `NANORTC_CONFIG_FILE`.
+
+2. **Zero-copy CRC-32c** — `nsctp_verify_checksum()` used to copy the entire SCTP packet (1200B) to a stack buffer. Replaced with segmented `nano_crc32c_init/update/final` API that computes CRC in three passes, skipping the checksum field.
+
+3. **Struct field reordering** (~32 B saved) — SCTP `recv_gap` struct reordered to eliminate padding: `uint32_t` fields first, `uint16_t` next, `uint8_t/bool` last (20B→16B per entry × 8).
+
+4. **Type narrowing** (~50 B saved) — Credential length fields (`size_t`→`uint16_t`) in ICE, TURN, and jitter structs. Max credential length is 128 bytes, well within `uint16_t` range.
+
+5. **TURN feature flag** (700B RAM + 13KB code) — `NANORTC_FEATURE_TURN=0` compiles out all TURN relay code. Most embedded deployments are LAN-only and don't need NAT traversal.
+
+6. **Buffer size tightening** — `NANORTC_SDP_FINGERPRINT_SIZE` 128→104 (exact SHA-256 fit), `NANORTC_ICE_REMOTE_PWD_SIZE` 128→48 (covers all browser implementations), `NANORTC_MEDIA_BUF_SIZE` headroom 80→32 bytes.
+
 ## Measuring Sizes
 
 ```bash
-# Print sizeof(nanortc_t) and sub-structs:
+# Run sizeof regression tests (CI-integrated):
+cmake -B build -DNANORTC_CRYPTO=openssl
+cmake --build build && ctest --test-dir build -R sizeof
+
+# Print sizeof(nanortc_t) and sub-structs for a specific config:
 gcc -I include -I src -I crypto \
     -DNANORTC_FEATURE_DATACHANNEL=1 \
     -DNANORTC_FEATURE_AUDIO=0 \
