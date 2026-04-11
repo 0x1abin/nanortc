@@ -61,7 +61,7 @@ int nsctp_verify_checksum(const uint8_t *data, size_t len)
      * stack allocation + memcpy on every SCTP packet received). */
     static const uint8_t zeros[4] = {0, 0, 0, 0};
     uint32_t crc = nano_crc32c_init();
-    crc = nano_crc32c_update(crc, data, 8);            /* [0..8)  src+dst port, vtag */
+    crc = nano_crc32c_update(crc, data, 8);             /* [0..8)  src+dst port, vtag */
     crc = nano_crc32c_update(crc, zeros, 4);            /* [8..12) checksum as zero  */
     crc = nano_crc32c_update(crc, data + 12, len - 12); /* [12..len) chunk data      */
     uint32_t computed = nano_crc32c_final(crc);

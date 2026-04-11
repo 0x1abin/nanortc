@@ -14,8 +14,12 @@
  * but tight enough to catch accidental large buffer/array additions.
  * Values are for the host (64-bit) build; 32-bit ARM will be smaller. */
 
-void setUp(void) {}
-void tearDown(void) {}
+void setUp(void)
+{
+}
+void tearDown(void)
+{
+}
 
 static void test_sizeof_ice(void)
 {
@@ -71,8 +75,7 @@ static void test_sizeof_stun_msg(void)
 int main(void)
 {
     UNITY_BEGIN();
-    printf("nanortc sizeof tests (DC=%d AUDIO=%d VIDEO=%d TURN=%d)\n",
-           NANORTC_FEATURE_DATACHANNEL,
+    printf("nanortc sizeof tests (DC=%d AUDIO=%d VIDEO=%d TURN=%d)\n", NANORTC_FEATURE_DATACHANNEL,
 #if NANORTC_FEATURE_AUDIO
            1,
 #else
