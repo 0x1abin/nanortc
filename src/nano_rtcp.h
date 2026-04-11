@@ -65,9 +65,10 @@ typedef struct nano_rtcp_info {
     uint32_t sr_packets;
     uint32_t sr_octets;
 
-    /* NACK-specific */
-    uint16_t nack_pid; /* Packet ID (seq) */
-    uint16_t nack_blp; /* Bitmask of following lost packets */
+    /* NACK-specific (RFC 4585 §6.2.1) */
+    uint32_t nack_media_ssrc; /* SSRC of the media source whose packets were lost */
+    uint16_t nack_pid;        /* Packet ID (first lost seq number) */
+    uint16_t nack_blp;        /* Bitmask of following 16 lost packets */
 } nano_rtcp_info_t;
 
 int rtcp_init(nano_rtcp_t *rtcp, uint32_t ssrc);

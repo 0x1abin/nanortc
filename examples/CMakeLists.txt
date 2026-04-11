@@ -15,3 +15,7 @@ endif()
 if(APPLE)
     add_subdirectory(macos_camera)
 endif()
+
+if(UNIX AND NOT APPLE)
+    add_subdirectory(rk3588_uvc_camera)
+endif()

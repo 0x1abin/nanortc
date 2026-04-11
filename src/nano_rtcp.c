@@ -265,7 +265,8 @@ int rtcp_parse(const uint8_t *data, size_t len, nano_rtcp_info_t *info)
         /* FMT field */
         uint8_t fmt = data[0] & 0x1F;
         if (fmt == 1) {
-            /* media SSRC at offset 8, FCI at offset 12 */
+            /* RFC 4585 §6.2.1: media SSRC at offset 8, FCI at offset 12 */
+            info->nack_media_ssrc = nanortc_read_u32be(data + 8);
             info->nack_pid = nanortc_read_u16be(data + 12);
             info->nack_blp = nanortc_read_u16be(data + 14);
         }
