@@ -60,6 +60,9 @@ set(COMMON ${CMAKE_CURRENT_SOURCE_DIR}/../common)
 
 add_executable(rk3588_uvc_camera
     main.c
+    frame_queue.c
+    sig_queue.c
+    session.c
     ${CAPTURE_SRC}
     ${COMMON}/run_loop_linux.c
     ${COMMON}/http_signaling.c

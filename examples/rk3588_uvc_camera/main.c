@@ -1,5 +1,5 @@
 /*
- * rk3588_uvc_camera — V4L2 USB camera → H.264 encoder → browser via nanortc
+ * rk3588_uvc_camera — V4L2 USB camera -> H.264 encoder -> browser via nanortc
  *
  * Captures from a USB UVC camera, encodes to H.264, and streams to one
  * or more browser viewers using the nanortc Sans I/O WebRTC engine.
@@ -20,11 +20,11 @@
 #include "http_signaling.h"
 #include "capture.h"
 #include "sig_discovery.h"
+#include "frame_queue.h"
+#include "sig_queue.h"
+#include "session.h"
 
-#include <arpa/inet.h>
 #include <errno.h>
-#include <ifaddrs.h>
-#include <net/if.h>
 #include <netinet/in.h>
 #include <pthread.h>
 #include <signal.h>
@@ -53,261 +53,9 @@
 #define DEFAULT_SIG_HOST    ""     /* empty = auto-discover on LAN */
 #define DEFAULT_SIG_PORT    8765
 
-#define FRAME_QUEUE_SIZE    16
-#define SIG_QUEUE_SIZE      8
-#define MAX_SESSIONS        4
-#define MAX_LOCAL_IPS       8
 #define SIG_POLL_TIMEOUT_MS 2000
 
 uint32_t nano_get_millis(void); /* from run_loop_linux.c */
-
-/* Diagnostic counters — reset every stats interval */
-static uint32_t g_pli_count;
-static uint32_t g_fq_drop_count;
-static uint32_t g_idr_max_bytes;
-
-/* ----------------------------------------------------------------
- * Thread-safe frame queue (mutex + wake pipe)
- * ---------------------------------------------------------------- */
-
-typedef struct {
-    uint8_t *data;
-    size_t len;
-    uint32_t pts_ms;
-    bool is_keyframe;
-} queued_frame_t;
-
-typedef struct {
-    queued_frame_t frames[FRAME_QUEUE_SIZE];
-    int head;
-    int count;
-    pthread_mutex_t lock;
-    int wake_pipe[2];
-} frame_queue_t;
-
-static int fq_init(frame_queue_t *q)
-{
-    memset(q, 0, sizeof(*q));
-    if (pipe(q->wake_pipe) < 0) {
-        perror("pipe");
-        return -1;
-    }
-    pthread_mutex_init(&q->lock, NULL);
-    return 0;
-}
-
-static void fq_destroy(frame_queue_t *q)
-{
-    pthread_mutex_lock(&q->lock);
-    for (int i = 0; i < q->count; i++) {
-        int idx = (q->head + i) % FRAME_QUEUE_SIZE;
-        free(q->frames[idx].data);
-    }
-    pthread_mutex_unlock(&q->lock);
-    pthread_mutex_destroy(&q->lock);
-    close(q->wake_pipe[0]);
-    close(q->wake_pipe[1]);
-}
-
-static void fq_push(frame_queue_t *q, const uint8_t *data, size_t len,
-                    uint32_t pts_ms, bool is_keyframe)
-{
-    pthread_mutex_lock(&q->lock);
-    if (q->count == FRAME_QUEUE_SIZE) {
-        free(q->frames[q->head].data);
-        q->head = (q->head + 1) % FRAME_QUEUE_SIZE;
-        q->count--;
-        g_fq_drop_count++;
-    }
-    int idx = (q->head + q->count) % FRAME_QUEUE_SIZE;
-    q->frames[idx].data = malloc(len);
-    if (q->frames[idx].data) {
-        memcpy(q->frames[idx].data, data, len);
-        q->frames[idx].len = len;
-        q->frames[idx].pts_ms = pts_ms;
-        q->frames[idx].is_keyframe = is_keyframe;
-        q->count++;
-    }
-    pthread_mutex_unlock(&q->lock);
-
-    char c = 'F';
-    ssize_t w = write(q->wake_pipe[1], &c, 1);
-    (void)w;
-}
-
-static int fq_pop(frame_queue_t *q, queued_frame_t *out)
-{
-    pthread_mutex_lock(&q->lock);
-    if (q->count == 0) {
-        pthread_mutex_unlock(&q->lock);
-        return -1;
-    }
-    *out = q->frames[q->head];
-    q->frames[q->head].data = NULL;
-    q->head = (q->head + 1) % FRAME_QUEUE_SIZE;
-    q->count--;
-    pthread_mutex_unlock(&q->lock);
-    return 0;
-}
-
-/* ----------------------------------------------------------------
- * Thread-safe signaling message queue
- *
- * The signaling thread pushes incoming offers/candidates here;
- * the main event loop pops and processes them without blocking.
- * ---------------------------------------------------------------- */
-
-typedef struct {
-    int msg_type; /* 0 = offer, 1 = candidate */
-    int from;
-    char payload[HTTP_SIG_BUF_SIZE];
-} sig_msg_t;
-
-typedef struct {
-    sig_msg_t msgs[SIG_QUEUE_SIZE];
-    int head;
-    int count;
-    pthread_mutex_t lock;
-    int wake_pipe[2];
-} sig_queue_t;
-
-static int sq_init(sig_queue_t *q)
-{
-    memset(q, 0, sizeof(*q));
-    if (pipe(q->wake_pipe) < 0) {
-        perror("pipe");
-        return -1;
-    }
-    pthread_mutex_init(&q->lock, NULL);
-    return 0;
-}
-
-static void sq_destroy(sig_queue_t *q)
-{
-    pthread_mutex_destroy(&q->lock);
-    close(q->wake_pipe[0]);
-    close(q->wake_pipe[1]);
-}
-
-static void sq_push(sig_queue_t *q, int msg_type, int from, const char *payload)
-{
-    pthread_mutex_lock(&q->lock);
-    if (q->count == SIG_QUEUE_SIZE) {
-        q->head = (q->head + 1) % SIG_QUEUE_SIZE;
-        q->count--;
-    }
-    int idx = (q->head + q->count) % SIG_QUEUE_SIZE;
-    q->msgs[idx].msg_type = msg_type;
-    q->msgs[idx].from = from;
-    size_t len = strlen(payload);
-    if (len >= HTTP_SIG_BUF_SIZE) len = HTTP_SIG_BUF_SIZE - 1;
-    memcpy(q->msgs[idx].payload, payload, len);
-    q->msgs[idx].payload[len] = '\0';
-    q->count++;
-    pthread_mutex_unlock(&q->lock);
-
-    char c = 'S';
-    ssize_t w = write(q->wake_pipe[1], &c, 1);
-    (void)w;
-}
-
-static int sq_pop(sig_queue_t *q, sig_msg_t *out)
-{
-    pthread_mutex_lock(&q->lock);
-    if (q->count == 0) {
-        pthread_mutex_unlock(&q->lock);
-        return -1;
-    }
-    *out = q->msgs[q->head];
-    q->head = (q->head + 1) % SIG_QUEUE_SIZE;
-    q->count--;
-    pthread_mutex_unlock(&q->lock);
-    return 0;
-}
-
-/* ----------------------------------------------------------------
- * Local interface enumeration (IPv4)
- * ---------------------------------------------------------------- */
-
-typedef struct { char ip[INET_ADDRSTRLEN]; } local_ip_t;
-static local_ip_t g_local_ips[MAX_LOCAL_IPS];
-static int g_local_ip_count;
-
-static void enumerate_local_ipv4(void)
-{
-    struct ifaddrs *ifas, *ifa;
-    g_local_ip_count = 0;
-
-    if (getifaddrs(&ifas) != 0) { perror("getifaddrs"); return; }
-
-    for (ifa = ifas; ifa && g_local_ip_count < MAX_LOCAL_IPS; ifa = ifa->ifa_next) {
-        if (!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_INET) continue;
-        if (ifa->ifa_flags & IFF_LOOPBACK) continue;
-        if (!(ifa->ifa_flags & IFF_UP)) continue;
-
-        struct sockaddr_in *sa = (struct sockaddr_in *)ifa->ifa_addr;
-        char ip[INET_ADDRSTRLEN];
-        if (!inet_ntop(AF_INET, &sa->sin_addr, ip, sizeof(ip))) continue;
-
-        bool dup = false;
-        for (int i = 0; i < g_local_ip_count; i++)
-            if (strcmp(g_local_ips[i].ip, ip) == 0) { dup = true; break; }
-        if (dup) continue;
-
-        size_t len = strlen(ip);
-        if (len >= sizeof(g_local_ips[0].ip)) len = sizeof(g_local_ips[0].ip) - 1;
-        memcpy(g_local_ips[g_local_ip_count].ip, ip, len);
-        g_local_ips[g_local_ip_count].ip[len] = '\0';
-        g_local_ip_count++;
-        fprintf(stderr, "[net] local IP: %s (%s)\n", ip, ifa->ifa_name);
-    }
-    freeifaddrs(ifas);
-
-    if (g_local_ip_count == 0) {
-        memcpy(g_local_ips[0].ip, "127.0.0.1", 10);
-        g_local_ip_count = 1;
-    }
-}
-
-/* ----------------------------------------------------------------
- * Per-viewer session
- * ---------------------------------------------------------------- */
-
-typedef struct {
-    int active;
-    int viewer_id;
-    nanortc_t rtc;
-    int udp_fd;
-    int video_mid;
-    int media_connected;
-} session_t;
-
-static session_t g_sessions[MAX_SESSIONS];
-
-static session_t *find_free_session(void)
-{
-    for (int i = 0; i < MAX_SESSIONS; i++)
-        if (!g_sessions[i].active) return &g_sessions[i];
-    return NULL;
-}
-
-static session_t *find_session_by_viewer(int viewer_id)
-{
-    for (int i = 0; i < MAX_SESSIONS; i++)
-        if (g_sessions[i].active && g_sessions[i].viewer_id == viewer_id) return &g_sessions[i];
-    return NULL;
-}
-
-static void destroy_session(session_t *s)
-{
-    if (!s) return;
-    if (s->udp_fd >= 0) { close(s->udp_fd); s->udp_fd = -1; }
-    nanortc_destroy(&s->rtc);
-    s->active = 0;
-    s->media_connected = 0;
-    s->viewer_id = -1;
-    s->video_mid = -1;
-}
 
 /* ----------------------------------------------------------------
  * Globals
@@ -317,145 +65,14 @@ static frame_queue_t g_fq;
 static sig_queue_t g_sq;
 static volatile sig_atomic_t g_quit;
 
+/* Diagnostic counter — reset every stats interval */
+static uint32_t g_idr_max_bytes;
+
 static void on_encoded_video(void *ctx, const uint8_t *annex_b, size_t len,
                              uint32_t pts_ms, bool is_keyframe)
 {
     (void)ctx;
     fq_push(&g_fq, annex_b, len, pts_ms, is_keyframe);
-}
-
-/* ----------------------------------------------------------------
- * Per-session event handler
- * ---------------------------------------------------------------- */
-
-static void on_session_event(nanortc_t *rtc, const nanortc_event_t *evt, void *userdata)
-{
-    (void)rtc;
-    session_t *s = (session_t *)userdata;
-
-    switch (evt->type) {
-    case NANORTC_EV_ICE_STATE_CHANGE:
-        fprintf(stderr, "[session %d] ICE state -> %u\n", s->viewer_id, evt->ice_state);
-        break;
-    case NANORTC_EV_CONNECTED:
-        fprintf(stderr, "[session %d] connected\n", s->viewer_id);
-        s->media_connected = 1;
-        capture_force_keyframe();
-        break;
-    case NANORTC_EV_KEYFRAME_REQUEST: {
-        /* Rate-limit: max once per 2 s to avoid disrupting the encoder */
-        static uint32_t last_kf_ms;
-        uint32_t now_kf = nano_get_millis();
-        g_pli_count++;
-        if (now_kf - last_kf_ms >= 2000) {
-            last_kf_ms = now_kf;
-            capture_force_keyframe();
-            fprintf(stderr, "[session %d] PLI → forced keyframe\n", s->viewer_id);
-        }
-        break;
-    }
-    case NANORTC_EV_DISCONNECTED:
-        fprintf(stderr, "[session %d] disconnected\n", s->viewer_id);
-        s->media_connected = 0;
-        s->active = 0;
-        break;
-    default:
-        break;
-    }
-}
-
-/* ----------------------------------------------------------------
- * Session creation
- * ---------------------------------------------------------------- */
-
-static int create_session(int viewer_id, const char *offer_sdp,
-                          const nanortc_config_t *cfg, http_sig_t *sig)
-{
-    session_t *existing = find_session_by_viewer(viewer_id);
-    if (existing) {
-        fprintf(stderr, "[session] viewer %d reconnecting\n", viewer_id);
-        destroy_session(existing);
-    }
-
-    session_t *s = find_free_session();
-    if (!s) {
-        fprintf(stderr, "[session] no free slots\n");
-        return -1;
-    }
-
-    memset(s, 0, sizeof(*s));
-    s->viewer_id = viewer_id;
-    s->udp_fd = -1;
-    s->video_mid = -1;
-
-    if (nanortc_init(&s->rtc, cfg) != NANORTC_OK) return -1;
-
-#if NANORTC_FEATURE_VIDEO
-    s->video_mid = nanortc_add_video_track(&s->rtc, NANORTC_DIR_SENDONLY, NANORTC_CODEC_H264);
-    if (s->video_mid < 0) { nanortc_destroy(&s->rtc); return -1; }
-#endif
-
-    s->udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (s->udp_fd < 0) { nanortc_destroy(&s->rtc); return -1; }
-
-    int reuse = 1;
-    setsockopt(s->udp_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
-
-    /* Enlarge send buffer for bursty IDR frame transmission.
-     * A 1080p IDR can produce 100+ RTP packets (~150KB) in a burst. */
-    int sndbuf = 512 * 1024;
-    setsockopt(s->udp_fd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
-
-    struct sockaddr_in local = {.sin_family = AF_INET, .sin_addr.s_addr = INADDR_ANY};
-    if (bind(s->udp_fd, (struct sockaddr *)&local, sizeof(local)) < 0) {
-        close(s->udp_fd); s->udp_fd = -1; nanortc_destroy(&s->rtc); return -1;
-    }
-
-    struct sockaddr_in bound;
-    socklen_t blen = sizeof(bound);
-    getsockname(s->udp_fd, (struct sockaddr *)&bound, &blen);
-    uint16_t port = ntohs(bound.sin_port);
-
-    for (int i = 0; i < g_local_ip_count; i++)
-        nanortc_add_local_candidate(&s->rtc, g_local_ips[i].ip, port);
-
-    char answer[HTTP_SIG_BUF_SIZE];
-    size_t answer_len = 0;
-    if (nanortc_accept_offer(&s->rtc, offer_sdp, answer, sizeof(answer), &answer_len) != NANORTC_OK ||
-        http_sig_send_to(sig, viewer_id, "answer", answer, "sdp") < 0) {
-        close(s->udp_fd); s->udp_fd = -1; nanortc_destroy(&s->rtc); return -1;
-    }
-
-    s->active = 1;
-    fprintf(stderr, "[session] viewer %d ready (port %u)\n", viewer_id, port);
-    return 0;
-}
-
-/* ----------------------------------------------------------------
- * Output dispatch
- * ---------------------------------------------------------------- */
-
-static void dispatch_outputs(session_t *s, uint32_t *timeout_ms)
-{
-    nanortc_output_t out;
-    while (nanortc_poll_output(&s->rtc, &out) == NANORTC_OK) {
-        switch (out.type) {
-        case NANORTC_OUTPUT_TRANSMIT: {
-            struct sockaddr_in dest = {.sin_family = AF_INET};
-            memcpy(&dest.sin_addr, out.transmit.dest.addr, 4);
-            dest.sin_port = htons(out.transmit.dest.port);
-            sendto(s->udp_fd, out.transmit.data, out.transmit.len, 0,
-                   (struct sockaddr *)&dest, sizeof(dest));
-            break;
-        }
-        case NANORTC_OUTPUT_EVENT:
-            on_session_event(&s->rtc, &out.event, s);
-            break;
-        case NANORTC_OUTPUT_TIMEOUT:
-            if (out.timeout_ms < *timeout_ms) *timeout_ms = out.timeout_ms;
-            break;
-        }
-    }
 }
 
 /* ----------------------------------------------------------------
@@ -504,7 +121,7 @@ static void run_event_loop(http_sig_t *sig, const nanortc_config_t *cfg)
 
         /* Pre-select: drain outputs */
         for (int i = 0; i < MAX_SESSIONS; i++)
-            if (g_sessions[i].active) dispatch_outputs(&g_sessions[i], &timeout_ms);
+            if (g_sessions[i].active) session_dispatch_outputs(&g_sessions[i], &timeout_ms);
 
         /* Build fd_set */
         fd_set rset;
@@ -557,7 +174,7 @@ static void run_event_loop(http_sig_t *sig, const nanortc_config_t *cfg)
 #if NANORTC_FEATURE_VIDEO
                     nanortc_send_video(&s->rtc, (uint8_t)s->video_mid,
                                        frame.pts_ms, frame.data, frame.len);
-                    dispatch_outputs(s, &timeout_ms);
+                    session_dispatch_outputs(s, &timeout_ms);
                     sent = true;
 #endif
                 }
@@ -580,9 +197,9 @@ static void run_event_loop(http_sig_t *sig, const nanortc_config_t *cfg)
             while (sq_pop(&g_sq, &msg) == 0) {
                 if (msg.msg_type == 0) {
                     fprintf(stderr, "[sig] offer from viewer %d\n", msg.from);
-                    create_session(msg.from, msg.payload, cfg, sig);
+                    session_create(msg.from, msg.payload, cfg, sig);
                 } else {
-                    session_t *s = find_session_by_viewer(msg.from);
+                    session_t *s = session_find_by_viewer(msg.from);
                     if (s && msg.payload[0]) nanortc_add_remote_candidate(&s->rtc, msg.payload);
                 }
             }
@@ -590,33 +207,18 @@ static void run_event_loop(http_sig_t *sig, const nanortc_config_t *cfg)
 
         /* Post-select: drain again */
         for (int i = 0; i < MAX_SESSIONS; i++)
-            if (g_sessions[i].active) dispatch_outputs(&g_sessions[i], &timeout_ms);
+            if (g_sessions[i].active) session_dispatch_outputs(&g_sessions[i], &timeout_ms);
 
         /* Session cleanup */
         for (int i = 0; i < MAX_SESSIONS; i++) {
             session_t *s = &g_sessions[i];
             if (!s->active && s->udp_fd >= 0) {
                 fprintf(stderr, "[session %d] cleanup\n", s->viewer_id);
-                destroy_session(s);
+                session_destroy(s);
             }
         }
 
-        /* Stats — print diagnostics every 5 s.
-         *
-         * Troubleshooting guide:
-         *   drop>0         Frame queue overflow — main loop too slow to drain.
-         *                  Check if dispatch_outputs is blocked or encoder too fast.
-         *   PLI>0          Browser requested keyframe — usually means packet loss
-         *                  exceeded NACK recovery. Check network, increase bitrate
-         *                  headroom, or shorten GOP (DEFAULT_KEYFRAME_S).
-         *   kbps<<target   Encoder under-producing. Check encoder load, rc-mode,
-         *                  or camera capture rate.
-         *   IDR>200KB      Large keyframes risk burst loss. Increase
-         *                  NANORTC_OUT_QUEUE_SIZE or reduce resolution/quality.
-         *   RTT>100ms      High latency path. Consider TURN relay or closer server.
-         *   BWE<bitrate    Network can't sustain target bitrate. Lower -b or
-         *                  let the app adapt encoder to BWE (not yet implemented).
-         */
+        /* Stats — print diagnostics every 5 s. */
         if (now - last_stats_ms >= 5000) {
             uint32_t dt = now - last_stats_ms;
             uint32_t kbps = (uint32_t)(((uint64_t)bytes_sent * 8) / (dt ? dt : 1));
@@ -758,7 +360,7 @@ int main(int argc, char *argv[])
     g_quit = 1;
     pthread_join(sig_tid, NULL);
     for (int i = 0; i < MAX_SESSIONS; i++)
-        if (g_sessions[i].udp_fd >= 0) destroy_session(&g_sessions[i]);
+        if (g_sessions[i].udp_fd >= 0) session_destroy(&g_sessions[i]);
     capture_stop();
     http_sig_leave(&sig);
     sq_destroy(&g_sq);
