@@ -592,7 +592,9 @@ struct nanortc {
     nanortc_addr_t remote_addr;
 
     /* Scratch for trickle ICE candidate strings (valid until next poll) */
+#if NANORTC_FEATURE_TURN
     char relay_cand_str[NANORTC_IPV6_STR_SIZE + 96];
+#endif
     char srflx_cand_str[NANORTC_IPV6_STR_SIZE + 96];
     char host_cand_str[NANORTC_IPV6_STR_SIZE + 96];
 
