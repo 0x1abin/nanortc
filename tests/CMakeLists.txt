@@ -22,6 +22,9 @@ set(VIDEO_TESTS test_h264 test_bwe)
 # Tests that require DataChannel
 set(DC_TESTS test_datachannel)
 
+# Tests that require TURN
+set(TURN_TESTS test_turn)
+
 foreach(test_source ${TEST_SOURCES})
     get_filename_component(test_name ${test_source} NAME_WE)
 
@@ -46,6 +49,12 @@ foreach(test_source ${TEST_SOURCES})
     # Skip DC-only tests when DATACHANNEL is not enabled
     list(FIND DC_TESTS ${test_name} _is_dc_test)
     if(_is_dc_test GREATER -1 AND NOT NANORTC_FEATURE_DATACHANNEL)
+        continue()
+    endif()
+
+    # Skip TURN tests when TURN is not enabled
+    list(FIND TURN_TESTS ${test_name} _is_turn_test)
+    if(_is_turn_test GREATER -1 AND NOT NANORTC_FEATURE_TURN)
         continue()
     endif()
 

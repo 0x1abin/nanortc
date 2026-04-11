@@ -187,6 +187,14 @@
 #endif
 #endif
 
+#if defined(IDF_VER) && !defined(NANORTC_FEATURE_TURN)
+#ifdef CONFIG_NANORTC_FEATURE_TURN
+#define NANORTC_FEATURE_TURN 1
+#else
+#define NANORTC_FEATURE_TURN 0
+#endif
+#endif
+
 #if defined(IDF_VER) && !defined(NANORTC_FEATURE_IPV6)
 #ifdef CONFIG_NANORTC_FEATURE_IPV6
 #define NANORTC_FEATURE_IPV6 1
@@ -230,6 +238,13 @@
 /** @brief Enable video transport (RTP/SRTP + BWE). Default: 0. */
 #ifndef NANORTC_FEATURE_VIDEO
 #define NANORTC_FEATURE_VIDEO 0
+#endif
+
+/** @brief Enable TURN relay client (RFC 5766). Default: 1.
+ *  When disabled, saves ~700B RAM + ~13KB code. LAN-only deployments
+ *  that do not need NAT traversal via relay can disable this. */
+#ifndef NANORTC_FEATURE_TURN
+#define NANORTC_FEATURE_TURN 1
 #endif
 
 /** @brief Enable IPv6 address support. Default: 1.

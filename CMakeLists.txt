@@ -9,11 +9,15 @@ if(DEFINED ENV{IDF_PATH})
         src/nano_ice.c
         src/nano_stun.c
         src/nano_addr.c
-        src/nano_turn.c
         src/nano_dtls.c
         src/nano_crc32.c
         crypto/nanortc_crypto_mbedtls.c
     )
+
+    # TURN relay client (conditional on Kconfig)
+    if(CONFIG_NANORTC_FEATURE_TURN)
+        list(APPEND NANORTC_CORE_SRCS src/nano_turn.c)
+    endif()
 
     # DataChannel sources (conditional on Kconfig)
     if(CONFIG_NANORTC_FEATURE_DATACHANNEL)
@@ -60,8 +64,9 @@ option(NANORTC_FEATURE_DC_ORDERED  "Enable ordered DataChannel delivery" ON)
 option(NANORTC_FEATURE_AUDIO "Enable audio (RTP/SRTP/Jitter)" OFF)
 option(NANORTC_FEATURE_VIDEO "Enable video (RTP/SRTP/BWE)" OFF)
 option(NANORTC_FEATURE_IPV6  "Enable IPv6 address support" ON)
+option(NANORTC_FEATURE_TURN "Enable TURN relay client (RFC 5766)" ON)
 
-message(STATUS "nanortc features: DC=${NANORTC_FEATURE_DATACHANNEL} DC_REL=${NANORTC_FEATURE_DC_RELIABLE} DC_ORD=${NANORTC_FEATURE_DC_ORDERED} AUDIO=${NANORTC_FEATURE_AUDIO} VIDEO=${NANORTC_FEATURE_VIDEO} IPV6=${NANORTC_FEATURE_IPV6}")
+message(STATUS "nanortc features: DC=${NANORTC_FEATURE_DATACHANNEL} DC_REL=${NANORTC_FEATURE_DC_RELIABLE} DC_ORD=${NANORTC_FEATURE_DC_ORDERED} AUDIO=${NANORTC_FEATURE_AUDIO} VIDEO=${NANORTC_FEATURE_VIDEO} IPV6=${NANORTC_FEATURE_IPV6} TURN=${NANORTC_FEATURE_TURN}")
 
 # Crypto backend selection
 set(NANORTC_CRYPTO "mbedtls" CACHE STRING "Crypto backend: mbedtls or openssl")
@@ -82,8 +87,12 @@ set(NANORTC_SOURCES
     src/nano_dtls.c
     src/nano_crc32.c
     src/nano_addr.c
-    src/nano_turn.c
 )
+
+# ---- TURN relay client ----
+if(NANORTC_FEATURE_TURN)
+    list(APPEND NANORTC_SOURCES src/nano_turn.c)
+endif()
 
 # ---- DataChannel sources ----
 if(NANORTC_FEATURE_DATACHANNEL)
@@ -140,6 +149,7 @@ target_compile_definitions(nanortc PUBLIC
     NANORTC_FEATURE_AUDIO=$<BOOL:${NANORTC_FEATURE_AUDIO}>
     NANORTC_FEATURE_VIDEO=$<BOOL:${NANORTC_FEATURE_VIDEO}>
     NANORTC_FEATURE_IPV6=$<BOOL:${NANORTC_FEATURE_IPV6}>
+    NANORTC_FEATURE_TURN=$<BOOL:${NANORTC_FEATURE_TURN}>
 )
 
 if(NANORTC_CONFIG_FILE)

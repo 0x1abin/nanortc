@@ -1858,6 +1858,7 @@ TEST(test_e2e_srflx_retry)
     nanortc_destroy(&rtc);
 }
 
+#if NANORTC_FEATURE_TURN
 /* T: TURN allocation lifecycle — configure, allocate, 401, authenticated, success */
 TEST(test_e2e_turn_allocation_lifecycle)
 {
@@ -2123,6 +2124,7 @@ TEST(test_e2e_channeldata_inbound)
 
     nanortc_destroy(&rtc);
 }
+#endif /* NANORTC_FEATURE_TURN */
 
 /* T: Simple Binding Request encoding */
 TEST(test_e2e_simple_binding_request)
@@ -2222,7 +2224,9 @@ RUN(test_e2e_simple_binding_request);
 RUN(test_e2e_stun_server_config);
 RUN(test_e2e_srflx_discovery);
 RUN(test_e2e_srflx_retry);
+#if NANORTC_FEATURE_TURN
 RUN(test_e2e_turn_allocation_lifecycle);
 RUN(test_e2e_turn_relay_wrapping);
 RUN(test_e2e_channeldata_inbound);
+#endif
 TEST_MAIN_END
