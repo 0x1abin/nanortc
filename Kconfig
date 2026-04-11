@@ -45,6 +45,13 @@ menu "NanoRTC Configuration"
             Enable IPv6 candidate parsing and SDP generation.
             Disable on IPv4-only targets to save code size.
 
+    config NANORTC_FEATURE_TURN
+        bool "Enable TURN relay client (RFC 5766)"
+        default y
+        help
+            Enable TURN relay support for NAT traversal. LAN-only
+            deployments can disable to save ~700B RAM + ~13KB code.
+
     config NANORTC_MAX_DATACHANNELS
         int "Maximum number of DataChannels"
         default 8
@@ -130,22 +137,22 @@ menu "NanoRTC Configuration"
 
     config NANORTC_VIDEO_NAL_BUF_SIZE
         int "H.264 NAL reassembly buffer size (bytes)"
-        default 32768
+        default 16384
         range 4096 131072
         depends on NANORTC_FEATURE_VIDEO
         help
             Maximum reassembled NAL unit size for the FU-A depacketizer.
-            720p IDR NALs can reach ~30 KB. Reduce on constrained devices
-            if only low-resolution video is expected.
+            16384 covers 480p IDR NALs. Override to 32768 or 65536
+            for 720p/1080p streams with large keyframes.
 
     config NANORTC_JITTER_SLOTS
         int "Jitter buffer slots"
-        default 64
+        default 32
         range 8 256
         depends on NANORTC_FEATURE_AUDIO
         help
             Number of slots in the jitter buffer. Each slot holds one
-            RTP packet.
+            RTP packet. 32 slots at 20ms pacing = 640ms reorder window.
 
     config NANORTC_JITTER_SLOT_DATA_SIZE
         int "Jitter buffer slot data size (bytes)"

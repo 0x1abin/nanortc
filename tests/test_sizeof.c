@@ -7,6 +7,7 @@
  * SPDX-License-Identifier: MIT
  */
 
+#include <stdio.h>
 #include "unity.h"
 #include "nanortc.h"
 
