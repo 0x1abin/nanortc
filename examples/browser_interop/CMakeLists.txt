@@ -1,9 +1,11 @@
+set(COMMON ${CMAKE_CURRENT_SOURCE_DIR}/../common)
+
 add_executable(browser_interop
     main.c
-    http_signaling.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../common/run_loop_linux.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../common/media_source_file.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../common/ice_server_resolve.c
+    ${COMMON}/http_signaling.c
+    ${COMMON}/run_loop_linux.c
+    ${COMMON}/media_source_file.c
+    ${COMMON}/ice_server_resolve.c
 )
 
 target_include_directories(browser_interop PRIVATE

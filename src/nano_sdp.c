@@ -140,6 +140,12 @@ static void extract_value(const char *line, size_t line_len, const char *prefix,
         vlen++;
     }
 
+    /* Strip trailing whitespace (defense against SDP generators that
+     * add trailing spaces — protects exact-fit buffers like fingerprint). */
+    while (vlen > 0 && (val[vlen - 1] == ' ' || val[vlen - 1] == '\t')) {
+        vlen--;
+    }
+
     if (vlen >= dst_size) {
         vlen = dst_size - 1;
     }

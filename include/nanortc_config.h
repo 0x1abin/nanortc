@@ -9,6 +9,18 @@
  *
  * This follows the same pattern as MBEDTLS_CONFIG_FILE / FreeRTOSConfig.h.
  *
+ * Memory profiles (approximate sizeof(nanortc_t)):
+ *   Default DC-only:   ~27 KB
+ *   Default DC+Audio:  ~38 KB   (per audio track: ~11 KB jitter buffer)
+ *   Default full:      ~108 KB  (+ video pkt_ring + H.264 NAL buffer)
+ *
+ *   Minimal embedded (DC-only, no TURN):
+ *     NANORTC_FEATURE_TURN 0
+ *     NANORTC_MAX_DATACHANNELS 2
+ *     NANORTC_MAX_ICE_CANDIDATES 4
+ *     NANORTC_OUT_QUEUE_SIZE 8
+ *     → ~18 KB
+ *
  * SPDX-License-Identifier: MIT
  */
 
@@ -84,6 +96,10 @@
 
 #if defined(CONFIG_NANORTC_MEDIA_BUF_SIZE) && !defined(NANORTC_MEDIA_BUF_SIZE)
 #define NANORTC_MEDIA_BUF_SIZE CONFIG_NANORTC_MEDIA_BUF_SIZE
+#endif
+
+#if defined(CONFIG_NANORTC_VIDEO_NAL_BUF_SIZE) && !defined(NANORTC_VIDEO_NAL_BUF_SIZE)
+#define NANORTC_VIDEO_NAL_BUF_SIZE CONFIG_NANORTC_VIDEO_NAL_BUF_SIZE
 #endif
 
 #if defined(CONFIG_NANORTC_RTCP_INTERVAL_MS) && !defined(NANORTC_RTCP_INTERVAL_MS)
@@ -175,6 +191,14 @@
 #endif
 #endif
 
+#if defined(IDF_VER) && !defined(NANORTC_FEATURE_TURN)
+#ifdef CONFIG_NANORTC_FEATURE_TURN
+#define NANORTC_FEATURE_TURN 1
+#else
+#define NANORTC_FEATURE_TURN 0
+#endif
+#endif
+
 #if defined(IDF_VER) && !defined(NANORTC_FEATURE_IPV6)
 #ifdef CONFIG_NANORTC_FEATURE_IPV6
 #define NANORTC_FEATURE_IPV6 1
@@ -218,6 +242,13 @@
 /** @brief Enable video transport (RTP/SRTP + BWE). Default: 0. */
 #ifndef NANORTC_FEATURE_VIDEO
 #define NANORTC_FEATURE_VIDEO 0
+#endif
+
+/** @brief Enable TURN relay client (RFC 5766). Default: 1.
+ *  When disabled, saves ~700B RAM + ~13KB code. LAN-only deployments
+ *  that do not need NAT traversal via relay can disable this. */
+#ifndef NANORTC_FEATURE_TURN
+#define NANORTC_FEATURE_TURN 1
 #endif
 
 /** @brief Enable IPv6 address support. Default: 1.
@@ -313,8 +344,11 @@
 #define NANORTC_ICE_REMOTE_UFRAG_SIZE 32
 #endif
 
+/** @brief Remote ICE password buffer size. Browser implementations typically use
+ *  22-32 character passwords; 48 is generous for real-world interop.
+ *  Override to 128 if connecting to non-standard ICE agents. */
 #ifndef NANORTC_ICE_REMOTE_PWD_SIZE
-#define NANORTC_ICE_REMOTE_PWD_SIZE 128
+#define NANORTC_ICE_REMOTE_PWD_SIZE 48
 #endif
 
 /* ----------------------------------------------------------------
@@ -340,8 +374,11 @@
 
 /* SDP field sizes */
 
+/** @brief SDP fingerprint buffer size.
+ *  SHA-256: "sha-256 " (8) + 32 hex pairs with colons (95) + NUL = 104.
+ *  Reduced from 128: exact fit for SHA-256, the only hash used in WebRTC. */
 #ifndef NANORTC_SDP_FINGERPRINT_SIZE
-#define NANORTC_SDP_FINGERPRINT_SIZE 128
+#define NANORTC_SDP_FINGERPRINT_SIZE 104
 #endif
 
 #ifndef NANORTC_SDP_MIN_BUF_SIZE
@@ -456,9 +493,9 @@
 
 /* Media scratch buffer size (for RTP/SRTP processing).
  * Must hold: RTP header (12) + max payload (NANORTC_VIDEO_MTU) + SRTP tag (10).
- * Formula: NANORTC_VIDEO_MTU + 80 provides sufficient headroom. */
+ * Total overhead: 22 bytes. +32 provides safe headroom for extensions. */
 #ifndef NANORTC_MEDIA_BUF_SIZE
-#define NANORTC_MEDIA_BUF_SIZE (NANORTC_VIDEO_MTU + 80)
+#define NANORTC_MEDIA_BUF_SIZE (NANORTC_VIDEO_MTU + 32)
 #endif
 
 /* RTCP send interval in milliseconds (RFC 3550 §6.2) */
@@ -480,9 +517,11 @@
  * Video configuration (VIDEO feature only)
  * ---------------------------------------------------------------- */
 
-/** @brief Maximum reassembled NAL unit size for FU-A depacketizer (bytes). */
+/** @brief Maximum reassembled NAL unit size for FU-A depacketizer (bytes).
+ *  16384 covers 480p H.264 IDR NAL units. Override to 32768 or 65536
+ *  for 720p/1080p streams with large keyframes. */
 #ifndef NANORTC_VIDEO_NAL_BUF_SIZE
-#define NANORTC_VIDEO_NAL_BUF_SIZE 32768
+#define NANORTC_VIDEO_NAL_BUF_SIZE 16384
 #endif
 
 /** @brief Default dynamic Payload Type for H.264 (RFC 6184). */
@@ -494,16 +533,18 @@
  * Jitter buffer slots (AUDIO feature only)
  * ---------------------------------------------------------------- */
 
+/** @brief Jitter buffer ring size (number of RTP packet slots).
+ *  32 slots at 20ms pacing = 640ms reorder window, sufficient for most networks.
+ *  Override to 64 for high-jitter satellite or long-haul links. */
 #ifndef NANORTC_JITTER_SLOTS
-#define NANORTC_JITTER_SLOTS 64
+#define NANORTC_JITTER_SLOTS 32
 #endif
 
-/* Maximum RTP payload data per jitter slot (bytes).
- * 640 covers Opus 20ms @ 510 kbps (extreme) and all common audio codecs.
- * Opus 20ms @ 128 kbps ≈ 320 B, G.711 20ms = 160 B.
- * Increase for wideband video-over-jitter or unusually large audio frames. */
+/** @brief Maximum RTP payload data per jitter slot (bytes).
+ *  320 covers Opus 20ms @ 128 kbps (~320 B) and G.711 20ms (160 B).
+ *  Override to 640 for Opus at extreme bitrates (510 kbps). */
 #ifndef NANORTC_JITTER_SLOT_DATA_SIZE
-#define NANORTC_JITTER_SLOT_DATA_SIZE 640
+#define NANORTC_JITTER_SLOT_DATA_SIZE 320
 #endif
 
 /* ----------------------------------------------------------------

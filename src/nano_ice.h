@@ -66,13 +66,13 @@ typedef struct nano_ice {
     nano_ice_state_t state;
     int is_controlling; /* 0 = controlled (answerer), 1 = controlling (offerer) */
     char local_ufrag[NANORTC_ICE_UFRAG_SIZE];
-    size_t local_ufrag_len;
+    uint16_t local_ufrag_len;
     char local_pwd[NANORTC_ICE_PWD_SIZE];
-    size_t local_pwd_len;
+    uint16_t local_pwd_len;
     char remote_ufrag[NANORTC_ICE_REMOTE_UFRAG_SIZE];
-    size_t remote_ufrag_len;
+    uint16_t remote_ufrag_len;
     char remote_pwd[NANORTC_ICE_REMOTE_PWD_SIZE];
-    size_t remote_pwd_len;
+    uint16_t remote_pwd_len;
     uint8_t selected_addr[NANORTC_ADDR_SIZE];
     uint16_t selected_port;
     uint8_t selected_family;

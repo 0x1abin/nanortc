@@ -159,13 +159,14 @@ typedef struct nano_sctp {
     uint32_t cumulative_tsn; /* highest TSN such that all TSN <= this received */
     bool sack_needed;
 
-    /* Gap tracking — buffer out-of-order DATA for reordering (RFC 9260 §6.2) */
+    /* Gap tracking — buffer out-of-order DATA for reordering (RFC 9260 §6.2).
+     * Fields ordered largest-first to eliminate struct padding (16B vs 20B). */
     struct {
         uint32_t tsn;
+        uint32_t ppid;
         uint16_t data_offset; /* offset into recv_gap_buf */
         uint16_t data_len;
         uint16_t stream_id;
-        uint32_t ppid;
         uint8_t flags;
         bool valid;
     } recv_gap[NANORTC_SCTP_MAX_RECV_GAP];

@@ -51,7 +51,7 @@ Dependencies flow strictly downward. No cycles allowed.
                               └──────────┘ └────────┘ └────────┘ └──────────┘
                                             ↑ AUDIO    ↑ VIDEO    ↑ VIDEO
 
-  TURN relay (always compiled, ~300B overhead):
+  TURN relay (optional, controlled by NANORTC_FEATURE_TURN):
   ┌──────────┐
   │nano_turn │  (TURN client: Allocate/Refresh/Permission/ChannelBind/Send/Data)
   └──────────┘

@@ -137,6 +137,7 @@ static int rtc_enqueue_transmit(nanortc_t *rtc, const uint8_t *data, size_t len,
     memset(&out, 0, sizeof(out));
     out.type = NANORTC_OUTPUT_TRANSMIT;
 
+#if NANORTC_FEATURE_TURN
     if (rtc->turn.configured && rtc->turn.state == NANORTC_TURN_ALLOCATED &&
         rtc->ice.selected_type == NANORTC_ICE_CAND_RELAY) {
         /* Route through TURN relay */
@@ -164,7 +165,9 @@ static int rtc_enqueue_transmit(nanortc_t *rtc, const uint8_t *data, size_t len,
         out.transmit.dest.family = rtc->turn.server_family;
         memcpy(out.transmit.dest.addr, rtc->turn.server_addr, NANORTC_ADDR_SIZE);
         out.transmit.dest.port = rtc->turn.server_port;
-    } else {
+    } else
+#endif /* NANORTC_FEATURE_TURN */
+    {
         /* Direct path (no relay) */
         out.transmit.data = data;
         out.transmit.len = len;
@@ -380,7 +383,9 @@ int nanortc_init(nanortc_t *rtc, const nanortc_config_t *cfg)
 #endif
 
     /* Process ICE servers (WebRTC RTCConfiguration.iceServers) */
+#if NANORTC_FEATURE_TURN
     turn_init(&rtc->turn);
+#endif
     if (cfg->ice_servers && cfg->ice_server_count > 0) {
         int irc = rtc_apply_ice_servers(rtc, cfg->ice_servers, cfg->ice_server_count);
         if (irc != NANORTC_OK) {
@@ -908,6 +913,7 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
 {
     uint8_t first = data[0];
 
+#if NANORTC_FEATURE_TURN
     /* RFC 7983 §3: ChannelData [0x40-0x7F] from TURN server */
     if (turn_is_channel_data(data, len) && rtc->turn.configured &&
         turn_is_from_server(&rtc->turn, src->addr, src->family, src->port)) {
@@ -930,11 +936,13 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
         }
         return NANORTC_OK;
     }
+#endif /* NANORTC_FEATURE_TURN */
 
     /* RFC 7983 §3: demultiplexing by first byte */
     if (first <= 3) {
         /* STUN [0x00-0x03] */
 
+#if NANORTC_FEATURE_TURN
         /* TURN: intercept packets from the TURN server */
         if (rtc->turn.configured &&
             turn_is_from_server(&rtc->turn, src->addr, src->family, src->port)) {
@@ -1016,6 +1024,7 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
             }
             return NANORTC_OK;
         }
+#endif /* NANORTC_FEATURE_TURN */
 
         /* STUN server response for srflx discovery (RFC 8445 §5.1.1.1) */
         if (rtc->stun_server_configured && !rtc->srflx_discovered) {
@@ -1314,6 +1323,42 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
                             rtc_emit_event_full(rtc, &kfevt);
                         }
                     }
+#if NANORTC_FEATURE_VIDEO
+                } else if (info.type == RTCP_RTPFB) {
+                    /* Generic NACK (RFC 4585 §6.2.1) — retransmit lost packets
+                     * from pkt_ring if they are still available. */
+                    uint8_t rtpfb_fmt = rtc->stun_buf[0] & 0x1F;
+                    if (rtpfb_fmt == 1) {
+                        /* Expand PID + BLP into up to 17 lost seq numbers and
+                         * retransmit each one found in the pkt_ring. */
+                        uint16_t lost[17];
+                        int lost_count = 0;
+                        lost[lost_count++] = info.nack_pid;
+                        for (int bit = 0; bit < 16; bit++) {
+                            if (info.nack_blp & (1u << bit)) {
+                                lost[lost_count++] = (uint16_t)(info.nack_pid + 1 + bit);
+                            }
+                        }
+                        int retx = 0;
+                        for (int i = 0; i < lost_count; i++) {
+                            /* Linear scan over pkt_ring_meta for a matching seq.
+                             * OUT_QUEUE_SIZE is small (32-256) so this is fast. */
+                            for (uint16_t s = 0; s < NANORTC_OUT_QUEUE_SIZE; s++) {
+                                if (rtc->pkt_ring_meta[s].len > 0 &&
+                                    rtc->pkt_ring_meta[s].seq == lost[i]) {
+                                    rtc_enqueue_transmit(rtc, rtc->pkt_ring[s],
+                                                         rtc->pkt_ring_meta[s].len,
+                                                         &rtc->remote_addr);
+                                    retx++;
+                                    break;
+                                }
+                            }
+                        }
+                        if (retx > 0) {
+                            NANORTC_LOGD("NACK", "retransmitted packet(s)");
+                        }
+                    }
+#endif /* NANORTC_FEATURE_VIDEO */
                 }
             }
             return NANORTC_OK;
@@ -1551,6 +1596,7 @@ static int rtc_process_timers(nanortc_t *rtc, uint32_t now_ms)
         }
     }
 
+#if NANORTC_FEATURE_TURN
     /* TURN: Allocate / Refresh / CreatePermission lifecycle */
     if (rtc->turn.configured) {
         nanortc_addr_t turn_dest;
@@ -1637,6 +1683,7 @@ static int rtc_process_timers(nanortc_t *rtc, uint32_t now_ms)
             }
         }
     }
+#endif /* NANORTC_FEATURE_TURN */
 
     /* STUN: server-reflexive candidate discovery (RFC 8445 §5.1.1.1) */
     if (rtc->stun_server_configured && !rtc->srflx_discovered) {
@@ -2073,6 +2120,7 @@ static int rtc_apply_ice_servers(nanortc_t *rtc, const nanortc_ice_server_t *ser
             uint16_t port = 3478;
             int type = parse_ice_url(url, host, sizeof(host), &port);
 
+#if NANORTC_FEATURE_TURN
             if (type == 1 && !rtc->turn.configured) {
                 /* First TURN URL wins (only one TURN server supported) */
                 if (!s->username || !s->credential) {
@@ -2103,6 +2151,7 @@ static int rtc_apply_ice_servers(nanortc_t *rtc, const nanortc_ice_server_t *ser
                     NANORTC_LOGI("RTC", "TURN server configured");
                 }
             }
+#endif /* NANORTC_FEATURE_TURN */
             if (type == 0 && !rtc->stun_server_configured) {
                 /* First STUN URL — configure for srflx discovery */
                 size_t host_len = 0;
@@ -2297,6 +2346,12 @@ static int video_send_fragment_cb(const uint8_t *payload, size_t len, int marker
 
     m->rtcp.packets_sent++;
     m->rtcp.octets_sent += (uint32_t)len;
+
+    /* Record NACK retransmission metadata for this slot.
+     * rtp_pack() increments seq after writing, so the seq in the packet
+     * is (m->rtp.seq - 1). */
+    rtc->pkt_ring_meta[slot].seq = (uint16_t)(m->rtp.seq - 1);
+    rtc->pkt_ring_meta[slot].len = (uint16_t)srtp_len;
 
     ctx->last_rc = rtc_enqueue_transmit(rtc, pkt_buf, srtp_len, &rtc->remote_addr);
     return ctx->last_rc;

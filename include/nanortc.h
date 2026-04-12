@@ -490,7 +490,9 @@ typedef struct nanortc_config {
 #include "nano_ice.h"
 #include "nano_dtls.h"
 #include "nano_sdp.h"
+#if NANORTC_FEATURE_TURN
 #include "nano_turn.h"
+#endif
 
 #if NANORTC_FEATURE_DATACHANNEL
 #include "nano_sctp.h"
@@ -541,7 +543,9 @@ struct nanortc {
     nano_ice_t ice;
     nano_dtls_t dtls;
     nano_sdp_t sdp;
+#if NANORTC_FEATURE_TURN
     nano_turn_t turn;
+#endif
 
 #if NANORTC_FEATURE_DATACHANNEL
     nano_sctp_t sctp;
@@ -568,6 +572,14 @@ struct nanortc {
      *  fragments don't clobber each other before dispatch_outputs sends them. */
     uint8_t pkt_ring[NANORTC_OUT_QUEUE_SIZE][NANORTC_MEDIA_BUF_SIZE];
 
+    /** NACK retransmission metadata — tracks which RTP seq lives in each
+     *  pkt_ring slot so we can retransmit on RTCP NACK (RFC 4585 §6.2.1).
+     *  len==0 means the slot is empty/invalid. */
+    struct {
+        uint16_t seq; /**< RTP sequence number stored in this slot. */
+        uint16_t len; /**< SRTP-protected packet length (0 = invalid). */
+    } pkt_ring_meta[NANORTC_OUT_QUEUE_SIZE];
+
     /** Shared bandwidth estimator (session-wide, not per-track). */
     nano_bwe_t bwe;
 #endif
@@ -588,7 +600,9 @@ struct nanortc {
     nanortc_addr_t remote_addr;
 
     /* Scratch for trickle ICE candidate strings (valid until next poll) */
+#if NANORTC_FEATURE_TURN
     char relay_cand_str[NANORTC_IPV6_STR_SIZE + 96];
+#endif
     char srflx_cand_str[NANORTC_IPV6_STR_SIZE + 96];
     char host_cand_str[NANORTC_IPV6_STR_SIZE + 96];
 

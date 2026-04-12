@@ -10,20 +10,21 @@ enable_language(OBJC)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(OPUS REQUIRED IMPORTED_TARGET opus)
 
+set(COMMON ${CMAKE_CURRENT_SOURCE_DIR}/../common)
+
 add_executable(macos_camera
     main.m
     av_capture.m
     vt_encoder.m
-    ${CMAKE_CURRENT_SOURCE_DIR}/../common/run_loop_linux.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../browser_interop/http_signaling.c
+    ${COMMON}/run_loop_linux.c
+    ${COMMON}/http_signaling.c
 )
 
 target_include_directories(macos_camera PRIVATE
     ${CMAKE_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/crypto
-    ${CMAKE_CURRENT_SOURCE_DIR}/../common
-    ${CMAKE_CURRENT_SOURCE_DIR}/../browser_interop
+    ${COMMON}
 )
 
 target_link_libraries(macos_camera PRIVATE
