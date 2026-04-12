@@ -1323,6 +1323,42 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
                             rtc_emit_event_full(rtc, &kfevt);
                         }
                     }
+#if NANORTC_FEATURE_VIDEO
+                } else if (info.type == RTCP_RTPFB) {
+                    /* Generic NACK (RFC 4585 §6.2.1) — retransmit lost packets
+                     * from pkt_ring if they are still available. */
+                    uint8_t rtpfb_fmt = rtc->stun_buf[0] & 0x1F;
+                    if (rtpfb_fmt == 1) {
+                        /* Expand PID + BLP into up to 17 lost seq numbers and
+                         * retransmit each one found in the pkt_ring. */
+                        uint16_t lost[17];
+                        int lost_count = 0;
+                        lost[lost_count++] = info.nack_pid;
+                        for (int bit = 0; bit < 16; bit++) {
+                            if (info.nack_blp & (1u << bit)) {
+                                lost[lost_count++] = (uint16_t)(info.nack_pid + 1 + bit);
+                            }
+                        }
+                        int retx = 0;
+                        for (int i = 0; i < lost_count; i++) {
+                            /* Linear scan over pkt_ring_meta for a matching seq.
+                             * OUT_QUEUE_SIZE is small (32-256) so this is fast. */
+                            for (uint16_t s = 0; s < NANORTC_OUT_QUEUE_SIZE; s++) {
+                                if (rtc->pkt_ring_meta[s].len > 0 &&
+                                    rtc->pkt_ring_meta[s].seq == lost[i]) {
+                                    rtc_enqueue_transmit(rtc, rtc->pkt_ring[s],
+                                                         rtc->pkt_ring_meta[s].len,
+                                                         &rtc->remote_addr);
+                                    retx++;
+                                    break;
+                                }
+                            }
+                        }
+                        if (retx > 0) {
+                            NANORTC_LOGD("NACK", "retransmitted packet(s)");
+                        }
+                    }
+#endif /* NANORTC_FEATURE_VIDEO */
                 }
             }
             return NANORTC_OK;
@@ -2310,6 +2346,12 @@ static int video_send_fragment_cb(const uint8_t *payload, size_t len, int marker
 
     m->rtcp.packets_sent++;
     m->rtcp.octets_sent += (uint32_t)len;
+
+    /* Record NACK retransmission metadata for this slot.
+     * rtp_pack() increments seq after writing, so the seq in the packet
+     * is (m->rtp.seq - 1). */
+    rtc->pkt_ring_meta[slot].seq = (uint16_t)(m->rtp.seq - 1);
+    rtc->pkt_ring_meta[slot].len = (uint16_t)srtp_len;
 
     ctx->last_rc = rtc_enqueue_transmit(rtc, pkt_buf, srtp_len, &rtc->remote_addr);
     return ctx->last_rc;

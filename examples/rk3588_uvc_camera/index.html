@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>nanortc — Orange Pi 5 USB Camera + Mic</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #111;
+    color: #ddd;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 1rem;
+  }
+  header {
+    width: 100%;
+    max-width: 1280px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 0.75rem;
+  }
+  h1 { font-size: 1rem; font-weight: 500; color: #aaa; }
+  #status {
+    font-size: 0.85rem;
+    padding: 4px 10px;
+    border-radius: 4px;
+    background: #222;
+    color: #888;
+    font-family: ui-monospace, Menlo, monospace;
+  }
+  #status.ok  { background: #1c3a1f; color: #6f6; }
+  #status.err { background: #3a1c1c; color: #f66; }
+  .video-wrap {
+    width: 100%;
+    max-width: 1280px;
+    background: #000;
+    border-radius: 6px;
+    overflow: hidden;
+    aspect-ratio: 16 / 9;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  video {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    background: #000;
+  }
+  .placeholder {
+    color: #555;
+    font-size: 0.9rem;
+    text-align: center;
+    padding: 2rem;
+  }
+  .controls {
+    margin-top: 0.75rem;
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+  }
+  button {
+    background: #2a5;
+    color: white;
+    border: 0;
+    padding: 8px 18px;
+    border-radius: 4px;
+    font-size: 0.9rem;
+    cursor: pointer;
+    font-weight: 500;
+  }
+  button:hover { background: #3b6; }
+  button:disabled { background: #444; color: #888; cursor: default; }
+  details {
+    margin-top: 0.75rem;
+    width: 100%;
+    max-width: 1280px;
+  }
+  summary {
+    cursor: pointer;
+    padding: 6px 10px;
+    background: #1a1a1a;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    color: #888;
+    user-select: none;
+  }
+  #log {
+    margin-top: 0.5rem;
+    border: 1px solid #222;
+    background: #0a0a0a;
+    padding: 8px;
+    height: 200px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    font-size: 0.78rem;
+    font-family: ui-monospace, Menlo, monospace;
+    border-radius: 4px;
+    color: #888;
+  }
+  #log .info { color: #888; }
+  #log .ok   { color: #6c6; }
+  #log .err  { color: #c66; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>nanortc — Orange Pi 5 USB Camera (RK3588 H.264)</h1>
+  <span id="status">Idle</span>
+</header>
+
+<div class="video-wrap">
+  <video id="remoteVideo" autoplay playsinline controls></video>
+</div>
+
+<div class="controls">
+  <button id="btnConnect" onclick="start()">Start</button>
+  <button id="btnStop" onclick="stop()" disabled>Stop</button>
+  <button id="btnUnmute" onclick="unmute()" style="display:none">Unmute</button>
+</div>
+
+<details>
+  <summary>Debug log</summary>
+  <div id="log"></div>
+</details>
+
+<script>
+// ----------------------------------------------------------------
+// rk3588_uvc_camera browser viewer
+//
+// Single-purpose page: connects as the WebRTC offerer to the nanortc
+// host (the rk3588_uvc_camera process), receives an H.264 video
+// track and (when available) an Opus audio track — both recvonly —
+// and renders them in a <video> element. No DataChannel, no local
+// microphone; this page only consumes the remote media.
+//
+// NOTE: the addTransceiver() order below (video, then audio) must
+// match the native side's track add order — see session.c
+// (add_local_tracks). nanortc matches pre-added tracks to offered
+// m-lines by integer mid, so reordering silently mis-routes packets.
+// ----------------------------------------------------------------
+
+const SIG_BASE = location.origin;
+let peerId = -1;
+let pc = null;
+let pollAbort = null;
+let polling = false;
+
+function log(cls, msg) {
+  const el = document.getElementById('log');
+  const line = document.createElement('div');
+  line.className = cls;
+  line.textContent = '[' + new Date().toLocaleTimeString() + '] ' + msg;
+  el.appendChild(line);
+  el.scrollTop = el.scrollHeight;
+}
+
+function setStatus(cls, text) {
+  const el = document.getElementById('status');
+  el.className = cls;
+  el.textContent = text;
+}
+
+// --- HTTP signaling ---
+
+async function sigJoin() {
+  const r = await fetch(SIG_BASE + '/join', {method: 'POST'});
+  if (!r.ok) throw new Error('join HTTP ' + r.status);
+  const j = await r.json();
+  return j.id;
+}
+
+async function sigSend(msg) {
+  await fetch(SIG_BASE + '/send?id=' + peerId, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(msg)
+  });
+}
+
+async function sigRecv(timeoutSec, signal) {
+  const r = await fetch(SIG_BASE + '/recv?id=' + peerId + '&timeout=' + timeoutSec,
+                        signal ? {signal} : undefined);
+  if (r.status === 204) return null;
+  if (!r.ok) throw new Error('recv HTTP ' + r.status);
+  return await r.json();
+}
+
+async function sigLeave() {
+  if (peerId < 0) return;
+  try {
+    await fetch(SIG_BASE + '/leave?id=' + peerId, {method: 'POST'});
+  } catch (_) {}
+  peerId = -1;
+}
+
+// --- Long-poll loop ---
+
+async function pollLoop() {
+  while (polling) {
+    try {
+      pollAbort = new AbortController();
+      const msg = await sigRecv(2, pollAbort.signal);
+      if (msg) await handleSignaling(msg);
+    } catch (e) {
+      if (e.name === 'AbortError') return;
+      log('err', 'Poll error: ' + e.message);
+      await new Promise(r => setTimeout(r, 500));
+    }
+  }
+}
+
+async function handleSignaling(msg) {
+  if (!pc) return;
+  if (msg.type === 'answer') {
+    log('info', 'Got answer (' + msg.sdp.length + ' bytes)');
+    await pc.setRemoteDescription({type: 'answer', sdp: msg.sdp});
+  } else if (msg.type === 'candidate' && msg.candidate) {
+    log('info', 'Got remote ICE candidate');
+    try {
+      await pc.addIceCandidate({candidate: msg.candidate, sdpMid: '0', sdpMLineIndex: 0});
+    } catch (e) {
+      log('err', 'addIceCandidate: ' + e.message);
+    }
+  }
+}
+
+// --- WebRTC ---
+
+async function start() {
+  document.getElementById('btnConnect').disabled = true;
+  document.getElementById('btnStop').disabled = false;
+  setStatus('', 'Joining signaling...');
+
+  // Consume user activation NOW, before any await. start() is async,
+  // so by the time ontrack fires (after ICE+DTLS, several seconds later)
+  // the original click's user gesture has expired and v.play() will be
+  // rejected by Chrome's autoplay policy with "user didn't interact".
+  // Calling play() synchronously inside the click handler establishes
+  // the play permission for this MediaElement so the later autoplay on
+  // srcObject assignment is allowed to make sound.
+  const _v0 = document.getElementById('remoteVideo');
+  if (!_v0.srcObject) _v0.srcObject = new MediaStream();
+  _v0.play().catch(() => { /* will be retried in ontrack */ });
+
+  try {
+    peerId = await sigJoin();
+    log('ok', 'Joined as peer ' + peerId);
+  } catch (e) {
+    log('err', 'Join failed: ' + e.message);
+    setStatus('err', 'Join failed');
+    document.getElementById('btnConnect').disabled = false;
+    document.getElementById('btnStop').disabled = true;
+    return;
+  }
+
+  // STUN-only — direct host candidates over LAN/Tailscale
+  const iceServers = [
+    {urls: 'stun:stun.l.google.com:19302'},
+    {urls: 'stun:stun.cloudflare.com:3478'},
+  ];
+  pc = new RTCPeerConnection({iceServers});
+
+  pc.oniceconnectionstatechange = () => {
+    log('info', 'ICE: ' + pc.iceConnectionState);
+    if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+      setStatus('ok', 'Connected');
+    } else if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
+      setStatus('err', pc.iceConnectionState === 'failed' ? 'ICE failed' : 'Disconnected');
+      log('info', 'Reconnecting in 3s...');
+      setTimeout(() => { stop(); start(); }, 3000);
+    }
+  };
+
+  pc.ontrack = (e) => {
+    log('ok', 'Remote track received: ' + e.track.kind);
+    const video = document.getElementById('remoteVideo');
+    if (e.streams && e.streams[0]) {
+      // If we already pre-created a placeholder stream in start() to
+      // hold the play() permission grant, merge incoming tracks into it
+      // rather than replacing srcObject (which would drop the grant).
+      if (video.srcObject && video.srcObject !== e.streams[0]) {
+        e.streams[0].getTracks().forEach(t => {
+          if (!video.srcObject.getTracks().some(x => x.id === t.id)) {
+            video.srcObject.addTrack(t);
+          }
+        });
+      } else {
+        video.srcObject = e.streams[0];
+      }
+    } else {
+      if (!video.srcObject) video.srcObject = new MediaStream();
+      video.srcObject.addTrack(e.track);
+    }
+    // Re-arm playback. If autoplay policy still rejects sound, the
+    // Unmute button gives the user a one-click escape.
+    video.play().catch(err => {
+      log('err', 'Autoplay rejected: ' + err.message + ' — click Unmute');
+      document.getElementById('btnUnmute').style.display = '';
+    });
+  };
+
+  pc.onicecandidate = async (e) => {
+    if (e.candidate) {
+      let c = e.candidate.candidate;
+      // Strip mDNS hostnames — they don't help cross-machine
+      c = c.replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.local/g,
+                    '127.0.0.1');
+      await sigSend({type: 'candidate', candidate: c});
+    } else {
+      await sigSend({type: 'candidate', candidate: ''});
+    }
+  };
+
+  // video first (mid 0), audio second (mid 1) — see header comment.
+  pc.addTransceiver('video', {direction: 'recvonly'});
+  pc.addTransceiver('audio', {direction: 'recvonly'});
+  log('info', 'Added video+audio transceivers (recvonly)');
+
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+  log('info', 'Sending offer (' + pc.localDescription.sdp.length + ' bytes)');
+  await sigSend({type: 'offer', sdp: pc.localDescription.sdp});
+  setStatus('', 'Offer sent, waiting for answer...');
+
+  polling = true;
+  pollLoop();
+}
+
+function unmute() {
+  const v = document.getElementById('remoteVideo');
+  v.muted = false;
+  v.play().then(() => {
+    document.getElementById('btnUnmute').style.display = 'none';
+    log('ok', 'Unmuted');
+  }).catch(e => log('err', 'Unmute failed: ' + e.message));
+}
+
+function stop() {
+  document.getElementById('btnConnect').disabled = false;
+  document.getElementById('btnStop').disabled = true;
+
+  polling = false;
+  if (pollAbort) { pollAbort.abort(); pollAbort = null; }
+  if (pc) { try { pc.close(); } catch(_) {} pc = null; }
+  sigLeave();
+
+  const video = document.getElementById('remoteVideo');
+  if (video.srcObject) {
+    video.srcObject.getTracks().forEach(t => t.stop());
+    video.srcObject = null;
+  }
+  setStatus('', 'Stopped');
+  log('info', 'Stopped');
+}
+
+window.addEventListener('beforeunload', () => {
+  polling = false;
+  if (pollAbort) pollAbort.abort();
+  if (peerId >= 0) {
+    navigator.sendBeacon(SIG_BASE + '/leave?id=' + peerId);
+  }
+});
+</script>
+</body>
+</html>

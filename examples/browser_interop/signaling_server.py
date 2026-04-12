@@ -42,6 +42,9 @@ lock = threading.Lock()
 host_mode = False
 MAX_PEERS = 8
 
+# Directory served at GET /. Set in __main__ from --www-dir.
+WWW_DIR = os.path.dirname(os.path.abspath(__file__))
+
 
 def alloc_peer(role=None):
     global host_mode
@@ -68,12 +71,15 @@ def alloc_peer(role=None):
 
 
 def remove_peer(pid):
-    global host_mode
     with lock:
-        peers.pop(pid, None)
         if pid == 0 and host_mode:
-            host_mode = False
-            print("[sig] Host left, reverting to legacy mode")
+            # In host mode, peer 0 (the host) cannot be removed by a
+            # viewer's stale /leave?id=0 (e.g. from beforeunload).
+            # Only drain its message queue so it can re-sync cleanly.
+            if 0 in peers:
+                peers[0]["msgs"].clear()
+            return
+        peers.pop(pid, None)
         if not peers:
             print("[sig] All peers gone, ready for new session")
 
@@ -147,8 +153,7 @@ class SigHandler(BaseHTTPRequestHandler):
         qs = parse_qs(parsed.query)
 
         if parsed.path == "/":
-            html = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                "index.html")
+            html = os.path.join(WWW_DIR, "index.html")
             self._send_html(html)
 
         elif parsed.path == "/recv":
@@ -296,7 +301,14 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--discovery-port", type=int, default=19730,
                         help="UDP port for ESP32 auto-discovery (0 to disable)")
+    parser.add_argument("--www-dir", default=None,
+                        help="Directory to serve / from "
+                             "(default: same as this script)")
     args = parser.parse_args()
+
+    if args.www_dir:
+        WWW_DIR = os.path.abspath(args.www_dir)
+        print(f"[sig] Serving HTML from {WWW_DIR}")
 
     # Start UDP discovery listener in background
     if args.discovery_port > 0:
