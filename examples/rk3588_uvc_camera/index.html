@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>nanortc — Orange Pi 5 USB Camera</title>
+<title>nanortc — Orange Pi 5 USB Camera + Mic</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
@@ -116,12 +116,13 @@
 </header>
 
 <div class="video-wrap">
-  <video id="remoteVideo" autoplay playsinline muted controls></video>
+  <video id="remoteVideo" autoplay playsinline controls></video>
 </div>
 
 <div class="controls">
   <button id="btnConnect" onclick="start()">Start</button>
   <button id="btnStop" onclick="stop()" disabled>Stop</button>
+  <button id="btnUnmute" onclick="unmute()" style="display:none">Unmute</button>
 </div>
 
 <details>
@@ -134,10 +135,15 @@
 // rk3588_uvc_camera browser viewer
 //
 // Single-purpose page: connects as the WebRTC offerer to the nanortc
-// host (the rk3588_uvc_camera process), receives one H.264 video track
-// (recvonly), and renders it in a <video> element. No DataChannel,
-// no audio, no microphone — keeps the SDP minimal so it matches the
-// video-only nanortc answerer cleanly.
+// host (the rk3588_uvc_camera process), receives an H.264 video
+// track and (when available) an Opus audio track — both recvonly —
+// and renders them in a <video> element. No DataChannel, no local
+// microphone; this page only consumes the remote media.
+//
+// NOTE: the addTransceiver() order below (video, then audio) must
+// match the native side's track add order — see session.c
+// (add_local_tracks). nanortc matches pre-added tracks to offered
+// m-lines by integer mid, so reordering silently mis-routes packets.
 // ----------------------------------------------------------------
 
 const SIG_BASE = location.origin;
@@ -232,6 +238,17 @@ async function start() {
   document.getElementById('btnStop').disabled = false;
   setStatus('', 'Joining signaling...');
 
+  // Consume user activation NOW, before any await. start() is async,
+  // so by the time ontrack fires (after ICE+DTLS, several seconds later)
+  // the original click's user gesture has expired and v.play() will be
+  // rejected by Chrome's autoplay policy with "user didn't interact".
+  // Calling play() synchronously inside the click handler establishes
+  // the play permission for this MediaElement so the later autoplay on
+  // srcObject assignment is allowed to make sound.
+  const _v0 = document.getElementById('remoteVideo');
+  if (!_v0.srcObject) _v0.srcObject = new MediaStream();
+  _v0.play().catch(() => { /* will be retried in ontrack */ });
+
   try {
     peerId = await sigJoin();
     log('ok', 'Joined as peer ' + peerId);
@@ -265,11 +282,28 @@ async function start() {
     log('ok', 'Remote track received: ' + e.track.kind);
     const video = document.getElementById('remoteVideo');
     if (e.streams && e.streams[0]) {
-      video.srcObject = e.streams[0];
+      // If we already pre-created a placeholder stream in start() to
+      // hold the play() permission grant, merge incoming tracks into it
+      // rather than replacing srcObject (which would drop the grant).
+      if (video.srcObject && video.srcObject !== e.streams[0]) {
+        e.streams[0].getTracks().forEach(t => {
+          if (!video.srcObject.getTracks().some(x => x.id === t.id)) {
+            video.srcObject.addTrack(t);
+          }
+        });
+      } else {
+        video.srcObject = e.streams[0];
+      }
     } else {
       if (!video.srcObject) video.srcObject = new MediaStream();
       video.srcObject.addTrack(e.track);
     }
+    // Re-arm playback. If autoplay policy still rejects sound, the
+    // Unmute button gives the user a one-click escape.
+    video.play().catch(err => {
+      log('err', 'Autoplay rejected: ' + err.message + ' — click Unmute');
+      document.getElementById('btnUnmute').style.display = '';
+    });
   };
 
   pc.onicecandidate = async (e) => {
@@ -284,10 +318,10 @@ async function start() {
     }
   };
 
-  // Video-only, recvonly. No audio, no DataChannel — keeps the SDP
-  // minimal so the nanortc answerer (video-only build) matches it.
+  // video first (mid 0), audio second (mid 1) — see header comment.
   pc.addTransceiver('video', {direction: 'recvonly'});
-  log('info', 'Added video transceiver (recvonly)');
+  pc.addTransceiver('audio', {direction: 'recvonly'});
+  log('info', 'Added video+audio transceivers (recvonly)');
 
   const offer = await pc.createOffer();
   await pc.setLocalDescription(offer);
@@ -297,6 +331,15 @@ async function start() {
 
   polling = true;
   pollLoop();
+}
+
+function unmute() {
+  const v = document.getElementById('remoteVideo');
+  v.muted = false;
+  v.play().then(() => {
+    document.getElementById('btnUnmute').style.display = 'none';
+    log('ok', 'Unmuted');
+  }).catch(e => log('err', 'Unmute failed: ' + e.message));
 }
 
 function stop() {

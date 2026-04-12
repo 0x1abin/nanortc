@@ -1,8 +1,14 @@
 # rk3588_uvc_camera
 
-Real-time H.264 video streaming from a USB UVC camera to one or more
-browser viewers, using the RK3588 hardware codec stack and the nanortc
-Sans I/O WebRTC engine.
+Real-time H.264 video + Opus audio streaming from a USB UVC camera
+(with its built-in USB Audio Class microphone) to one or more browser
+viewers, using the RK3588 hardware codec stack, libopus, and the
+nanortc Sans I/O WebRTC engine.
+
+Audio is optional and enabled automatically when `libopus` and
+`libasound2` are available at configure time and `NANORTC_FEATURE_AUDIO=ON`
+is set. If either is missing, the build degrades to video-only without
+any source changes.
 
 ## Quick start
 
@@ -41,8 +47,8 @@ MJPG, then override with `-d /dev/videoN -W ... -H ... -b ...`.
 | Resolution | FPS | Bitrate | Backend | CPU (1 viewer) | Status |
 |---|---|---|---|---|---|
 | 1920x1080 | 30 | 8 Mbps | GStreamer (MJPG path) | low | Verified, smooth playback |
-| **2592x1520** | **30** | **12 Mbps** | **GStreamer (MJPG path)** | **~39% of 1 core** | **Default — verified end-to-end** |
-| 3840x2160 | 30 | 20 Mbps | GStreamer (MJPG path) | ~64% of 1 core | Verified end-to-end (4K30) |
+| 2592x1520 | 30 | 12 Mbps | GStreamer (MJPG path) | ~39% of 1 core | Verified end-to-end |
+| **3840x2160** | **30** | **20 Mbps** | **GStreamer (MJPG path)** | **~64% of 1 core** | **Default — verified end-to-end (4K30)** |
 | Any | Any | Any | FFmpeg (`h264_rkmpp`) | — | **Untested on this distro** — see note below |
 
 CPU figures are the `rk3588_uvc_camera` process `%CPU` as reported by
@@ -50,8 +56,8 @@ CPU figures are the `rk3588_uvc_camera` process `%CPU` as reported by
 on the 8-core RK3588). The actual JPEG decode and H.264 encode run on
 the MPP IP block; userspace cost comes from DMA-BUF shuffling in the
 GStreamer plugins plus the per-frame `malloc`+`memcpy` in
-`frame_queue.c::fq_push`. A buffer pool in the frame queue would
-materially reduce both numbers.
+`media_queue.c::media_queue_push`. A buffer pool in the media queue
+would materially reduce both numbers.
 
 > **FFmpeg backend caveat**: the Orange Pi 5 Ultra Ubuntu image's stock
 > ffmpeg does not include `h264_rkmpp` and the libavformat V4L2 path then
@@ -61,10 +67,22 @@ materially reduce both numbers.
 
 ## Build
 
-Requires either FFmpeg or GStreamer development headers on the RK3588 device.
+Requires either FFmpeg or GStreamer development headers on the RK3588
+device for video. For audio (optional), `libopus` and `libasound2` must
+also be available.
 
 ```bash
-# GStreamer backend (recommended on RK3588)
+# GStreamer backend + audio (recommended on RK3588)
+cmake -B build \
+      -DRK3588_CAPTURE_BACKEND=gstreamer \
+      -DNANORTC_FEATURE_VIDEO=ON \
+      -DNANORTC_FEATURE_AUDIO=ON \
+      -DNANORTC_FEATURE_DATACHANNEL=ON \
+      -DNANORTC_CRYPTO=openssl \
+      -DNANORTC_BUILD_EXAMPLES=ON
+cmake --build build -- rk3588_uvc_camera
+
+# Video-only (omit -DNANORTC_FEATURE_AUDIO=ON)
 cmake -B build \
       -DRK3588_CAPTURE_BACKEND=gstreamer \
       -DNANORTC_FEATURE_VIDEO=ON \
@@ -76,11 +94,16 @@ cmake --build build -- rk3588_uvc_camera
 # FFmpeg backend (default if libav* found, but see caveat above)
 cmake -B build \
       -DNANORTC_FEATURE_VIDEO=ON \
+      -DNANORTC_FEATURE_AUDIO=ON \
       -DNANORTC_FEATURE_DATACHANNEL=ON \
       -DNANORTC_CRYPTO=openssl \
       -DNANORTC_BUILD_EXAMPLES=ON
 cmake --build build -- rk3588_uvc_camera
 ```
+
+CMake prints `rk3588_uvc_camera: audio=on (libopus …, libasound …)` when
+audio support is compiled in; if `libopus`/`libasound2` are installed
+but `NANORTC_FEATURE_AUDIO=OFF`, it prints a reminder to pass the flag.
 
 ### Device dependencies
 
@@ -97,27 +120,43 @@ libavformat-dev libavcodec-dev libavutil-dev libswscale-dev libavdevice-dev
 ```
 FFmpeg must be compiled with `--enable-rkmpp` for hardware encoding.
 
+**Audio (optional)**:
+```
+libopus-dev libasound2-dev
+```
+
 ## Command-line options
 
 ```
 rk3588_uvc_camera [options]
   -d DEV   V4L2 device        (default /dev/video1)
-  -W N     width               (default 2592)
-  -H N     height              (default 1520)
+  -W N     width               (default 3840)
+  -H N     height              (default 2160)
   -f N     fps                 (default 30)
-  -b N     bitrate in bps      (default 12000000)
+  -b N     video bitrate bps   (default 20000000)
   -e ENC   encoder element     (default h264_rkmpp or mpph264enc)
   -s H:P   signaling server    (default: auto-discover on LAN)
+  -A DEV   ALSA PCM device     (default plughw:CARD=U4K,DEV=0)   [audio build]
+  -R N     audio bitrate bps   (default 64000)                    [audio build]
   -h       show help
 ```
 
-Override the defaults if your camera reports a different native size, e.g.:
+The audio options (`-A`, `-R`) are only present in binaries built with
+`NANORTC_FEATURE_AUDIO=ON` + libopus + libasound2. Audio is always
+stereo 48 kHz Opus VOIP — the UGREEN U4K microphone only supports
+stereo capture, and the rtpmap is always `opus/48000/2` per RFC 7587.
+If the configured ALSA device cannot be opened, the process falls back
+to video-only and logs `[audio] start failed, running video-only`.
+
+Override the defaults if you want a different resolution / bitrate. The
+default 4K30 path is the camera's highest native MJPG mode. Drop down for
+lower CPU or to fit a slower link:
 ```bash
-# 1080p30 at 8 Mbps
+# 1080p30 at 8 Mbps (lower CPU/bandwidth)
 rk3588_uvc_camera -W 1920 -H 1080 -b 8000000
 
-# 4K30 at 20 Mbps
-rk3588_uvc_camera -W 3840 -H 2160 -b 20000000
+# 2592x1520 at 12 Mbps (sensor crop mode)
+rk3588_uvc_camera -W 2592 -H 1520 -b 12000000
 ```
 
 ## Architecture
@@ -213,17 +252,72 @@ move data via DMA-BUF (no userspace copies between them).
                                                      RTCPeerConnection
 ```
 
+### Audio processing flow
+
+When built with audio support, a second capture path runs alongside the
+video pipeline on its own pthread:
+
+```
+┌──────────────────────┐
+│  USB mic             │  UGREEN U4K USB Audio Class interface
+│  (hw:CARD=U4K,DEV=0) │  S16_LE stereo, 48 kHz only
+└──────────┬───────────┘
+           │  isochronous USB audio, ~1ms packet interval
+           v
+┌──────────────────────┐
+│  ALSA plug/hw        │  snd_pcm_readi() blocks until a 20 ms period
+│  (plughw)            │  (960 frames × 2 ch × 16 bit = 3840 bytes)
+└──────────┬───────────┘
+           v
+┌──────────────────────┐
+│  libopus             │  OPUS_APPLICATION_VOIP, stereo, 64 kbps,
+│  opus_encode()       │  inband FEC on, loss perc 5%
+└──────────┬───────────┘                                 ~120 B / 20 ms
+           v
+┌──────────────────────┐
+│  audio_queue         │  32-slot ring + wake pipe → main loop
+│  (capture thread)    │
+└══════════╤═══════════┘
+═══════════╪═════════════════ thread boundary ════════════════════════
+           v
+┌──────────────────────┐
+│  main loop           │  select() wakes on audio pipe → aq_pop()
+└──────────┬───────────┘
+           │  broadcast to every connected session_t:
+           v
+┌──────────────────────┐
+│  nanortc_send_audio  │  RTP (PT 111, opus/48000/2 per RFC 7587)
+│                      │  → SRTP → per-viewer UDP socket
+└──────────────────────┘
+```
+
+The capture pthread sleeps inside `snd_pcm_readi()`; shutdown uses
+`pthread_kill(audio_tid, SIGUSR1)` to interrupt the read via `EINTR`
+(an empty SIGUSR1 handler is installed in the audio thread, and the
+main thread blocks SIGUSR1 before spawning the capture thread so the
+signal is only delivered to the ALSA reader).
+
 ### Components in code
 
 - **`capture_gstreamer.c`** owns the v4l2src→appsink half (camera →
   H.264 Annex-B). Runs on its own GStreamer streaming thread.
-- **`frame_queue.h/.c`** is the cross-thread bridge from the capture
-  thread to the main event loop.
+- **`audio_capture_alsa.c`** (optional) owns the ALSA → libopus half.
+  Runs on its own pthread; emits 20 ms Opus packets via a callback.
+- **`media_queue.h/.c`** is the cross-thread bridge from a capture
+  thread to the main event loop. A single ring-buffer + wake-pipe
+  template, instantiated once per media kind.
+- **`media_pipeline.h/.c`** wires capture and audio_capture to the
+  two media queues and owns the broadcast-to-sessions loop. The
+  event loop in `main.c` hands the pipeline a fd_set plus the
+  session array and doesn't need to know which kinds are active.
 - **`session.h/.c`** owns one `session_t` per browser viewer: its own
   `nanortc_t` instance, its own UDP socket, its own ICE/DTLS/SRTP state.
-- **`main.c`** drives the `select()` event loop: drains the frame
-  queue, broadcasts to every connected `session_t`, and pumps each
-  `nanortc_poll_output()`.
+  Holds both `video_mid` and `audio_mid`, and centralises the
+  track-add order in `add_local_tracks` so the browser's
+  `addTransceiver` order and the native side stay aligned.
+- **`main.c`** drives the `select()` event loop: registers the
+  pipeline's wake pipes, drains to sessions, pumps
+  `nanortc_poll_output()`, handles signaling messages and cleanup.
 
 ### Signaling
 
@@ -324,11 +418,12 @@ Every 5 seconds the app prints a stats line. Sample from a verified
 - **`bwe=300kbps`, `rtt=0ms` permanently** — see the diagnostic-stats
   caveat above. nanortc-library limitation, not a camera bug.
 
-- **Single-thread CPU spike at 4K** — encoded H.264 frames flow through
-  `frame_queue.c::fq_push`, which `malloc`s and `memcpy`s every frame.
-  At 4K30 / 20 Mbps that is ~50 KB × 30 fps + occasional ~400 KB IDR
-  bursts. Correct but allocator-heavy; a buffer pool is the obvious
-  optimization but is out of scope for this example.
+- **Single-thread CPU spike at 4K** — encoded H.264 frames flow
+  through `media_queue.c::media_queue_push`, which `malloc`s and
+  `memcpy`s every frame. At 4K30 / 20 Mbps that is ~50 KB × 30 fps +
+  occasional ~400 KB IDR bursts. Correct but allocator-heavy; a
+  buffer pool is the obvious optimization but is out of scope for
+  this example.
 
 - **`Join as host failed (status=409)` when restarting the camera** —
   the signaling server's host slot (peer 0) is sticky in host mode.
@@ -342,17 +437,32 @@ Every 5 seconds the app prints a stats line. Sample from a verified
   MJPG (which the GStreamer pipeline requires). Override with
   `-d /dev/videoN`.
 
+- **No audio in the browser** — check the startup log. If it says
+  `audio=off` the binary was built without audio; rebuild with
+  `-DNANORTC_FEATURE_AUDIO=ON` and make sure `libopus-dev` /
+  `libasound2-dev` are installed. If it says `audio=on` but
+  `[audio] start failed, running video-only`, the ALSA device name is
+  wrong — run `arecord -L | grep -i card` on the device to find the
+  correct `plughw:CARD=…,DEV=…` string and pass it via `-A`. If the
+  startup line says `audio=on` and no error follows but you still
+  hear nothing in the browser, check Chrome's tab mute state and
+  `chrome://webrtc-internals` for the `RTCInboundRtpAudioStream`
+  `packetsReceived` counter.
+
 ## File overview
 
 | File | Description |
 |------|-------------|
 | `main.c` | Event loop, signaling thread, CLI |
-| `frame_queue.h/.c` | Thread-safe encoded frame queue (capture thread → main loop) |
-| `sig_queue.h/.c` | Thread-safe signaling message queue (sig thread → main loop) |
+| `media_queue.h/.c` | Thread-safe encoded media frame queue (one instance per kind) |
+| `media_pipeline.h/.c` | Wires capture + audio_capture to queues; drains queues to all sessions |
+| `sig_queue.h/.c` | Thread-safe signaling message queue (sig thread → main) |
 | `session.h/.c` | Per-viewer session lifecycle, IP enumeration, output dispatch |
-| `capture.h` | Backend-agnostic capture + encode interface |
-| `capture_ffmpeg.c` | FFmpeg/libav* backend (`h264_rkmpp` if available) |
-| `capture_gstreamer.c` | GStreamer backend (MJPG → `mppjpegdec` → `mpph264enc`) |
-| `index.html` | Browser viewer (WebRTC offerer, recvonly H.264) |
+| `capture.h` | Backend-agnostic video capture + encode interface |
+| `capture_ffmpeg.c` | FFmpeg/libav* video backend (`h264_rkmpp` if available) |
+| `capture_gstreamer.c` | GStreamer video backend (MJPG → `mppjpegdec` → `mpph264enc`) |
+| `audio_capture.h` | Backend-agnostic audio capture + encode interface (audio build) |
+| `audio_capture_alsa.c` | ALSA + libopus microphone pipeline (audio build) |
+| `index.html` | Browser viewer (WebRTC offerer, recvonly video + audio) |
 | `nanortc_app_config.h` | Overrides `NANORTC_OUT_QUEUE_SIZE=512` for HD/4K IDR fragmentation |
-| `CMakeLists.txt` | Dual-backend build configuration |
+| `CMakeLists.txt` | Dual video backend + optional audio build configuration |

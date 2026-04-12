@@ -1,8 +1,11 @@
 /*
- * rk3588_uvc_camera — V4L2 USB camera -> H.264 encoder -> browser via nanortc
+ * rk3588_uvc_camera — V4L2 USB camera -> H.264 encoder (+ ALSA -> Opus)
+ *                     -> browser via nanortc
  *
- * Captures from a USB UVC camera, encodes to H.264, and streams to one
- * or more browser viewers using the nanortc Sans I/O WebRTC engine.
+ * Captures from a USB UVC camera, encodes to H.264, optionally
+ * captures audio from an ALSA device, encodes to Opus, and streams
+ * both to one or more browser viewers using the nanortc Sans I/O
+ * WebRTC engine.
  *
  * Typical workflow (signaling server runs on your dev machine):
  *   1. Dev machine:  python3 signaling_server.py --port 8765
@@ -20,14 +23,15 @@
 #include "http_signaling.h"
 #include "capture.h"
 #include "sig_discovery.h"
-#include "frame_queue.h"
 #include "sig_queue.h"
 #include "session.h"
+#include "media_pipeline.h"
 
 #include <errno.h>
 #include <netinet/in.h>
 #include <pthread.h>
 #include <signal.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -40,10 +44,10 @@
  * ---------------------------------------------------------------- */
 
 #define DEFAULT_DEVICE      "/dev/video1"
-#define DEFAULT_WIDTH       2592
-#define DEFAULT_HEIGHT      1520
+#define DEFAULT_WIDTH       3840
+#define DEFAULT_HEIGHT      2160
 #define DEFAULT_FPS         30
-#define DEFAULT_BITRATE     12000000
+#define DEFAULT_BITRATE     20000000
 #define DEFAULT_KEYFRAME_S  2
 #if defined(RK3588_CAPTURE_FFMPEG)
 #define DEFAULT_ENCODER     "h264_rkmpp"
@@ -53,6 +57,14 @@
 #define DEFAULT_SIG_HOST    ""     /* empty = auto-discover on LAN */
 #define DEFAULT_SIG_PORT    8765
 
+#if RK3588_HAS_AUDIO
+#define DEFAULT_AUDIO_DEVICE  "plughw:CARD=U4K,DEV=0"
+#define DEFAULT_AUDIO_BITRATE 64000
+#define DEFAULT_AUDIO_RATE    48000
+#define DEFAULT_AUDIO_CHANS   2
+#define DEFAULT_AUDIO_FRAMEMS 20
+#endif
+
 #define SIG_POLL_TIMEOUT_MS 2000
 
 uint32_t nano_get_millis(void); /* from run_loop_linux.c */
@@ -61,19 +73,9 @@ uint32_t nano_get_millis(void); /* from run_loop_linux.c */
  * Globals
  * ---------------------------------------------------------------- */
 
-static frame_queue_t g_fq;
+static media_pipeline_t g_mp;
 static sig_queue_t g_sq;
 static volatile sig_atomic_t g_quit;
-
-/* Diagnostic counter — reset every stats interval */
-static uint32_t g_idr_max_bytes;
-
-static void on_encoded_video(void *ctx, const uint8_t *annex_b, size_t len,
-                             uint32_t pts_ms, bool is_keyframe)
-{
-    (void)ctx;
-    fq_push(&g_fq, annex_b, len, pts_ms, is_keyframe);
-}
 
 /* ----------------------------------------------------------------
  * Signaling thread
@@ -111,9 +113,7 @@ static void on_signal(int sig) { (void)sig; g_quit = 1; }
 
 static void run_event_loop(http_sig_t *sig, const nanortc_config_t *cfg)
 {
-    int frame_pipe = g_fq.wake_pipe[0];
     int sig_pipe = g_sq.wake_pipe[0];
-    uint32_t frame_count = 0, bytes_sent = 0;
     uint32_t last_stats_ms = nano_get_millis();
 
     while (!g_quit) {
@@ -126,9 +126,9 @@ static void run_event_loop(http_sig_t *sig, const nanortc_config_t *cfg)
         /* Build fd_set */
         fd_set rset;
         FD_ZERO(&rset);
-        FD_SET(frame_pipe, &rset);
         FD_SET(sig_pipe, &rset);
-        int maxfd = frame_pipe > sig_pipe ? frame_pipe : sig_pipe;
+        int maxfd = sig_pipe;
+        media_pipeline_add_fds(&g_mp, &rset, &maxfd);
         for (int i = 0; i < MAX_SESSIONS; i++) {
             if (g_sessions[i].active && g_sessions[i].udp_fd >= 0) {
                 FD_SET(g_sessions[i].udp_fd, &rset);
@@ -160,33 +160,9 @@ static void run_event_loop(http_sig_t *sig, const nanortc_config_t *cfg)
             }
         }
 
-        /* Frame queue -> broadcast to connected viewers */
-        if (ret > 0 && FD_ISSET(frame_pipe, &rset)) {
-            char drain[64];
-            ssize_t r = read(frame_pipe, drain, sizeof(drain));
-            (void)r;
-            queued_frame_t frame;
-            while (fq_pop(&g_fq, &frame) == 0) {
-                bool sent = false;
-                for (int i = 0; i < MAX_SESSIONS; i++) {
-                    session_t *s = &g_sessions[i];
-                    if (!s->active || !s->media_connected || s->video_mid < 0) continue;
-#if NANORTC_FEATURE_VIDEO
-                    nanortc_send_video(&s->rtc, (uint8_t)s->video_mid,
-                                       frame.pts_ms, frame.data, frame.len);
-                    session_dispatch_outputs(s, &timeout_ms);
-                    sent = true;
-#endif
-                }
-                if (sent) {
-                    frame_count++;
-                    bytes_sent += (uint32_t)frame.len;
-                    if (frame.is_keyframe && frame.len > g_idr_max_bytes)
-                        g_idr_max_bytes = (uint32_t)frame.len;
-                }
-                free(frame.data);
-            }
-        }
+        /* Video + audio queues -> broadcast to connected viewers */
+        if (ret > 0)
+            media_pipeline_drain_to_sessions(&g_mp, &rset, g_sessions, MAX_SESSIONS, &timeout_ms);
 
         /* Signaling queue -> process offers/candidates */
         if (ret > 0 && FD_ISSET(sig_pipe, &rset)) {
@@ -197,7 +173,8 @@ static void run_event_loop(http_sig_t *sig, const nanortc_config_t *cfg)
             while (sq_pop(&g_sq, &msg) == 0) {
                 if (msg.msg_type == 0) {
                     fprintf(stderr, "[sig] offer from viewer %d\n", msg.from);
-                    session_create(msg.from, msg.payload, cfg, sig);
+                    session_create(msg.from, msg.payload, cfg, sig,
+                                   media_pipeline_audio_enabled(&g_mp));
                 } else {
                     session_t *s = session_find_by_viewer(msg.from);
                     if (s && msg.payload[0]) nanortc_add_remote_candidate(&s->rtc, msg.payload);
@@ -221,15 +198,19 @@ static void run_event_loop(http_sig_t *sig, const nanortc_config_t *cfg)
         /* Stats — print diagnostics every 5 s. */
         if (now - last_stats_ms >= 5000) {
             uint32_t dt = now - last_stats_ms;
+            uint32_t frame_count = media_pipeline_take_frame_count(&g_mp);
+            uint32_t bytes_sent = media_pipeline_take_bytes_sent(&g_mp);
+            uint32_t drops = media_pipeline_take_video_drops(&g_mp);
+            uint32_t idr_max = media_pipeline_take_idr_max_bytes(&g_mp);
             uint32_t kbps = (uint32_t)(((uint64_t)bytes_sent * 8) / (dt ? dt : 1));
             int active = 0;
             for (int i = 0; i < MAX_SESSIONS; i++)
                 if (g_sessions[i].active && g_sessions[i].media_connected) active++;
             fprintf(stderr, "[stats] %u frames ~%u kbps %d viewer(s)",
                     frame_count, kbps, active);
-            if (g_pli_count || g_fq_drop_count || g_idr_max_bytes)
+            if (g_pli_count || drops || idr_max)
                 fprintf(stderr, " | PLI=%u drop=%u IDR_max=%uKB",
-                        g_pli_count, g_fq_drop_count, g_idr_max_bytes / 1024);
+                        g_pli_count, drops, idr_max / 1024);
 #if NANORTC_FEATURE_VIDEO
             /* Per-session RTP stats from first active session */
             for (int i = 0; i < MAX_SESSIONS; i++) {
@@ -244,8 +225,8 @@ static void run_event_loop(http_sig_t *sig, const nanortc_config_t *cfg)
             }
 #endif
             fprintf(stderr, "\n");
-            frame_count = 0; bytes_sent = 0; last_stats_ms = now;
-            g_pli_count = 0; g_fq_drop_count = 0; g_idr_max_bytes = 0;
+            last_stats_ms = now;
+            g_pli_count = 0;
         }
     }
 }
@@ -257,13 +238,17 @@ static void run_event_loop(http_sig_t *sig, const nanortc_config_t *cfg)
 static void usage(const char *prog)
 {
     fprintf(stderr, "Usage: %s [options]\n", prog);
-    fprintf(stderr, "  -d DEV   V4L2 device      (default %s)\n", DEFAULT_DEVICE);
-    fprintf(stderr, "  -W N     width             (default %d)\n", DEFAULT_WIDTH);
-    fprintf(stderr, "  -H N     height            (default %d)\n", DEFAULT_HEIGHT);
-    fprintf(stderr, "  -f N     fps               (default %d)\n", DEFAULT_FPS);
-    fprintf(stderr, "  -b N     bitrate (bps)     (default %d)\n", DEFAULT_BITRATE);
-    fprintf(stderr, "  -e ENC   encoder element   (default %s)\n", DEFAULT_ENCODER);
-    fprintf(stderr, "  -s H:P   signaling server  (default: auto-discover on LAN)\n");
+    fprintf(stderr, "  -d DEV   V4L2 device       (default %s)\n", DEFAULT_DEVICE);
+    fprintf(stderr, "  -W N     width              (default %d)\n", DEFAULT_WIDTH);
+    fprintf(stderr, "  -H N     height             (default %d)\n", DEFAULT_HEIGHT);
+    fprintf(stderr, "  -f N     fps                (default %d)\n", DEFAULT_FPS);
+    fprintf(stderr, "  -b N     video bitrate bps  (default %d)\n", DEFAULT_BITRATE);
+    fprintf(stderr, "  -e ENC   encoder element    (default %s)\n", DEFAULT_ENCODER);
+    fprintf(stderr, "  -s H:P   signaling server   (default: auto-discover on LAN)\n");
+#if RK3588_HAS_AUDIO
+    fprintf(stderr, "  -A DEV   ALSA PCM device    (default %s)\n", DEFAULT_AUDIO_DEVICE);
+    fprintf(stderr, "  -R N     audio bitrate bps  (default %d)\n", DEFAULT_AUDIO_BITRATE);
+#endif
 }
 
 int main(int argc, char *argv[])
@@ -274,6 +259,10 @@ int main(int argc, char *argv[])
     int fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE;
     char sig_host[256] = DEFAULT_SIG_HOST;
     uint16_t sig_port = DEFAULT_SIG_PORT;
+#if RK3588_HAS_AUDIO
+    const char *audio_device = DEFAULT_AUDIO_DEVICE;
+    int audio_bitrate = DEFAULT_AUDIO_BITRATE;
+#endif
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-d") == 0 && i+1 < argc)      device = argv[++i];
@@ -282,6 +271,10 @@ int main(int argc, char *argv[])
         else if (strcmp(argv[i], "-f") == 0 && i+1 < argc)  fps = atoi(argv[++i]);
         else if (strcmp(argv[i], "-b") == 0 && i+1 < argc)  bitrate = atoi(argv[++i]);
         else if (strcmp(argv[i], "-e") == 0 && i+1 < argc)  encoder = argv[++i];
+#if RK3588_HAS_AUDIO
+        else if (strcmp(argv[i], "-A") == 0 && i+1 < argc)  audio_device = argv[++i];
+        else if (strcmp(argv[i], "-R") == 0 && i+1 < argc)  audio_bitrate = atoi(argv[++i]);
+#endif
         else if (strcmp(argv[i], "-s") == 0 && i+1 < argc) {
             i++;
             const char *colon = strrchr(argv[i], ':');
@@ -314,12 +307,12 @@ int main(int argc, char *argv[])
         }
     }
 
-    if (fq_init(&g_fq) < 0) return 1;
-    if (sq_init(&g_sq) < 0) { fq_destroy(&g_fq); return 1; }
+    if (sq_init(&g_sq) < 0) return 1;
 
     for (int i = 0; i < MAX_SESSIONS; i++) {
         g_sessions[i].udp_fd = -1;
         g_sessions[i].video_mid = -1;
+        g_sessions[i].audio_mid = -1;
         g_sessions[i].viewer_id = -1;
     }
 
@@ -328,15 +321,32 @@ int main(int argc, char *argv[])
     capture_config_t cap_cfg = {
         .device = device, .width = width, .height = height, .fps = fps,
         .bitrate_bps = bitrate, .keyframe_interval_s = DEFAULT_KEYFRAME_S,
-        .encoder = encoder, .callback = on_encoded_video,
+        .encoder = encoder,
     };
-    if (capture_start(&cap_cfg) < 0) {
-        sq_destroy(&g_sq); fq_destroy(&g_fq); return 1;
+#if RK3588_HAS_AUDIO
+    audio_config_t aud_cfg = {
+        .device = audio_device,
+        .sample_rate = DEFAULT_AUDIO_RATE,
+        .channels = DEFAULT_AUDIO_CHANS,
+        .frame_ms = DEFAULT_AUDIO_FRAMEMS,
+        .bitrate_bps = audio_bitrate,
+    };
+    if (media_pipeline_init(&g_mp, &cap_cfg, &aud_cfg) < 0) {
+        sq_destroy(&g_sq);
+        return 1;
     }
+#else
+    if (media_pipeline_init(&g_mp, &cap_cfg) < 0) {
+        sq_destroy(&g_sq);
+        return 1;
+    }
+#endif
 
     http_sig_t sig;
     if (http_sig_join_as_host(&sig, sig_host, sig_port) < 0) {
-        capture_stop(); sq_destroy(&g_sq); fq_destroy(&g_fq); return 1;
+        media_pipeline_shutdown(&g_mp);
+        sq_destroy(&g_sq);
+        return 1;
     }
 
     nanortc_config_t rtc_cfg = NANORTC_CONFIG_DEFAULT();
@@ -346,13 +356,16 @@ int main(int argc, char *argv[])
     rtc_cfg.crypto = nanortc_crypto_mbedtls();
 #endif
 
-    fprintf(stderr, "rk3588_uvc_camera: %s %dx%d@%d %dbps enc=%s sig=%s:%u IPs=%d\n",
-            device, width, height, fps, bitrate, encoder, sig_host, sig_port, g_local_ip_count);
+    fprintf(stderr, "rk3588_uvc_camera: %s %dx%d@%d %dbps enc=%s sig=%s:%u IPs=%d audio=%s\n",
+            device, width, height, fps, bitrate, encoder, sig_host, sig_port, g_local_ip_count,
+            media_pipeline_audio_enabled(&g_mp) ? "on" : "off");
 
     pthread_t sig_tid;
     if (pthread_create(&sig_tid, NULL, sig_thread_fn, &sig) != 0) {
-        capture_stop(); http_sig_leave(&sig);
-        sq_destroy(&g_sq); fq_destroy(&g_fq); return 1;
+        http_sig_leave(&sig);
+        media_pipeline_shutdown(&g_mp);
+        sq_destroy(&g_sq);
+        return 1;
     }
 
     run_event_loop(&sig, &rtc_cfg);
@@ -361,9 +374,8 @@ int main(int argc, char *argv[])
     pthread_join(sig_tid, NULL);
     for (int i = 0; i < MAX_SESSIONS; i++)
         if (g_sessions[i].udp_fd >= 0) session_destroy(&g_sessions[i]);
-    capture_stop();
+    media_pipeline_shutdown(&g_mp);
     http_sig_leave(&sig);
     sq_destroy(&g_sq);
-    fq_destroy(&g_fq);
     return 0;
 }

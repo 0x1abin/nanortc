@@ -100,10 +100,46 @@ void session_destroy(session_t *s)
     s->media_connected = 0;
     s->viewer_id = -1;
     s->video_mid = -1;
+    s->audio_mid = -1;
+}
+
+/* Register local media tracks in the fixed order:
+ *
+ *     1. video   (mid 0)
+ *     2. audio   (mid 1, optional)
+ *
+ * The browser adds transceivers in the same order (see index.html).
+ * nanortc matches local pre-added tracks to offered m-lines by
+ * integer mid — the payload-type / name are only used for codec
+ * negotiation, not for track identification. Reordering or skipping
+ * video would silently mis-route packets, so we centralise the
+ * order here. */
+static int add_local_tracks(session_t *s, bool audio_enabled)
+{
+#if NANORTC_FEATURE_VIDEO
+    s->video_mid = nanortc_add_video_track(&s->rtc, NANORTC_DIR_SENDONLY, NANORTC_CODEC_H264);
+    if (s->video_mid < 0) return -1;
+#endif
+
+#if RK3588_HAS_AUDIO && NANORTC_FEATURE_AUDIO
+    if (audio_enabled) {
+        s->audio_mid = nanortc_add_audio_track(&s->rtc, NANORTC_DIR_SENDONLY,
+                                                NANORTC_CODEC_OPUS, 48000, 2);
+        if (s->audio_mid < 0) {
+            fprintf(stderr, "[session] add_audio_track failed (%d), continuing video-only\n",
+                    s->audio_mid);
+            s->audio_mid = -1;
+        }
+    }
+#else
+    (void)audio_enabled;
+#endif
+    return 0;
 }
 
 int session_create(int viewer_id, const char *offer_sdp,
-                   const nanortc_config_t *cfg, http_sig_t *sig)
+                   const nanortc_config_t *cfg, http_sig_t *sig,
+                   bool audio_enabled)
 {
     session_t *existing = session_find_by_viewer(viewer_id);
     if (existing) {
@@ -121,13 +157,10 @@ int session_create(int viewer_id, const char *offer_sdp,
     s->viewer_id = viewer_id;
     s->udp_fd = -1;
     s->video_mid = -1;
+    s->audio_mid = -1;
 
     if (nanortc_init(&s->rtc, cfg) != NANORTC_OK) return -1;
-
-#if NANORTC_FEATURE_VIDEO
-    s->video_mid = nanortc_add_video_track(&s->rtc, NANORTC_DIR_SENDONLY, NANORTC_CODEC_H264);
-    if (s->video_mid < 0) { nanortc_destroy(&s->rtc); return -1; }
-#endif
+    if (add_local_tracks(s, audio_enabled) < 0) { nanortc_destroy(&s->rtc); return -1; }
 
     s->udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (s->udp_fd < 0) { nanortc_destroy(&s->rtc); return -1; }
@@ -154,14 +187,14 @@ int session_create(int viewer_id, const char *offer_sdp,
         nanortc_add_local_candidate(&s->rtc, g_local_ips[i].ip, port);
 
     char answer[HTTP_SIG_BUF_SIZE];
-    size_t answer_len = 0;
-    if (nanortc_accept_offer(&s->rtc, offer_sdp, answer, sizeof(answer), &answer_len) != NANORTC_OK ||
+    if (nanortc_accept_offer(&s->rtc, offer_sdp, answer, sizeof(answer), NULL) != NANORTC_OK ||
         http_sig_send_to(sig, viewer_id, "answer", answer, "sdp") < 0) {
         close(s->udp_fd); s->udp_fd = -1; nanortc_destroy(&s->rtc); return -1;
     }
 
     s->active = 1;
-    fprintf(stderr, "[session] viewer %d ready (port %u)\n", viewer_id, port);
+    fprintf(stderr, "[session] viewer %d ready (port %u, video_mid=%d, audio_mid=%d)\n",
+            viewer_id, port, s->video_mid, s->audio_mid);
     return 0;
 }
 
@@ -184,12 +217,13 @@ static void on_session_event(nanortc_t *rtc, const nanortc_event_t *evt, void *u
         capture_force_keyframe();
         break;
     case NANORTC_EV_KEYFRAME_REQUEST: {
-        /* Rate-limit: max once per 2 s to avoid disrupting the encoder */
-        static uint32_t last_kf_ms;
+        /* Rate-limit per session: max one forced keyframe every 2 s
+         * to avoid disrupting the encoder. Per-session so one viewer's
+         * packet loss doesn't starve another viewer's recovery. */
         uint32_t now_kf = nano_get_millis();
         g_pli_count++;
-        if (now_kf - last_kf_ms >= 2000) {
-            last_kf_ms = now_kf;
+        if (now_kf - s->last_kf_ms >= 2000) {
+            s->last_kf_ms = now_kf;
             capture_force_keyframe();
             fprintf(stderr, "[session %d] PLI -> forced keyframe\n", s->viewer_id);
         }
