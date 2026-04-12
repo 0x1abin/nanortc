@@ -1,24 +1,28 @@
 # rk3588_uvc_camera
 
-Real-time H.264 video streaming from a USB UVC camera to the browser,
-using the RK3588 hardware encoder and the nanortc Sans I/O WebRTC engine.
+Real-time H.264 video streaming from a USB UVC camera to one or more
+browser viewers, using the RK3588 hardware codec stack and the nanortc
+Sans I/O WebRTC engine.
 
 ## Quick start
 
 ```
-# 1. Dev machine — start signaling server (serves the browser UI)
+# 1. Dev machine — start signaling server (also serves the browser UI)
 python3 examples/browser_interop/signaling_server.py --port 8765 \
         --www-dir examples/rk3588_uvc_camera
 
 # 2. RK3588 device — start camera (auto-discovers signaling on LAN)
-rk3588_uvc_camera -d /dev/video2
+rk3588_uvc_camera
 
 # 3. Browser — open http://localhost:8765/ and click Start
 ```
 
 The camera broadcasts a UDP discovery packet on port 19730 and
-automatically connects to the first signaling server that replies.
-Use `-s host:port` to skip discovery and connect directly.
+automatically connects to the first signaling server that replies. Use
+`-s host:port` to skip discovery and connect directly. If the defaults
+don't match your camera, run `v4l2-ctl --list-devices` and
+`v4l2-ctl -d /dev/videoN --list-formats-ext` to find a node that exposes
+MJPG, then override with `-d /dev/videoN -W ... -H ... -b ...`.
 
 ## Tested hardware
 
@@ -26,36 +30,51 @@ Use `-s host:port` to skip discovery and connect directly.
 |-----------|-------|
 | SoC | Rockchip RK3588 (Orange Pi 5 Ultra) |
 | Camera | UGREEN 4K USB UVC (USB 3.0) |
-| Encoder | Rockchip MPP H.264 (`h264_rkmpp` / `mpph264enc`) |
+| Encoder | Rockchip MPP H.264 (`mpph264enc`) |
+| Decoder | Rockchip MPP JPEG (`mppjpegdec`) |
+| RGA driver | librga 1.9.3 |
 | Dev machine | macOS (Apple Silicon), Chrome browser |
 | Network | Gigabit Ethernet, same LAN |
 
-## Supported resolutions
+## Verified configurations
 
-The camera and encoder support up to 4K. Tested configurations:
+| Resolution | FPS | Bitrate | Backend | CPU (1 viewer) | Status |
+|---|---|---|---|---|---|
+| 1920x1080 | 30 | 8 Mbps | GStreamer (MJPG path) | low | Verified, smooth playback |
+| **2592x1520** | **30** | **12 Mbps** | **GStreamer (MJPG path)** | **~39% of 1 core** | **Default — verified end-to-end** |
+| 3840x2160 | 30 | 20 Mbps | GStreamer (MJPG path) | ~64% of 1 core | Verified end-to-end (4K30) |
+| Any | Any | Any | FFmpeg (`h264_rkmpp`) | — | **Untested on this distro** — see note below |
 
-| Resolution | FPS | Bitrate | Backend | Status |
-|------------|-----|---------|---------|--------|
-| 1920x1080 | 30 | 8 Mbps | FFmpeg (`h264_rkmpp`) | Verified, smooth playback |
-| 1920x1080 | 30 | 8 Mbps | GStreamer (`mpph264enc`) | Verified, smooth playback |
-| 3840x2160 | 30 | 20 Mbps | FFmpeg (`h264_rkmpp`) | Encoding verified, needs swscale optimization for full pipeline |
+CPU figures are the `rk3588_uvc_camera` process `%CPU` as reported by
+`ps`, **as a fraction of one core** (so 39% is about 5% of total load
+on the 8-core RK3588). The actual JPEG decode and H.264 encode run on
+the MPP IP block; userspace cost comes from DMA-BUF shuffling in the
+GStreamer plugins plus the per-frame `malloc`+`memcpy` in
+`frame_queue.c::fq_push`. A buffer pool in the frame queue would
+materially reduce both numbers.
+
+> **FFmpeg backend caveat**: the Orange Pi 5 Ultra Ubuntu image's stock
+> ffmpeg does not include `h264_rkmpp` and the libavformat V4L2 path then
+> falls back to software `swscale` for YUYV→NV12. That caps throughput at
+> ~22 fps for 2592x1520 because it saturates a single core. The
+> GStreamer backend is the verified path on this device.
 
 ## Build
 
 Requires either FFmpeg or GStreamer development headers on the RK3588 device.
 
 ```bash
-# FFmpeg backend (default if libav* found)
+# GStreamer backend (recommended on RK3588)
 cmake -B build \
+      -DRK3588_CAPTURE_BACKEND=gstreamer \
       -DNANORTC_FEATURE_VIDEO=ON \
       -DNANORTC_FEATURE_DATACHANNEL=ON \
       -DNANORTC_CRYPTO=openssl \
       -DNANORTC_BUILD_EXAMPLES=ON
 cmake --build build -- rk3588_uvc_camera
 
-# Explicitly select GStreamer backend
+# FFmpeg backend (default if libav* found, but see caveat above)
 cmake -B build \
-      -DRK3588_CAPTURE_BACKEND=gstreamer \
       -DNANORTC_FEATURE_VIDEO=ON \
       -DNANORTC_FEATURE_DATACHANNEL=ON \
       -DNANORTC_CRYPTO=openssl \
@@ -65,107 +84,275 @@ cmake --build build -- rk3588_uvc_camera
 
 ### Device dependencies
 
+**GStreamer backend** (`mpph264enc` + `mppjpegdec`):
+```
+libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+gstreamer1.0-rockchip1   # provides mpph264enc and mppjpegdec
+gstreamer1.0-plugins-good # provides jpegparse
+```
+
 **FFmpeg backend** (`h264_rkmpp`):
 ```
 libavformat-dev libavcodec-dev libavutil-dev libswscale-dev libavdevice-dev
 ```
 FFmpeg must be compiled with `--enable-rkmpp` for hardware encoding.
 
-**GStreamer backend** (`mpph264enc`):
-```
-libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
-```
-Plus the `gstreamer-rockchip` plugin package for `mpph264enc`.
-
 ## Command-line options
 
 ```
 rk3588_uvc_camera [options]
-  -d DEV   V4L2 device        (default /dev/video2)
-  -W N     width               (default 1920)
-  -H N     height              (default 1080)
+  -d DEV   V4L2 device        (default /dev/video1)
+  -W N     width               (default 2592)
+  -H N     height              (default 1520)
   -f N     fps                 (default 30)
-  -b N     bitrate in bps      (default 8000000)
+  -b N     bitrate in bps      (default 12000000)
   -e ENC   encoder element     (default h264_rkmpp or mpph264enc)
   -s H:P   signaling server    (default: auto-discover on LAN)
   -h       show help
 ```
 
+Override the defaults if your camera reports a different native size, e.g.:
+```bash
+# 1080p30 at 8 Mbps
+rk3588_uvc_camera -W 1920 -H 1080 -b 8000000
+
+# 4K30 at 20 Mbps
+rk3588_uvc_camera -W 3840 -H 2160 -b 20000000
+```
+
 ## Architecture
 
+### Video processing flow
+
+Each box is one stage; the column on the right shows the data format
+**leaving** that stage. Hardware blocks run on the RK3588 MPP IP and
+move data via DMA-BUF (no userspace copies between them).
+
 ```
-USB Camera (/dev/videoN)
-    |
-    v
-[capture backend]  ← capture_ffmpeg.c or capture_gstreamer.c
-    | YUYV → NV12 → H.264 Annex-B (hardware encoder)
-    v
-[frame queue]  ← thread-safe ring buffer (capture thread → main thread)
-    |
-    v
-[nanortc]  ← Sans I/O WebRTC engine
-    | RTP/SRTP packetization, ICE, DTLS
-    v
-[UDP socket]  → Browser (Chrome/Safari/Firefox)
-    |
-    v
-[signaling]  ← HTTP long-poll via signaling_server.py
+┌──────────────────────┐
+│  USB camera          │  sensor → on-camera ISP → JPEG encoder
+│  (UVC, /dev/videoN)  │
+└──────────┬───────────┘
+           │  MJPG over USB 3.0 bulk transfer
+           v                                              ─── format ───
+┌──────────────────────┐
+│  v4l2src             │  V4L2 mmap buffers (kernel→user)  GstBuffer
+└──────────┬───────────┘                                   (raw JPEG)
+           v
+┌──────────────────────┐
+│  jpegparse           │  reads JPEG SOF marker → fills    GstBuffer
+│                      │  caps with width/height (req'd    + image/jpeg
+│                      │  by mppjpegdec)                   caps
+└──────────┬───────────┘
+           v
+┌──────────────────────┐
+│  queue               │  decouples capture thread from    same
+│  (4 buf, leaky)      │  decode thread; absorbs jitter
+└──────────┬───────────┘
+           v
+┌══════════════════════┐
+║  mppjpegdec    HW    ║  RK3588 MPP JPEG decoder          NV12 in
+║                      ║  reads JPEG from DMA-BUF          DMA-BUF
+║                      ║  writes NV12 (Y + interleaved UV)
+└══════════╤═══════════┘
+           v
+┌══════════════════════┐
+║  mpph264enc    HW    ║  RK3588 MPP H.264 encoder         H.264
+║                      ║  reads NV12 from DMA-BUF          Annex-B
+║                      ║  baseline / level 5.1 / CBR       (NAL units)
+║                      ║  GOP = fps × 2 (2-second IDR)
+║                      ║  header-mode=each-idr (SPS/PPS)
+└══════════╤═══════════┘
+           v
+┌──────────────────────┐
+│  appsink             │  on_new_sample() callback fires   bytes +
+│                      │  on the GStreamer streaming       PTS in ms
+│                      │  thread
+└──────────┬───────────┘
+           │
+           │  malloc + memcpy each frame into a queued slot
+           │  (dominant userspace CPU cost — buffer pool TODO)
+           v
+┌──────────────────────┐
+│  frame_queue         │  16-slot ring buffer + pipe wake  malloc'd
+│  (capture thread)    │  to notify main loop              copy
+└══════════╤═══════════┘
+═══════════╪═════════════════ thread boundary ════════════════════════
+           v
+┌──────────────────────┐
+│  main loop           │  select() wakes on pipe →
+│  (event loop)        │  fq_pop() drains all queued frames
+└──────────┬───────────┘
+           │  for each connected viewer (up to MAX_SESSIONS = 4):
+           v
+┌──────────────────────┐
+│  nanortc_send_video  │  splits Annex-B → NAL units      RTP packets
+│                      │  packetizes per RFC 6184          (~1200 B,
+│                      │  (single-NAL or FU-A frag)        ~330/IDR
+│                      │                                   at 4K)
+└──────────┬───────────┘
+           v
+┌──────────────────────┐
+│  SRTP encrypt        │  AES-CTR + HMAC-SHA1 with         SRTP packets
+│  (in nanortc)        │  DTLS-derived keys
+└──────────┬───────────┘
+           v
+┌──────────────────────┐
+│  nanortc_poll_output │  yields ready packets to caller   sockaddr +
+│                      │                                   payload
+└──────────┬───────────┘
+           v
+┌──────────────────────┐
+│  sendto()            │  per-viewer UDP socket
+│  (one per session)   │  remote = browser ICE candidate
+└──────────┬───────────┘
+           v
+       ╔════════╗      ╔════════╗      ╔════════╗
+       ║Browser1║      ║Browser2║ ...  ║Browser4║   each runs an
+       ╚════════╝      ╚════════╝      ╚════════╝   independent
+                                                     RTCPeerConnection
+```
+
+### Components in code
+
+- **`capture_gstreamer.c`** owns the v4l2src→appsink half (camera →
+  H.264 Annex-B). Runs on its own GStreamer streaming thread.
+- **`frame_queue.h/.c`** is the cross-thread bridge from the capture
+  thread to the main event loop.
+- **`session.h/.c`** owns one `session_t` per browser viewer: its own
+  `nanortc_t` instance, its own UDP socket, its own ICE/DTLS/SRTP state.
+- **`main.c`** drives the `select()` event loop: drains the frame
+  queue, broadcasts to every connected `session_t`, and pumps each
+  `nanortc_poll_output()`.
+
+### Signaling
+
+The signaling server runs on the dev machine, not on the device, and
+relays SDP offers/answers and ICE candidates over HTTP long-poll.
+
+```
+[camera]               [signaling_server.py]               [browser]
+    │                          │                              │
+    │  POST /join?role=host    │                              │
+    ├─────────────────────────►│                              │
+    │      {id: 0}             │                              │
+    │◄─────────────────────────┤                              │
+    │                          │   POST /join (viewer)        │
+    │                          │◄─────────────────────────────┤
+    │                          │      {id: N}                 │
+    │                          ├─────────────────────────────►│
+    │                          │   POST /send  offer SDP      │
+    │   GET /recv (long-poll)  │◄─────────────────────────────┤
+    │  offer SDP {from: N}     │                              │
+    │◄─────────────────────────┤                              │
+    │  POST /send?to=N answer  │                              │
+    ├─────────────────────────►│   GET /recv (long-poll)      │
+    │                          │  answer SDP                  │
+    │                          ├─────────────────────────────►│
+    │  ICE candidates exchanged in both directions...         │
+    │                                                          │
+    │  ════════ direct UDP RTP/SRTP after ICE+DTLS ════════    │
+    │ ◄───────────────────────────────────────────────────────►│
 ```
 
 ### Capture backends
 
 Both backends implement the same `capture.h` interface:
 
-- **FFmpeg** (`capture_ffmpeg.c`): Uses `libavdevice` for V4L2 capture,
-  `libswscale` for YUYV→NV12 conversion, and `libavcodec` with the
-  `h264_rkmpp` encoder for hardware H.264. Runs capture + encode on a
-  dedicated pthread.
+- **GStreamer** (`capture_gstreamer.c`, recommended): Builds the
+  full-hardware pipeline shown above. The camera produces MJPG, the
+  RK3588 MPP decoder unpacks it to NV12 in DMA-BUF, and the MPP H.264
+  encoder consumes that NV12 directly. No CPU colorspace conversion;
+  no buffer copies between elements. The `jpegparse` element is
+  required so that `mppjpegdec` learns the image dimensions from the
+  JPEG SOF marker — without it, `v4l2src` reports `stream error -5`
+  silently and the pipeline never produces a frame.
 
-- **GStreamer** (`capture_gstreamer.c`): Builds a GStreamer pipeline
-  (`v4l2src ! videoconvert ! mpph264enc ! appsink`). GStreamer manages
-  its own streaming thread; encoded frames arrive via the appsink callback.
+- **FFmpeg** (`capture_ffmpeg.c`): Uses `libavdevice` for V4L2 capture,
+  `libswscale` for YUYV→NV12 conversion, and `libavcodec` with
+  `h264_rkmpp` for hardware H.264 encoding. Requires an ffmpeg build
+  with `--enable-rkmpp`. On stock distro ffmpeg the rkmpp encoder is
+  usually missing and the pipeline degrades to software encoding plus
+  swscale, which caps at ~22 fps for 2592x1520.
 
 Selected at build time via `-DRK3588_CAPTURE_BACKEND=ffmpeg|gstreamer`.
 
-### Signaling flow
-
-The signaling server runs on the dev machine (not the device):
-
-1. Camera app discovers the signaling server via UDP broadcast (port 19730)
-2. Camera joins as **host** (peer 0) via `POST /join?role=host`
-3. Browser joins as **viewer** (peer 1+) via `POST /join`
-4. Browser creates WebRTC offer → signaling relays to host
-5. Host generates answer → signaling relays to browser
-6. ICE connectivity checks establish a direct UDP path
-7. DTLS handshake → SRTP keys derived
-8. H.264 RTP stream begins
-
 ### Diagnostic stats
 
-Every 5 seconds the app prints a stats line:
+Every 5 seconds the app prints a stats line. Sample from a verified
+4K30 run on Orange Pi 5 Ultra:
 
 ```
-[stats] 150 frames ~8012 kbps 1 viewer(s) | PLI=0 drop=0 IDR_max=183KB | rtp_sent=4520 rtt=3ms bwe=9200kbps
+[stats] 151 frames ~19919 kbps 1 viewer(s) | PLI=0 drop=0 IDR_max=350KB | rtp_sent=99002 rtt=0ms bwe=300kbps
 ```
 
 | Field | Meaning | Action if abnormal |
 |-------|---------|-------------------|
-| `frames` | Encoded frames in this interval | Low → encoder stalled or camera disconnected |
-| `kbps` | Actual bitrate sent | Much lower than `-b` → encoder under-producing |
+| `frames` | Encoded frames sent in this interval | Low → encoder stalled or capture queue dropping |
+| `kbps` | Actual bitrate sent on the wire | Much lower than `-b` → encoder under-producing |
 | `PLI=N` | Keyframe requests from browser | >0 → packet loss exceeding NACK recovery |
-| `drop=N` | Frames dropped from queue | >0 → main loop too slow to drain |
-| `IDR_max` | Largest keyframe in interval | >200KB → risk of burst loss at 1080p |
-| `rtt` | Round-trip time (RTCP) | >100ms → high latency path |
-| `bwe` | Browser's bandwidth estimate | Much lower than bitrate → network bottleneck |
+| `drop=N` | Frames dropped from `frame_queue` | >0 → main loop too slow to drain |
+| `IDR_max` | Largest keyframe in interval | Approaching `NANORTC_OUT_QUEUE_SIZE × MTU` (~600 KB) → bump the queue |
+| `rtt` | RTT from RTCP | See caveat below |
+| `bwe` | Browser bandwidth estimate | See caveat below |
+
+> **Known caveat — `rtt=0ms` and `bwe=300kbps` look stuck.** This is
+> not a camera-side problem. nanortc currently parses only REMB
+> (`draft-alvestrand-rmcat-remb-03`) feedback for bandwidth estimation,
+> but Chrome sends `transport-cc` instead. The displayed BWE therefore
+> stays at the initial value (`NANORTC_BWE_INITIAL_BITRATE`, 300 kbps)
+> and `rtt` stays at 0 ms for the lifetime of the session. The actual
+> RTP throughput and quality are unaffected — verified by `kbps` and
+> `PLI=0` in the same line. Tracked as a nanortc-library limitation;
+> not actionable inside this example.
+
+## Troubleshooting
+
+- **`RgaBlit RGA_BLIT fail: Invalid argument` / `10000 is unsupport format now`**
+  in stderr — `mpph264enc` was given an input format its underlying RGA
+  backend can't handle (for example, raw YUY2 with librga 1.9.3). Route
+  capture through `mppjpegdec` from MJPG instead. The default GStreamer
+  pipeline already does this; the error means something rewrote the
+  pipeline back to a YUY2 source.
+
+- **`v4l2src: Internal data stream error (reason error -5)`** when
+  feeding `mppjpegdec` — `jpegparse` is missing from the pipeline.
+  `mppjpegdec` reads dimensions from the JPEG SOF marker, not from
+  GStreamer caps; without `jpegparse` between `v4l2src` and
+  `mppjpegdec`, capture appears to start, then fails silently.
+
+- **`bwe=300kbps`, `rtt=0ms` permanently** — see the diagnostic-stats
+  caveat above. nanortc-library limitation, not a camera bug.
+
+- **Single-thread CPU spike at 4K** — encoded H.264 frames flow through
+  `frame_queue.c::fq_push`, which `malloc`s and `memcpy`s every frame.
+  At 4K30 / 20 Mbps that is ~50 KB × 30 fps + occasional ~400 KB IDR
+  bursts. Correct but allocator-heavy; a buffer pool is the obvious
+  optimization but is out of scope for this example.
+
+- **`Join as host failed (status=409)` when restarting the camera** —
+  the signaling server's host slot (peer 0) is sticky in host mode.
+  `/leave?id=0` only drains the host's message queue; it does not
+  release the slot. Workaround: restart `signaling_server.py`.
+
+- **Wrong v4l2 device node** — the RK3588 ISP typically claims
+  `/dev/video0`; the USB UVC camera ends up on `/dev/video1` or higher.
+  Run `v4l2-ctl --list-devices` to identify the camera, then
+  `v4l2-ctl -d /dev/videoN --list-formats-ext` to confirm it exposes
+  MJPG (which the GStreamer pipeline requires). Override with
+  `-d /dev/videoN`.
 
 ## File overview
 
 | File | Description |
 |------|-------------|
-| `main.c` | Multi-viewer event loop, signaling thread, session management |
+| `main.c` | Event loop, signaling thread, CLI |
+| `frame_queue.h/.c` | Thread-safe encoded frame queue (capture thread → main loop) |
+| `sig_queue.h/.c` | Thread-safe signaling message queue (sig thread → main loop) |
+| `session.h/.c` | Per-viewer session lifecycle, IP enumeration, output dispatch |
 | `capture.h` | Backend-agnostic capture + encode interface |
-| `capture_ffmpeg.c` | FFmpeg/libav* backend (h264_rkmpp) |
-| `capture_gstreamer.c` | GStreamer backend (mpph264enc) |
+| `capture_ffmpeg.c` | FFmpeg/libav* backend (`h264_rkmpp` if available) |
+| `capture_gstreamer.c` | GStreamer backend (MJPG → `mppjpegdec` → `mpph264enc`) |
 | `index.html` | Browser viewer (WebRTC offerer, recvonly H.264) |
-| `nanortc_app_config.h` | Overrides `NANORTC_OUT_QUEUE_SIZE` to 512 for HD/4K |
+| `nanortc_app_config.h` | Overrides `NANORTC_OUT_QUEUE_SIZE=512` for HD/4K IDR fragmentation |
 | `CMakeLists.txt` | Dual-backend build configuration |

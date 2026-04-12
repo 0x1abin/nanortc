@@ -39,11 +39,11 @@
  * Tunables
  * ---------------------------------------------------------------- */
 
-#define DEFAULT_DEVICE      "/dev/video2"
-#define DEFAULT_WIDTH       1920
-#define DEFAULT_HEIGHT      1080
+#define DEFAULT_DEVICE      "/dev/video1"
+#define DEFAULT_WIDTH       2592
+#define DEFAULT_HEIGHT      1520
 #define DEFAULT_FPS         30
-#define DEFAULT_BITRATE     8000000
+#define DEFAULT_BITRATE     12000000
 #define DEFAULT_KEYFRAME_S  2
 #if defined(RK3588_CAPTURE_FFMPEG)
 #define DEFAULT_ENCODER     "h264_rkmpp"

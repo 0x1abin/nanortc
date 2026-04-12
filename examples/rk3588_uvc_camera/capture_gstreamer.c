@@ -60,9 +60,7 @@ static GstFlowReturn on_new_sample(GstAppSink *sink, gpointer user_data)
     sample_count++;
 
     GstClockTime pts_ns = GST_BUFFER_PTS(buffer);
-    uint32_t pts_ms = (pts_ns != GST_CLOCK_TIME_NONE)
-                          ? (uint32_t)(pts_ns / GST_MSECOND)
-                          : 0;
+    uint32_t pts_ms = (pts_ns != GST_CLOCK_TIME_NONE) ? (uint32_t)(pts_ns / GST_MSECOND) : 0;
 
     bool is_keyframe = capture_annex_b_is_keyframe(map.data, map.size);
 
@@ -105,36 +103,64 @@ int capture_start(const capture_config_t *cfg)
     const char *enc = (cfg->encoder && cfg->encoder[0]) ? cfg->encoder : "mpph264enc";
     int use_mpp = (strcmp(enc, "mpph264enc") == 0);
 
-    /* Both encoders receive NV12 via videoconvert for correct chroma
-     * downsampling (YUY2 4:2:2 → NV12 4:2:0).
-     * mpph264enc: header-mode=each-idr ensures SPS/PPS in every IDR
-     * so browsers can decode from any keyframe (mid-stream join, PLI).
-     * openh264enc: needs I420 instead of NV12. */
+    /* Full-hardware pipeline: MJPG capture → mppjpegdec → mpph264enc.
+     *
+     * Measured CPU (single-process %CPU as reported by `ps`, one viewer
+     * connected, 5-sample average) on Orange Pi 5 Ultra (RK3588) +
+     * UGREEN 4K UVC:
+     *   2592x1520 @ 30 / 12 Mbps  → ~39% of one core (~5% whole-system)
+     *   3840x2160 @ 30 / 20 Mbps  → ~64% of one core (~8% whole-system)
+     * The bulk of this is userspace DMA-BUF management in mppjpegdec /
+     * mpph264enc plus the per-frame malloc+memcpy in frame_queue.c — the
+     * actual JPEG decode and H.264 encode run on the MPP IP block.
+     *
+     * Why MJPG and not YUY2: mpph264enc advertises YUY2 in its sink caps,
+     * but the underlying RGA color-space conversion fails at runtime with
+     * "10000 is unsupport format" — librga 1.9.3 doesn't map GStreamer's
+     * YUY2 to any known RGA format. mpph264enc then falls back to a buggy
+     * software path that produces horizontal-stripe tearing on motion.
+     * Routing through `mppjpegdec` instead gives mpph264enc NV12 from a
+     * source it knows how to consume (DMA-BUF straight from MPP).
+     *
+     * The CPU `videoconvert` path (YUY2 → NV12) works visually but caps
+     * throughput at ~22 fps for 2592x1520 because it saturates a single
+     * core with chroma resampling.
+     *
+     * `header-mode=each-idr` ensures SPS/PPS in every IDR so browsers can
+     * decode from any keyframe (mid-stream join, PLI).
+     *
+     * openh264enc has no hardware path; it still uses YUY2 + CPU
+     * videoconvert to I420. */
     char pipeline_str[1024];
     int n;
     if (use_mpp) {
+        /* `jpegparse` is required: without it, mppjpegdec triggers
+         * "GST_VIDEO_INFO_WIDTH (&state->info) != 0" because GStreamer
+         * doesn't propagate JPEG image dimensions through caps alone —
+         * the parser must inspect the SOF marker. v4l2src→mppjpegdec
+         * silently fails with stream error -5 without it. */
         n = snprintf(pipeline_str, sizeof(pipeline_str),
-            "v4l2src device=%s do-timestamp=true "
-            "! video/x-raw,format=YUY2,width=%d,height=%d,framerate=%d/1 "
-            "! videoconvert "
-            "! video/x-raw,format=NV12 "
-            "! mpph264enc name=enc header-mode=each-idr "
-              "rc-mode=cbr bps=%d bps-max=%d gop=%d "
-            "! video/x-h264,stream-format=byte-stream,alignment=au "
-            "! appsink name=sink sync=false max-buffers=2 drop=true",
-            cfg->device, cfg->width, cfg->height, cfg->fps,
-            cfg->bitrate_bps, cfg->bitrate_bps * 3 / 2, gop);
+                     "v4l2src device=%s do-timestamp=true "
+                     "! image/jpeg,width=%d,height=%d,framerate=%d/1 "
+                     "! jpegparse "
+                     "! queue max-size-buffers=4 leaky=downstream "
+                     "! mppjpegdec "
+                     "! mpph264enc name=enc header-mode=each-idr "
+                     "rc-mode=cbr bps=%d bps-max=%d gop=%d "
+                     "! video/x-h264,stream-format=byte-stream,alignment=au "
+                     "! appsink name=sink sync=false max-buffers=2 drop=true",
+                     cfg->device, cfg->width, cfg->height, cfg->fps, cfg->bitrate_bps,
+                     cfg->bitrate_bps * 3 / 2, gop);
     } else {
         n = snprintf(pipeline_str, sizeof(pipeline_str),
-            "v4l2src device=%s do-timestamp=true "
-            "! video/x-raw,format=YUY2,width=%d,height=%d,framerate=%d/1 "
-            "! videoconvert "
-            "! video/x-raw,format=I420 "
-            "! openh264enc name=enc bitrate=%d gop-size=%d complexity=low "
-            "! video/x-h264,stream-format=byte-stream,alignment=au "
-            "! appsink name=sink sync=false max-buffers=4 drop=true",
-            cfg->device, cfg->width, cfg->height, cfg->fps,
-            cfg->bitrate_bps, gop);
+                     "v4l2src device=%s do-timestamp=true "
+                     "! video/x-raw,format=YUY2,width=%d,height=%d,framerate=%d/1 "
+                     "! videoconvert "
+                     "! video/x-raw,format=I420 "
+                     "! openh264enc name=enc bitrate=%d gop-size=%d complexity=low "
+                     "! video/x-h264,stream-format=byte-stream,alignment=au "
+                     "! appsink name=sink sync=false max-buffers=4 drop=true",
+                     cfg->device, cfg->width, cfg->height, cfg->fps, cfg->bitrate_bps, gop);
     }
 
     if (n < 0 || (size_t)n >= sizeof(pipeline_str)) {
@@ -147,10 +173,11 @@ int capture_start(const capture_config_t *cfg)
     GError *err = NULL;
     GstElement *pipeline = gst_parse_launch(pipeline_str, &err);
     if (!pipeline || err) {
-        fprintf(stderr, "[gst] gst_parse_launch failed: %s\n",
-                err ? err->message : "(unknown)");
-        if (err) g_error_free(err);
-        if (pipeline) gst_object_unref(pipeline);
+        fprintf(stderr, "[gst] gst_parse_launch failed: %s\n", err ? err->message : "(unknown)");
+        if (err)
+            g_error_free(err);
+        if (pipeline)
+            gst_object_unref(pipeline);
         return -1;
     }
 
@@ -184,8 +211,8 @@ int capture_start(const capture_config_t *cfg)
         return -1;
     }
 
-    fprintf(stderr, "[gst] pipeline running (%dx%d@%dfps, %d bps, GOP %d)\n",
-            cfg->width, cfg->height, cfg->fps, cfg->bitrate_bps, gop);
+    fprintf(stderr, "[gst] pipeline running (%dx%d@%dfps, %d bps, GOP %d)\n", cfg->width,
+            cfg->height, cfg->fps, cfg->bitrate_bps, gop);
     return 0;
 }
 
@@ -223,8 +250,7 @@ void capture_force_keyframe(void)
         return;
     }
 
-    GstEvent *evt = gst_video_event_new_upstream_force_key_unit(
-        GST_CLOCK_TIME_NONE, TRUE, 0);
+    GstEvent *evt = gst_video_event_new_upstream_force_key_unit(GST_CLOCK_TIME_NONE, TRUE, 0);
 
     if (evt) {
         gst_pad_send_event(src_pad, evt);
