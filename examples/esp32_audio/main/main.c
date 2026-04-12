@@ -30,6 +30,7 @@
 #include "nanortc_crypto.h"
 #include "run_loop.h"
 #include "webserver.h"
+#include "media_pacer.h"
 
 #include "music_gen.h"
 
@@ -77,8 +78,7 @@ static int s_connected;
 static int s_audio_mid;
 
 /* Audio state */
-static uint32_t s_audio_epoch_ms;
-static uint32_t s_audio_frame_count;
+static nano_media_pacer_t s_audio_pacer = {.interval_ms = 20}; /* 20ms frames */
 
 /* Audio encoder (esp_audio_codec unified API) */
 static esp_audio_enc_handle_t s_encoder;
@@ -101,17 +101,8 @@ extern const uint8_t index_html_end[] asm("_binary_index_html_end");
  * ---------------------------------------------------------------- */
 static void audio_send_tick(nanortc_t *rtc, uint8_t mid, uint32_t now)
 {
-    if (s_audio_epoch_ms == 0)
-        s_audio_epoch_ms = now;
-
-    uint32_t target_frames = (now - s_audio_epoch_ms) / 20;
-
-    /* Skip frames if we fell too far behind */
-    if (target_frames - s_audio_frame_count > 2) {
-        s_audio_frame_count = target_frames - 1;
-    }
-
-    while (s_audio_frame_count < target_frames) {
+    uint32_t due = nano_media_pacer_due(&s_audio_pacer, now);
+    for (uint32_t i = 0; i < due; i++) {
         /* 1. Generate music PCM */
         static int16_t pcm_buf[SAMPLES_PER_FRAME * AUDIO_CHANNELS];
         music_generate(pcm_buf, SAMPLES_PER_FRAME, AUDIO_SAMPLE_RATE, AUDIO_CHANNELS);
@@ -134,7 +125,7 @@ static void audio_send_tick(nanortc_t *rtc, uint8_t mid, uint32_t now)
             }
         }
 
-        s_audio_frame_count++;
+        nano_media_pacer_advance(&s_audio_pacer);
     }
 }
 
@@ -156,8 +147,7 @@ static void on_event(nanortc_t *rtc, const nanortc_event_t *evt, void *userdata)
     case NANORTC_EV_CONNECTED:
         ESP_LOGI(TAG, "Connected — starting audio");
         s_connected = 1;
-        s_audio_epoch_ms = 0;
-        s_audio_frame_count = 0;
+        nano_media_pacer_reset(&s_audio_pacer);
         music_reset();
         encoder_init();
         break;
@@ -178,6 +168,21 @@ static void on_event(nanortc_t *rtc, const nanortc_event_t *evt, void *userdata)
 }
 
 /* ----------------------------------------------------------------
+ * Track setup callback — add a send-only audio track.
+ * ---------------------------------------------------------------- */
+static int setup_audio_track(nanortc_t *rtc, void *userdata)
+{
+    (void)userdata;
+    s_audio_mid = nanortc_add_audio_track(rtc, NANORTC_DIR_SENDONLY, AUDIO_CODEC,
+                                          AUDIO_SAMPLE_RATE, AUDIO_CHANNELS);
+    if (s_audio_mid < 0) {
+        ESP_LOGE(TAG, "nanortc_add_audio_track failed: %d", s_audio_mid);
+        return s_audio_mid;
+    }
+    return 0;
+}
+
+/* ----------------------------------------------------------------
  * POST /offer handler — full nanortc session lifecycle
  * ---------------------------------------------------------------- */
 static int handle_offer(const char *offer, char *answer, size_t answer_size, size_t *answer_len,
@@ -185,51 +190,33 @@ static int handle_offer(const char *offer, char *answer, size_t answer_size, siz
 {
     (void)userdata;
 
-    /* Tear down previous session */
+    /* Tear down app-side state that lives outside nanortc/run_loop. */
     s_connected = 0;
     if (s_encoder) {
         esp_audio_enc_close(s_encoder);
         s_encoder = NULL;
     }
-    nano_run_loop_destroy(&s_loop);
-    nanortc_destroy(&s_rtc);
 
-    /* Initialize nanortc */
     nanortc_config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.crypto = nanortc_crypto_mbedtls();
     cfg.role = NANORTC_ROLE_CONTROLLED;
 
-    int rc = nanortc_init(&s_rtc, &cfg);
+    nano_accept_offer_params_t params = {
+        .rtc_cfg = &cfg,
+        .track_setup = setup_audio_track,
+        .local_ip = s_local_ip,
+        .udp_port = CONFIG_EXAMPLE_UDP_PORT,
+        .max_poll_ms = 5,
+        .event_cb = on_event,
+    };
+
+    int rc = nano_session_accept_offer(&s_rtc, &s_loop, &params, offer, answer, answer_size,
+                                       answer_len);
     if (rc != NANORTC_OK) {
-        ESP_LOGE(TAG, "nanortc_init failed: %d", rc);
-        return rc;
+        ESP_LOGE(TAG, "nano_session_accept_offer failed: %d (%s)", rc, nanortc_err_name(rc));
     }
-
-    /* Add audio track */
-    s_audio_mid = nanortc_add_audio_track(&s_rtc, NANORTC_DIR_SENDONLY, AUDIO_CODEC,
-                                          AUDIO_SAMPLE_RATE, AUDIO_CHANNELS);
-    if (s_audio_mid < 0) {
-        ESP_LOGE(TAG, "nanortc_add_audio_track failed: %d", s_audio_mid);
-        return s_audio_mid;
-    }
-
-    rc = nano_run_loop_init(&s_loop, &s_rtc, CONFIG_EXAMPLE_UDP_PORT);
-    if (rc < 0) {
-        ESP_LOGE(TAG, "Failed to bind UDP port");
-        return rc;
-    }
-    nanortc_add_local_candidate(&s_rtc, s_local_ip, CONFIG_EXAMPLE_UDP_PORT);
-    nano_run_loop_set_event_cb(&s_loop, on_event, NULL);
-    s_loop.max_poll_ms = 5;
-    s_loop.running = 1;
-
-    rc = nanortc_accept_offer(&s_rtc, offer, answer, answer_size, answer_len);
-    if (rc != NANORTC_OK) {
-        ESP_LOGE(TAG, "nanortc_accept_offer failed: %d (%s)", rc, nanortc_err_name(rc));
-        return rc;
-    }
-    return 0;
+    return rc;
 }
 
 /* ----------------------------------------------------------------

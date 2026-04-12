@@ -20,6 +20,7 @@
 #include "nanortc.h"
 #include "nanortc_crypto.h"
 #include "http_signaling.h"
+#include "multi_session.h"
 #include "av_capture.h"
 #include "vt_encoder.h"
 
@@ -31,11 +32,7 @@
 #include <signal.h>
 #include <unistd.h>
 #include <pthread.h>
-#include <ifaddrs.h>
-#include <arpa/inet.h>
-#include <net/if.h>
 #include <sys/select.h>
-#include <sys/socket.h>
 
 /* ----------------------------------------------------------------
  * Constants
@@ -56,6 +53,7 @@
 
 #define FRAME_QUEUE_SIZE   16
 #define MAX_SESSIONS       4
+#define MAX_LOCAL_IPS      8
 
 /* ----------------------------------------------------------------
  * Thread-safe frame queue (pipe + mutex)
@@ -142,50 +140,12 @@ static int fq_pop(frame_queue_t *q, queued_frame_t *out)
 }
 
 /* ----------------------------------------------------------------
- * Session: one per connected viewer
+ * Session pool (one session per connected viewer)
  * ---------------------------------------------------------------- */
 
-typedef struct {
-    int active;
-    int viewer_id;       /* signaling peer id of the browser */
-    nanortc_t rtc;
-    int udp_fd;
-    int audio_mid;
-    int video_mid;
-    int media_connected;
-} session_t;
-
-static session_t g_sessions[MAX_SESSIONS];
-
-static session_t *find_free_session(void)
-{
-    for (int i = 0; i < MAX_SESSIONS; i++) {
-        if (!g_sessions[i].active)
-            return &g_sessions[i];
-    }
-    return NULL;
-}
-
-static session_t *find_session_by_viewer(int viewer_id)
-{
-    for (int i = 0; i < MAX_SESSIONS; i++) {
-        if (g_sessions[i].active && g_sessions[i].viewer_id == viewer_id)
-            return &g_sessions[i];
-    }
-    return NULL;
-}
-
-static void destroy_session(session_t *s)
-{
-    if (!s || !s->active)
-        return;
-    fprintf(stderr, "[session] Destroying session for viewer %d\n", s->viewer_id);
-    nanortc_destroy(&s->rtc);
-    if (s->udp_fd >= 0)
-        close(s->udp_fd);
-    s->active = 0;
-    s->udp_fd = -1;
-}
+static nano_session_t g_sessions[MAX_SESSIONS];
+static nano_local_ip_t g_local_ips[MAX_LOCAL_IPS];
+static nano_session_pool_t g_pool;
 
 /* ----------------------------------------------------------------
  * Application context (shared across all sessions)
@@ -208,37 +168,43 @@ static void on_signal(int sig)
 }
 
 /* ----------------------------------------------------------------
- * Per-session event callback
+ * Track setup + event callback (injected into the session pool)
  * ---------------------------------------------------------------- */
 
-static void on_session_event(nanortc_t *rtc, const nanortc_event_t *evt, void *userdata)
+static int macos_track_setup(nano_session_t *s, void *userdata)
 {
-    session_t *s = (session_t *)userdata;
+    (void)userdata;
+#if NANORTC_FEATURE_AUDIO
+    s->audio_mid = nanortc_add_audio_track(&s->rtc, NANORTC_DIR_SENDONLY,
+                                           NANORTC_CODEC_OPUS, 48000, 2);
+#endif
+#if NANORTC_FEATURE_VIDEO
+    s->video_mid = nanortc_add_video_track(&s->rtc, NANORTC_DIR_SENDONLY,
+                                           NANORTC_CODEC_H264);
+#endif
+    return 0;
+}
 
+static void macos_on_event(nano_session_t *s, const nanortc_event_t *evt, void *userdata)
+{
+    (void)userdata;
     switch (evt->type) {
     case NANORTC_EV_ICE_STATE_CHANGE:
         if (evt->ice_state == NANORTC_ICE_STATE_CONNECTED) {
             fprintf(stderr, "[session %d] ICE connected\n", s->viewer_id);
         }
         break;
-
     case NANORTC_EV_CONNECTED:
         fprintf(stderr, "[session %d] Media connected — forcing keyframe\n", s->viewer_id);
-        s->media_connected = 1;
         vt_encoder_force_keyframe();
         break;
-
     case NANORTC_EV_KEYFRAME_REQUEST:
         fprintf(stderr, "[session %d] Keyframe requested (PLI)\n", s->viewer_id);
         vt_encoder_force_keyframe();
         break;
-
     case NANORTC_EV_DISCONNECTED:
         fprintf(stderr, "[session %d] Disconnected\n", s->viewer_id);
-        s->media_connected = 0;
-        s->active = 0; /* mark for cleanup */
         break;
-
     default:
         break;
     }
@@ -295,138 +261,6 @@ static void on_audio_samples(void *ctx, const int16_t *pcm, size_t sample_count,
 }
 
 /* ----------------------------------------------------------------
- * Session creation (on new offer from viewer)
- * ---------------------------------------------------------------- */
-
-static int create_session(int viewer_id, const char *offer_sdp,
-                          const nanortc_config_t *cfg, const char *bind_ip,
-                          http_sig_t *sig)
-{
-    /* Check for existing session from same viewer */
-    session_t *existing = find_session_by_viewer(viewer_id);
-    if (existing) {
-        fprintf(stderr, "[session] Viewer %d reconnecting, cleaning old session\n",
-                viewer_id);
-        destroy_session(existing);
-    }
-
-    session_t *s = find_free_session();
-    if (!s) {
-        fprintf(stderr, "[session] No free slots (max %d)\n", MAX_SESSIONS);
-        return -1;
-    }
-
-    memset(s, 0, sizeof(*s));
-    s->viewer_id = viewer_id;
-    s->udp_fd = -1;
-    s->audio_mid = -1;
-    s->video_mid = -1;
-
-    /* Init nanortc */
-    int rc = nanortc_init(&s->rtc, cfg);
-    if (rc != NANORTC_OK) {
-        fprintf(stderr, "[session] nanortc_init failed: %d\n", rc);
-        return -1;
-    }
-
-    /* Add media tracks */
-#if NANORTC_FEATURE_AUDIO
-    s->audio_mid = nanortc_add_audio_track(&s->rtc, NANORTC_DIR_SENDONLY,
-                                           NANORTC_CODEC_OPUS, 48000, 2);
-#endif
-#if NANORTC_FEATURE_VIDEO
-    s->video_mid = nanortc_add_video_track(&s->rtc, NANORTC_DIR_SENDONLY,
-                                           NANORTC_CODEC_H264);
-#endif
-
-    /* Bind UDP socket (port 0 = OS assigns) */
-    s->udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (s->udp_fd < 0) {
-        perror("[session] socket");
-        nanortc_destroy(&s->rtc);
-        return -1;
-    }
-    int reuse = 1;
-    setsockopt(s->udp_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
-
-    struct sockaddr_in local;
-    memset(&local, 0, sizeof(local));
-    local.sin_family = AF_INET;
-    local.sin_port = 0; /* OS assigns */
-    local.sin_addr.s_addr = INADDR_ANY;
-
-    if (bind(s->udp_fd, (struct sockaddr *)&local, sizeof(local)) < 0) {
-        perror("[session] bind");
-        close(s->udp_fd);
-        nanortc_destroy(&s->rtc);
-        return -1;
-    }
-
-    /* Get assigned port */
-    struct sockaddr_in bound;
-    socklen_t blen = sizeof(bound);
-    getsockname(s->udp_fd, (struct sockaddr *)&bound, &blen);
-    uint16_t port = ntohs(bound.sin_port);
-
-    nanortc_add_local_candidate(&s->rtc, bind_ip, port);
-
-    /* Accept offer, generate answer */
-    char answer[HTTP_SIG_BUF_SIZE];
-    size_t answer_len = 0;
-    rc = nanortc_accept_offer(&s->rtc, offer_sdp, answer, sizeof(answer), &answer_len);
-    if (rc != NANORTC_OK) {
-        fprintf(stderr, "[session] nanortc_accept_offer failed: %d\n", rc);
-        close(s->udp_fd);
-        nanortc_destroy(&s->rtc);
-        return -1;
-    }
-
-    /* Send answer to viewer */
-    rc = http_sig_send_to(sig, viewer_id, "answer", answer, "sdp");
-    if (rc < 0) {
-        fprintf(stderr, "[session] Failed to send answer to viewer %d\n", viewer_id);
-        close(s->udp_fd);
-        nanortc_destroy(&s->rtc);
-        return -1;
-    }
-
-    s->active = 1;
-    fprintf(stderr, "[session] Created session for viewer %d (udp=%s:%u)\n",
-            viewer_id, bind_ip, port);
-    return 0;
-}
-
-/* ----------------------------------------------------------------
- * Output dispatch for a single session
- * ---------------------------------------------------------------- */
-
-static void dispatch_session_outputs(session_t *s, uint32_t *timeout_ms)
-{
-    nanortc_output_t out;
-    while (nanortc_poll_output(&s->rtc, &out) == NANORTC_OK) {
-        switch (out.type) {
-        case NANORTC_OUTPUT_TRANSMIT: {
-            struct sockaddr_in dest;
-            memset(&dest, 0, sizeof(dest));
-            dest.sin_family = AF_INET;
-            memcpy(&dest.sin_addr, out.transmit.dest.addr, 4);
-            dest.sin_port = htons(out.transmit.dest.port);
-            sendto(s->udp_fd, out.transmit.data, out.transmit.len, 0,
-                   (struct sockaddr *)&dest, sizeof(dest));
-            break;
-        }
-        case NANORTC_OUTPUT_EVENT:
-            on_session_event(&s->rtc, &out.event, s);
-            break;
-        case NANORTC_OUTPUT_TIMEOUT:
-            if (out.timeout_ms < *timeout_ms)
-                *timeout_ms = out.timeout_ms;
-            break;
-        }
-    }
-}
-
-/* ----------------------------------------------------------------
  * Signaling poll: accept new offers and ICE candidates
  * ---------------------------------------------------------------- */
 
@@ -434,8 +268,7 @@ static uint32_t last_poll_ms;
 
 uint32_t nano_get_millis(void); /* from run_loop_linux.c */
 
-static void poll_signaling(http_sig_t *sig, const nanortc_config_t *cfg,
-                           const char *bind_ip)
+static void poll_signaling(http_sig_t *sig, const nanortc_config_t *cfg)
 {
     uint32_t now = nano_get_millis();
     if (now - last_poll_ms < 100)
@@ -457,10 +290,10 @@ static void poll_signaling(http_sig_t *sig, const nanortc_config_t *cfg,
     if (strcmp(type, "offer") == 0) {
         fprintf(stderr, "[sig] Got offer from viewer %d (%zu bytes)\n",
                 from, strlen(payload));
-        create_session(from, payload, cfg, bind_ip, sig);
+        nano_session_create(&g_pool, from, payload, cfg, sig);
 
     } else if (strcmp(type, "candidate") == 0) {
-        session_t *s = find_session_by_viewer(from);
+        nano_session_t *s = nano_session_find_by_viewer(&g_pool, from);
         if (s && payload[0] != '\0') {
             fprintf(stderr, "[sig] ICE candidate from viewer %d\n", from);
             nanortc_add_remote_candidate(&s->rtc, payload);
@@ -473,7 +306,7 @@ static void poll_signaling(http_sig_t *sig, const nanortc_config_t *cfg,
  * ---------------------------------------------------------------- */
 
 static void run_event_loop(app_ctx_t *ctx, http_sig_t *sig,
-                           const nanortc_config_t *cfg, const char *bind_ip)
+                           const nanortc_config_t *cfg)
 {
     int pipe_fd = ctx->fq.wake_pipe[0];
 
@@ -481,24 +314,14 @@ static void run_event_loop(app_ctx_t *ctx, http_sig_t *sig,
         uint32_t timeout_ms = 5; /* 5ms for smooth media pacing */
 
         /* Drain output queues for all sessions */
-        for (int i = 0; i < MAX_SESSIONS; i++) {
-            if (g_sessions[i].active)
-                dispatch_session_outputs(&g_sessions[i], &timeout_ms);
-        }
+        nano_session_pool_dispatch_all(&g_pool, &timeout_ms);
 
         /* Build fd_set: all session UDP fds + wake pipe */
         fd_set rset;
         FD_ZERO(&rset);
         FD_SET(pipe_fd, &rset);
         int maxfd = pipe_fd;
-
-        for (int i = 0; i < MAX_SESSIONS; i++) {
-            if (g_sessions[i].active && g_sessions[i].udp_fd >= 0) {
-                FD_SET(g_sessions[i].udp_fd, &rset);
-                if (g_sessions[i].udp_fd > maxfd)
-                    maxfd = g_sessions[i].udp_fd;
-            }
-        }
+        nano_session_pool_add_fds(&g_pool, &rset, &maxfd);
 
         struct timeval tv = {
             .tv_sec = timeout_ms / 1000,
@@ -508,32 +331,8 @@ static void run_event_loop(app_ctx_t *ctx, http_sig_t *sig,
         int ret = select(maxfd + 1, &rset, NULL, NULL, &tv);
         uint32_t now = nano_get_millis();
 
-        /* Handle UDP input for each session */
-        for (int i = 0; i < MAX_SESSIONS; i++) {
-            session_t *s = &g_sessions[i];
-            if (!s->active || s->udp_fd < 0)
-                continue;
-
-            if (ret > 0 && FD_ISSET(s->udp_fd, &rset)) {
-                uint8_t buf[1500];
-                struct sockaddr_in from;
-                socklen_t fromlen = sizeof(from);
-
-                ssize_t n = recvfrom(s->udp_fd, buf, sizeof(buf), 0,
-                                     (struct sockaddr *)&from, &fromlen);
-                if (n > 0) {
-                    nanortc_addr_t src;
-                    memset(&src, 0, sizeof(src));
-                    src.family = 4;
-                    memcpy(src.addr, &from.sin_addr, 4);
-                    src.port = ntohs(from.sin_port);
-                    nanortc_handle_input(&s->rtc, now, buf, (size_t)n, &src);
-                }
-            } else {
-                /* Timer tick even without data */
-                nanortc_handle_input(&s->rtc, now, NULL, 0, NULL);
-            }
-        }
+        /* Pump UDP input + internal timers for all active sessions */
+        nano_session_pool_handle_udp(&g_pool, ret, &rset, now);
 
         /* Handle wake pipe: broadcast encoded frames to all connected sessions */
         if (ret > 0 && FD_ISSET(pipe_fd, &rset)) {
@@ -543,7 +342,7 @@ static void run_event_loop(app_ctx_t *ctx, http_sig_t *sig,
             queued_frame_t frame;
             while (fq_pop(&ctx->fq, &frame) == 0) {
                 for (int i = 0; i < MAX_SESSIONS; i++) {
-                    session_t *s = &g_sessions[i];
+                    nano_session_t *s = &g_sessions[i];
                     if (!s->active || !s->media_connected)
                         continue;
 
@@ -559,23 +358,14 @@ static void run_event_loop(app_ctx_t *ctx, http_sig_t *sig,
             }
         }
 
-        /* Dispatch any new outputs generated by handle_input */
-        for (int i = 0; i < MAX_SESSIONS; i++) {
-            if (g_sessions[i].active)
-                dispatch_session_outputs(&g_sessions[i], &timeout_ms);
-        }
+        /* Dispatch any new outputs generated by handle_input / send_* */
+        nano_session_pool_dispatch_all(&g_pool, &timeout_ms);
 
-        /* Cleanup disconnected sessions */
-        for (int i = 0; i < MAX_SESSIONS; i++) {
-            session_t *s = &g_sessions[i];
-            if (s->udp_fd >= 0 && !s->active) {
-                /* Marked for cleanup by event handler */
-                destroy_session(s);
-            }
-        }
+        /* Cleanup sessions whose active flag was cleared on DISCONNECTED */
+        nano_session_pool_cleanup(&g_pool);
 
         /* Poll signaling for new offers / ICE candidates */
-        poll_signaling(sig, cfg, bind_ip);
+        poll_signaling(sig, cfg);
     }
 }
 
@@ -586,7 +376,7 @@ static void run_event_loop(app_ctx_t *ctx, http_sig_t *sig,
 static void usage(const char *prog)
 {
     fprintf(stderr, "Usage: %s [options]\n", prog);
-    fprintf(stderr, "  -b IP          Bind/candidate IP (default: auto-detect)\n");
+    fprintf(stderr, "  -b IP          Bind/candidate IP (default: auto-detect all interfaces)\n");
     fprintf(stderr, "  -s HOST:PORT   Signaling server (default: localhost:8765)\n");
 }
 
@@ -667,25 +457,30 @@ int main(int argc, char *argv[])
             return 1;
         }
 
-        /* 2. Auto-detect IP */
-        if (bind_ip[0] == '\0') {
-            struct ifaddrs *ifas, *ifa;
-            if (getifaddrs(&ifas) == 0) {
-                for (ifa = ifas; ifa; ifa = ifa->ifa_next) {
-                    if (!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_INET)
-                        continue;
-                    if (ifa->ifa_flags & IFF_LOOPBACK)
-                        continue;
-                    struct sockaddr_in *sa = (struct sockaddr_in *)ifa->ifa_addr;
-                    inet_ntop(AF_INET, &sa->sin_addr, bind_ip, sizeof(bind_ip));
-                    break;
-                }
-                freeifaddrs(ifas);
-            }
-            if (bind_ip[0] == '\0') {
-                memcpy(bind_ip, "127.0.0.1", 10);
-            }
+        /* 2. Set up session pool + local IP candidates */
+        nano_session_pool_init(&g_pool, g_sessions, MAX_SESSIONS);
+        g_pool.track_setup = macos_track_setup;
+        g_pool.on_event = macos_on_event;
+
+        int local_ip_count;
+        if (bind_ip[0] != '\0') {
+            /* User-supplied single IP */
+            size_t len = strlen(bind_ip);
+            if (len >= sizeof(g_local_ips[0].ip))
+                len = sizeof(g_local_ips[0].ip) - 1;
+            memcpy(g_local_ips[0].ip, bind_ip, len);
+            g_local_ips[0].ip[len] = '\0';
+            local_ip_count = 1;
+        } else {
+            local_ip_count = nano_enumerate_local_ipv4(g_local_ips, MAX_LOCAL_IPS);
+            /* Capture the first IP for the startup log. */
+            size_t len = strlen(g_local_ips[0].ip);
+            if (len >= sizeof(bind_ip)) len = sizeof(bind_ip) - 1;
+            memcpy(bind_ip, g_local_ips[0].ip, len);
+            bind_ip[len] = '\0';
         }
+        g_pool.local_ips = g_local_ips;
+        g_pool.local_ip_count = local_ip_count;
 
         /* 3. Join signaling server as host */
         http_sig_t sig;
@@ -732,12 +527,12 @@ int main(int argc, char *argv[])
         fprintf(stderr, "Waiting for viewers (Ctrl+C to stop)...\n");
 
         /* 6. Run multi-session event loop */
-        run_event_loop(&ctx, &sig, &rtc_cfg, bind_ip);
+        run_event_loop(&ctx, &sig, &rtc_cfg);
 
         /* 7. Cleanup */
         av_capture_stop();
         for (int i = 0; i < MAX_SESSIONS; i++) {
-            destroy_session(&g_sessions[i]);
+            nano_session_destroy(&g_sessions[i]);
         }
         vt_encoder_destroy();
         opus_encoder_destroy(ctx.opus_enc);

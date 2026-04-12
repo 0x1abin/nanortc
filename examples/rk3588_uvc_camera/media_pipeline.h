@@ -23,7 +23,7 @@
 #if RK3588_HAS_AUDIO
 #include "audio_capture.h"
 #endif
-#include "session.h"
+#include "multi_session.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -86,7 +86,7 @@ void media_pipeline_add_fds(media_pipeline_t *mp, fd_set *rset, int *maxfd);
  */
 void media_pipeline_drain_to_sessions(media_pipeline_t *mp,
                                       const fd_set *rset,
-                                      session_t *sessions, int n_sessions,
+                                      nano_session_t *sessions, int n_sessions,
                                       uint32_t *timeout_ms);
 
 /* ----------------------------------------------------------------

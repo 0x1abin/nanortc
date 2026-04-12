@@ -58,6 +58,47 @@ void nano_run_loop_destroy(nano_run_loop_t *loop);
 /* Platform helper: monotonic milliseconds */
 uint32_t nano_get_millis(void);
 
+/* ----------------------------------------------------------------
+ * Single-session offer handler (high-level convenience)
+ *
+ * Encapsulates the "tear down -> init -> add tracks -> bind UDP ->
+ * add candidate -> set event cb -> accept offer -> start loop" chain
+ * that every single-peer example (ESP32 web UI, etc.) performs
+ * whenever a new browser offer arrives.
+ *
+ * The caller provides:
+ *   - an already-built nanortc_config_t (crypto/role/ICE servers/log)
+ *   - a track_setup callback that calls nanortc_add_audio_track /
+ *     nanortc_add_video_track as needed (returning the first negative
+ *     rc aborts the session; 0 = success)
+ *   - UDP bind parameters and the event callback
+ *
+ * On success, loop->running is set to 1 and the generated SDP answer
+ * is written to `answer`. On failure, both rtc and loop are left in
+ * a destroyed state ready for the next attempt.
+ * ---------------------------------------------------------------- */
+
+typedef int (*nano_track_setup_fn)(nanortc_t *rtc, void *userdata);
+
+typedef struct {
+    const nanortc_config_t *rtc_cfg;     /* required */
+    nano_track_setup_fn     track_setup; /* optional (NULL = no tracks) */
+    void                   *track_userdata;
+    const char             *local_ip;    /* required: candidate IP */
+    uint16_t                udp_port;    /* required: bind port */
+    uint32_t                max_poll_ms; /* 0 = default (100ms) */
+    nano_event_cb           event_cb;    /* optional */
+    void                   *event_userdata;
+} nano_accept_offer_params_t;
+
+/* Returns NANORTC_OK on success, negative on error. */
+int nano_session_accept_offer(nanortc_t *rtc,
+                              nano_run_loop_t *loop,
+                              const nano_accept_offer_params_t *params,
+                              const char *offer,
+                              char *answer, size_t answer_size,
+                              size_t *answer_len);
+
 #ifdef __cplusplus
 }
 #endif

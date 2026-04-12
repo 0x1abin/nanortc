@@ -148,19 +148,19 @@ static void drain_wake_pipe(int fd)
 }
 
 static void broadcast_video(media_pipeline_t *mp,
-                            session_t *sessions, int n_sessions,
+                            nano_session_t *sessions, int n_sessions,
                             uint32_t *timeout_ms)
 {
     media_frame_t frame;
     while (media_queue_pop(&mp->video_q, &frame) == 0) {
         bool sent = false;
         for (int i = 0; i < n_sessions; i++) {
-            session_t *s = &sessions[i];
+            nano_session_t *s = &sessions[i];
             if (!s->active || !s->media_connected || s->video_mid < 0) continue;
 #if NANORTC_FEATURE_VIDEO
             nanortc_send_video(&s->rtc, (uint8_t)s->video_mid,
                                frame.pts_ms, frame.data, frame.len);
-            session_dispatch_outputs(s, timeout_ms);
+            nano_session_dispatch(s, timeout_ms);
             sent = true;
 #endif
         }
@@ -176,7 +176,7 @@ static void broadcast_video(media_pipeline_t *mp,
 
 #if RK3588_HAS_AUDIO
 static void broadcast_audio(media_pipeline_t *mp,
-                            session_t *sessions, int n_sessions,
+                            nano_session_t *sessions, int n_sessions,
                             uint32_t *timeout_ms)
 {
     /* Rate-limited error reporter: many sends per second, but a
@@ -187,7 +187,7 @@ static void broadcast_audio(media_pipeline_t *mp,
     media_frame_t frame;
     while (media_queue_pop(&mp->audio_q, &frame) == 0) {
         for (int i = 0; i < n_sessions; i++) {
-            session_t *s = &sessions[i];
+            nano_session_t *s = &sessions[i];
             if (!s->active || !s->media_connected || s->audio_mid < 0) continue;
 #if NANORTC_FEATURE_AUDIO
             int rc = nanortc_send_audio(&s->rtc, (uint8_t)s->audio_mid,
@@ -203,7 +203,7 @@ static void broadcast_audio(media_pipeline_t *mp,
                     err_count = 0;
                 }
             }
-            session_dispatch_outputs(s, timeout_ms);
+            nano_session_dispatch(s, timeout_ms);
 #endif
         }
         free(frame.data);
@@ -213,7 +213,7 @@ static void broadcast_audio(media_pipeline_t *mp,
 
 void media_pipeline_drain_to_sessions(media_pipeline_t *mp,
                                       const fd_set *rset,
-                                      session_t *sessions, int n_sessions,
+                                      nano_session_t *sessions, int n_sessions,
                                       uint32_t *timeout_ms)
 {
     if (FD_ISSET(mp->video_q.wake_pipe[0], rset)) {

@@ -24,7 +24,7 @@
 #include "capture.h"
 #include "sig_discovery.h"
 #include "sig_queue.h"
-#include "session.h"
+#include "multi_session.h"
 #include "media_pipeline.h"
 
 #include <errno.h>
@@ -67,6 +67,9 @@
 
 #define SIG_POLL_TIMEOUT_MS 2000
 
+#define MAX_SESSIONS  4
+#define MAX_LOCAL_IPS 8
+
 uint32_t nano_get_millis(void); /* from run_loop_linux.c */
 
 /* ----------------------------------------------------------------
@@ -76,6 +79,82 @@ uint32_t nano_get_millis(void); /* from run_loop_linux.c */
 static media_pipeline_t g_mp;
 static sig_queue_t g_sq;
 static volatile sig_atomic_t g_quit;
+
+static nano_session_t g_sessions[MAX_SESSIONS];
+static nano_local_ip_t g_local_ips[MAX_LOCAL_IPS];
+static nano_session_pool_t g_pool;
+static uint32_t g_pli_count; /* rk3588-specific diagnostic counter */
+
+/* ----------------------------------------------------------------
+ * Session hooks (track setup + event callback)
+ * ---------------------------------------------------------------- */
+
+/* Register local media tracks in the fixed order:
+ *
+ *     1. video   (mid 0)
+ *     2. audio   (mid 1, optional)
+ *
+ * The browser adds transceivers in the same order (see index.html).
+ * nanortc matches local pre-added tracks to offered m-lines by
+ * integer mid — the payload-type / name are only used for codec
+ * negotiation, not for track identification. Reordering or skipping
+ * video would silently mis-route packets, so we centralise the
+ * order here. */
+static int rk3588_track_setup(nano_session_t *s, void *userdata)
+{
+    (void)userdata;
+#if NANORTC_FEATURE_VIDEO
+    s->video_mid = nanortc_add_video_track(&s->rtc, NANORTC_DIR_SENDONLY, NANORTC_CODEC_H264);
+    if (s->video_mid < 0) return -1;
+#endif
+
+#if RK3588_HAS_AUDIO && NANORTC_FEATURE_AUDIO
+    if (media_pipeline_audio_enabled(&g_mp)) {
+        s->audio_mid = nanortc_add_audio_track(&s->rtc, NANORTC_DIR_SENDONLY,
+                                                NANORTC_CODEC_OPUS, 48000, 2);
+        if (s->audio_mid < 0) {
+            fprintf(stderr, "[session] add_audio_track failed (%d), continuing video-only\n",
+                    s->audio_mid);
+            s->audio_mid = -1;
+        }
+    }
+#endif
+    return 0;
+}
+
+/* Per-session event callback: rk3588-specific keyframe handling +
+ * PLI rate limiting. Pool has already updated active/media_connected. */
+static void rk3588_on_event(nano_session_t *s, const nanortc_event_t *evt, void *userdata)
+{
+    (void)userdata;
+    switch (evt->type) {
+    case NANORTC_EV_ICE_STATE_CHANGE:
+        fprintf(stderr, "[session %d] ICE state -> %u\n", s->viewer_id, evt->ice_state);
+        break;
+    case NANORTC_EV_CONNECTED:
+        fprintf(stderr, "[session %d] connected\n", s->viewer_id);
+        capture_force_keyframe();
+        break;
+    case NANORTC_EV_KEYFRAME_REQUEST: {
+        /* Rate-limit per session: max one forced keyframe every 2 s
+         * to avoid disrupting the encoder. Per-session so one viewer's
+         * packet loss doesn't starve another viewer's recovery. */
+        uint32_t now_kf = nano_get_millis();
+        g_pli_count++;
+        if (now_kf - s->last_kf_ms >= 2000) {
+            s->last_kf_ms = now_kf;
+            capture_force_keyframe();
+            fprintf(stderr, "[session %d] PLI -> forced keyframe\n", s->viewer_id);
+        }
+        break;
+    }
+    case NANORTC_EV_DISCONNECTED:
+        fprintf(stderr, "[session %d] disconnected\n", s->viewer_id);
+        break;
+    default:
+        break;
+    }
+}
 
 /* ----------------------------------------------------------------
  * Signaling thread
@@ -120,8 +199,7 @@ static void run_event_loop(http_sig_t *sig, const nanortc_config_t *cfg)
         uint32_t timeout_ms = 5;
 
         /* Pre-select: drain outputs */
-        for (int i = 0; i < MAX_SESSIONS; i++)
-            if (g_sessions[i].active) session_dispatch_outputs(&g_sessions[i], &timeout_ms);
+        nano_session_pool_dispatch_all(&g_pool, &timeout_ms);
 
         /* Build fd_set */
         fd_set rset;
@@ -129,36 +207,14 @@ static void run_event_loop(http_sig_t *sig, const nanortc_config_t *cfg)
         FD_SET(sig_pipe, &rset);
         int maxfd = sig_pipe;
         media_pipeline_add_fds(&g_mp, &rset, &maxfd);
-        for (int i = 0; i < MAX_SESSIONS; i++) {
-            if (g_sessions[i].active && g_sessions[i].udp_fd >= 0) {
-                FD_SET(g_sessions[i].udp_fd, &rset);
-                if (g_sessions[i].udp_fd > maxfd) maxfd = g_sessions[i].udp_fd;
-            }
-        }
+        nano_session_pool_add_fds(&g_pool, &rset, &maxfd);
 
         struct timeval tv = {.tv_sec = timeout_ms / 1000, .tv_usec = (timeout_ms % 1000) * 1000};
         int ret = select(maxfd + 1, &rset, NULL, NULL, &tv);
         uint32_t now = nano_get_millis();
 
         /* UDP recv */
-        for (int i = 0; i < MAX_SESSIONS; i++) {
-            session_t *s = &g_sessions[i];
-            if (!s->active || s->udp_fd < 0) continue;
-            if (ret > 0 && FD_ISSET(s->udp_fd, &rset)) {
-                uint8_t buf[1500];
-                struct sockaddr_in from;
-                socklen_t fromlen = sizeof(from);
-                ssize_t n = recvfrom(s->udp_fd, buf, sizeof(buf), 0,
-                                     (struct sockaddr *)&from, &fromlen);
-                if (n > 0) {
-                    nanortc_addr_t src = {.family = 4, .port = ntohs(from.sin_port)};
-                    memcpy(src.addr, &from.sin_addr, 4);
-                    nanortc_handle_input(&s->rtc, now, buf, (size_t)n, &src);
-                }
-            } else {
-                nanortc_handle_input(&s->rtc, now, NULL, 0, NULL);
-            }
-        }
+        nano_session_pool_handle_udp(&g_pool, ret, &rset, now);
 
         /* Video + audio queues -> broadcast to connected viewers */
         if (ret > 0)
@@ -173,27 +229,20 @@ static void run_event_loop(http_sig_t *sig, const nanortc_config_t *cfg)
             while (sq_pop(&g_sq, &msg) == 0) {
                 if (msg.msg_type == 0) {
                     fprintf(stderr, "[sig] offer from viewer %d\n", msg.from);
-                    session_create(msg.from, msg.payload, cfg, sig,
-                                   media_pipeline_audio_enabled(&g_mp));
+                    nano_session_create(&g_pool, msg.from, msg.payload, cfg, sig);
                 } else {
-                    session_t *s = session_find_by_viewer(msg.from);
+                    nano_session_t *s = nano_session_find_by_viewer(&g_pool, msg.from);
                     if (s && msg.payload[0]) nanortc_add_remote_candidate(&s->rtc, msg.payload);
                 }
             }
         }
 
         /* Post-select: drain again */
-        for (int i = 0; i < MAX_SESSIONS; i++)
-            if (g_sessions[i].active) session_dispatch_outputs(&g_sessions[i], &timeout_ms);
+        nano_session_pool_dispatch_all(&g_pool, &timeout_ms);
 
-        /* Session cleanup */
-        for (int i = 0; i < MAX_SESSIONS; i++) {
-            session_t *s = &g_sessions[i];
-            if (!s->active && s->udp_fd >= 0) {
-                fprintf(stderr, "[session %d] cleanup\n", s->viewer_id);
-                session_destroy(s);
-            }
-        }
+        /* Session cleanup (any session whose active flag was cleared by
+         * the event callback but still holds an fd). */
+        nano_session_pool_cleanup(&g_pool);
 
         /* Stats — print diagnostics every 5 s. */
         if (now - last_stats_ms >= 5000) {
@@ -214,7 +263,7 @@ static void run_event_loop(http_sig_t *sig, const nanortc_config_t *cfg)
 #if NANORTC_FEATURE_VIDEO
             /* Per-session RTP stats from first active session */
             for (int i = 0; i < MAX_SESSIONS; i++) {
-                session_t *s = &g_sessions[i];
+                nano_session_t *s = &g_sessions[i];
                 if (!s->active || !s->media_connected || s->video_mid < 0) continue;
                 nanortc_track_stats_t ts;
                 if (nanortc_get_track_stats(&s->rtc, (uint8_t)s->video_mid, &ts) == NANORTC_OK) {
@@ -309,14 +358,14 @@ int main(int argc, char *argv[])
 
     if (sq_init(&g_sq) < 0) return 1;
 
-    for (int i = 0; i < MAX_SESSIONS; i++) {
-        g_sessions[i].udp_fd = -1;
-        g_sessions[i].video_mid = -1;
-        g_sessions[i].audio_mid = -1;
-        g_sessions[i].viewer_id = -1;
-    }
+    /* Initialise session pool (zeroes storage, sets pool back-pointers) */
+    nano_session_pool_init(&g_pool, g_sessions, MAX_SESSIONS);
 
-    enumerate_local_ipv4();
+    int local_ip_count = nano_enumerate_local_ipv4(g_local_ips, MAX_LOCAL_IPS);
+    g_pool.local_ips = g_local_ips;
+    g_pool.local_ip_count = local_ip_count;
+    g_pool.track_setup = rk3588_track_setup;
+    g_pool.on_event = rk3588_on_event;
 
     capture_config_t cap_cfg = {
         .device = device, .width = width, .height = height, .fps = fps,
@@ -357,8 +406,8 @@ int main(int argc, char *argv[])
 #endif
 
     fprintf(stderr, "rk3588_uvc_camera: %s %dx%d@%d %dbps enc=%s sig=%s:%u IPs=%d audio=%s\n",
-            device, width, height, fps, bitrate, encoder, sig_host, sig_port, g_local_ip_count,
-            media_pipeline_audio_enabled(&g_mp) ? "on" : "off");
+            device, width, height, fps, bitrate, encoder, sig_host, sig_port,
+            g_pool.local_ip_count, media_pipeline_audio_enabled(&g_mp) ? "on" : "off");
 
     pthread_t sig_tid;
     if (pthread_create(&sig_tid, NULL, sig_thread_fn, &sig) != 0) {
@@ -373,7 +422,7 @@ int main(int argc, char *argv[])
     g_quit = 1;
     pthread_join(sig_tid, NULL);
     for (int i = 0; i < MAX_SESSIONS; i++)
-        if (g_sessions[i].udp_fd >= 0) session_destroy(&g_sessions[i]);
+        if (g_sessions[i].udp_fd >= 0) nano_session_destroy(&g_sessions[i]);
     media_pipeline_shutdown(&g_mp);
     http_sig_leave(&sig);
     sq_destroy(&g_sq);
