@@ -12,9 +12,9 @@ NanoRTC is built by AI coding agents. Estimates use **agent sessions** (one focu
 |------|-------|--------|--------|--------|
 | [Phase 2: Audio](exec-plans/active/phase2-audio.md) | 2 | **Active** — Pending human verification of bidirectional audio + ESP32 intercom | 1 session | Bidirectional audio with browser |
 | [Phase 5: Network Traversal](exec-plans/active/phase5-network-traversal.md) | 5 | **Active** — Sessions 1-4 complete. All acceptance criteria met. | 3 sessions | NAT traversal for production |
-| [Phase 8: Continued Optimization](exec-plans/active/phase8-continued-optimization.md) | 8 | **Active** — Planning. 4 independent PRs (PR-1…PR-4) + P2 series on demand. | 3–5 sessions | IoT memory profile, stability propagation, video pkt_ring decoupling, H.264 zero-copy |
+| [Phase 8: Continued Optimization & Stability](exec-plans/active/phase8-continued-optimization.md) | 8 | **Active** — Planning. 5 independent PRs (PR-1…PR-5) + P2 series on demand. | 4–6 sessions | IoT memory profile, stability propagation, video pkt_ring decoupling, H.264 zero-copy, ICE CONTROLLING per-pair transaction fix |
 
-**Total Phase 1-8:** ~19-23 agent sessions
+**Total Phase 1-8:** ~20-24 agent sessions
 
 ## Completed Plans
 
@@ -31,7 +31,7 @@ NanoRTC is built by AI coding agents. Estimates use **agent sessions** (one focu
 
 Tracked in [tech-debt-tracker.md](exec-plans/tech-debt-tracker.md).
 
-**Current status: 0 active items** (all 17 resolved).
+**Current status: 1 active item** — `TD-018` (ICE CONTROLLING per-pair transaction fix, Phase 8 / PR-5). 17 resolved.
 
 ## Plan Lifecycle
 

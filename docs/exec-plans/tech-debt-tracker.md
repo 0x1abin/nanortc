@@ -6,6 +6,7 @@ Track known debt, prioritize by impact, pay down continuously.
 
 | ID | Category | Description | Impact | Priority | Plan to Resolve |
 |----|----------|-------------|--------|----------|-----------------|
+| TD-018 | ICE | CONTROLLING role only keeps a single `last_txid` / `last_{local,remote}_idx` scratch and overwrites it every 50 ms, so any Binding Response that is not for the most recently sent check is rejected with `NANORTC_ERR_PROTOCOL`. Makes `nanortc --offer` against a real browser stall in `ICE_STATE_CHECKING`. Answer mode is unaffected. Found via `examples/browser_interop` T2 during Phase 7 validation. | High (blocks nanortc-as-offerer with real browsers) | Phase 8 / PR-5 | [phase8-continued-optimization.md §PR-5](active/phase8-continued-optimization.md) — per-pair pending transaction table |
 | ~~TD-002~~ | ~~Test~~ | ~~No test framework — manual macros only (333 tests, exceeds 50 threshold)~~ | ~~Medium~~ | ~~Phase 4~~ | ~~Resolved~~ |
 | ~~TD-001~~ | ~~Build~~ | ~~`-Wno-unused-parameter` suppresses useful warnings~~ | ~~Low~~ | ~~Phase 3~~ | ~~Resolved~~ |
 | ~~TD-008~~ | ~~CI~~ | ~~`scripts/ci-check.sh` uses `declare -A` (bash 4+)~~ | ~~Low~~ | ~~Phase 3~~ | ~~Resolved~~ |
