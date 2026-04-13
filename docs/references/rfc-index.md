@@ -1,6 +1,6 @@
 # RFC Reference Index
 
-Authoritative protocol specifications for NanoRTC. RFCs are the ultimate authority — when reference code and RFCs disagree, RFCs win.
+Authoritative protocol specifications for NanoRTC. RFCs are the **sole** authoritative source for protocol stack implementation — third-party implementations must not be consulted for design or wire-format decisions.
 
 ## Core Protocol Stack
 
