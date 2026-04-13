@@ -22,6 +22,9 @@ set(FUZZ_MEDIA_TARGETS fuzz_rtp)
 # Video parsers
 set(FUZZ_VIDEO_TARGETS fuzz_h264 fuzz_bwe)
 
+# H.265 sub-feature parsers
+set(FUZZ_H265_TARGETS fuzz_h265)
+
 # Build core fuzz targets
 foreach(target ${FUZZ_CORE_TARGETS})
     add_executable(${target} ${target}.c)
@@ -65,6 +68,20 @@ endif()
 # Build video fuzz targets
 if(NANORTC_FEATURE_VIDEO)
     foreach(target ${FUZZ_VIDEO_TARGETS})
+        add_executable(${target} ${target}.c)
+        target_link_libraries(${target} PRIVATE nanortc)
+        target_include_directories(${target} PRIVATE
+            ${CMAKE_SOURCE_DIR}/src
+            ${CMAKE_SOURCE_DIR}/crypto
+        )
+        target_compile_options(${target} PRIVATE ${FUZZ_FLAGS})
+        target_link_options(${target} PRIVATE ${FUZZ_FLAGS})
+    endforeach()
+endif()
+
+# Build H.265 fuzz targets (requires NANORTC_FEATURE_H265)
+if(NANORTC_FEATURE_H265)
+    foreach(target ${FUZZ_H265_TARGETS})
         add_executable(${target} ${target}.c)
         target_link_libraries(${target} PRIVATE nanortc)
         target_include_directories(${target} PRIVATE

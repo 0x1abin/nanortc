@@ -19,6 +19,9 @@ set(AUDIO_TESTS test_jitter)
 # Tests that require VIDEO specifically
 set(VIDEO_TESTS test_h264 test_bwe)
 
+# Tests that require the H.265 sub-feature of VIDEO
+set(H265_TESTS test_h265 test_base64)
+
 # Tests that require DataChannel
 set(DC_TESTS test_datachannel)
 
@@ -43,6 +46,12 @@ foreach(test_source ${TEST_SOURCES})
     # Skip VIDEO-only tests when VIDEO is not enabled
     list(FIND VIDEO_TESTS ${test_name} _is_video_test)
     if(_is_video_test GREATER -1 AND NOT NANORTC_FEATURE_VIDEO)
+        continue()
+    endif()
+
+    # Skip H.265 sub-feature tests when H265 is not enabled
+    list(FIND H265_TESTS ${test_name} _is_h265_test)
+    if(_is_h265_test GREATER -1 AND NOT NANORTC_FEATURE_H265)
         continue()
     endif()
 
