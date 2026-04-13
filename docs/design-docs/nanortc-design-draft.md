@@ -472,7 +472,7 @@ CLOSED ──(收到 INIT)──> COOKIE_WAIT
 - 从 SDP 协商映射 payload type
 - 序列号和时间戳管理
 - 音频打包：Opus, G.711（A-law / μ-law）
-- 视频打包（NANORTC_FEATURE_VIDEO）：H.264（FU-A）, VP8
+- 视频打包（NANORTC_FEATURE_VIDEO）：H.264（RFC 6184: Single NAL + FU-A）、H.265/HEVC（RFC 7798: Single NAL + FU）
 
 **RTCP（nano_rtcp.c）：**
 

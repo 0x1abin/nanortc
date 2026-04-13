@@ -27,6 +27,7 @@
 
 #if NANORTC_FEATURE_VIDEO
 #include "nano_h264.h"
+#include "nano_h265.h"
 #include "nano_bwe.h"
 /* Internal video flags for RTP packetization */
 #define NANORTC_VIDEO_FLAG_KEYFRAME 0x01 /* NAL is part of a keyframe (IDR) */
@@ -433,6 +434,46 @@ static nanortc_direction_t direction_complement(nanortc_direction_t remote)
 static void rtc_apply_negotiated_media(nanortc_t *rtc)
 {
 #if NANORTC_HAVE_MEDIA_TRANSPORT
+    /* Reconcile pre-added local tracks with parsed offer m-lines.
+     *
+     * In answerer mode, the user pre-adds tracks before seeing the offer, so
+     * the MIDs that nanortc_add_*_track() returned (based on sdp_mid_count
+     * at add time) may not align with the browser's m-line order.  Example:
+     * the user pre-adds only video (local MID=0), but the browser's offer
+     * lists audio at position 0 and video at position 1.  sdp_parse() resets
+     * the mline table and fills it from the offer, so mlines[1] (video) now
+     * carries MID=1.  If we left the pre-added track's MID at 0 it would
+     * collide with the audio we'll auto-create below, and every downstream
+     * code path that looks up tracks by MID (SSRC init, SDP find_mline,
+     * RTP demux) would either misroute or silently pick the wrong track.
+     *
+     * The invariant we want: each active nano_media.mid is unique and
+     * equals the MID of the SDP m-line that represents it.  Enforce it by
+     * matching pre-added tracks to offer m-lines by KIND (one-to-one, in
+     * order) and relabeling their MID to the matched mline's MID.  The
+     * user's cached value from nanortc_add_*_track() may become stale; the
+     * example (and docs) tell callers to re-query via
+     * nanortc_find_track_mid() after accept_offer(). */
+    {
+        bool claimed[NANORTC_MAX_MEDIA_TRACKS] = {0};
+        for (uint8_t i = 0; i < rtc->sdp.mline_count; i++) {
+            nano_sdp_mline_t *ml = &rtc->sdp.mlines[i];
+            if (!ml->active)
+                continue;
+            nanortc_track_kind_t want_kind =
+                (ml->kind == SDP_MLINE_AUDIO) ? NANORTC_TRACK_AUDIO : NANORTC_TRACK_VIDEO;
+            for (uint8_t k = 0; k < rtc->media_count; k++) {
+                if (claimed[k] || !rtc->media[k].active)
+                    continue;
+                if (rtc->media[k].kind != want_kind)
+                    continue;
+                rtc->media[k].mid = ml->mid; /* restore MID invariant */
+                claimed[k] = true;
+                break;
+            }
+        }
+    }
+
     for (uint8_t i = 0; i < rtc->sdp.mline_count; i++) {
         nano_sdp_mline_t *ml = &rtc->sdp.mlines[i];
         if (!ml->active)
@@ -474,13 +515,32 @@ static void rtc_apply_negotiated_media(nanortc_t *rtc)
         ml->direction = m->direction;
 
         /* Apply negotiated PT.
-         * For video: fmtp parsing already selected the correct H264 PT from
-         * the offer's codec list (matching packetization-mode=1).  Don't
-         * overwrite it with remote_pt, which is just the *first* PT on the
-         * m= line (often VP8, not H264). */
-        if (ml->kind == SDP_MLINE_VIDEO && ml->pt != 0) {
-            m->rtp.payload_type = ml->pt;
-            NANORTC_LOGD("SDP", "video using negotiated H264 PT");
+         *
+         * Video codec selection:
+         *  - If the local track was pre-added with H.265 and the offer
+         *    contains a valid H.265 fmtp entry, use the H.265 PT and mark
+         *    ml->codec as H.265 so sdp_append_video_mline emits the right
+         *    rtpmap/fmtp lines.
+         *  - Otherwise fall back to H.264 (the default behavior preserved
+         *    from the pre-H.265 implementation).
+         */
+        if (ml->kind == SDP_MLINE_VIDEO) {
+            if (m->codec == NANORTC_CODEC_H265 && ml->video_h265_fmtp_pt != 0) {
+                ml->pt = ml->video_h265_fmtp_pt;
+                ml->codec = NANORTC_CODEC_H265;
+                m->rtp.payload_type = ml->pt;
+                NANORTC_LOGD("SDP", "video using negotiated H265 PT");
+            } else if (ml->pt != 0) {
+                m->rtp.payload_type = ml->pt;
+                if (ml->codec == NANORTC_CODEC_NONE) {
+                    ml->codec = NANORTC_CODEC_H264;
+                }
+                NANORTC_LOGD("SDP", "video using negotiated H264 PT");
+            } else if (ml->remote_pt != 0) {
+                m->rtp.payload_type = ml->remote_pt;
+                ml->pt = ml->remote_pt;
+                NANORTC_LOGD("SDP", "media using remote PT");
+            }
         } else if (ml->remote_pt != 0) {
             m->rtp.payload_type = ml->remote_pt;
             ml->pt = ml->remote_pt;
@@ -1455,12 +1515,25 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
 #endif
         } else {
 #if NANORTC_FEATURE_VIDEO
-            /* H.264 depacketization */
+            /* Video depacketization — codec-specific */
             uint8_t rtp_marker = (pkt[1] >> 7) & 1;
             const uint8_t *nalu_out = NULL;
             size_t nalu_len = 0;
-            int drc = h264_depkt_push(&m->track.video.h264_depkt, payload, payload_len, rtp_marker,
-                                      &nalu_out, &nalu_len);
+            int drc;
+            bool is_keyframe = false;
+            if (m->codec == NANORTC_CODEC_H265) {
+                drc = h265_depkt_push(&m->track.video.u.h265_depkt, payload, payload_len,
+                                      rtp_marker, &nalu_out, &nalu_len);
+                if (drc == NANORTC_OK && nalu_out && nalu_len > 0) {
+                    is_keyframe = h265_is_keyframe(nalu_out, nalu_len) ? true : false;
+                }
+            } else {
+                drc = h264_depkt_push(&m->track.video.u.h264_depkt, payload, payload_len,
+                                      rtp_marker, &nalu_out, &nalu_len);
+                if (drc == NANORTC_OK && nalu_out && nalu_len > 0) {
+                    is_keyframe = h264_is_keyframe(nalu_out, nalu_len) ? true : false;
+                }
+            }
             if (drc == NANORTC_OK && nalu_out && nalu_len > 0) {
                 nanortc_event_t vevt;
                 memset(&vevt, 0, sizeof(vevt));
@@ -1470,7 +1543,7 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
                 vevt.media_data.data = nalu_out;
                 vevt.media_data.len = nalu_len;
                 vevt.media_data.timestamp = rtp_ts;
-                vevt.media_data.is_keyframe = h264_is_keyframe(nalu_out, nalu_len) ? true : false;
+                vevt.media_data.is_keyframe = is_keyframe;
                 vevt.media_data.contiguous = true;
                 rtc_emit_event_full(rtc, &vevt);
             }
@@ -2248,7 +2321,14 @@ static int nanortc_add_track(nanortc_t *rtc, nanortc_track_kind_t kind,
             pt = 111; /* Opus dynamic PT */
         sdp_kind = SDP_MLINE_AUDIO;
     } else {
-        pt = NANORTC_VIDEO_DEFAULT_PT;
+        if (codec == NANORTC_CODEC_H264) {
+            pt = NANORTC_VIDEO_H264_DEFAULT_PT;
+        } else if (codec == NANORTC_CODEC_H265) {
+            pt = NANORTC_VIDEO_H265_DEFAULT_PT;
+        } else {
+            /* VP8 enum exists but is not implemented (no packetizer). */
+            return NANORTC_ERR_NOT_IMPLEMENTED;
+        }
         sdp_kind = SDP_MLINE_VIDEO;
     }
 
@@ -2287,6 +2367,25 @@ int nanortc_add_audio_track(nanortc_t *rtc, nanortc_direction_t direction, nanor
 int nanortc_add_video_track(nanortc_t *rtc, nanortc_direction_t direction, nanortc_codec_t codec)
 {
     return nanortc_add_track(rtc, NANORTC_TRACK_VIDEO, direction, codec, 90000, 0);
+}
+
+int nanortc_find_track_mid(const nanortc_t *rtc, nanortc_track_kind_t kind, uint8_t nth)
+{
+    if (!rtc) {
+        return NANORTC_ERR_INVALID_PARAM;
+    }
+    uint8_t seen = 0;
+    for (uint8_t i = 0; i < rtc->media_count; i++) {
+        const nanortc_track_t *m = &rtc->media[i];
+        if (!m->active || m->kind != kind) {
+            continue;
+        }
+        if (seen == nth) {
+            return (int)m->mid;
+        }
+        seen++;
+    }
+    return NANORTC_ERR_INVALID_PARAM;
 }
 
 /* Send audio: RTP pack → SRTP protect → enqueue */
@@ -2373,7 +2472,12 @@ static int rtc_send_video(nanortc_t *rtc, nanortc_track_t *m, uint32_t timestamp
     ctx.last_rc = NANORTC_OK;
     ctx.is_last_nal = (flags & NANORTC_VIDEO_FLAG_MARKER) ? 1 : 0;
 
-    int rc = h264_packetize(data, len, NANORTC_VIDEO_MTU, video_send_fragment_cb, &ctx);
+    int rc;
+    if (m->codec == NANORTC_CODEC_H265) {
+        rc = h265_packetize(data, len, NANORTC_VIDEO_MTU, video_send_fragment_cb, &ctx);
+    } else {
+        rc = h264_packetize(data, len, NANORTC_VIDEO_MTU, video_send_fragment_cb, &ctx);
+    }
     if (rc != NANORTC_OK)
         return rc;
     return ctx.last_rc;
@@ -2461,8 +2565,16 @@ int nanortc_send_video(nanortc_t *rtc, uint8_t mid, uint32_t pts_ms, const void 
         }
 
         int flags = 0;
-        if ((nal[0] & 0x1F) == 5) {
-            flags |= NANORTC_VIDEO_FLAG_KEYFRAME;
+        if (m->codec == NANORTC_CODEC_H265) {
+            /* RFC 7798 §1.1.4: IRAP set = types 16..21 (BLA/IDR/CRA). */
+            uint8_t h265_type = (uint8_t)((nal[0] >> 1) & 0x3F);
+            if (h265_type >= H265_NAL_BLA_W_LP && h265_type <= H265_NAL_CRA_NUT) {
+                flags |= NANORTC_VIDEO_FLAG_KEYFRAME;
+            }
+        } else {
+            if ((nal[0] & 0x1F) == 5) {
+                flags |= NANORTC_VIDEO_FLAG_KEYFRAME;
+            }
         }
 
         size_t peek_off = offset;

@@ -54,8 +54,16 @@ typedef struct nano_sdp_mline {
     nanortc_direction_t remote_direction; /**< Parsed remote direction. */
     bool active;                          /**< True if this m-line slot is in use. */
 
-    /* H264 cross-validation */
+    /* Video codec cross-validation (filled by parse_rtpmap) */
     uint8_t video_h264_rtpmap_pt; /**< PT confirmed via a=rtpmap H264 (0=not yet). */
+    uint8_t video_h265_rtpmap_pt; /**< PT confirmed via a=rtpmap H265 (0=not yet). */
+
+    /* Video H.265 fmtp-selected PT (filled by fmtp parser).  A remote offer
+     * may advertise both H.264 and H.265; ml->pt always holds the H.264 PT
+     * for backward compatibility, while this field records the H.265 PT so
+     * rtc_apply_negotiated_media can promote it when the pre-added track's
+     * codec is H.265. */
+    uint8_t video_h265_fmtp_pt;
 } nano_sdp_mline_t;
 #endif
 

@@ -46,10 +46,10 @@ Dependencies flow strictly downward. No cycles allowed.
                                                │
                                     ┌──────────┼──────────┐
                                     ▼          ▼          ▼
-                              ┌──────────┐ ┌────────┐ ┌────────┐ ┌──────────┐
-                              │nano_rtcp │ │ jitter │ │  bwe   │ │nano_h264 │
-                              └──────────┘ └────────┘ └────────┘ └──────────┘
-                                            ↑ AUDIO    ↑ VIDEO    ↑ VIDEO
+                              ┌──────────┐ ┌────────┐ ┌────────┐ ┌──────────────────────┐
+                              │nano_rtcp │ │ jitter │ │  bwe   │ │nano_h264  nano_h265 │
+                              └──────────┘ └────────┘ └────────┘ └──────────────────────┘
+                                            ↑ AUDIO    ↑ VIDEO    ↑ VIDEO codecs
 
   TURN relay (optional, controlled by NANORTC_FEATURE_TURN):
   ┌──────────┐

@@ -20,7 +20,7 @@ set(FUZZ_DC_TARGETS fuzz_sctp)
 set(FUZZ_MEDIA_TARGETS fuzz_rtp)
 
 # Video parsers
-set(FUZZ_VIDEO_TARGETS fuzz_h264 fuzz_bwe)
+set(FUZZ_VIDEO_TARGETS fuzz_h264 fuzz_h265 fuzz_bwe)
 
 # Build core fuzz targets
 foreach(target ${FUZZ_CORE_TARGETS})

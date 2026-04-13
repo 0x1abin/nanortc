@@ -29,7 +29,8 @@ Authoritative protocol specifications for NanoRTC. RFCs are the **sole** authori
 | DTLS-SRTP | [RFC 5764](https://www.rfc-editor.org/rfc/rfc5764) | DTLS Extension to Establish Keys for SRTP | §4 (key material export) | Phase 2 Week 1 |
 | RTCP FB | [RFC 4585](https://www.rfc-editor.org/rfc/rfc4585) | Extended RTP Profile for RTCP-Based Feedback | §6.2.1 (NACK), §6.3.1 (PLI) | Phase 2 Week 2 |
 | Opus RTP | [RFC 7587](https://www.rfc-editor.org/rfc/rfc7587) | RTP Payload Format for Opus | Entire document | Phase 2 Week 1 |
-| H.264 RTP | [RFC 6184](https://www.rfc-editor.org/rfc/rfc6184) | RTP Payload Format for H.264 Video | §5.8 (FU-A fragmentation) | Phase 3 Week 1 |
+| H.264 RTP | [RFC 6184](https://www.rfc-editor.org/rfc/rfc6184) | RTP Payload Format for H.264 Video | §5.6 (Single NAL), §5.7 (STAP-A), §5.8 (FU-A fragmentation), §8.1 (SDP fmtp) | Phase 3 Week 1 |
+| H.265 RTP | [RFC 7798](https://www.rfc-editor.org/rfc/rfc7798) | RTP Payload Format for HEVC | §1.1.4 (NAL header layout), §4.4.1 (Single NAL), §4.4.2 (AP), §4.4.3 (FU), §7.1 (SDP fmtp) | Phase 3 Week 1 |
 | VP8 RTP | [RFC 7741](https://www.rfc-editor.org/rfc/rfc7741) | RTP Payload Format for VP8 Video | §4 (payload format) | Phase 3 Week 1 (optional) |
 
 ## Security

@@ -414,6 +414,7 @@ typedef enum {
     NANORTC_CODEC_PCMU,     /**< G.711 mu-law (RFC 3551). */
     NANORTC_CODEC_H264,     /**< H.264 video (RFC 6184). */
     NANORTC_CODEC_VP8,      /**< VP8 video (RFC 7741). */
+    NANORTC_CODEC_H265,     /**< H.265/HEVC video (RFC 7798). */
 } nanortc_codec_t;
 
 /* ----------------------------------------------------------------
@@ -842,6 +843,23 @@ NANORTC_API int nanortc_add_audio_track(nanortc_t *rtc, nanortc_direction_t dire
  */
 NANORTC_API int nanortc_add_video_track(nanortc_t *rtc, nanortc_direction_t direction,
                                         nanortc_codec_t codec);
+
+/**
+ * @brief Look up the current MID of the nth active track of a given kind.
+ *
+ * The MID a pre-added track carries may change across nanortc_accept_offer():
+ * in answerer mode, the offer drives the m-line order, so pre-added tracks
+ * are relabeled to match the offer's corresponding m-line.  Callers that
+ * cached a MID from nanortc_add_audio_track() / nanortc_add_video_track()
+ * should refresh it with this function after nanortc_accept_offer() returns.
+ *
+ * @param rtc   Initialized RTC state.
+ * @param kind  NANORTC_TRACK_AUDIO or NANORTC_TRACK_VIDEO.
+ * @param nth   0-based index among active tracks of that kind.
+ * @return MID (>= 0) on success, negative if no such track.
+ */
+NANORTC_API int nanortc_find_track_mid(const nanortc_t *rtc, nanortc_track_kind_t kind,
+                                       uint8_t nth);
 
 /**
  * @brief Change direction of an existing media track.

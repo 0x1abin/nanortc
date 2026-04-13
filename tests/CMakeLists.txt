@@ -17,7 +17,7 @@ set(MEDIA_TESTS test_rtp test_srtp test_rtcp test_media)
 set(AUDIO_TESTS test_jitter)
 
 # Tests that require VIDEO specifically
-set(VIDEO_TESTS test_h264 test_bwe)
+set(VIDEO_TESTS test_h264 test_h265 test_bwe)
 
 # Tests that require DataChannel
 set(DC_TESTS test_datachannel)
@@ -64,5 +64,11 @@ foreach(test_source ${TEST_SOURCES})
         ${CMAKE_SOURCE_DIR}/src
         ${CMAKE_SOURCE_DIR}/crypto
     )
+    # test_h265 needs a resolvable path to examples/sample_data/h265SampleFrames
+    if(${test_name} STREQUAL "test_h265")
+        target_compile_definitions(${test_name} PRIVATE
+            H265_SAMPLE_DIR="${CMAKE_SOURCE_DIR}/examples/sample_data/h265SampleFrames"
+        )
+    endif()
     add_test(NAME ${test_name} COMMAND ${test_name})
 endforeach()

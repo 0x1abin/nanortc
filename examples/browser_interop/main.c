@@ -104,7 +104,8 @@ static void usage(const char *prog)
     fprintf(stderr, "  -b IP          Bind/candidate IP (default: auto-detect)\n");
     fprintf(stderr, "  -s HOST:PORT   Signaling server (default: localhost:8765)\n");
     fprintf(stderr, "  -a DIR         Opus frame directory for audio send\n");
-    fprintf(stderr, "  -v DIR         H.264 frame directory for video send\n");
+    fprintf(stderr, "  -v DIR         Video frame directory (H.264 .h264 or H.265 .h265)\n");
+    fprintf(stderr, "  --video-codec CODEC    Video codec: h264 (default) or h265\n");
     fprintf(stderr, "  --turn-server IP:PORT  TURN relay server\n");
     fprintf(stderr, "  --turn-user USER       TURN username\n");
     fprintf(stderr, "  --turn-pass PASS       TURN password/credential\n");
@@ -242,6 +243,7 @@ int main(int argc, char *argv[])
     int offer_mode = 0;
     const char *audio_dir = NULL;
     const char *video_dir = NULL;
+    const char *video_codec_str = "h264";
     char turn_ip[64] = "";
     uint16_t turn_port = 3478;
     const char *turn_user = NULL;
@@ -262,6 +264,8 @@ int main(int argc, char *argv[])
             audio_dir = argv[++i];
         } else if (strcmp(argv[i], "-v") == 0 && i + 1 < argc) {
             video_dir = argv[++i];
+        } else if (strcmp(argv[i], "--video-codec") == 0 && i + 1 < argc) {
+            video_codec_str = argv[++i];
         } else if (strcmp(argv[i], "--turn-server") == 0 && i + 1 < argc) {
             nano_parse_host_port(argv[++i], turn_ip, sizeof(turn_ip), &turn_port);
         } else if (strcmp(argv[i], "--turn-user") == 0 && i + 1 < argc) {
@@ -287,6 +291,19 @@ int main(int argc, char *argv[])
         turn_user = "peerjs";
     if (!turn_pass)
         turn_pass = "peerjsp";
+
+    /* Resolve --video-codec to enum + media source type */
+    nanortc_codec_t video_codec = NANORTC_CODEC_H264;
+    nanortc_track_type_t video_media_type = NANORTC_MEDIA_H264;
+    const char *video_codec_name = "H.264";
+    if (strcmp(video_codec_str, "h265") == 0) {
+        video_codec = NANORTC_CODEC_H265;
+        video_media_type = NANORTC_MEDIA_H265;
+        video_codec_name = "H.265";
+    } else if (strcmp(video_codec_str, "h264") != 0) {
+        fprintf(stderr, "Unknown --video-codec '%s' (expected h264 or h265)\n", video_codec_str);
+        return 1;
+    }
 
     app_ctx_t app_ctx = {.offer_mode = offer_mode, .audio_mid = -1, .video_mid = -1};
     signal(SIGINT, on_signal);
@@ -359,7 +376,7 @@ int main(int argc, char *argv[])
 
 #if NANORTC_FEATURE_VIDEO
     if (video_dir) {
-        app_ctx.video_mid = nanortc_add_video_track(&rtc, NANORTC_DIR_SENDONLY, NANORTC_CODEC_H264);
+        app_ctx.video_mid = nanortc_add_video_track(&rtc, NANORTC_DIR_SENDONLY, video_codec);
         if (app_ctx.video_mid < 0)
             fprintf(stderr, "nanortc_add_video_track failed: %d\n", app_ctx.video_mid);
     }
@@ -416,9 +433,9 @@ int main(int argc, char *argv[])
     int has_video_src = 0;
 #if NANORTC_FEATURE_VIDEO
     if (video_dir) {
-        if (nano_media_source_init(&video_src, NANORTC_MEDIA_H264, video_dir) == 0) {
+        if (nano_media_source_init(&video_src, video_media_type, video_dir) == 0) {
             has_video_src = 1;
-            fprintf(stderr, "Video source: %s (H.264, 25fps)\n", video_dir);
+            fprintf(stderr, "Video source: %s (%s, 25fps)\n", video_dir, video_codec_name);
         } else {
             fprintf(stderr, "Warning: failed to init video source from %s\n", video_dir);
         }
@@ -449,6 +466,23 @@ int main(int argc, char *argv[])
     }
     if (rc != 0) {
         goto cleanup;
+    }
+
+    /* Refresh cached track MIDs.  In answerer mode, the browser's offer
+     * drives the m-line order, so a pre-added track may have been
+     * relabeled to the corresponding offer m-line's MID.  Re-query to
+     * avoid sending on a stale MID. */
+    if (app_ctx.audio_mid >= 0) {
+        int fresh = nanortc_find_track_mid(&rtc, NANORTC_TRACK_AUDIO, 0);
+        if (fresh >= 0) {
+            app_ctx.audio_mid = fresh;
+        }
+    }
+    if (app_ctx.video_mid >= 0) {
+        int fresh = nanortc_find_track_mid(&rtc, NANORTC_TRACK_VIDEO, 0);
+        if (fresh >= 0) {
+            app_ctx.video_mid = fresh;
+        }
     }
 
     /* 6. Event loop with trickle ICE polling + media send */

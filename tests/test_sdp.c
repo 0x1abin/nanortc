@@ -667,6 +667,116 @@ TEST(test_sdp_video_roundtrip)
     ASSERT_EQ(sdp2.mlines[0].remote_pt, 96);
 }
 
+/* ================================================================
+ * H.265 / HEVC negotiation (RFC 7798 §7.1)
+ * ================================================================ */
+
+TEST(test_sdp_generate_video_h265)
+{
+    /* Generator emits "H265/90000" rtpmap and profile-id=1 fmtp when
+     * ml->codec is NANORTC_CODEC_H265. */
+    nano_sdp_t sdp;
+    sdp_init(&sdp);
+    memcpy(sdp.local_ufrag, "hvufrag1", 8);
+    memcpy(sdp.local_pwd, "hvpassword12345678", 18);
+    sdp.local_setup = NANORTC_SDP_SETUP_PASSIVE;
+
+    int vmid =
+        sdp_add_mline(&sdp, SDP_MLINE_VIDEO, NANORTC_CODEC_H265, 97, 0, 0, NANORTC_DIR_SENDONLY);
+    ASSERT(vmid >= 0);
+
+    char buf[4096];
+    size_t out_len = 0;
+    ASSERT_OK(sdp_generate_answer(&sdp, buf, sizeof(buf), &out_len));
+    ASSERT_TRUE(out_len > 0);
+
+    ASSERT_TRUE(strstr(buf, "m=video 9 UDP/TLS/RTP/SAVPF 97") != NULL);
+    ASSERT_TRUE(strstr(buf, "a=rtpmap:97 H265/90000") != NULL);
+    ASSERT_TRUE(strstr(buf, "profile-id=1") != NULL);
+    ASSERT_TRUE(strstr(buf, "tier-flag=0") != NULL);
+    ASSERT_TRUE(strstr(buf, "level-id=93") != NULL);
+    ASSERT_TRUE(strstr(buf, "tx-mode=SRST") != NULL);
+    ASSERT_TRUE(strstr(buf, "a=rtcp-fb:97 nack pli") != NULL);
+    /* Must NOT contain H.264-specific fmtp attributes. */
+    ASSERT_TRUE(strstr(buf, "H264/90000") == NULL);
+    ASSERT_TRUE(strstr(buf, "profile-level-id=42e01f") == NULL);
+}
+
+TEST(test_sdp_parse_h265_rtpmap_and_fmtp)
+{
+    /* Parser records H.265 rtpmap and fmtp PTs without clobbering H.264. */
+    const char *offer =
+        "v=0\r\n"
+        "o=- 1 2 IN IP4 0.0.0.0\r\n"
+        "s=-\r\n"
+        "t=0 0\r\n"
+        "a=ice-ufrag:h265test\r\n"
+        "a=ice-pwd:h265password12345678\r\n"
+        "a=fingerprint:sha-256 AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:"
+        "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99\r\n"
+        "a=setup:actpass\r\n"
+        "m=video 9 UDP/TLS/RTP/SAVPF 96 97\r\n"
+        "c=IN IP4 0.0.0.0\r\n"
+        "a=mid:0\r\n"
+        "a=sendrecv\r\n"
+        "a=rtcp-mux\r\n"
+        "a=rtpmap:96 H264/90000\r\n"
+        "a=fmtp:96 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f\r\n"
+        "a=rtcp-fb:96 nack pli\r\n"
+        "a=rtpmap:97 H265/90000\r\n"
+        "a=fmtp:97 profile-id=1;tier-flag=0;level-id=93;tx-mode=SRST\r\n"
+        "a=rtcp-fb:97 nack pli\r\n";
+
+    nano_sdp_t sdp;
+    sdp_init(&sdp);
+    ASSERT_OK(sdp_parse(&sdp, offer, strlen(offer)));
+    ASSERT_TRUE(sdp.mline_count >= 1);
+
+    nano_sdp_mline_t *ml = &sdp.mlines[0];
+    ASSERT_EQ(ml->kind, SDP_MLINE_VIDEO);
+    ASSERT_EQ(ml->video_h264_rtpmap_pt, 96);
+    ASSERT_EQ(ml->video_h265_rtpmap_pt, 97);
+    ASSERT_EQ(ml->video_h265_fmtp_pt, 97);
+    /* Default PT selection prefers H.264 for backward compatibility. */
+    ASSERT_EQ(ml->pt, 96);
+}
+
+TEST(test_sdp_parse_h265_only_offer)
+{
+    /* Offer advertising only H.265 — parser records H.265 rtpmap+fmtp.
+     * ml->pt remains 0 (H.264 path did not trigger); rtc_apply_negotiated_media
+     * will promote it based on the local track's codec. */
+    const char *offer = "v=0\r\n"
+                        "o=- 1 2 IN IP4 0.0.0.0\r\n"
+                        "s=-\r\n"
+                        "t=0 0\r\n"
+                        "a=ice-ufrag:h265only\r\n"
+                        "a=ice-pwd:h265onlypassword123456\r\n"
+                        "a=fingerprint:sha-256 AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:"
+                        "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99\r\n"
+                        "a=setup:actpass\r\n"
+                        "m=video 9 UDP/TLS/RTP/SAVPF 98\r\n"
+                        "c=IN IP4 0.0.0.0\r\n"
+                        "a=mid:0\r\n"
+                        "a=sendrecv\r\n"
+                        "a=rtcp-mux\r\n"
+                        "a=rtpmap:98 H265/90000\r\n"
+                        "a=fmtp:98 profile-id=1;tier-flag=0;level-id=120;tx-mode=SRST\r\n";
+
+    nano_sdp_t sdp;
+    sdp_init(&sdp);
+    ASSERT_OK(sdp_parse(&sdp, offer, strlen(offer)));
+    ASSERT_TRUE(sdp.mline_count >= 1);
+
+    nano_sdp_mline_t *ml = &sdp.mlines[0];
+    ASSERT_EQ(ml->video_h264_rtpmap_pt, 0);
+    ASSERT_EQ(ml->video_h265_rtpmap_pt, 98);
+    ASSERT_EQ(ml->video_h265_fmtp_pt, 98);
+    /* H.264 was not advertised, so ml->pt remains 0 until
+     * rtc_apply_negotiated_media promotes the H.265 PT. */
+    ASSERT_EQ(ml->pt, 0);
+}
+
 #endif /* NANORTC_HAVE_MEDIA_TRANSPORT */
 
 /* ================================================================
@@ -865,7 +975,8 @@ TEST(test_sdp_parse_media_directions)
     nano_sdp_t sdp;
     sdp_init(&sdp);
     size_t len = 0;
-    while (sdp_sendonly[len]) len++;
+    while (sdp_sendonly[len])
+        len++;
     ASSERT_OK(sdp_parse(&sdp, sdp_sendonly, len));
     ASSERT_EQ(sdp.mlines[0].remote_direction, NANORTC_DIR_SENDONLY);
 
@@ -890,7 +1001,8 @@ TEST(test_sdp_parse_media_directions)
     nano_sdp_t sdp2;
     sdp_init(&sdp2);
     len = 0;
-    while (sdp_recvonly[len]) len++;
+    while (sdp_recvonly[len])
+        len++;
     ASSERT_OK(sdp_parse(&sdp2, sdp_recvonly, len));
     ASSERT_EQ(sdp2.mlines[0].remote_direction, NANORTC_DIR_RECVONLY);
 
@@ -915,7 +1027,8 @@ TEST(test_sdp_parse_media_directions)
     nano_sdp_t sdp3;
     sdp_init(&sdp3);
     len = 0;
-    while (sdp_inactive[len]) len++;
+    while (sdp_inactive[len])
+        len++;
     ASSERT_OK(sdp_parse(&sdp3, sdp_inactive, len));
     ASSERT_EQ(sdp3.mlines[0].remote_direction, NANORTC_DIR_INACTIVE);
 }
@@ -1004,6 +1117,9 @@ RUN(test_sdp_parse_video_offer);
 RUN(test_sdp_parse_full_media_offer);
 RUN(test_sdp_generate_video_answer);
 RUN(test_sdp_video_roundtrip);
+RUN(test_sdp_generate_video_h265);
+RUN(test_sdp_parse_h265_rtpmap_and_fmtp);
+RUN(test_sdp_parse_h265_only_offer);
 RUN(test_sdp_parse_media_directions);
 #endif
 #if NANORTC_FEATURE_IPV6

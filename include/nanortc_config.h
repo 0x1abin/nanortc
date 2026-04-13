@@ -569,6 +569,16 @@
 #define NANORTC_VIDEO_DEFAULT_PT 96
 #endif
 
+/** @brief Default dynamic Payload Type for H.264. Alias for backward compat. */
+#ifndef NANORTC_VIDEO_H264_DEFAULT_PT
+#define NANORTC_VIDEO_H264_DEFAULT_PT NANORTC_VIDEO_DEFAULT_PT
+#endif
+
+/** @brief Default dynamic Payload Type for H.265 (RFC 7798). */
+#ifndef NANORTC_VIDEO_H265_DEFAULT_PT
+#define NANORTC_VIDEO_H265_DEFAULT_PT 97
+#endif
+
 /* ----------------------------------------------------------------
  * Jitter buffer slots (AUDIO feature only)
  * ---------------------------------------------------------------- */

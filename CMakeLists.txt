@@ -41,7 +41,7 @@ if(DEFINED ENV{IDF_PATH})
         list(APPEND NANORTC_CORE_SRCS src/nano_jitter.c)
     endif()
     if(CONFIG_NANORTC_FEATURE_VIDEO)
-        list(APPEND NANORTC_CORE_SRCS src/nano_bwe.c src/nano_h264.c)
+        list(APPEND NANORTC_CORE_SRCS src/nano_bwe.c src/nano_h264.c src/nano_h265.c)
     endif()
 
     idf_component_register(
@@ -125,6 +125,7 @@ if(NANORTC_FEATURE_VIDEO)
     list(APPEND NANORTC_SOURCES
         src/nano_bwe.c
         src/nano_h264.c
+        src/nano_h265.c
     )
 endif()
 

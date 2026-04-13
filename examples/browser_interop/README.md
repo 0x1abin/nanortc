@@ -216,16 +216,56 @@ Navigate to `http://localhost:8765/`
 # Browser: select "Answerer", click Connect → should see H.264 video
 ```
 
+### Step 3g: Test H.265 (HEVC) video sending
+
+```bash
+# Terminal: nanortc as answerer with H.265 sample frames
+./build/examples/browser_interop/browser_interop --answer -p 9999 \
+    --video-codec h265 \
+    -v examples/sample_data/h265SampleFrames
+
+# Browser: Safari on macOS recommended (see compatibility matrix below)
+```
+
+H.265 support uses RFC 7798 packetization (Single NAL + FU fragmentation).
+Default local payload type is 97, but in answerer mode the negotiated PT
+comes from the browser's offer (Chrome typically advertises H.265 at PT 49
+or 51).  The answer emits `a=rtpmap:<PT> H265/90000` and
+`a=fmtp:<PT> profile-id=1;tier-flag=0;level-id=93;tx-mode=SRST` (Main profile
+Level 3.1 per RFC 7798 §7.1).
+
+> **Note on MIDs and pre-added tracks.**  In answerer mode the browser's
+> offer drives the SDP m-line order, so a pre-added track may be relabeled
+> to the offer's corresponding m-line MID.  `main.c` calls
+> `nanortc_find_track_mid()` after `nanortc_accept_offer()` to refresh the
+> cached handle before entering the send loop.  Code that caches the MID
+> returned from `nanortc_add_video_track()` should follow the same pattern.
+
+**Browser compatibility matrix**:
+
+| Browser | Platform | H.265 WebRTC receive |
+|---|---|---|
+| Safari 11+ | macOS / iOS | ✅ Native support (hardware decoder) |
+| Chrome 107+ | macOS (Apple Silicon) | ✅ Hardware decoder auto-enabled |
+| Chrome 116+ | Windows | ⚠️ Experimental, requires platform decoder |
+| Chrome | Linux | ❌ No platform H.265 decoder |
+| Firefox | Any | ❌ WebRTC H.265 not supported |
+
+For end-to-end verification, **Safari on macOS is the recommended target**.
+On Chrome macOS, check `chrome://webrtc-internals` for `codecId = H265`
+and a nonzero `framesDecoded` counter.
+
 ### CLI Options
 
 ```
-  -p PORT        UDP port (default: 9999)
-  -b IP          Bind/candidate IP (default: auto-detect)
-  -s HOST:PORT   Signaling server (default: localhost:8765)
-  -a DIR         Opus frame directory for audio send
-  -v DIR         H.264 frame directory for video send
-  --offer        Act as offerer (CONTROLLING)
-  --answer       Act as answerer (CONTROLLED, default)
+  -p PORT              UDP port (default: 9999)
+  -b IP                Bind/candidate IP (default: auto-detect)
+  -s HOST:PORT         Signaling server (default: localhost:8765)
+  -a DIR               Opus frame directory for audio send
+  -v DIR               Video frame directory (H.264 .h264 or H.265 .h265)
+  --video-codec CODEC  Video codec: h264 (default) or h265
+  --offer              Act as offerer (CONTROLLING)
+  --answer             Act as answerer (CONTROLLED, default)
 ```
 
 ## Expected Output
