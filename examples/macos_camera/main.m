@@ -19,6 +19,7 @@
 
 #include "nanortc.h"
 #include "nanortc_crypto.h"
+#include "cli_helpers.h"
 #include "http_signaling.h"
 #include "multi_session.h"
 #include "av_capture.h"
@@ -399,22 +400,7 @@ int main(int argc, char *argv[])
                 memcpy(bind_ip, argv[i], len);
                 bind_ip[len] = '\0';
             } else if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) {
-                i++;
-                char *colon = strrchr(argv[i], ':');
-                if (colon) {
-                    size_t hlen = (size_t)(colon - argv[i]);
-                    if (hlen >= sizeof(sig_host))
-                        hlen = sizeof(sig_host) - 1;
-                    memcpy(sig_host, argv[i], hlen);
-                    sig_host[hlen] = '\0';
-                    sig_port = (uint16_t)atoi(colon + 1);
-                } else {
-                    size_t hlen = strlen(argv[i]);
-                    if (hlen >= sizeof(sig_host))
-                        hlen = sizeof(sig_host) - 1;
-                    memcpy(sig_host, argv[i], hlen);
-                    sig_host[hlen] = '\0';
-                }
+                nano_parse_host_port(argv[++i], sig_host, sizeof(sig_host), &sig_port);
             } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
                 usage(argv[0]);
                 return 0;
