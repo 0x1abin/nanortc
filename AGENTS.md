@@ -103,21 +103,13 @@ These rules are mechanically enforced. Violations will break the build or CI.
 
 **No global state:** All state in `nanortc_t`. Multiple instances must coexist.
 
-**RFC authority:** When RFC and reference code disagree, RFC wins. Cite RFC sections in comments.
+**RFC authority:** RFC documents are the **sole authoritative source** for protocol stack implementation. Do not consult third-party implementations (e.g., str0m, libdatachannel, kvs-webrtc) when designing wire formats, state machines, or protocol behavior. Every non-obvious design decision must cite a specific RFC section in a comment.
 
-**RFC testing:** Any RFC-based module MUST have tests generated independently from the RFC document — hardcoded byte-level test vectors from RFC appendices (e.g., RFC 5769 for STUN) plus real captures from reference implementations. Roundtrip tests (encode → parse own output) are supplementary only. See [development-workflow.md](docs/engineering/development-workflow.md) for full requirements.
+**RFC testing:** Any RFC-based module MUST have tests generated independently from the RFC document — hardcoded byte-level test vectors from RFC appendices (e.g., RFC 5769 for STUN) plus real captures from browser/wireshark pcaps. Roundtrip tests (encode → parse own output) are supplementary only. See [development-workflow.md](docs/engineering/development-workflow.md) for full requirements.
 
 **Safe C functions:** No `strlen`, `sprintf`, `snprintf`, `strcpy`, `strncpy`, `strcat`, `strncat`, `sscanf`, `atoi`, `atol`, `gets` in `src/` or `crypto/`. Use explicit `(buffer, length)` pairs and `memcpy`. API boundary functions (`nano_*`) may use `strlen` once per parameter with `/* NANORTC_SAFE: API boundary */` annotation. See `docs/engineering/safe-c-guidelines.md`.
 
 **Named array sizes:** Every struct array member must use a named macro for its size, never a bare integer literal. Configurable buffer sizes use `NANORTC_*` macros in `nanortc_config.h` with `#ifndef` guards. Protocol-fixed sizes (RFC-mandated) use `MODULE_*_SIZE` macros in the relevant module header. Boundary checks in `.c` files must reference the same macro.
-
-## Reference Implementations
-
-- `.local-reference/str0m/` — Rust Sans I/O WebRTC (architecture reference for poll/handle pattern)
-- `.local-reference/libdatachannel/` — C/C++ WebRTC network library featuring Data Channels, Media Transport, and WebSockets
-- `.local-reference/amazon-kinesis-video-streams-webrtc-sdk-c/` — beta-reference-esp-port
-
-Consult str0m for Sans I/O patterns.
 
 ## Approach
 - Think before acting. Read existing files before writing code.
