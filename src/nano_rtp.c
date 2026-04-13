@@ -63,22 +63,28 @@ int rtp_unpack(const uint8_t *data, size_t len, uint8_t *pt, uint16_t *seq, uint
         return NANORTC_ERR_PARSE;
     }
 
-    /* CSRC count extends the header */
+    /* CSRC count extends the header. cc ∈ [0..15] so cc*4 ∈ [0..60]
+     * which cannot overflow size_t on any supported platform. */
     uint8_t cc = data[0] & 0x0F;
     size_t header_len = RTP_HEADER_SIZE + (size_t)cc * 4;
-
-    /* Extension header (X bit) */
-    if (data[0] & 0x10) {
-        if (len < header_len + 4) {
-            return NANORTC_ERR_PARSE;
-        }
-        /* Extension length in 32-bit words (RFC 3550 section 5.3.1) */
-        uint16_t ext_len = nanortc_read_u16be(data + header_len + 2);
-        header_len += 4 + (size_t)ext_len * 4;
+    if (header_len > len) {
+        return NANORTC_ERR_PARSE;
     }
 
-    if (len < header_len) {
-        return NANORTC_ERR_PARSE;
+    /* Extension header (X bit, RFC 3550 section 5.3.1) */
+    if (data[0] & 0x10) {
+        if (len - header_len < 4) {
+            return NANORTC_ERR_PARSE;
+        }
+        uint16_t ext_len = nanortc_read_u16be(data + header_len + 2);
+        /* Guard: 4 + ext_len*4 must fit in the remaining buffer.
+         * ext_len ≤ 0xFFFF so ext_bytes ≤ 0x3FFFC (≈ 256 KiB) which
+         * stays inside a 32-bit size_t; the real check is against len. */
+        size_t ext_bytes = 4u + (size_t)ext_len * 4u;
+        if (ext_bytes > len - header_len) {
+            return NANORTC_ERR_PARSE;
+        }
+        header_len += ext_bytes;
     }
 
     if (pt) {

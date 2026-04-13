@@ -315,6 +315,13 @@
 #define NANORTC_ICE_CHECK_INTERVAL_MS 50
 #endif
 
+/** @brief Recommended minimum poll interval for nanortc_handle_input() (ms).
+ *  Callers should tick the state machine at least this often so DTLS
+ *  handshake retransmits, ICE checks, and SCTP RTO timers fire on time. */
+#ifndef NANORTC_MIN_POLL_INTERVAL_MS
+#define NANORTC_MIN_POLL_INTERVAL_MS 50
+#endif
+
 /* Consent freshness interval in milliseconds (RFC 7675 §5.1).
  * A STUN Binding Request is sent periodically to verify path liveness.
  * Consent expires after NANORTC_ICE_CONSENT_TIMEOUT_MS without a response. */
@@ -386,11 +393,29 @@
 #endif
 
 /* ----------------------------------------------------------------
- * STUN scratch buffer size
+ * STUN / RTCP / RTP scratch buffer size
+ *
+ * Shared scratch buffer used for:
+ *   - STUN request/response encoding (ICE checks, consent, srflx)
+ *   - TURN allocate/refresh/channel framing
+ *   - RTCP generation (SR/RR) and SRTCP protect
+ *   - RTCP/RTP receive-side in-place unprotect
+ *
+ * With media transport enabled, must fit a full RTP packet including
+ * CSRC list + extension header + payload + SRTP auth tag. Otherwise
+ * 256 bytes is sufficient for all STUN-only use cases.
+ *
+ * The default is feature-gated: DC-only builds keep the small 256-byte
+ * default; AUDIO/VIDEO builds get NANORTC_MEDIA_BUF_SIZE automatically.
+ * Users may always override via NANORTC_CONFIG_FILE or a -D flag.
  * ---------------------------------------------------------------- */
 
 #ifndef NANORTC_STUN_BUF_SIZE
+#if NANORTC_HAVE_MEDIA_TRANSPORT
+#define NANORTC_STUN_BUF_SIZE NANORTC_MEDIA_BUF_SIZE
+#else
 #define NANORTC_STUN_BUF_SIZE 256
+#endif
 #endif
 
 /* ----------------------------------------------------------------
@@ -659,6 +684,16 @@ typedef enum {
 
 #if NANORTC_STUN_BUF_SIZE < 128
 #error "NANORTC_STUN_BUF_SIZE must be at least 128"
+#endif
+
+/* When media transport is enabled, the shared scratch buffer is also used
+ * for in-place SRTP unprotect on inbound RTP packets, so it must be large
+ * enough to hold a full RTP packet (NANORTC_MEDIA_BUF_SIZE includes the
+ * RTP header, CSRC, extension, payload and SRTP auth tag).
+ * See the bug history in docs/exec-plans or git log for context. */
+#if NANORTC_HAVE_MEDIA_TRANSPORT && (NANORTC_STUN_BUF_SIZE < NANORTC_MEDIA_BUF_SIZE)
+#error \
+    "NANORTC_STUN_BUF_SIZE must be >= NANORTC_MEDIA_BUF_SIZE when audio or video transport is enabled"
 #endif
 
 #if NANORTC_SDP_MIN_BUF_SIZE < 128

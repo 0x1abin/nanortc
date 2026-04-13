@@ -771,6 +771,15 @@ NANORTC_API int nanortc_poll_output(nanortc_t *rtc, nanortc_output_t *out);
  *
  * Call with data=NULL, len=0, src=NULL for a pure timeout (no packet).
  *
+ * @note For correct timing-sensitive behaviour (DTLS handshake retransmit,
+ *       ICE connectivity checks, SCTP retransmit, consent freshness), this
+ *       function should be called at least every
+ *       @c NANORTC_MIN_POLL_INTERVAL_MS (default 50 ms) even when no packet
+ *       is pending — pass @c data=NULL and @c len=0 to tick timers only.
+ *       Slower polling rates may miss DTLS retransmit deadlines and delay
+ *       handshake completion. A future @c nanortc_next_timeout_ms() API
+ *       will let callers use epoll_wait/select with an exact timeout.
+ *
  * @param rtc     Initialized RTC state.
  * @param now_ms  Current monotonic time in milliseconds.
  * @param data    Packet payload, or NULL for timeout-only.

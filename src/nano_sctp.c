@@ -233,9 +233,9 @@ size_t nsctp_encode_cookie_echo(uint8_t *buf, const uint8_t *cookie, uint16_t co
     memcpy(buf + SCTP_CHUNK_HDR_SIZE, cookie, cookie_len);
 
     size_t total = SCTP_PAD4(clen);
-    /* Zero padding */
-    for (size_t i = clen; i < total; i++) {
-        buf[i] = 0;
+    /* Zero padding (at most 3 bytes: total - clen ∈ {0,1,2,3}) */
+    if (total > clen) {
+        memset(buf + clen, 0, total - clen);
     }
     return total;
 }
@@ -268,8 +268,8 @@ size_t nsctp_encode_data(uint8_t *buf, uint32_t tsn, uint16_t stream_id, uint16_
     }
 
     size_t total = SCTP_PAD4(clen);
-    for (size_t i = clen; i < total; i++) {
-        buf[i] = 0;
+    if (total > clen) {
+        memset(buf + clen, 0, total - clen);
     }
     return total;
 }
@@ -382,8 +382,8 @@ size_t nsctp_encode_heartbeat(uint8_t *buf, const uint8_t *info, uint16_t info_l
     }
 
     size_t total = SCTP_PAD4(clen);
-    for (size_t i = clen; i < total; i++) {
-        buf[i] = 0;
+    if (total > clen) {
+        memset(buf + clen, 0, total - clen);
     }
     return total;
 }

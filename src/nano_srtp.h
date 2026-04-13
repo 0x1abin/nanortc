@@ -59,6 +59,13 @@ typedef struct nano_srtp {
     nano_srtp_ssrc_state_t ssrc_states[NANORTC_MAX_SSRC_MAP];
     uint32_t srtcp_send_index; /* SRTCP index counter */
 
+    /* Last-used SSRC cache indices for RTP send/recv paths.
+     * BUNDLE scenarios usually alternate packets from the same SSRC,
+     * so caching the last hit avoids O(NANORTC_MAX_SSRC_MAP) linear scan
+     * per-packet. -1 means "no cache / invalid". */
+    int8_t last_send_idx;
+    int8_t last_recv_idx;
+
     /* References */
     const nanortc_crypto_provider_t *crypto;
     int is_client; /* DTLS client role (determines key direction) */

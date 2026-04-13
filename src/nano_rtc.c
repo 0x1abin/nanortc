@@ -1364,17 +1364,16 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
             return NANORTC_OK;
         }
 
-        /* RTP packet — demux by SSRC → MID */
-        /* Make a mutable copy for SRTP unprotect (in-place) */
-        if (len > NANORTC_MEDIA_BUF_SIZE) {
-            return NANORTC_ERR_BUFFER_TOO_SMALL;
-        }
-
-        /* Use stun_buf as scratch for RTP unprotect (not used simultaneously) */
-        uint8_t *pkt = rtc->stun_buf;
+        /* RTP packet — demux by SSRC → MID.
+         * Use stun_buf as scratch for in-place SRTP unprotect: under Sans I/O
+         * single-threaded invocation, STUN/RTCP/RTP use of stun_buf is
+         * time-disjoint. In media builds stun_buf is sized to
+         * NANORTC_MEDIA_BUF_SIZE (see nanortc_config.h), so a full RTP packet
+         * fits; in DC-only builds this path is unreachable. */
         if (len > sizeof(rtc->stun_buf)) {
             return NANORTC_ERR_BUFFER_TOO_SMALL;
         }
+        uint8_t *pkt = rtc->stun_buf;
         memcpy(pkt, data, len);
         size_t pkt_len = len;
 
