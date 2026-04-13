@@ -96,40 +96,26 @@ static int handle_offer(const char *offer, char *answer, size_t answer_size, siz
 {
     (void)userdata;
 
-    /* Tear down previous session */
-    nano_run_loop_destroy(&s_loop);
-    nanortc_destroy(&s_rtc);
-
-    /* Initialize nanortc */
     nanortc_config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.crypto = nanortc_crypto_mbedtls();
     cfg.role = NANORTC_ROLE_CONTROLLED;
 
-    int rc = nanortc_init(&s_rtc, &cfg);
-    if (rc != NANORTC_OK) {
-        ESP_LOGE(TAG, "nanortc_init failed: %d", rc);
-        return rc;
-    }
-
     /* No tracks needed for DataChannel */
+    nano_accept_offer_params_t params = {
+        .rtc_cfg = &cfg,
+        .local_ip = s_local_ip,
+        .udp_port = CONFIG_EXAMPLE_UDP_PORT,
+        .max_poll_ms = 5,
+        .event_cb = on_event,
+    };
 
-    rc = nano_run_loop_init(&s_loop, &s_rtc, CONFIG_EXAMPLE_UDP_PORT);
-    if (rc < 0) {
-        ESP_LOGE(TAG, "Failed to bind UDP port");
-        return rc;
-    }
-    nanortc_add_local_candidate(&s_rtc, s_local_ip, CONFIG_EXAMPLE_UDP_PORT);
-    nano_run_loop_set_event_cb(&s_loop, on_event, NULL);
-    s_loop.max_poll_ms = 5;
-    s_loop.running = 1;
-
-    rc = nanortc_accept_offer(&s_rtc, offer, answer, answer_size, answer_len);
+    int rc = nano_session_accept_offer(&s_rtc, &s_loop, &params, offer, answer, answer_size,
+                                       answer_len);
     if (rc != NANORTC_OK) {
-        ESP_LOGE(TAG, "nanortc_accept_offer failed: %d (%s)", rc, nanortc_err_name(rc));
-        return rc;
+        ESP_LOGE(TAG, "nano_session_accept_offer failed: %d (%s)", rc, nanortc_err_name(rc));
     }
-    return 0;
+    return rc;
 }
 
 /* ----------------------------------------------------------------

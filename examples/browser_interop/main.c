@@ -17,6 +17,8 @@
 #include "run_loop.h"
 #include "http_signaling.h"
 #include "media_source.h"
+#include "media_pacer.h"
+#include "cli_helpers.h"
 #include "h264_utils.h"
 #include "ice_server_resolve.h"
 
@@ -264,43 +266,13 @@ int main(int argc, char *argv[])
             memcpy(bind_ip, argv[i], len);
             bind_ip[len] = '\0';
         } else if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) {
-            i++;
-            char *colon = strrchr(argv[i], ':');
-            if (colon) {
-                size_t hlen = (size_t)(colon - argv[i]);
-                if (hlen >= sizeof(sig_host))
-                    hlen = sizeof(sig_host) - 1;
-                memcpy(sig_host, argv[i], hlen);
-                sig_host[hlen] = '\0';
-                sig_port = (uint16_t)atoi(colon + 1);
-            } else {
-                size_t hlen = strlen(argv[i]);
-                if (hlen >= sizeof(sig_host))
-                    hlen = sizeof(sig_host) - 1;
-                memcpy(sig_host, argv[i], hlen);
-                sig_host[hlen] = '\0';
-            }
+            nano_parse_host_port(argv[++i], sig_host, sizeof(sig_host), &sig_port);
         } else if (strcmp(argv[i], "-a") == 0 && i + 1 < argc) {
             audio_dir = argv[++i];
         } else if (strcmp(argv[i], "-v") == 0 && i + 1 < argc) {
             video_dir = argv[++i];
         } else if (strcmp(argv[i], "--turn-server") == 0 && i + 1 < argc) {
-            i++;
-            char *colon = strrchr(argv[i], ':');
-            if (colon) {
-                size_t iplen = (size_t)(colon - argv[i]);
-                if (iplen < sizeof(turn_ip)) {
-                    memcpy(turn_ip, argv[i], iplen);
-                    turn_ip[iplen] = '\0';
-                }
-                turn_port = (uint16_t)atoi(colon + 1);
-            } else {
-                size_t len = strlen(argv[i]);
-                if (len < sizeof(turn_ip)) {
-                    memcpy(turn_ip, argv[i], len);
-                    turn_ip[len] = '\0';
-                }
-            }
+            nano_parse_host_port(argv[++i], turn_ip, sizeof(turn_ip), &turn_port);
         } else if (strcmp(argv[i], "--turn-user") == 0 && i + 1 < argc) {
             turn_user = argv[++i];
         } else if (strcmp(argv[i], "--turn-pass") == 0 && i + 1 < argc) {
@@ -477,10 +449,8 @@ int main(int argc, char *argv[])
 
     /* 6. Event loop with trickle ICE polling + media send */
     fprintf(stderr, "Entering event loop...\n");
-    uint32_t audio_epoch_ms = 0;    /* wall-clock start time for audio */
-    uint32_t audio_frame_count = 0; /* frames sent since epoch */
-    uint32_t video_epoch_ms = 0;    /* wall-clock start time for video */
-    uint32_t video_frame_count = 0; /* frames sent since epoch */
+    nano_media_pacer_t audio_pacer = {.interval_ms = 20};        /* 20ms Opus */
+    nano_media_pacer_t video_pacer = {.interval_ms = 40};        /* 25fps = 40ms */
     if (has_audio_src || has_video_src) {
         loop.max_poll_ms = 5; /* 5ms poll for smooth media pacing */
     }
@@ -490,50 +460,38 @@ int main(int argc, char *argv[])
         poll_trickle_ice(&sig, &rtc);
 
 #if NANORTC_FEATURE_AUDIO
-        /* Send audio frames at 20ms intervals (epoch-based for drift-free timing) */
+        /* Send audio frames at 20ms intervals (drift-free epoch-based pacing) */
         if (has_audio_src && app_ctx.media_connected) {
-            uint32_t now = nano_get_millis();
-            if (audio_epoch_ms == 0)
-                audio_epoch_ms = now;
-            uint32_t target_frames = (now - audio_epoch_ms) / 20;
-            /* Prevent burst: if we fell behind by >2 frames, skip ahead */
-            if (target_frames - audio_frame_count > 2) {
-                audio_frame_count = target_frames - 1;
-            }
-            if (audio_frame_count < target_frames) {
+            uint32_t due = nano_media_pacer_due(&audio_pacer, nano_get_millis());
+            for (uint32_t i = 0; i < due; i++) {
                 uint8_t frame_buf[1024];
                 size_t frame_len = 0;
                 uint32_t ts_ms = 0;
                 if (nano_media_source_next_frame(&audio_src, frame_buf, sizeof(frame_buf),
-                                                 &frame_len, &ts_ms) == 0) {
-                    nanortc_send_audio(&rtc, (uint8_t)app_ctx.audio_mid, ts_ms, frame_buf,
-                                       frame_len);
-                    audio_frame_count++;
+                                                 &frame_len, &ts_ms) != 0) {
+                    break;
                 }
+                nanortc_send_audio(&rtc, (uint8_t)app_ctx.audio_mid, ts_ms, frame_buf, frame_len);
+                nano_media_pacer_advance(&audio_pacer);
             }
         }
 #endif
 
 #if NANORTC_FEATURE_VIDEO
-        /* Send video frames at 25fps (epoch-based for drift-free timing) */
+        /* Send video frames at 25fps (drift-free epoch-based pacing) */
         if (has_video_src && app_ctx.media_connected) {
-            uint32_t now = nano_get_millis();
-            if (video_epoch_ms == 0)
-                video_epoch_ms = now;
-            uint32_t target_frames = (now - video_epoch_ms) / 40; /* 25fps = 40ms */
-            if (target_frames - video_frame_count > 2) {
-                video_frame_count = target_frames - 1; /* skip burst */
-            }
-            if (video_frame_count < target_frames) {
+            uint32_t due = nano_media_pacer_due(&video_pacer, nano_get_millis());
+            for (uint32_t i = 0; i < due; i++) {
                 uint8_t frame_buf[NANORTC_MEDIA_MAX_FRAME_SIZE];
                 size_t frame_len = 0;
                 uint32_t ts_ms = 0;
                 if (nano_media_source_next_frame(&video_src, frame_buf, sizeof(frame_buf),
-                                                 &frame_len, &ts_ms) == 0) {
-                    nanortc_send_video(&rtc, (uint8_t)app_ctx.video_mid, nano_get_millis(),
-                                       frame_buf, frame_len);
-                    video_frame_count++;
+                                                 &frame_len, &ts_ms) != 0) {
+                    break;
                 }
+                nanortc_send_video(&rtc, (uint8_t)app_ctx.video_mid, nano_get_millis(), frame_buf,
+                                   frame_len);
+                nano_media_pacer_advance(&video_pacer);
             }
         }
 #endif

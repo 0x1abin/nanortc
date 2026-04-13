@@ -140,6 +140,27 @@ static void on_event(nanortc_t *rtc, const nanortc_event_t *evt, void *userdata)
 }
 
 /* ----------------------------------------------------------------
+ * Track setup callback — audio first, video second.
+ * ---------------------------------------------------------------- */
+static int setup_camera_tracks(nanortc_t *rtc, void *userdata)
+{
+    (void)userdata;
+
+    s_mic_mid = nanortc_add_audio_track(rtc, NANORTC_DIR_SENDONLY, NANORTC_CODEC_OPUS, 48000, 1);
+    if (s_mic_mid < 0) {
+        ESP_LOGE(TAG, "nanortc_add_audio_track failed: %d", s_mic_mid);
+        return s_mic_mid;
+    }
+
+    s_video_mid = nanortc_add_video_track(rtc, NANORTC_DIR_SENDONLY, NANORTC_CODEC_H264);
+    if (s_video_mid < 0) {
+        ESP_LOGE(TAG, "nanortc_add_video_track failed: %d", s_video_mid);
+        return s_video_mid;
+    }
+    return 0;
+}
+
+/* ----------------------------------------------------------------
  * POST /offer handler — full nanortc session lifecycle
  * ---------------------------------------------------------------- */
 static int handle_offer(const char *offer, char *answer, size_t answer_size, size_t *answer_len,
@@ -147,10 +168,7 @@ static int handle_offer(const char *offer, char *answer, size_t answer_size, siz
 {
     (void)userdata;
 
-    /* Tear down previous session */
     s_connected = 0;
-    nano_run_loop_destroy(&s_loop);
-    nanortc_destroy(&s_rtc);
 
     /* Drain any leftover frames in the queues */
     frame_msg_t stale;
@@ -162,7 +180,6 @@ static int handle_offer(const char *offer, char *answer, size_t answer_size, siz
         free(mic_stale.data);
     }
 
-    /* Initialize nanortc */
     nanortc_config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.crypto = nanortc_crypto_mbedtls();
@@ -182,41 +199,22 @@ static int handle_offer(const char *offer, char *answer, size_t answer_size, siz
     cfg.ice_servers = ice_servers;
     cfg.ice_server_count = 2;
 
-    int rc = nanortc_init(&s_rtc, &cfg);
+    nano_accept_offer_params_t params = {
+        .rtc_cfg = &cfg,
+        .track_setup = setup_camera_tracks,
+        .local_ip = s_local_ip,
+        .udp_port = CONFIG_EXAMPLE_UDP_PORT,
+        .max_poll_ms = 20,
+        .event_cb = on_event,
+    };
+
+    int rc = nano_session_accept_offer(&s_rtc, &s_loop, &params, offer, answer, answer_size,
+                                       answer_len);
     if (rc != NANORTC_OK) {
-        ESP_LOGE(TAG, "nanortc_init failed: %d", rc);
+        ESP_LOGE(TAG, "nano_session_accept_offer failed: %d (%s)", rc, nanortc_err_name(rc));
         return rc;
     }
 
-    /* Add tracks: audio first, video second (must match browser SDP m-line order) */
-    s_mic_mid = nanortc_add_audio_track(&s_rtc, NANORTC_DIR_SENDONLY, NANORTC_CODEC_OPUS, 48000, 1);
-    if (s_mic_mid < 0) {
-        ESP_LOGE(TAG, "nanortc_add_audio_track failed: %d", s_mic_mid);
-        return s_mic_mid;
-    }
-
-    s_video_mid = nanortc_add_video_track(&s_rtc, NANORTC_DIR_SENDONLY, NANORTC_CODEC_H264);
-    if (s_video_mid < 0) {
-        ESP_LOGE(TAG, "nanortc_add_video_track failed: %d", s_video_mid);
-        return s_video_mid;
-    }
-
-    rc = nano_run_loop_init(&s_loop, &s_rtc, CONFIG_EXAMPLE_UDP_PORT);
-    if (rc < 0) {
-        ESP_LOGE(TAG, "Failed to bind UDP port");
-        return rc;
-    }
-    nanortc_add_local_candidate(&s_rtc, s_local_ip, CONFIG_EXAMPLE_UDP_PORT);
-    nano_run_loop_set_event_cb(&s_loop, on_event, NULL);
-    s_loop.max_poll_ms = 20;
-
-    rc = nanortc_accept_offer(&s_rtc, offer, answer, answer_size, answer_len);
-    if (rc != NANORTC_OK) {
-        ESP_LOGE(TAG, "nanortc_accept_offer failed: %d (%s)", rc, nanortc_err_name(rc));
-        return rc;
-    }
-
-    s_loop.running = 1;
     ESP_LOGI(TAG, "remote_candidates=%d", s_rtc.ice.remote_candidate_count);
     return 0;
 }

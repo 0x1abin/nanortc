@@ -2,6 +2,7 @@ idf_component_register(
     SRCS
         "main.c"
         "${CMAKE_CURRENT_SOURCE_DIR}/../../common/run_loop_esp.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../common/run_loop_session.c"
         "${CMAKE_CURRENT_SOURCE_DIR}/../../common/webserver_esp.c"
     INCLUDE_DIRS
         "."

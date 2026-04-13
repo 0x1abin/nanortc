@@ -18,6 +18,7 @@ add_executable(macos_camera
     vt_encoder.m
     ${COMMON}/run_loop_linux.c
     ${COMMON}/http_signaling.c
+    ${COMMON}/multi_session.c
 )
 
 target_include_directories(macos_camera PRIVATE
