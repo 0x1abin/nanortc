@@ -40,9 +40,9 @@ static int dcep_parse_open(const uint8_t *data, size_t len, dcep_open_t *out)
     out->label_len = nanortc_read_u16be(data + 8);
     out->protocol_len = nanortc_read_u16be(data + 10);
 
-    /* Overflow-safe bounds check: label_len + protocol_len is at most
-     * 0xFFFF + 0xFFFF = 0x1FFFE, which fits in size_t even on 16-bit
-     * platforms. Use subtraction to avoid any reliance on that math. */
+    /* Overflow-safe bounds check: validate each field against the
+     * remaining payload using subtraction, so we do not rely on
+     * label_len + protocol_len fitting in size_t on every platform. */
     if (out->label_len > len - 12 || out->protocol_len > (size_t)(len - 12) - out->label_len) {
         return NANORTC_ERR_PARSE;
     }

@@ -73,18 +73,19 @@ int rtp_unpack(const uint8_t *data, size_t len, uint8_t *pt, uint16_t *seq, uint
 
     /* Extension header (X bit, RFC 3550 section 5.3.1) */
     if (data[0] & 0x10) {
-        if (len - header_len < 4) {
+        size_t remaining = len - header_len;
+        if (remaining < 4) {
             return NANORTC_ERR_PARSE;
         }
         uint16_t ext_len = nanortc_read_u16be(data + header_len + 2);
-        /* Guard: 4 + ext_len*4 must fit in the remaining buffer.
-         * ext_len ≤ 0xFFFF so ext_bytes ≤ 0x3FFFC (≈ 256 KiB) which
-         * stays inside a 32-bit size_t; the real check is against len. */
-        size_t ext_bytes = 4u + (size_t)ext_len * 4u;
-        if (ext_bytes > len - header_len) {
+        /* Overflow-safe bounding: bound ext_len against the remaining
+         * buffer *before* multiplying, so (ext_len * 4) cannot wrap
+         * size_t on any platform (including 16-bit size_t targets).
+         * (remaining - 4) / 4 is safe because remaining >= 4 above. */
+        if ((size_t)ext_len > (remaining - 4) / 4) {
             return NANORTC_ERR_PARSE;
         }
-        header_len += ext_bytes;
+        header_len += 4u + (size_t)ext_len * 4u;
     }
 
     if (pt) {

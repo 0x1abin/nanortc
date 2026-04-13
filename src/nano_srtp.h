@@ -62,7 +62,10 @@ typedef struct nano_srtp {
     /* Last-used SSRC cache indices for RTP send/recv paths.
      * BUNDLE scenarios usually alternate packets from the same SSRC,
      * so caching the last hit avoids O(NANORTC_MAX_SSRC_MAP) linear scan
-     * per-packet. -1 means "no cache / invalid". */
+     * per-packet. -1 means "no cache / invalid". The int8_t type is
+     * guarded by the compile-time check below — a user override that
+     * raises NANORTC_MAX_SSRC_MAP past 127 would silently wrap the
+     * cast in srtp_get_ssrc_state(), so we refuse to build instead. */
     int8_t last_send_idx;
     int8_t last_recv_idx;
 

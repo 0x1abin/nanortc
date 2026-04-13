@@ -712,4 +712,12 @@ typedef enum {
 #error "NANORTC_MAX_SSRC_MAP must be at least NANORTC_MAX_MEDIA_TRACKS"
 #endif
 
+/* nano_srtp_t uses int8_t cache indices (last_send_idx / last_recv_idx)
+ * to keep the struct compact. Silently wrapping the (int8_t)i cast in
+ * srtp_get_ssrc_state() would turn the cache into a no-op, so we refuse
+ * to build if the map is configured past the representable range. */
+#if NANORTC_MAX_SSRC_MAP > 127
+#error "NANORTC_MAX_SSRC_MAP must be <= 127 (nano_srtp_t uses int8_t SSRC cache indices)"
+#endif
+
 #endif /* NANORTC_CONFIG_H_ */

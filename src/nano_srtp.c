@@ -281,16 +281,20 @@ static int srtp_parse_hdr_len(const uint8_t *packet, size_t len, size_t *hdr_len
         return NANORTC_ERR_PARSE;
     }
     if (packet[0] & 0x10) { /* X bit: extension header (RFC 3550 §5.3.1) */
-        if (len - hdr_len < 4) {
+        size_t remaining = len - hdr_len;
+        if (remaining < 4) {
             return NANORTC_ERR_PARSE;
         }
         uint16_t ext_words = nanortc_read_u16be(packet + hdr_len + 2);
-        /* Same overflow-safe bound check as rtp_unpack(). */
-        size_t ext_bytes = 4u + (size_t)ext_words * 4u;
-        if (ext_bytes > len - hdr_len) {
+        /* Overflow-safe bounding: mirrors rtp_unpack() — bound
+         * ext_words against the remaining buffer *before* the
+         * multiplication so (ext_words * 4) cannot wrap size_t on
+         * 16-bit targets. (remaining - 4) / 4 is safe because
+         * remaining >= 4. */
+        if ((size_t)ext_words > (remaining - 4) / 4) {
             return NANORTC_ERR_PARSE;
         }
-        hdr_len += ext_bytes;
+        hdr_len += 4u + (size_t)ext_words * 4u;
     }
     *hdr_len_out = hdr_len;
     return NANORTC_OK;
