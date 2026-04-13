@@ -89,3 +89,15 @@ Full-media `sizeof(nanortc_t)` reduced from 157 KB to 103 KB (**34% reduction**)
 - **TURN feature flag**: `NANORTC_FEATURE_TURN` saves 700B RAM + 13KB code when disabled
 - **SDP hardening**: `extract_value()` strips trailing whitespace, protecting exact-fit buffers
 - **Regression guard**: `test_sizeof.c` prevents accidental struct growth in CI
+
+## Phase 7 Summary (Stability & Performance Hardening)
+
+Single-session PR that fixed one latent bug and hardened the hot paths discovered by a full three-axis audit (memory / performance / stability). Every change is backward compatible; DC-only builds see zero memory impact. See [phase7-stability-performance-hardening.md](exec-plans/completed/phase7-stability-performance-hardening.md) for the full session log.
+
+- **Critical fix — C0 (RTP receive)**: the RTP RX path used `stun_buf` (256B) as scratch, silently dropping every inbound RTP packet > 256B. `NANORTC_STUN_BUF_SIZE` now auto-enlarges to `NANORTC_MEDIA_BUF_SIZE` under `NANORTC_HAVE_MEDIA_TRANSPORT` and a `#error` assertion in `nanortc_config.h` pins the invariant so a user-provided override below `NANORTC_MEDIA_BUF_SIZE` breaks the build instead of regressing the fix.
+- **SRTP hot path**: `srtp_compute_iv()` marked `static inline` (folds into the surrounding AES-CM call); `nano_srtp_t` gained `last_send_idx`/`last_recv_idx` cache slots so `srtp_get_ssrc_state()` becomes O(1) on the common BUNDLE hit path.
+- **SCTP padding**: three `nsctp_encode_*` byte-loops rewritten as `memset` — authoritative single-instruction padding across every target compiler, especially xtensa-gcc.
+- **Defensive integer guards**: RTP ext_len, SRTP ext_len (same logic), H.264 STAP-A sub-NAL length, and DCEP `label_len + protocol_len` all converted to subtraction-form bound checks (`a > max - b`). None of the old forms were exploitable on 32-bit size_t platforms, but the rewrite eliminates the implicit dependency on later-in-the-function length checks and lets fuzz directly exercise pathological values.
+- **Poll cadence documentation**: `nanortc_handle_input()` doxygen now spells out the minimum poll interval contract; `NANORTC_MIN_POLL_INTERVAL_MS=50` added to `nanortc_config.h`.
+- **Verification scope**: 19/19 ctest in default build, 93/93 across 6 feature combos × openssl, 46/46 across 3 combos × mbedtls, AddressSanitizer MEDIA build clean, clang-format clean, **768,656,267 fuzz executions (0 crashes)** across 8 harnesses, and 4/4 libdatachannel interop tests pass including audio + video (the direct end-to-end validation of the C0 fix). Cumulative fuzz budget now exceeds 1.2 billion executions on top of Phase 4's 456M base.
+- **No regressions**: `test_sizeof.c` upper bounds untouched, no API breakage, DC-only builds see zero memory growth.

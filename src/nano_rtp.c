@@ -63,22 +63,29 @@ int rtp_unpack(const uint8_t *data, size_t len, uint8_t *pt, uint16_t *seq, uint
         return NANORTC_ERR_PARSE;
     }
 
-    /* CSRC count extends the header */
+    /* CSRC count extends the header. cc ∈ [0..15] so cc*4 ∈ [0..60]
+     * which cannot overflow size_t on any supported platform. */
     uint8_t cc = data[0] & 0x0F;
     size_t header_len = RTP_HEADER_SIZE + (size_t)cc * 4;
-
-    /* Extension header (X bit) */
-    if (data[0] & 0x10) {
-        if (len < header_len + 4) {
-            return NANORTC_ERR_PARSE;
-        }
-        /* Extension length in 32-bit words (RFC 3550 section 5.3.1) */
-        uint16_t ext_len = nanortc_read_u16be(data + header_len + 2);
-        header_len += 4 + (size_t)ext_len * 4;
+    if (header_len > len) {
+        return NANORTC_ERR_PARSE;
     }
 
-    if (len < header_len) {
-        return NANORTC_ERR_PARSE;
+    /* Extension header (X bit, RFC 3550 section 5.3.1) */
+    if (data[0] & 0x10) {
+        size_t remaining = len - header_len;
+        if (remaining < 4) {
+            return NANORTC_ERR_PARSE;
+        }
+        uint16_t ext_len = nanortc_read_u16be(data + header_len + 2);
+        /* Overflow-safe bounding: bound ext_len against the remaining
+         * buffer *before* multiplying, so (ext_len * 4) cannot wrap
+         * size_t on any platform (including 16-bit size_t targets).
+         * (remaining - 4) / 4 is safe because remaining >= 4 above. */
+        if ((size_t)ext_len > (remaining - 4) / 4) {
+            return NANORTC_ERR_PARSE;
+        }
+        header_len += 4u + (size_t)ext_len * 4u;
     }
 
     if (pt) {

@@ -21,9 +21,42 @@ Host (64-bit) sizes are slightly larger due to pointer/size_t widths.
 | Jitter buffer (per audio track) | ~11 KB | `NANORTC_JITTER_SLOTS` (32), `NANORTC_JITTER_SLOT_DATA_SIZE` (320) |
 | H.264 NAL reassembly (per video track) | ~16 KB | `NANORTC_VIDEO_NAL_BUF_SIZE` (16384) |
 | Video packet ring (32 slots) | ~39 KB | `NANORTC_OUT_QUEUE_SIZE` (32), `NANORTC_MEDIA_BUF_SIZE` |
-| SCTP send + recv buffers | ~13 KB | `NANORTC_SCTP_SEND_BUF_SIZE`, `NANORTC_SCTP_RECV_BUF_SIZE` |
+| SCTP send + recv + gap buffers | ~13 KB | `NANORTC_SCTP_SEND_BUF_SIZE`, `NANORTC_SCTP_RECV_BUF_SIZE`, `NANORTC_SCTP_RECV_GAP_BUF_SIZE` |
 | DTLS buffers (3 x 2048) | ~6 KB | `NANORTC_DTLS_BUF_SIZE` (2048) |
+| Shared STUN/RTCP/RTP scratch | 256 B (DC-only) / ~1232 B (media) | `NANORTC_STUN_BUF_SIZE` (feature-gated — see below) |
 | TURN client | ~668 B | `NANORTC_FEATURE_TURN` (disable to save) |
+
+### Shared scratch buffer — feature-gated default
+
+`nanortc_t.stun_buf` is a single Sans-I/O scratch region that services, in
+time-disjoint phases, STUN request/response encoding, TURN allocate/refresh/
+channel framing, RTCP generation and SRTCP protect, and — crucially — the
+in-place SRTP unprotect step on the inbound RTP path.
+
+The default size is therefore feature-gated:
+
+- `NANORTC_HAVE_MEDIA_TRANSPORT=0` → 256 B (STUN / RTCP only)
+- `NANORTC_HAVE_MEDIA_TRANSPORT=1` → `NANORTC_MEDIA_BUF_SIZE` (1232 B today)
+
+`nanortc_config.h` enforces the invariant with a `#error`:
+
+```c
+#if NANORTC_HAVE_MEDIA_TRANSPORT && (NANORTC_STUN_BUF_SIZE < NANORTC_MEDIA_BUF_SIZE)
+#error "NANORTC_STUN_BUF_SIZE must be >= NANORTC_MEDIA_BUF_SIZE when audio or video transport is enabled"
+#endif
+```
+
+Any override that shrinks the scratch buffer below the media packet size in a
+media build becomes an explicit build failure, not a silent runtime packet
+drop. This is the guard for the Phase 7 C0 fix: the previous 256 B default
+caused every inbound RTP packet above 256 B to return
+`NANORTC_ERR_BUFFER_TOO_SMALL`. See the
+[Phase 7 exec plan](../exec-plans/completed/phase7-stability-performance-hardening.md)
+for the full history.
+
+**Impact**: DC-only builds pay nothing for this scratch — the buffer stays at
+256 B. Media builds pay ~976 B more than the pre-Phase-7 default to carry a
+single scratch buffer instead of introducing a new field.
 
 ## Minimal Embedded Profile
 

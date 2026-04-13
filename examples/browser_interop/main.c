@@ -62,15 +62,6 @@ static void on_event(nanortc_t *rtc, const nanortc_event_t *evt, void *userdata)
     case NANORTC_EV_CONNECTED:
         fprintf(stderr, "[event] Connected\n");
         ctx->media_connected = 1;
-        /* Offerer must create the DataChannel after connection is ready */
-        if (ctx->offer_mode) {
-            int drc = nanortc_create_datachannel(rtc, "test", NULL);
-            if (drc >= 0) {
-                fprintf(stderr, "[event] Created DataChannel 'test'\n");
-            } else {
-                fprintf(stderr, "[event] Failed to create DataChannel: %d\n", drc);
-            }
-        }
         break;
 
     case NANORTC_EV_DATACHANNEL_OPEN:
@@ -437,6 +428,19 @@ int main(int argc, char *argv[])
     fprintf(stderr, "nanortc browser_interop (mode=%s, udp=%s:%d, sig=%s:%u)\n",
             offer_mode ? "offer" : "answer", bind_ip, port, sig_host, sig_port);
 
+    /* Offerer must register the DataChannel m-line BEFORE create_offer
+     * so it appears in the generated SDP. DCEP OPEN is queued in the
+     * DC module's output buffer and flushed to SCTP once the SCTP
+     * association reaches the ESTABLISHED state. */
+    if (offer_mode) {
+        int drc = nanortc_create_datachannel(&rtc, "test", NULL);
+        if (drc >= 0) {
+            fprintf(stderr, "[event] Created DataChannel 'test'\n");
+        } else {
+            fprintf(stderr, "[event] Failed to create DataChannel: %d\n", drc);
+        }
+    }
+
     /* 5. SDP exchange */
     if (offer_mode) {
         rc = do_offer_signaling(&sig, &rtc);
@@ -449,8 +453,8 @@ int main(int argc, char *argv[])
 
     /* 6. Event loop with trickle ICE polling + media send */
     fprintf(stderr, "Entering event loop...\n");
-    nano_media_pacer_t audio_pacer = {.interval_ms = 20};        /* 20ms Opus */
-    nano_media_pacer_t video_pacer = {.interval_ms = 40};        /* 25fps = 40ms */
+    nano_media_pacer_t audio_pacer = {.interval_ms = 20}; /* 20ms Opus */
+    nano_media_pacer_t video_pacer = {.interval_ms = 40}; /* 25fps = 40ms */
     if (has_audio_src || has_video_src) {
         loop.max_poll_ms = 5; /* 5ms poll for smooth media pacing */
     }

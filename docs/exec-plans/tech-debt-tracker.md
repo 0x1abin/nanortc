@@ -6,6 +6,7 @@ Track known debt, prioritize by impact, pay down continuously.
 
 | ID | Category | Description | Impact | Priority | Plan to Resolve |
 |----|----------|-------------|--------|----------|-----------------|
+| TD-018 | ICE | CONTROLLING role only keeps a single `last_txid` / `last_{local,remote}_idx` scratch and overwrites it every 50 ms, so any Binding Response that is not for the most recently sent check is rejected with `NANORTC_ERR_PROTOCOL`. Makes `nanortc --offer` against a real browser stall in `ICE_STATE_CHECKING`. Answer mode is unaffected. Found via `examples/browser_interop` T2 during Phase 7 validation. | High (blocks nanortc-as-offerer with real browsers) | Phase 8 / PR-5 | [phase8-continued-optimization.md §PR-5](active/phase8-continued-optimization.md) — per-pair pending transaction table |
 | ~~TD-002~~ | ~~Test~~ | ~~No test framework — manual macros only (333 tests, exceeds 50 threshold)~~ | ~~Medium~~ | ~~Phase 4~~ | ~~Resolved~~ |
 | ~~TD-001~~ | ~~Build~~ | ~~`-Wno-unused-parameter` suppresses useful warnings~~ | ~~Low~~ | ~~Phase 3~~ | ~~Resolved~~ |
 | ~~TD-008~~ | ~~CI~~ | ~~`scripts/ci-check.sh` uses `declare -A` (bash 4+)~~ | ~~Low~~ | ~~Phase 3~~ | ~~Resolved~~ |
@@ -22,6 +23,7 @@ Track known debt, prioritize by impact, pay down continuously.
 | ~~TD-014~~ | ~~SDP~~ | ~~`rtc_apply_negotiated_media()` overwrites fmtp-selected H264 PT with m-line first PT (often VP8) — browser video decode fails~~ | ~~High~~ | ~~Phase 3~~ | ~~Resolved~~ |
 | ~~TD-015~~ | ~~Config~~ | ~~`NANORTC_MEDIA_BUF_SIZE=1200` too small for RTP header (12) + max payload (1200) + SRTP tag (10) — video keyframe send fails~~ | ~~High~~ | ~~Phase 3~~ | ~~Resolved~~ |
 | ~~TD-016~~ | ~~Examples~~ | ~~`browser_interop` and `linux_datachannel` pass event struct pointer to `nanortc_datachannel_send*()` instead of `nanortc_datachannel_t` handle~~ | ~~Medium~~ | ~~Phase 3~~ | ~~Resolved~~ |
+| ~~TD-017~~ | ~~Media~~ | ~~RTP receive path used 256B `stun_buf` as SRTP unprotect scratch — every inbound RTP packet > 256 B dropped with `BUFFER_TOO_SMALL` (masked by interop tests running send-only, unit tests not covering RTP RX)~~ | ~~High~~ | ~~Phase 7~~ | ~~Resolved~~ |
 
 ## Resolved Debt
 
@@ -43,6 +45,7 @@ Track known debt, prioritize by impact, pay down continuously.
 | TD-001 | 2026-04-03 | Removed `-Wno-unused-parameter` from CMake — BWE fully implemented (no stubs remain), fixed `nano_h264.c` marker param with `(void)` cast. All 6 feature combos compile warning-free with `-Wall -Wextra -Werror`. |
 | TD-008 | 2026-04-03 | Already resolved: `ci-check.sh` was rewritten to use indexed arrays (bash 3.2 compatible). No `declare -A` or bash 4+ features. |
 | TD-002 | 2026-04-05 | Migrated to Unity test framework (ThrowTheSwitch/Unity). Vendored in `third_party/unity/`. Compatibility shim in `nano_test.h` maps existing macros to Unity — zero changes to 14 test files, all 357+ tests pass across 6 feature combos × 2 crypto backends. |
+| TD-017 | 2026-04-13 | Phase 7: `NANORTC_STUN_BUF_SIZE` default is now feature-gated — it auto-expands to `NANORTC_MEDIA_BUF_SIZE` when `NANORTC_HAVE_MEDIA_TRANSPORT=1`, so the shared scratch buffer fits a full RTP packet during in-place SRTP unprotect. `nanortc_config.h` adds a `#error` assertion so any override that shrinks the scratch below `NANORTC_MEDIA_BUF_SIZE` in a media build is a compile-time failure. DC-only builds keep the original 256 B size — zero RAM impact on DataChannel-only deployments. Verified end-to-end by libdatachannel interop audio + video tests. See [phase7-stability-performance-hardening.md](completed/phase7-stability-performance-hardening.md). |
 
 ## Principles
 

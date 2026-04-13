@@ -152,12 +152,14 @@ int h264_depkt_push(nano_h264_depkt_t *d, const uint8_t *payload, size_t len, in
         size_t offset = H264_STAPA_HEADER_SIZE;
         size_t buf_pos = 0;
 
-        /* Extract all sub-NALUs concatenated into buffer */
+        /* Extract all sub-NALUs concatenated into buffer.
+         * Bounds-check each length field with subtraction instead of
+         * addition to avoid any chance of size_t wrap (RFC 6184 §5.7). */
         while (offset + H264_STAPA_NALU_LEN_SIZE <= len) {
             uint16_t sub_len = (uint16_t)((uint16_t)payload[offset] << 8 | payload[offset + 1]);
             offset += H264_STAPA_NALU_LEN_SIZE;
 
-            if (offset + sub_len > len) {
+            if (sub_len > len - offset) {
                 NANORTC_LOGW("H264", "STAP-A sub-NAL exceeds packet");
                 return NANORTC_ERR_PARSE;
             }
@@ -263,14 +265,15 @@ int h264_is_keyframe(const uint8_t *rtp_payload, size_t len)
         return (nal_type == H264_NAL_IDR) ? 1 : 0;
     }
 
-    /* STAP-A (type 24): check each sub-NAL for IDR */
+    /* STAP-A (type 24): check each sub-NAL for IDR.
+     * Use subtraction in length checks to avoid any size_t wrap. */
     if (nal_type == H264_NAL_STAPA) {
         size_t offset = H264_STAPA_HEADER_SIZE;
         while (offset + H264_STAPA_NALU_LEN_SIZE <= len) {
             uint16_t sub_len =
                 (uint16_t)((uint16_t)rtp_payload[offset] << 8 | rtp_payload[offset + 1]);
             offset += H264_STAPA_NALU_LEN_SIZE;
-            if (offset + sub_len > len || sub_len == 0) {
+            if (sub_len == 0 || sub_len > len - offset) {
                 break;
             }
             if ((rtp_payload[offset] & H264_NAL_TYPE_MASK) == H264_NAL_IDR) {
