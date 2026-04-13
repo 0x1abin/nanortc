@@ -436,8 +436,18 @@ TEST(test_ice_controlling_rejects_wrong_txid)
     size_t req_len = 0;
     ASSERT_OK(ice_generate_check(&ctrl, 100, crypto(), req_buf, sizeof(req_buf), &req_len));
 
-    /* Tamper: change the last txid byte in ctrl so response won't match */
-    ctrl.last_txid[11] ^= 0xFF;
+    /* TD-018: locate the unique in-flight pending slot (we just called
+     * ice_generate_check once, so exactly one slot is in_flight) and
+     * tamper its txid so the incoming response won't match. */
+    int found = -1;
+    for (int i = 0; i < NANORTC_ICE_MAX_PENDING_CHECKS; i++) {
+        if (ctrl.pending[i].in_flight) {
+            ASSERT_EQ(found, -1); /* exactly one in-flight slot expected */
+            found = i;
+        }
+    }
+    ASSERT_NEQ(found, -1);
+    ctrl.pending[found].txid[11] ^= 0xFF;
 
     nanortc_addr_t src;
     memset(&src, 0, sizeof(src));
@@ -460,6 +470,164 @@ TEST(test_ice_controlling_rejects_wrong_txid)
 
     /* Should NOT be connected */
     ASSERT_NEQ(ctrl.state, NANORTC_ICE_STATE_CONNECTED);
+}
+
+/* ================================================================
+ * TD-018: per-pair pending transaction table (RFC 8445 §7.1.3)
+ * ================================================================ */
+
+TEST(test_ice_controlling_multi_pair_response_out_of_order)
+{
+    /*
+     * TD-018 regression: CONTROLLING sends 3 checks to 3 different
+     * remote candidate pairs in quick succession. Only the *2nd* response
+     * arrives back. Pre-fix, the single `last_txid` scratch had already
+     * been overwritten by the 3rd check — so the response was rejected
+     * with NANORTC_ERR_PROTOCOL and nanortc stalled in CHECKING. Post-fix
+     * the response matches the 2nd pending slot and the 2nd pair is
+     * correctly recorded as the selected pair.
+     */
+    nano_ice_t ctrl, ctld;
+    setup_ice_pair(&ctrl, &ctld);
+
+    /* Add 2 more remote candidates so ctrl has 3 total */
+    ctrl.remote_candidates[1].family = 4;
+    ctrl.remote_candidates[1].addr[0] = 10;
+    ctrl.remote_candidates[1].addr[3] = 20;
+    ctrl.remote_candidates[1].port = 5001;
+    ctrl.remote_candidates[1].type = NANORTC_ICE_CAND_HOST;
+    ctrl.remote_candidates[2].family = 4;
+    ctrl.remote_candidates[2].addr[0] = 10;
+    ctrl.remote_candidates[2].addr[3] = 30;
+    ctrl.remote_candidates[2].port = 5002;
+    ctrl.remote_candidates[2].type = NANORTC_ICE_CAND_HOST;
+    ctrl.remote_candidate_count = 3;
+
+    /* Generate 3 checks at t=100, 150, 200 — one per remote pair */
+    uint8_t req1[256], req2[256], req3[256];
+    size_t req1_len = 0, req2_len = 0, req3_len = 0;
+    ASSERT_OK(ice_generate_check(&ctrl, 100, crypto(), req1, sizeof(req1), &req1_len));
+    ASSERT_TRUE(req1_len > 0);
+    ASSERT_OK(ice_generate_check(&ctrl, 150, crypto(), req2, sizeof(req2), &req2_len));
+    ASSERT_TRUE(req2_len > 0);
+    ASSERT_OK(ice_generate_check(&ctrl, 200, crypto(), req3, sizeof(req3), &req3_len));
+    ASSERT_TRUE(req3_len > 0);
+    ASSERT_EQ(ctrl.check_count, 3);
+
+    /* Three distinct pending slots should be in flight */
+    int in_flight_count = 0;
+    for (int i = 0; i < NANORTC_ICE_MAX_PENDING_CHECKS; i++) {
+        if (ctrl.pending[i].in_flight) {
+            in_flight_count++;
+        }
+    }
+    ASSERT_EQ(in_flight_count, 3);
+
+    /* Feed ONLY the 2nd request to ctld and collect the 2nd response.
+     * The response echoes req2's txid and is signed with ctld's local_pwd
+     * (which equals ctrl's remote_pwd — see setup_ice_pair). */
+    nanortc_addr_t src;
+    memset(&src, 0, sizeof(src));
+    src.family = 4;
+    src.addr[0] = 10;
+    src.addr[3] = 1;
+    src.port = 4000;
+
+    uint8_t resp2[256];
+    size_t resp2_len = 0;
+    ASSERT_OK(
+        ice_handle_stun(&ctld, req2, req2_len, &src, crypto(), resp2, sizeof(resp2), &resp2_len));
+    ASSERT_TRUE(resp2_len > 0);
+
+    /* Feed resp2 back to ctrl. Pre-fix this returned NANORTC_ERR_PROTOCOL
+     * because last_txid held req3 — the 2nd response was unmatched. */
+    nanortc_addr_t resp_src;
+    memset(&resp_src, 0, sizeof(resp_src));
+    resp_src.family = 4;
+    resp_src.addr[0] = 10;
+    resp_src.addr[3] = 20;
+    resp_src.port = 5001;
+
+    uint8_t dummy[256];
+    size_t dummy_len = 0;
+    ASSERT_OK(ice_handle_stun(&ctrl, resp2, resp2_len, &resp_src, crypto(), dummy, sizeof(dummy),
+                              &dummy_len));
+
+    /* The 2nd pair (remote_idx=1, addr .20, port 5001) must be the one
+     * selected — NOT whichever `last_remote_idx` happened to hold. */
+    ASSERT_EQ(ctrl.state, NANORTC_ICE_STATE_CONNECTED);
+    ASSERT_TRUE(ctrl.nominated);
+    ASSERT_EQ(ctrl.selected_addr[0], 10);
+    ASSERT_EQ(ctrl.selected_addr[3], 20);
+    ASSERT_EQ(ctrl.selected_port, 5001);
+    ASSERT_EQ(ctrl.selected_local_idx, 0);
+
+    /* The matching slot must be freed; the other two still in flight */
+    int still = 0;
+    for (int i = 0; i < NANORTC_ICE_MAX_PENDING_CHECKS; i++) {
+        if (ctrl.pending[i].in_flight) {
+            still++;
+        }
+    }
+    ASSERT_EQ(still, 2);
+}
+
+TEST(test_ice_controlling_pending_table_full)
+{
+    /*
+     * TD-018 regression: when the pending table fills up without responses,
+     * the allocator must reap the oldest slot so forward progress continues.
+     * Verify that (a) every generate call succeeds, (b) the table stays at
+     * exactly NANORTC_ICE_MAX_PENDING_CHECKS in-flight entries, and (c) the
+     * first (oldest) txid is no longer present in any slot.
+     */
+    nano_ice_t ctrl, ctld;
+    setup_ice_pair(&ctrl, &ctld);
+
+    uint8_t req[256];
+    size_t req_len = 0;
+
+    /* Initial check — capture its txid so we can prove it gets reaped */
+    ASSERT_OK(ice_generate_check(&ctrl, 100, crypto(), req, sizeof(req), &req_len));
+    ASSERT_TRUE(req_len > 0);
+
+    int oldest_slot = -1;
+    for (int i = 0; i < NANORTC_ICE_MAX_PENDING_CHECKS; i++) {
+        if (ctrl.pending[i].in_flight) {
+            ASSERT_EQ(oldest_slot, -1); /* exactly one in-flight slot */
+            oldest_slot = i;
+        }
+    }
+    ASSERT_NEQ(oldest_slot, -1);
+    uint8_t oldest_txid[STUN_TXID_SIZE];
+    memcpy(oldest_txid, ctrl.pending[oldest_slot].txid, STUN_TXID_SIZE);
+
+    /* Generate NANORTC_ICE_MAX_PENDING_CHECKS + 1 more checks without any
+     * responses. The first NANORTC_ICE_MAX_PENDING_CHECKS - 1 fill the
+     * remaining free slots; the next two force the reap-oldest path. */
+    uint32_t now = 100;
+    for (int i = 0; i < NANORTC_ICE_MAX_PENDING_CHECKS + 1; i++) {
+        now += 50;
+        req_len = 0;
+        ASSERT_OK(ice_generate_check(&ctrl, now, crypto(), req, sizeof(req), &req_len));
+        ASSERT_TRUE(req_len > 0);
+    }
+    ASSERT_EQ(ctrl.check_count, (uint8_t)(NANORTC_ICE_MAX_PENDING_CHECKS + 2));
+
+    /* Every slot must be in_flight (table at capacity) and none of them
+     * may still hold the original oldest txid. */
+    int still_in_flight = 0;
+    bool oldest_present = false;
+    for (int i = 0; i < NANORTC_ICE_MAX_PENDING_CHECKS; i++) {
+        if (ctrl.pending[i].in_flight) {
+            still_in_flight++;
+        }
+        if (memcmp(ctrl.pending[i].txid, oldest_txid, STUN_TXID_SIZE) == 0) {
+            oldest_present = true;
+        }
+    }
+    ASSERT_EQ(still_in_flight, NANORTC_ICE_MAX_PENDING_CHECKS);
+    ASSERT_FALSE(oldest_present);
 }
 
 /* ================================================================
@@ -759,6 +927,9 @@ RUN(test_ice_no_use_candidate_no_nomination);
 /* §7.3: Processing responses */
 RUN(test_ice_controlling_receives_response);
 RUN(test_ice_controlling_rejects_wrong_txid);
+/* TD-018: per-pair pending transaction table */
+RUN(test_ice_controlling_multi_pair_response_out_of_order);
+RUN(test_ice_controlling_pending_table_full);
 /* §8: State transitions */
 RUN(test_ice_state_new_to_checking);
 RUN(test_ice_state_checking_to_connected);

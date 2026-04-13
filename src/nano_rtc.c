@@ -1550,6 +1550,13 @@ static int rtc_process_timers(nanortc_t *rtc, uint32_t now_ms)
             fice.type = NANORTC_EV_ICE_STATE_CHANGE;
             fice.ice_state = (uint16_t)NANORTC_ICE_STATE_FAILED;
             rtc_emit_event_full(rtc, &fice);
+            /* TD-018: emit DISCONNECTED symmetric to the consent-expiry path
+             * so applications see a consistent signal across both failure
+             * modes (ICE check exhaustion and consent loss). */
+            nanortc_event_t fdev;
+            memset(&fdev, 0, sizeof(fdev));
+            fdev.type = NANORTC_EV_DISCONNECTED;
+            rtc_emit_event_full(rtc, &fdev);
             rtc->state = NANORTC_STATE_CLOSED;
         }
     }

@@ -160,6 +160,16 @@ int ice_handle_stun(nano_ice_t *ice, const uint8_t *data, size_t len, const nano
             ice->selected_port = src->port;
             ice->selected_family = src->family;
             ice->selected_type = NANORTC_ICE_CAND_HOST; /* incoming STUN = host path */
+            /*
+             * TD-018: consent path (RFC 7675) reads selected_local_idx to
+             * compute ICE_HOST_PRIORITY. In lite mode we cannot tell which
+             * local candidate the remote targeted — only src (the remote
+             * side) is exposed — so fall back to index 0. This matches the
+             * historical behavior of silently reading last_local_idx == 0;
+             * a future fix would need to plumb the local socket identity
+             * into ice_handle_stun.
+             */
+            ice->selected_local_idx = 0;
             ice->nominated = true;
             ice->state = NANORTC_ICE_STATE_CONNECTED;
             /* Arm consent freshness (RFC 7675) — caller sets now_ms-based times */
@@ -186,15 +196,27 @@ int ice_handle_stun(nano_ice_t *ice, const uint8_t *data, size_t len, const nano
         /*
          * Connectivity check response — controlling role only.
          *
-         * RFC 8445 §7.1.3: Verify transaction ID matches our request,
-         * then verify MESSAGE-INTEGRITY with remote_pwd.
+         * RFC 8445 §7.1.3: Verify transaction ID matches one of our
+         * in-flight requests, then verify MESSAGE-INTEGRITY with remote_pwd.
          */
         if (!ice->is_controlling) {
             return NANORTC_ERR_PROTOCOL;
         }
 
-        /* Verify transaction ID matches our last request */
-        if (memcmp(msg.transaction_id, ice->last_txid, STUN_TXID_SIZE) != 0) {
+        /*
+         * TD-018: scan the pending table for a slot whose txid matches
+         * this response. Responses may arrive out of order, so we cannot
+         * assume the latest-sent check is the one being acknowledged.
+         */
+        int pending_slot = -1;
+        for (int i = 0; i < NANORTC_ICE_MAX_PENDING_CHECKS; i++) {
+            if (ice->pending[i].in_flight &&
+                memcmp(msg.transaction_id, ice->pending[i].txid, STUN_TXID_SIZE) == 0) {
+                pending_slot = i;
+                break;
+            }
+        }
+        if (pending_slot < 0) {
             return NANORTC_ERR_PROTOCOL;
         }
 
@@ -213,20 +235,31 @@ int ice_handle_stun(nano_ice_t *ice, const uint8_t *data, size_t len, const nano
             }
         }
 
-        /* ICE connectivity established — record the selected pair */
-        if (ice->last_remote_idx < ice->remote_candidate_count) {
-            memcpy(ice->selected_addr, ice->remote_candidates[ice->last_remote_idx].addr,
+        /*
+         * ICE connectivity established — record the selected pair using
+         * the indices captured when this specific check was sent.
+         *
+         * Only clear the slot after MI verification succeeds; on MI failure
+         * we return early (above) without touching in_flight so a legitimate
+         * response arriving microseconds later can still be matched.
+         */
+        uint8_t sel_remote_idx = ice->pending[pending_slot].remote_idx;
+        uint8_t sel_local_idx = ice->pending[pending_slot].local_idx;
+        if (sel_remote_idx < ice->remote_candidate_count) {
+            memcpy(ice->selected_addr, ice->remote_candidates[sel_remote_idx].addr,
                    NANORTC_ADDR_SIZE);
-            ice->selected_port = ice->remote_candidates[ice->last_remote_idx].port;
-            ice->selected_family = ice->remote_candidates[ice->last_remote_idx].family;
-            ice->selected_type = ice->remote_candidates[ice->last_remote_idx].type;
+            ice->selected_port = ice->remote_candidates[sel_remote_idx].port;
+            ice->selected_family = ice->remote_candidates[sel_remote_idx].family;
+            ice->selected_type = ice->remote_candidates[sel_remote_idx].type;
         }
-        if (ice->last_local_idx < ice->local_candidate_count) {
-            memcpy(ice->selected_local_addr, ice->local_candidates[ice->last_local_idx].addr,
+        if (sel_local_idx < ice->local_candidate_count) {
+            memcpy(ice->selected_local_addr, ice->local_candidates[sel_local_idx].addr,
                    NANORTC_ADDR_SIZE);
-            ice->selected_local_port = ice->local_candidates[ice->last_local_idx].port;
-            ice->selected_local_family = ice->local_candidates[ice->last_local_idx].family;
+            ice->selected_local_port = ice->local_candidates[sel_local_idx].port;
+            ice->selected_local_family = ice->local_candidates[sel_local_idx].family;
         }
+        ice->selected_local_idx = sel_local_idx;
+        ice->pending[pending_slot].in_flight = false; /* free slot */
         ice->nominated = true;
         ice->state = NANORTC_ICE_STATE_CONNECTED;
 
@@ -281,8 +314,37 @@ int ice_generate_check(nano_ice_t *ice, uint32_t now_ms, const nanortc_crypto_pr
         return NANORTC_OK;
     }
 
-    /* Generate random transaction ID */
-    if (crypto->random_bytes(ice->last_txid, STUN_TXID_SIZE) != 0) {
+    /*
+     * TD-018: allocate a pending slot for this check. Prefer a free slot,
+     * then a stale entry past NANORTC_ICE_CHECK_TIMEOUT_MS, else reap the
+     * oldest in-flight entry so we always make forward progress. RFC 8445
+     * §6.1.4.2 allows retransmitting a check for a pair that already has
+     * an in-flight request, so reap-oldest is RFC-conformant.
+     */
+    int slot = -1;
+    int oldest = -1;
+    uint32_t oldest_age = 0;
+    for (int i = 0; i < NANORTC_ICE_MAX_PENDING_CHECKS; i++) {
+        if (!ice->pending[i].in_flight) {
+            slot = i;
+            break;
+        }
+        uint32_t age = now_ms - ice->pending[i].sent_at_ms; /* wrap-safe */
+        if (age >= NANORTC_ICE_CHECK_TIMEOUT_MS) {
+            slot = i; /* reap stale */
+            break;
+        }
+        if (oldest < 0 || age > oldest_age) {
+            oldest = i;
+            oldest_age = age;
+        }
+    }
+    if (slot < 0) {
+        slot = oldest; /* table full of fresh entries — reap oldest */
+    }
+
+    /* Generate random transaction ID into the chosen slot */
+    if (crypto->random_bytes(ice->pending[slot].txid, STUN_TXID_SIZE) != 0) {
         return NANORTC_ERR_CRYPTO;
     }
 
@@ -302,11 +364,17 @@ int ice_generate_check(nano_ice_t *ice, uint32_t now_ms, const nanortc_crypto_pr
     int rc = stun_encode_binding_request(
         username, ulen, ICE_HOST_PRIORITY(ice->current_local), true, /* use_candidate */
         true,                                                        /* is_controlling */
-        ice->tie_breaker, ice->last_txid, (const uint8_t *)ice->remote_pwd, ice->remote_pwd_len,
-        crypto->hmac_sha1, buf, buf_len, out_len);
+        ice->tie_breaker, ice->pending[slot].txid, (const uint8_t *)ice->remote_pwd,
+        ice->remote_pwd_len, crypto->hmac_sha1, buf, buf_len, out_len);
     if (rc != NANORTC_OK) {
         return rc;
     }
+
+    /* Commit the pending slot only after encoding succeeded */
+    ice->pending[slot].sent_at_ms = now_ms;
+    ice->pending[slot].local_idx = ice->current_local;
+    ice->pending[slot].remote_idx = ice->current_remote;
+    ice->pending[slot].in_flight = true;
 
     ice->check_count++;
     ice->next_check_ms = now_ms + ice->check_interval_ms;
@@ -314,10 +382,6 @@ int ice_generate_check(nano_ice_t *ice, uint32_t now_ms, const nanortc_crypto_pr
     if (ice->state == NANORTC_ICE_STATE_NEW) {
         ice->state = NANORTC_ICE_STATE_CHECKING;
     }
-
-    /* Record which pair this check belongs to (for response matching) */
-    ice->last_local_idx = ice->current_local;
-    ice->last_remote_idx = ice->current_remote;
 
     /* Advance pair: remote inner loop, local outer loop */
     ice->current_remote++;
@@ -409,7 +473,7 @@ int ice_generate_consent(nano_ice_t *ice, uint32_t now_ms, const nanortc_crypto_
 
     /* Consent check = Binding Request without USE-CANDIDATE (RFC 7675 §5.1) */
     int rc = stun_encode_binding_request(
-        username, ulen, ICE_HOST_PRIORITY(ice->last_local_idx), false, /* no use_candidate */
+        username, ulen, ICE_HOST_PRIORITY(ice->selected_local_idx), false, /* no use_candidate */
         ice->is_controlling, ice->tie_breaker, ice->consent_txid, (const uint8_t *)ice->remote_pwd,
         ice->remote_pwd_len, crypto->hmac_sha1, buf, buf_len, out_len);
     if (rc != NANORTC_OK) {

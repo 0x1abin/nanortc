@@ -31,7 +31,7 @@ NanoRTC is built by AI coding agents. Estimates use **agent sessions** (one focu
 
 Tracked in [tech-debt-tracker.md](exec-plans/tech-debt-tracker.md).
 
-**Current status: 1 active item** — `TD-018` (ICE CONTROLLING per-pair transaction fix, Phase 8 / PR-5). 17 resolved.
+**Current status: 0 active items.** 18 resolved (most recently `TD-018` — ICE CONTROLLING per-pair pending transaction table, Phase 8 / PR-5, resolved 2026-04-13).
 
 ## Plan Lifecycle
 

@@ -120,7 +120,7 @@ Each row is a self-contained PR. `PR-1…PR-5` are the recommended landing order
 
 ---
 
-## PR-5 — ICE CONTROLLING per-pair pending transaction table
+## PR-5 — ICE CONTROLLING per-pair pending transaction table **[COMPLETED 2026-04-13]**
 
 **Problem.** The CONTROLLING role in `src/nano_ice.c` only keeps a single scratch triple for its in-flight connectivity check:
 

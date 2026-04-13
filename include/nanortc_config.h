@@ -315,6 +315,21 @@
 #define NANORTC_ICE_CHECK_INTERVAL_MS 50
 #endif
 
+/* Maximum in-flight connectivity checks tracked per ICE agent (TD-018).
+ * Each slot holds a txid + pair indices + timestamp so out-of-order
+ * Binding Responses can be matched to the originating pair. Typical
+ * browser LAN RTT < 20 ms so 4 slots at 50 ms pacing cover 200 ms of
+ * in-flight budget per pair. */
+#ifndef NANORTC_ICE_MAX_PENDING_CHECKS
+#define NANORTC_ICE_MAX_PENDING_CHECKS 4
+#endif
+
+/* A pending connectivity check is considered stale and may be reaped
+ * after this many milliseconds without a matching Binding Response. */
+#ifndef NANORTC_ICE_CHECK_TIMEOUT_MS
+#define NANORTC_ICE_CHECK_TIMEOUT_MS 5000
+#endif
+
 /** @brief Recommended minimum poll interval for nanortc_handle_input() (ms).
  *  Callers should tick the state machine at least this often so DTLS
  *  handshake retransmits, ICE checks, and SCTP RTO timers fire on time. */
@@ -702,6 +717,18 @@ typedef enum {
 
 #if NANORTC_MAX_LOCAL_CANDIDATES < 1
 #error "NANORTC_MAX_LOCAL_CANDIDATES must be at least 1"
+#endif
+
+#if NANORTC_ICE_MAX_PENDING_CHECKS < 1
+#error "NANORTC_ICE_MAX_PENDING_CHECKS must be at least 1"
+#endif
+
+#if NANORTC_ICE_MAX_PENDING_CHECKS > 16
+#error "NANORTC_ICE_MAX_PENDING_CHECKS must be <= 16 (each slot uses ~20 B of nano_ice_t)"
+#endif
+
+#if NANORTC_ICE_CHECK_TIMEOUT_MS < NANORTC_ICE_CHECK_INTERVAL_MS
+#error "NANORTC_ICE_CHECK_TIMEOUT_MS must be >= NANORTC_ICE_CHECK_INTERVAL_MS"
 #endif
 
 #if NANORTC_MAX_MEDIA_TRACKS < 1
