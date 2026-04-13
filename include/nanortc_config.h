@@ -570,6 +570,48 @@
 #endif
 
 /* ----------------------------------------------------------------
+ * H.265/HEVC configuration (H265 sub-feature of VIDEO)
+ *
+ * RFC 7798 — "RTP Payload Format for High Efficiency Video Coding (HEVC)"
+ * ---------------------------------------------------------------- */
+
+/** @brief Enable H.265/HEVC video codec (RFC 7798). Sub-feature of VIDEO.
+ *  Disable to save ~11 KB of code on flash-constrained targets even when
+ *  NANORTC_FEATURE_VIDEO is on. Defaults to the VIDEO master switch. */
+#ifndef NANORTC_FEATURE_H265
+#define NANORTC_FEATURE_H265 NANORTC_FEATURE_VIDEO
+#endif
+
+#if NANORTC_FEATURE_H265 && !NANORTC_FEATURE_VIDEO
+#error "NANORTC_FEATURE_H265 requires NANORTC_FEATURE_VIDEO"
+#endif
+
+/** @brief Default dynamic Payload Type for H.265 (RFC 7798).
+ *  Intentionally disjoint from NANORTC_VIDEO_DEFAULT_PT (96) so a future
+ *  dual-codec m-line does not need to renumber. Falls in the dynamic range
+ *  96–127 per RFC 3551 §6. */
+#ifndef NANORTC_VIDEO_H265_DEFAULT_PT
+#define NANORTC_VIDEO_H265_DEFAULT_PT 98
+#endif
+
+/** @brief Maximum size of the pre-formatted sprop-vps/sps/pps fmtp fragment
+ *  stored per H.265 m-line (bytes). Holds the already-base64-encoded
+ *  parameter sets wrapped in "sprop-vps=..;sprop-sps=..;sprop-pps=.." form
+ *  so SDP generation is a single append. 512 bytes covers VPS(~32B) +
+ *  SPS(~128B) + PPS(~32B) after base64 expansion plus keys and separators. */
+#ifndef NANORTC_H265_SPROP_FMTP_SIZE
+#define NANORTC_H265_SPROP_FMTP_SIZE 512
+#endif
+
+/** @brief Maximum number of NAL units per H.265 access unit that the packer
+ *  will process in a single nanortc_send_video() call. The packer reference
+ *  array lives on the stack, so this also caps the stack cost. Typical VPS+
+ *  SPS+PPS+SEI+IDR access units have <= 8 NALs. */
+#ifndef NANORTC_MAX_NALS_PER_AU
+#define NANORTC_MAX_NALS_PER_AU 16
+#endif
+
+/* ----------------------------------------------------------------
  * Jitter buffer slots (AUDIO feature only)
  * ---------------------------------------------------------------- */
 

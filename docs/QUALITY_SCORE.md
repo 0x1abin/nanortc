@@ -45,6 +45,9 @@ Per-module quality grades for NanoRTC. Updated as implementation progresses.
 | Module | File | Grade | Tests | Notes |
 |--------|------|-------|-------|-------|
 | H.264 packetizer | `nano_h264.c` | **A** | 32 tests (single NAL, FU-A fragment/reassembly, STAP-A, keyframe detection, Annex-B NAL finder, edge cases) | RFC 6184 FU-A packetizer + depacketizer. Fuzz-tested (`fuzz_h264`): 31M+ executions clean. 83% line coverage. Browser verified (H.264 → Chrome). |
+| H.265 packetizer | `nano_h265.c` | **B** | 51 tests (Single NAL §4.4.1, FU §4.4.3 with S/E/FuType + LayerId/TID/F-bit preservation, AP §4.4.2 with LayerId/TID min + F-bit union + greedy AU packer, keyframe detection for IRAP types 16–23, PACI §4.4.4 drop, AP/FU abort transitions) | RFC 7798 Single/AP/FU packetizer + depacketizer. Hand-crafted vectors (no reference-implementation byte copies). Fuzz harness `fuzz_h265` + 5 seed corpora ready; 50M+ target execs to reach A grade. Not yet wired to nano_rtc (PR-2). Not yet browser-verified (PR-3). |
+| Annex-B scanner | `nano_annex_b.c` | **A** | 6 tests (shared via `test_h264.c`) | Codec-agnostic start-code scanner. Extracted from `nano_h264.c` to be shared with H.265. Fuzz-tested via `fuzz_h264` (31M+ execs) and `fuzz_h265`. |
+| Base64 encoder | `nano_base64.c` | **A** | 12 tests (RFC 4648 §10 canonical 7 vectors + alphabet coverage + buffer overflow + NUL termination + encoded-size helper) | RFC 4648 §4 standard alphabet encoder. Single function, no decoder (not needed). Used by H.265 SDP sprop-vps/sps/pps emission. |
 | BWE | `nano_bwe.c` | **A** | 26 tests (REMB parse, byte vector, EMA smoothing, min/max clamp, event threshold, public API) | REMB parsing, EMA smoothing. Fuzz-tested (`fuzz_bwe`): 82M+ executions clean. 96% line coverage. |
 
 ### Infrastructure

@@ -41,7 +41,10 @@ if(DEFINED ENV{IDF_PATH})
         list(APPEND NANORTC_CORE_SRCS src/nano_jitter.c)
     endif()
     if(CONFIG_NANORTC_FEATURE_VIDEO)
-        list(APPEND NANORTC_CORE_SRCS src/nano_bwe.c src/nano_h264.c)
+        list(APPEND NANORTC_CORE_SRCS src/nano_bwe.c src/nano_annex_b.c src/nano_h264.c)
+        if(CONFIG_NANORTC_FEATURE_H265)
+            list(APPEND NANORTC_CORE_SRCS src/nano_h265.c src/nano_base64.c)
+        endif()
     endif()
 
     idf_component_register(
@@ -63,10 +66,15 @@ option(NANORTC_FEATURE_DC_RELIABLE "Enable reliable DataChannel delivery" ON)
 option(NANORTC_FEATURE_DC_ORDERED  "Enable ordered DataChannel delivery" ON)
 option(NANORTC_FEATURE_AUDIO "Enable audio (RTP/SRTP/Jitter)" OFF)
 option(NANORTC_FEATURE_VIDEO "Enable video (RTP/SRTP/BWE)" OFF)
+option(NANORTC_FEATURE_H265  "Enable H.265/HEVC video codec (RFC 7798)" ${NANORTC_FEATURE_VIDEO})
 option(NANORTC_FEATURE_IPV6  "Enable IPv6 address support" ON)
 option(NANORTC_FEATURE_TURN "Enable TURN relay client (RFC 5766)" ON)
 
-message(STATUS "nanortc features: DC=${NANORTC_FEATURE_DATACHANNEL} DC_REL=${NANORTC_FEATURE_DC_RELIABLE} DC_ORD=${NANORTC_FEATURE_DC_ORDERED} AUDIO=${NANORTC_FEATURE_AUDIO} VIDEO=${NANORTC_FEATURE_VIDEO} IPV6=${NANORTC_FEATURE_IPV6} TURN=${NANORTC_FEATURE_TURN}")
+if(NANORTC_FEATURE_H265 AND NOT NANORTC_FEATURE_VIDEO)
+    message(FATAL_ERROR "NANORTC_FEATURE_H265 requires NANORTC_FEATURE_VIDEO=ON")
+endif()
+
+message(STATUS "nanortc features: DC=${NANORTC_FEATURE_DATACHANNEL} DC_REL=${NANORTC_FEATURE_DC_RELIABLE} DC_ORD=${NANORTC_FEATURE_DC_ORDERED} AUDIO=${NANORTC_FEATURE_AUDIO} VIDEO=${NANORTC_FEATURE_VIDEO} H265=${NANORTC_FEATURE_H265} IPV6=${NANORTC_FEATURE_IPV6} TURN=${NANORTC_FEATURE_TURN}")
 
 # Crypto backend selection
 set(NANORTC_CRYPTO "mbedtls" CACHE STRING "Crypto backend: mbedtls or openssl")
@@ -124,8 +132,15 @@ endif()
 if(NANORTC_FEATURE_VIDEO)
     list(APPEND NANORTC_SOURCES
         src/nano_bwe.c
+        src/nano_annex_b.c
         src/nano_h264.c
     )
+    if(NANORTC_FEATURE_H265)
+        list(APPEND NANORTC_SOURCES
+            src/nano_h265.c
+            src/nano_base64.c
+        )
+    endif()
 endif()
 
 # ---- Crypto backend ----
@@ -148,6 +163,7 @@ target_compile_definitions(nanortc PUBLIC
     NANORTC_FEATURE_DC_ORDERED=$<BOOL:${NANORTC_FEATURE_DC_ORDERED}>
     NANORTC_FEATURE_AUDIO=$<BOOL:${NANORTC_FEATURE_AUDIO}>
     NANORTC_FEATURE_VIDEO=$<BOOL:${NANORTC_FEATURE_VIDEO}>
+    NANORTC_FEATURE_H265=$<BOOL:${NANORTC_FEATURE_H265}>
     NANORTC_FEATURE_IPV6=$<BOOL:${NANORTC_FEATURE_IPV6}>
     NANORTC_FEATURE_TURN=$<BOOL:${NANORTC_FEATURE_TURN}>
 )
