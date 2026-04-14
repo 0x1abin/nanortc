@@ -203,11 +203,17 @@ static void parse_rtpmap(nano_sdp_mline_t *ml, const char *line, size_t line_len
             return;
         }
     } else if (ml->kind == SDP_MLINE_VIDEO) {
-        /* Check if this PT maps to H264 */
         p = next + 1;
+        /* Match H264 (4 chars) */
         if (p + 4 <= end && memcmp(p, "H264", 4) == 0) {
             ml->video_h264_rtpmap_pt = (uint8_t)pt;
         }
+#if NANORTC_FEATURE_H265
+        /* Match H265 (4 chars) — must come before any broader match */
+        else if (p + 4 <= end && memcmp(p, "H265", 4) == 0) {
+            ml->video_h265_rtpmap_pt = (uint8_t)pt;
+        }
+#endif
     }
 }
 
@@ -237,6 +243,12 @@ int sdp_parse(nano_sdp_t *sdp, const char *sdp_str, size_t len)
     sdp->mline_count = 0;
     /* Index into sdp->mlines[] for current m-line, -1 if not a media m-line */
     int current_mline_idx = -1;
+#if NANORTC_FEATURE_H265
+    /* RFC 7798 §4.1: MSST / MSMT tx-modes and §6.1 sprop-max-don-diff > 0 cause
+     * the receiver to fail hard — first pass does not implement DON reordering
+     * or multi-session decoding. */
+    bool h265_reject = false;
+#endif
 #endif
 
     size_t pos = 0;
@@ -298,15 +310,41 @@ int sdp_parse(nano_sdp_t *sdp, const char *sdp_str, size_t len)
             uint32_t fmtp_pt = parse_u32(fp, fend, &fnext);
             bool has_mode1 = false;
             bool has_preferred_profile = false;
+#if NANORTC_FEATURE_H265
+            bool h265_bad_txmode = false;
+            bool h265_bad_don = false;
+#endif
             const char *search = fnext;
             size_t remain = (size_t)(fend - search);
-            while (remain >= 20) {
-                if (memcmp(search, "packetization-mode=1", 20) == 0) {
+            /* Scan to the shortest fingerprint we care about. H.264 needs
+             * "packetization-mode=1" (20 B) and "profile-level-id=42e01f"
+             * (23 B); H.265 needs "tx-mode=MSMT"/"tx-mode=MSST" (12 B) and
+             * "sprop-max-don-diff=" + digit (20 B). The outer gate must be
+             * loose enough that the shortest match can still fit — the inner
+             * bounds gate each individual memcmp. */
+            while (remain >= 12) {
+                if (remain >= 20 && memcmp(search, "packetization-mode=1", 20) == 0) {
                     has_mode1 = true;
                 }
                 if (remain >= 23 && memcmp(search, "profile-level-id=42e01f", 23) == 0) {
                     has_preferred_profile = true;
                 }
+#if NANORTC_FEATURE_H265
+                /* RFC 7798 §4.1: only SRST (single-stream) is supported. */
+                if (memcmp(search, "tx-mode=MSMT", 12) == 0) {
+                    h265_bad_txmode = true;
+                }
+                if (memcmp(search, "tx-mode=MSST", 12) == 0) {
+                    h265_bad_txmode = true;
+                }
+                /* RFC 7798 §6.1: DON reordering unsupported; any non-zero value rejects. */
+                if (remain >= 20 && memcmp(search, "sprop-max-don-diff=", 19) == 0) {
+                    const char *vp = search + 19;
+                    if (vp < fend && *vp >= '0' && *vp <= '9' && *vp != '0') {
+                        h265_bad_don = true;
+                    }
+                }
+#endif
                 search++;
                 remain--;
             }
@@ -319,6 +357,19 @@ int sdp_parse(nano_sdp_t *sdp, const char *sdp_str, size_t len)
                 NANORTC_LOGD("SDP", has_preferred_profile ? "video H264 PT selected (profile match)"
                                                           : "video H264 PT selected (fallback)");
             }
+#if NANORTC_FEATURE_H265
+            /* H.265 fmtp validation: applies only when this fmtp's PT maps to an
+             * H.265 rtpmap we already parsed. */
+            if (ml->video_h265_rtpmap_pt != 0 && (uint8_t)fmtp_pt == ml->video_h265_rtpmap_pt) {
+                if (h265_bad_txmode || h265_bad_don) {
+                    NANORTC_LOGW("SDP", "H265 fmtp rejected (unsupported tx-mode or DON)");
+                    h265_reject = true;
+                } else if (ml->pt == 0 || ml->codec == NANORTC_CODEC_H265) {
+                    ml->pt = (uint8_t)fmtp_pt;
+                    NANORTC_LOGD("SDP", "video H265 PT selected");
+                }
+            }
+#endif
         } else if (current_mline_idx >= 0 && (line_starts_with(line, line_len, "a=sendrecv") ||
                                               line_starts_with(line, line_len, "a=sendonly") ||
                                               line_starts_with(line, line_len, "a=recvonly") ||
@@ -413,6 +464,12 @@ int sdp_parse(nano_sdp_t *sdp, const char *sdp_str, size_t len)
         NANORTC_LOGW("SDP", "missing ice-ufrag or ice-pwd");
         return NANORTC_ERR_PARSE;
     }
+
+#if NANORTC_HAVE_MEDIA_TRANSPORT && NANORTC_FEATURE_H265
+    if (h265_reject) {
+        return NANORTC_ERR_PARSE;
+    }
+#endif
 
     sdp->parsed = true;
     NANORTC_LOGI("SDP", "offer parsed");
@@ -698,7 +755,16 @@ static bool sdp_append_audio_mline(nano_sdp_t *sdp, nano_sdp_mline_t *ml, char *
     return true;
 }
 
-/** Append video m-line block (H.264, RFC 6184 §8.1). */
+/** Append video m-line block.
+ *
+ *  H.264 — RFC 6184 §8.1: profile-level-id 42e01f (Constrained Baseline 3.1),
+ *  packetization-mode=1 (STAP-A + FU-A + single NAL).
+ *
+ *  H.265 — RFC 7798 §7.1: profile-id=1 (Main), tier-flag=0, level-id=93
+ *  (Main Level 3.1), tx-mode=SRST. Optional sprop-vps/sprop-sps/sprop-pps
+ *  appended when the caller has provided out-of-band parameter sets via
+ *  nanortc_video_set_h265_parameter_sets().
+ */
 static bool sdp_append_video_mline(nano_sdp_t *sdp, nano_sdp_mline_t *ml, char *buf, size_t buf_len,
                                    size_t *pos, const char *mid)
 {
@@ -726,15 +792,44 @@ static bool sdp_append_video_mline(nano_sdp_t *sdp, nano_sdp_mline_t *ml, char *
         return false;
     if (!sdp_append_u16(buf, buf_len, pos, (uint16_t)ml->pt))
         return false;
-    if (!sdp_append(buf, buf_len, pos, " H264/90000\r\n"))
-        return false;
-    if (!sdp_append(buf, buf_len, pos, "a=fmtp:"))
-        return false;
-    if (!sdp_append_u16(buf, buf_len, pos, (uint16_t)ml->pt))
-        return false;
-    if (!sdp_append(buf, buf_len, pos,
-                    " level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f\r\n"))
-        return false;
+
+#if NANORTC_FEATURE_H265
+    if (ml->codec == NANORTC_CODEC_H265) {
+        if (!sdp_append(buf, buf_len, pos, " H265/90000\r\n"))
+            return false;
+        if (!sdp_append(buf, buf_len, pos, "a=fmtp:"))
+            return false;
+        if (!sdp_append_u16(buf, buf_len, pos, (uint16_t)ml->pt))
+            return false;
+        if (!sdp_append(buf, buf_len, pos, " profile-id=1;tier-flag=0;level-id=93;tx-mode=SRST"))
+            return false;
+        if (ml->h265_sprop_fmtp_len > 0) {
+            size_t frag_len = (size_t)ml->h265_sprop_fmtp_len;
+            if (*pos + frag_len + 1 >= buf_len) {
+                return false;
+            }
+            buf[(*pos)++] = ';';
+            memcpy(buf + *pos, ml->h265_sprop_fmtp, frag_len);
+            *pos += frag_len;
+            buf[*pos] = '\0';
+        }
+        if (!sdp_append(buf, buf_len, pos, "\r\n"))
+            return false;
+    } else
+#endif /* NANORTC_FEATURE_H265 */
+    {
+        if (!sdp_append(buf, buf_len, pos, " H264/90000\r\n"))
+            return false;
+        if (!sdp_append(buf, buf_len, pos, "a=fmtp:"))
+            return false;
+        if (!sdp_append_u16(buf, buf_len, pos, (uint16_t)ml->pt))
+            return false;
+        if (!sdp_append(
+                buf, buf_len, pos,
+                " level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f\r\n"))
+            return false;
+    }
+
     if (!sdp_append(buf, buf_len, pos, "a=rtcp-fb:"))
         return false;
     if (!sdp_append_u16(buf, buf_len, pos, (uint16_t)ml->pt))

@@ -414,6 +414,7 @@ typedef enum {
     NANORTC_CODEC_PCMU,     /**< G.711 mu-law (RFC 3551). */
     NANORTC_CODEC_H264,     /**< H.264 video (RFC 6184). */
     NANORTC_CODEC_VP8,      /**< VP8 video (RFC 7741). */
+    NANORTC_CODEC_H265,     /**< H.265/HEVC video (RFC 7798). */
 } nanortc_codec_t;
 
 /* ----------------------------------------------------------------
@@ -842,6 +843,34 @@ NANORTC_API int nanortc_add_audio_track(nanortc_t *rtc, nanortc_direction_t dire
  */
 NANORTC_API int nanortc_add_video_track(nanortc_t *rtc, nanortc_direction_t direction,
                                         nanortc_codec_t codec);
+
+#if NANORTC_FEATURE_H265
+/**
+ * @brief Provide the out-of-band VPS/SPS/PPS NAL units for an H.265 track.
+ *
+ * Must be called after nanortc_add_video_track() with NANORTC_CODEC_H265 and
+ * before nanortc_create_offer() / nanortc_accept_offer(). The library
+ * base64-encodes the three parameter-set NALs (RFC 4648) and emits them as
+ * sprop-vps / sprop-sps / sprop-pps fmtp parameters (RFC 7798 §7.1).
+ *
+ * Each NAL must be the raw NAL unit (2-byte H.265 NAL header + RBSP), with
+ * no Annex-B start code.
+ *
+ * @param rtc      Initialized RTC state with an H.265 video track added.
+ * @param mid      Track MID returned by nanortc_add_video_track().
+ * @param vps      VPS NAL bytes.
+ * @param vps_len  Length of @p vps in bytes.
+ * @param sps      SPS NAL bytes.
+ * @param sps_len  Length of @p sps in bytes.
+ * @param pps      PPS NAL bytes.
+ * @param pps_len  Length of @p pps in bytes.
+ * @return NANORTC_OK on success, negative error code otherwise.
+ */
+NANORTC_API int nanortc_video_set_h265_parameter_sets(nanortc_t *rtc, uint8_t mid,
+                                                      const uint8_t *vps, size_t vps_len,
+                                                      const uint8_t *sps, size_t sps_len,
+                                                      const uint8_t *pps, size_t pps_len);
+#endif /* NANORTC_FEATURE_H265 */
 
 /**
  * @brief Change direction of an existing media track.

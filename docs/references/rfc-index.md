@@ -31,6 +31,8 @@ Authoritative protocol specifications for NanoRTC. RFCs are the **sole** authori
 | Opus RTP | [RFC 7587](https://www.rfc-editor.org/rfc/rfc7587) | RTP Payload Format for Opus | Entire document | Phase 2 Week 1 |
 | H.264 RTP | [RFC 6184](https://www.rfc-editor.org/rfc/rfc6184) | RTP Payload Format for H.264 Video | §5.8 (FU-A fragmentation) | Phase 3 Week 1 |
 | VP8 RTP | [RFC 7741](https://www.rfc-editor.org/rfc/rfc7741) | RTP Payload Format for VP8 Video | §4 (payload format) | Phase 3 Week 1 (optional) |
+| H.265 RTP | [RFC 7798](https://www.rfc-editor.org/rfc/rfc7798) | RTP Payload Format for HEVC | §1.1.4 (NAL header), §4.4.1 (Single NAL), §4.4.2 (Aggregation Packet), §4.4.3 (Fragmentation Unit), §7.1 (SDP parameters) | Phase 3.5 |
+| Base64 | [RFC 4648](https://www.rfc-editor.org/rfc/rfc4648) | The Base16, Base32, and Base64 Data Encodings | §4 (base64 alphabet), §10 (test vectors) | Phase 3.5 (sprop-vps/sps/pps fmtp) |
 
 ## Security
 
