@@ -110,6 +110,33 @@ Each module is one PR. A PR must include:
 - Tests (`tests/test_<module>.c`)
 - Updated CLAUDE.md if build instructions change
 
+## Local CI loop
+
+`scripts/ci-check.sh` mirrors GitHub Actions but is tuned to run fast on a
+developer machine:
+
+- **`./scripts/ci-check.sh --fast`** — pre-push tier. Runs arch checks +
+  clang-format + DATA build + MEDIA build + ASan, skips the AUDIO_ONLY /
+  MEDIA_ONLY / CORE_ONLY combos, mbedtls combos, and the libdatachannel
+  interop suite. Cold build ≈ 40 s; warm (incremental) build ≈ 5 s.
+- **`./scripts/ci-check.sh`** — full matrix. Mirrors GitHub Actions
+  exactly: 6 feature combos × 2 crypto backends + ASan + libdatachannel
+  interop. Run before pushing to `main` or release branches.
+- **`./scripts/ci-check.sh --clean`** — wipe `.cache/ci/build-ci-*` first.
+  Use after a flag or toolchain change that may have left stale state.
+
+Two speedups make this work and are auto-detected:
+
+- **ccache** — install via `brew install ccache`. The script wires it in
+  as `CMAKE_C_COMPILER_LAUNCHER`; on a warm cache, identical TUs compile
+  in microseconds. Inspect with `ccache -s`.
+- **Persistent build dirs** — `.cache/ci/build-ci-*` are kept across
+  runs. cmake reuses `CMakeCache.txt` and the ninja/make incremental
+  graph, so unchanged TUs are skipped at the build-system level too.
+
+The full matrix without these speedups runs in 8-10 minutes; with them, a
+warm `--fast` run is under 10 seconds.
+
 ## RFC Reference by Module
 
 | Module | RFC | Key Sections |

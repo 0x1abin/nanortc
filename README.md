@@ -183,7 +183,7 @@ What this means in practice:
 - **All code** — Written by AI agents: library source, tests, CI, build system, documentation
 - **Quality gates** — Mechanically enforced via CI: forbidden includes, no malloc, symbol naming, format checks, 6-combo feature flag build matrix, AddressSanitizer
 - **RFC compliance** — Protocol implementations follow RFCs as the authoritative standard, not reference code
-- **Continuous verification** — `./scripts/ci-check.sh` runs the same checks locally that run in GitHub Actions
+- **Continuous verification** — `./scripts/ci-check.sh` runs the same checks locally that run in GitHub Actions. Auto-detects `ccache`, keeps build dirs across runs for incremental compilation, and exposes `--fast` for tight pre-push loops (skips low-yield combos and the libdatachannel interop suite — seconds rather than minutes)
 
 The repository structure itself is designed for agent legibility: [AGENTS.md](AGENTS.md) serves as the entry point, with progressive disclosure into deeper documentation. Constraints are enforced by code, not by convention.
 

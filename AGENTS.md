@@ -80,7 +80,11 @@ idf.py build
 clang-format -i src/*.c src/*.h include/*.h crypto/*.h crypto/*.c
 
 # Run full CI locally (same checks as GitHub Actions)
-./scripts/ci-check.sh
+./scripts/ci-check.sh             # full matrix; mirrors GitHub Actions
+./scripts/ci-check.sh --fast      # tier-1 subset for tight pre-push loops (DATA + MEDIA + ASan, ~5s with ccache hit)
+./scripts/ci-check.sh --clean     # wipe build dirs first
+# The script auto-detects ccache and keeps build dirs across runs for
+# incremental compilation. Install via: brew install ccache
 ```
 
 ## Mandatory Rules
