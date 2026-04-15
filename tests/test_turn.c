@@ -892,7 +892,7 @@ static void test_turn_refresh_error_fails(void)
     TEST_ASSERT_EQUAL_INT(NANORTC_TURN_FAILED, turn.state);
 }
 
-/* T31: CreatePermission success response */
+/* T31: CreatePermission success response — must echo our txid (F1) */
 static void test_turn_permission_success_response(void)
 {
     nano_turn_t turn;
@@ -903,43 +903,53 @@ static void test_turn_permission_success_response(void)
     size_t out_len = 0;
     turn_create_permission(&turn, peer, 4, 7000, crypto(), buf, sizeof(buf), &out_len);
 
-    /* CreatePermission response uses the permission's txid, not last_txid.
-     * The response just needs to be a valid STUN message. Use a random txid
-     * since permission response matching skips txid check. */
+    /* Build success response echoing the per-permission txid stored
+     * during turn_create_permission(). */
     uint8_t resp[64];
-    uint8_t fake_txid[STUN_TXID_SIZE] = {0};
-    size_t resp_len = build_success_response(resp, STUN_CREATE_PERMISSION_RESPONSE, fake_txid);
+    size_t resp_len = build_success_response(resp, STUN_CREATE_PERMISSION_RESPONSE,
+                                             turn.permissions[0].txid);
 
     int rc = turn_handle_response(&turn, resp, resp_len, crypto());
     TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
 }
 
-/* T32: CreatePermission error 438 — stale nonce */
+/* T32: CreatePermission error 438 — stale nonce, must echo our txid (F1) */
 static void test_turn_permission_438_stale_nonce(void)
 {
     nano_turn_t turn;
     setup_turn_allocated(&turn);
 
-    uint8_t fake_txid[STUN_TXID_SIZE] = {0};
+    /* First send a permission so the client has a txid in flight. */
+    uint8_t peer[NANORTC_ADDR_SIZE] = {172, 16, 0, 1};
+    uint8_t buf[512];
+    size_t out_len = 0;
+    turn_create_permission(&turn, peer, 4, 7000, crypto(), buf, sizeof(buf), &out_len);
+
     uint8_t resp[256];
-    size_t resp_len =
-        build_error_response(resp, STUN_CREATE_PERMISSION_ERROR, fake_txid, 438, "perm_nonce");
+    size_t resp_len = build_error_response(resp, STUN_CREATE_PERMISSION_ERROR,
+                                           turn.permissions[0].txid, 438, "perm_nonce");
 
     int rc = turn_handle_response(&turn, resp, resp_len, crypto());
     TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
     TEST_ASSERT_EQUAL_STRING("perm_nonce", turn.nonce);
 }
 
-/* T33: CreatePermission error non-438 — fails */
+/* T33: CreatePermission error non-438 — fails (F1: must echo our txid first) */
 static void test_turn_permission_error_fails(void)
 {
     nano_turn_t turn;
     setup_turn_allocated(&turn);
 
-    uint8_t fake_txid[STUN_TXID_SIZE] = {0};
+    /* Send a permission so the txid is in flight. */
+    uint8_t peer[NANORTC_ADDR_SIZE] = {172, 16, 0, 1};
+    uint8_t buf[512];
+    size_t out_len = 0;
+    turn_create_permission(&turn, peer, 4, 7000, crypto(), buf, sizeof(buf), &out_len);
+
     uint8_t resp[256];
     size_t resp_len =
-        build_error_response(resp, STUN_CREATE_PERMISSION_ERROR, fake_txid, 403, NULL);
+        build_error_response(resp, STUN_CREATE_PERMISSION_ERROR, turn.permissions[0].txid, 403,
+                             NULL);
 
     int rc = turn_handle_response(&turn, resp, resp_len, crypto());
     TEST_ASSERT_EQUAL_INT(NANORTC_ERR_PROTOCOL, rc);
@@ -1064,6 +1074,285 @@ static void test_turn_channel_refresh_errors(void)
 }
 
 /* ----------------------------------------------------------------
+ * Phase 5.1 hardening tests — RFC 5766 / RFC 8656 / RFC 8489
+ * ---------------------------------------------------------------- */
+
+/* Helper: count outstanding occurrences of a STUN attribute in a parsed message buffer */
+static int rfc_count_attribute(const uint8_t *buf, size_t len, uint16_t target)
+{
+    if (len < STUN_HEADER_SIZE) {
+        return -1;
+    }
+    int count = 0;
+    size_t pos = STUN_HEADER_SIZE;
+    while (pos + 4 <= len) {
+        uint16_t type = (uint16_t)((buf[pos] << 8) | buf[pos + 1]);
+        uint16_t alen = (uint16_t)((buf[pos + 2] << 8) | buf[pos + 3]);
+        if (type == target) {
+            count++;
+        }
+        size_t padded = ((size_t)alen + 3u) & ~3u;
+        if (pos + 4 + padded > len) {
+            break;
+        }
+        pos += 4 + padded;
+    }
+    return count;
+}
+
+/* H1 (F2): RFC 8656 §12 channel range — 0x4FFF and 0x5000 are not valid binding numbers */
+static void test_turn_channel_number_range(void)
+{
+    nano_turn_t turn;
+    setup_turn_allocated(&turn);
+
+    /* Bypass the per-instance MAX_CHANNELS limit (which is 4 by default) so
+     * that we can exhaust the channel-number space directly. */
+    turn.next_channel = 0x4FFE; /* the very last legal binding */
+
+    uint8_t buf[512];
+    size_t out_len = 0;
+    uint8_t peer1[NANORTC_ADDR_SIZE] = {10, 0, 0, 1};
+    int rc = turn_channel_bind(&turn, peer1, 4, 5001, crypto(), buf, sizeof(buf), &out_len);
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
+    TEST_ASSERT_EQUAL_HEX16(0x4FFE, turn.channels[0].channel);
+
+    /* Next allocation must be rejected: 0x4FFF is reserved (8656 §12). */
+    turn.channel_count = 0; /* reset slot reuse but keep next_channel advanced */
+    out_len = 0;
+    uint8_t peer2[NANORTC_ADDR_SIZE] = {10, 0, 0, 2};
+    rc = turn_channel_bind(&turn, peer2, 4, 5002, crypto(), buf, sizeof(buf), &out_len);
+    TEST_ASSERT_EQUAL_INT(NANORTC_ERR_BUFFER_TOO_SMALL, rc);
+    TEST_ASSERT_EQUAL_size_t(0, out_len);
+}
+
+/* H2: ChannelData padding to 4-byte boundary (RFC 5766 §11.5) */
+static void test_turn_channel_data_padding(void)
+{
+    uint8_t payload[5] = {0xDE, 0xAD, 0xBE, 0xEF, 0x42};
+    uint8_t buf[64];
+    size_t out_len = 0;
+
+    int rc = nano_turn_wrap_channel_data(0x4001, payload, sizeof(payload), buf, sizeof(buf),
+                                         &out_len);
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
+    /* 4 (header) + 5 (payload) + 3 (padding to 8) = 12 */
+    TEST_ASSERT_EQUAL_size_t(12, out_len);
+    /* Length field is the *unpadded* payload length per RFC 5766 §11.4 */
+    TEST_ASSERT_EQUAL_HEX16(5, (uint16_t)((buf[2] << 8) | buf[3]));
+    /* Padding bytes should be zero. */
+    TEST_ASSERT_EQUAL_INT(0, buf[9]);
+    TEST_ASSERT_EQUAL_INT(0, buf[10]);
+    TEST_ASSERT_EQUAL_INT(0, buf[11]);
+}
+
+/* H3: Send Indication MUST NOT carry MESSAGE-INTEGRITY (RFC 5766 §10.1) */
+static void test_turn_send_indication_no_integrity(void)
+{
+    uint8_t peer_addr[NANORTC_ADDR_SIZE] = {192, 168, 1, 1};
+    const uint8_t payload[] = "no integrity here";
+    uint8_t buf[256];
+    size_t out_len = 0;
+
+    int rc = turn_wrap_send(peer_addr, 4, 5000, payload, sizeof(payload) - 1, buf, sizeof(buf),
+                            &out_len);
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
+
+    int mi_count = rfc_count_attribute(buf, out_len, STUN_ATTR_MESSAGE_INTEGRITY);
+    TEST_ASSERT_EQUAL_INT(0, mi_count);
+
+    /* Sanity: must contain XOR-PEER-ADDRESS and DATA */
+    TEST_ASSERT_EQUAL_INT(1, rfc_count_attribute(buf, out_len, STUN_ATTR_XOR_PEER_ADDRESS));
+    TEST_ASSERT_EQUAL_INT(1, rfc_count_attribute(buf, out_len, STUN_ATTR_DATA));
+}
+
+/* H4: CreatePermission MUST carry MESSAGE-INTEGRITY (RFC 5766 §9, §14.4) */
+static void test_turn_create_permission_has_integrity(void)
+{
+    nano_turn_t turn;
+    setup_turn_allocated(&turn);
+
+    uint8_t peer[NANORTC_ADDR_SIZE] = {172, 16, 0, 1};
+    uint8_t buf[512];
+    size_t out_len = 0;
+    int rc = turn_create_permission(&turn, peer, 4, 7000, crypto(), buf, sizeof(buf), &out_len);
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
+    TEST_ASSERT_EQUAL_INT(1, rfc_count_attribute(buf, out_len, STUN_ATTR_MESSAGE_INTEGRITY));
+    TEST_ASSERT_EQUAL_INT(1, rfc_count_attribute(buf, out_len, STUN_ATTR_USERNAME));
+    TEST_ASSERT_EQUAL_INT(1, rfc_count_attribute(buf, out_len, STUN_ATTR_REALM));
+    TEST_ASSERT_EQUAL_INT(1, rfc_count_attribute(buf, out_len, STUN_ATTR_NONCE));
+}
+
+/* H5: ChannelBind MUST carry MESSAGE-INTEGRITY (RFC 5766 §11.2) */
+static void test_turn_channel_bind_has_integrity(void)
+{
+    nano_turn_t turn;
+    setup_turn_allocated(&turn);
+
+    uint8_t peer[NANORTC_ADDR_SIZE] = {192, 168, 1, 50};
+    uint8_t buf[512];
+    size_t out_len = 0;
+    int rc = turn_channel_bind(&turn, peer, 4, 9000, crypto(), buf, sizeof(buf), &out_len);
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
+    TEST_ASSERT_EQUAL_INT(1, rfc_count_attribute(buf, out_len, STUN_ATTR_MESSAGE_INTEGRITY));
+    TEST_ASSERT_EQUAL_INT(1, rfc_count_attribute(buf, out_len, STUN_ATTR_CHANNEL_NUMBER));
+    TEST_ASSERT_EQUAL_INT(1, rfc_count_attribute(buf, out_len, STUN_ATTR_XOR_PEER_ADDRESS));
+}
+
+/* H6 (F3): Refresh with LIFETIME=0 explicitly deallocates (RFC 5766 §7) */
+static void test_turn_refresh_zero_lifetime_deallocate(void)
+{
+    nano_turn_t turn;
+    setup_turn_allocated(&turn);
+    turn.relay_family = STUN_FAMILY_IPV4;
+    turn.relay_port = 49152;
+
+    uint8_t buf[512];
+    size_t out_len = 0;
+    int rc = turn_deallocate(&turn, crypto(), buf, sizeof(buf), &out_len);
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
+    TEST_ASSERT_TRUE(out_len > 0);
+
+    /* Local state must be reset. */
+    TEST_ASSERT_EQUAL_INT(NANORTC_TURN_IDLE, turn.state);
+    TEST_ASSERT_EQUAL_INT(0, turn.lifetime_s);
+    TEST_ASSERT_EQUAL_INT(0, turn.permission_count);
+    TEST_ASSERT_EQUAL_INT(0, turn.channel_count);
+
+    /* Wire format: must be REFRESH-REQUEST with LIFETIME=0 + auth + MI. */
+    stun_msg_t msg;
+    rc = stun_parse(buf, out_len, &msg);
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
+    TEST_ASSERT_EQUAL_HEX16(STUN_REFRESH_REQUEST, msg.type);
+    TEST_ASSERT_EQUAL_INT(0, msg.lifetime);
+    TEST_ASSERT_TRUE(msg.has_integrity);
+    TEST_ASSERT_NOT_NULL(msg.username);
+    TEST_ASSERT_NOT_NULL(msg.realm);
+    TEST_ASSERT_NOT_NULL(msg.nonce);
+
+    /* Calling deallocate again from IDLE should be a no-op error. */
+    out_len = 0;
+    rc = turn_deallocate(&turn, crypto(), buf, sizeof(buf), &out_len);
+    TEST_ASSERT_EQUAL_INT(NANORTC_ERR_STATE, rc);
+}
+
+/* H7 (F1): Spoofed CreatePermission response with foreign txid is rejected */
+static void test_turn_create_permission_txid_validation(void)
+{
+    nano_turn_t turn;
+    setup_turn_allocated(&turn);
+
+    uint8_t peer[NANORTC_ADDR_SIZE] = {172, 16, 0, 1};
+    uint8_t buf[512];
+    size_t out_len = 0;
+    turn_create_permission(&turn, peer, 4, 7000, crypto(), buf, sizeof(buf), &out_len);
+
+    /* Spoofed response with a txid that does not match any in-flight request. */
+    uint8_t spoof_txid[STUN_TXID_SIZE];
+    memset(spoof_txid, 0xAA, STUN_TXID_SIZE);
+
+    /* Make sure we are not accidentally colliding with the real one. */
+    TEST_ASSERT_FALSE(memcmp(spoof_txid, turn.permissions[0].txid, STUN_TXID_SIZE) == 0);
+
+    /* Spoofed success response — must be rejected. */
+    uint8_t resp[64];
+    size_t resp_len = build_success_response(resp, STUN_CREATE_PERMISSION_RESPONSE, spoof_txid);
+    int rc = turn_handle_response(&turn, resp, resp_len, crypto());
+    TEST_ASSERT_EQUAL_INT(NANORTC_ERR_PROTOCOL, rc);
+
+    /* Spoofed 438 stale-nonce error — must NOT update our nonce. */
+    char stale_marker[] = "evilNonce!";
+    size_t err_len = build_error_response(resp, STUN_CREATE_PERMISSION_ERROR, spoof_txid, 438,
+                                          stale_marker);
+    rc = turn_handle_response(&turn, resp, err_len, crypto());
+    TEST_ASSERT_EQUAL_INT(NANORTC_ERR_PROTOCOL, rc);
+    /* Our nonce must remain unchanged ("nonce456" from setup_turn_allocated). */
+    TEST_ASSERT_EQUAL_STRING("nonce456", turn.nonce);
+
+    /* The legitimate response (echoing our txid) is still accepted. */
+    resp_len = build_success_response(resp, STUN_CREATE_PERMISSION_RESPONSE,
+                                      turn.permissions[0].txid);
+    rc = turn_handle_response(&turn, resp, resp_len, crypto());
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
+}
+
+/* H8: MESSAGE-INTEGRITY matches an independent HMAC-SHA1 with key derived per
+ * RFC 8489 §9.2.2 (long-term mechanism, key = MD5(user:realm:pass)). Drives the
+ * full credential path via the 401 challenge so we catch any drift between the
+ * two derivations. */
+static void test_turn_message_integrity_hmac_vector(void)
+{
+    nano_turn_t turn;
+    setup_turn(&turn); /* user="testuser", pass="testpass" */
+
+    /* Step 1: send unauthenticated Allocate. */
+    uint8_t buf[512];
+    size_t out_len = 0;
+    int rc = turn_start_allocate(&turn, crypto(), buf, sizeof(buf), &out_len);
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
+
+    /* Step 2: feed a 401 with realm="example.com" nonce="abc123nonce". */
+    uint8_t resp[256];
+    size_t resp_len = build_401_response(resp, turn.last_txid);
+    rc = turn_handle_response(&turn, resp, resp_len, crypto());
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
+    TEST_ASSERT_EQUAL_INT(NANORTC_TURN_CHALLENGED, turn.state);
+
+    /* Step 3: send authenticated Allocate. */
+    out_len = 0;
+    rc = turn_start_allocate(&turn, crypto(), buf, sizeof(buf), &out_len);
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
+
+    /* Locate the MESSAGE-INTEGRITY attribute in the wire bytes. */
+    int found = 0;
+    size_t mi_pos = 0;
+    size_t pos = STUN_HEADER_SIZE;
+    while (pos + 4 <= out_len) {
+        uint16_t type = (uint16_t)((buf[pos] << 8) | buf[pos + 1]);
+        uint16_t alen = (uint16_t)((buf[pos + 2] << 8) | buf[pos + 3]);
+        if (type == STUN_ATTR_MESSAGE_INTEGRITY) {
+            TEST_ASSERT_EQUAL_INT(20, alen);
+            mi_pos = pos;
+            found = 1;
+            break;
+        }
+        pos += 4 + (((size_t)alen + 3u) & ~3u);
+    }
+    TEST_ASSERT_TRUE(found);
+
+    /* Independently derive the key per RFC 8489 §9.2.2 with the credentials
+     * the test driver passed (testuser/testpass) and the realm from the 401. */
+    uint8_t key_input[64];
+    size_t kpos = 0;
+    memcpy(key_input + kpos, "testuser", 8);
+    kpos += 8;
+    key_input[kpos++] = ':';
+    memcpy(key_input + kpos, turn.realm, turn.realm_len);
+    kpos += turn.realm_len;
+    key_input[kpos++] = ':';
+    memcpy(key_input + kpos, "testpass", 8);
+    kpos += 8;
+
+    uint8_t key[16];
+    crypto()->md5(key_input, kpos, key);
+
+    /* Sanity: derived key must match what the client computed internally. */
+    TEST_ASSERT_EQUAL_MEMORY(key, turn.hmac_key, 16);
+
+    /* RFC 8489 §14.5: HMAC is over wire bytes [0..mi_pos) with the STUN length
+     * field set to include the MESSAGE-INTEGRITY attribute (mi_pos + 24 - HDR). */
+    uint8_t mi_buf[1024];
+    memcpy(mi_buf, buf, mi_pos);
+    mi_buf[2] = (uint8_t)((mi_pos + 24 - STUN_HEADER_SIZE) >> 8);
+    mi_buf[3] = (uint8_t)((mi_pos + 24 - STUN_HEADER_SIZE) & 0xFF);
+
+    uint8_t expected[20];
+    crypto()->hmac_sha1(key, 16, mi_buf, mi_pos, expected);
+
+    TEST_ASSERT_EQUAL_MEMORY(expected, buf + mi_pos + 4, 20);
+}
+
+/* ----------------------------------------------------------------
  * Test runner
  * ---------------------------------------------------------------- */
 
@@ -1114,6 +1403,16 @@ int main(void)
     RUN_TEST(test_turn_find_null_params);
     RUN_TEST(test_turn_permission_refresh_errors);
     RUN_TEST(test_turn_channel_refresh_errors);
+
+    /* Phase 5.1 hardening (RFC 5766 / 8656 / 8489) */
+    RUN_TEST(test_turn_channel_number_range);
+    RUN_TEST(test_turn_channel_data_padding);
+    RUN_TEST(test_turn_send_indication_no_integrity);
+    RUN_TEST(test_turn_create_permission_has_integrity);
+    RUN_TEST(test_turn_channel_bind_has_integrity);
+    RUN_TEST(test_turn_refresh_zero_lifetime_deallocate);
+    RUN_TEST(test_turn_create_permission_txid_validation);
+    RUN_TEST(test_turn_message_integrity_hmac_vector);
 
     return UNITY_END();
 }

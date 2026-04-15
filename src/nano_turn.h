@@ -76,6 +76,7 @@ typedef struct nano_turn {
         uint16_t port;
         uint8_t family;
         bool active;
+        uint8_t txid[STUN_TXID_SIZE]; /**< Last CreatePermission transaction ID (RFC 5766 §9). */
     } permissions[NANORTC_TURN_MAX_PERMISSIONS];
     uint8_t permission_count;
 
@@ -84,7 +85,7 @@ typedef struct nano_turn {
         uint8_t addr[NANORTC_ADDR_SIZE];
         uint16_t port;
         uint8_t family;
-        uint16_t channel;             /**< 0x4000-0x4FFF (RFC 5766 §11). */
+        uint16_t channel;             /**< 0x4000-0x4FFE (RFC 8656 §12). */
         bool bound;                   /**< True after ChannelBind success response. */
         uint32_t refresh_at_ms;       /**< When to re-send ChannelBind (9 min). */
         uint8_t txid[STUN_TXID_SIZE]; /**< Last ChannelBind transaction ID. */
@@ -130,6 +131,20 @@ int turn_handle_response(nano_turn_t *turn, const uint8_t *data, size_t len,
 int turn_generate_refresh(nano_turn_t *turn, uint32_t now_ms,
                           const nanortc_crypto_provider_t *crypto, uint8_t *buf, size_t buf_len,
                           size_t *out_len);
+
+/**
+ * Generate a Refresh request with LIFETIME=0 to explicitly deallocate
+ * the relay (RFC 5766 §7 / RFC 8656 §6).
+ *
+ * Unlike turn_generate_refresh(), this ignores the refresh schedule and
+ * always emits a request when in NANORTC_TURN_ALLOCATED state. After this
+ * call, the state machine moves to NANORTC_TURN_IDLE; the caller should
+ * stop using the relay address. The server will respond with a success
+ * Refresh response (treated as a normal refresh) but the allocation is
+ * already released on its side.
+ */
+int turn_deallocate(nano_turn_t *turn, const nanortc_crypto_provider_t *crypto, uint8_t *buf,
+                    size_t buf_len, size_t *out_len);
 
 /**
  * Generate a CreatePermission request for a peer address.

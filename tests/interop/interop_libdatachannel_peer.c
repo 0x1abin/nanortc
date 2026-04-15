@@ -155,6 +155,13 @@ static int libdatachannel_recv_answer(interop_libdatachannel_peer_t *peer)
 int interop_libdatachannel_start(interop_libdatachannel_peer_t *peer, int sig_fd, const char *label,
                                  uint16_t remote_port)
 {
+    return interop_libdatachannel_start_ex(peer, sig_fd, label, remote_port, NULL);
+}
+
+int interop_libdatachannel_start_ex(interop_libdatachannel_peer_t *peer, int sig_fd,
+                                    const char *label, uint16_t remote_port,
+                                    const interop_libdatachannel_ice_config_t *ice_config)
+{
     if (!peer || !label) {
         return -1;
     }
@@ -169,11 +176,43 @@ int interop_libdatachannel_start(interop_libdatachannel_peer_t *peer, int sig_fd
     /* Init libdatachannel logging */
     rtcInitLogger(RTC_LOG_WARNING, NULL);
 
-    /* Create PeerConnection (no STUN/TURN — localhost only) */
+    /* Create PeerConnection. ICE servers and transport policy come from the
+     * caller's ice_config, or are empty when ice_config is NULL (legacy
+     * host-only behaviour). */
     rtcConfiguration config;
     memset(&config, 0, sizeof(config));
     config.iceServers = NULL;
     config.iceServersCount = 0;
+
+    /* Build a transient iceServers array from ice_config. Storage lives on the
+     * stack here because rtcCreatePeerConnection() copies the URLs internally. */
+    const char *ice_urls[2];
+    int n_urls = 0;
+    char turn_with_creds[512];
+    if (ice_config) {
+        if (ice_config->stun_url && ice_config->stun_url[0] != '\0') {
+            ice_urls[n_urls++] = ice_config->stun_url;
+        }
+        if (ice_config->turn_url && ice_config->turn_url[0] != '\0') {
+            /* libdatachannel parses TURN credentials from the URL itself
+             * when in the form "turn:user:pass@host:port". Build the URL
+             * inline rather than relying on a separate creds struct. */
+            const char *user = ice_config->turn_user ? ice_config->turn_user : "";
+            const char *pass = ice_config->turn_pass ? ice_config->turn_pass : "";
+            int written = snprintf(turn_with_creds, sizeof(turn_with_creds), "turn:%s:%s@%s",
+                                   user, pass, ice_config->turn_url + 5);
+            if (written < 0 || (size_t)written >= sizeof(turn_with_creds)) {
+                fprintf(stderr, "[libdatachannel] TURN URL too long\n");
+                return -1;
+            }
+            ice_urls[n_urls++] = turn_with_creds;
+        }
+        config.iceServers = ice_urls;
+        config.iceServersCount = n_urls;
+        if (ice_config->relay_only) {
+            config.iceTransportPolicy = RTC_TRANSPORT_POLICY_RELAY;
+        }
+    }
 
     peer->pc = rtcCreatePeerConnection(&config);
     if (peer->pc < 0) {

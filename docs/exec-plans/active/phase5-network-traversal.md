@@ -69,6 +69,25 @@
 | Environment variable fallback for TURN config | `browser_interop/main.c` |
 | Register TURN test in CMake with `network` label | `tests/interop/CMakeLists.txt` |
 
+## Phase 5.1: TURN compliance hardening + relay-only data-path verification
+
+Discovered while auditing Phase 5: existing `test_interop_turn.c` connects libdc and nanortc via host candidates on localhost; the TURN allocation is a no-op background warmup, so `ChannelBind`, `ChannelData`, `Send Indication`, and `Data Indication` are not exercised by any e2e test. RFC 5766/8656 compliance was also not consolidated anywhere. See [docs/engineering/turn-rfc-compliance.md](../../engineering/turn-rfc-compliance.md) for the full review.
+
+| Task | File |
+|------|------|
+| RFC 5766/8656/8489 compliance matrix + findings | `docs/engineering/turn-rfc-compliance.md` |
+| F1: per-permission txid validation in `turn_handle_response()` | `src/nano_turn.{c,h}` |
+| F2: tighten channel range to RFC 8656 0x4000–0x4FFE | `src/nano_turn.c` |
+| F3: `turn_deallocate()` (Refresh with LIFETIME=0) | `src/nano_turn.{c,h}` |
+| F5: parse `typ` attribute in `nanortc_add_remote_candidate()` (silently dropped before, masking RELAY/SRFLX everywhere) | `src/nano_rtc.c` |
+| 8 new RFC-driven unit tests (channel range, ChannelData padding, Send-no-MI, CreatePerm/ChannelBind have MI, deallocate, txid spoofing, HMAC vector) | `tests/test_turn.c` |
+| ICE config + relay-only injection for libdc peer (`iceTransportPolicy=RELAY`) | `tests/interop/interop_libdatachannel_peer.{c,h}` |
+| 5 relay-only e2e tests (handshake, DC string, ChannelData burst, large payload, echo) | `tests/interop/test_interop_turn_relay.c` |
+| Local coturn test infrastructure | `tests/interop/turn-server/{docker-compose.yml,turnserver.conf}`, `scripts/{start,stop}-test-turn.sh` |
+| RFC 5766/8656/6156 added to RFC index | `docs/references/rfc-index.md` |
+
+The relay-only e2e tests force `libdatachannel` into `RTC_TRANSPORT_POLICY_RELAY`, so the only candidate libdc advertises is its TURN-allocated relay. nanortc has no choice but to talk to libdc through the TURN server, exercising the full ChannelData / Send Indication / Data Indication data path on libdc's side and the relay-receive demux on nanortc's side. CTest label is `turn-relay`; tests skip cleanly if no TURN server is reachable.
+
 ## Decision Log
 
 | # | Decision | Rationale |

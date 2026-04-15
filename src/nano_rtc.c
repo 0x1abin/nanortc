@@ -736,6 +736,7 @@ int nanortc_add_remote_candidate(nanortc_t *rtc, const char *candidate_str)
     const char *addr_str = NULL;
     size_t addr_len = 0;
     uint16_t port = 0;
+    uint8_t cand_type = NANORTC_ICE_CAND_HOST; /* default if "typ" attr missing */
 
     if (has_prefix) {
         /* SDP format: skip to field 5 (addr) and field 6 (port) */
@@ -763,6 +764,38 @@ int nanortc_add_remote_candidate(nanortc_t *rtc, const char *candidate_str)
         while (*p >= '0' && *p <= '9') {
             port = port * 10 + (uint16_t)(*p - '0');
             p++;
+        }
+
+        /* Optional "typ <type>" attribute (RFC 8839 §5.1). The candidate
+         * string may also carry "raddr/rport" and other extensions after
+         * the type — we only need the type token itself. F5: previously
+         * unparsed, leaving every remote candidate stuck at type=HOST. */
+        while (*p == ' ')
+            p++;
+        while (*p) {
+            if (p[0] == 't' && p[1] == 'y' && p[2] == 'p' && (p[3] == ' ' || p[3] == '\t')) {
+                p += 4;
+                while (*p == ' ' || *p == '\t')
+                    p++;
+                if (p[0] == 'h' && p[1] == 'o' && p[2] == 's' && p[3] == 't') {
+                    cand_type = NANORTC_ICE_CAND_HOST;
+                } else if (p[0] == 's' && p[1] == 'r' && p[2] == 'f' && p[3] == 'l' &&
+                           p[4] == 'x') {
+                    cand_type = NANORTC_ICE_CAND_SRFLX;
+                } else if (p[0] == 'p' && p[1] == 'r' && p[2] == 'f' && p[3] == 'l' &&
+                           p[4] == 'x') {
+                    cand_type = NANORTC_ICE_CAND_SRFLX; /* peer-reflexive: treat as srflx */
+                } else if (p[0] == 'r' && p[1] == 'e' && p[2] == 'l' && p[3] == 'a' &&
+                           p[4] == 'y') {
+                    cand_type = NANORTC_ICE_CAND_RELAY;
+                }
+                break;
+            }
+            /* Skip current token */
+            while (*p && *p != ' ' && *p != '\t')
+                p++;
+            while (*p == ' ' || *p == '\t')
+                p++;
         }
     } else {
         /* Simple format: "<addr> <port>" */
@@ -801,6 +834,7 @@ int nanortc_add_remote_candidate(nanortc_t *rtc, const char *candidate_str)
     memcpy(rtc->ice.remote_candidates[idx].addr, parsed_addr,
            family == 4 ? 4u : (size_t)NANORTC_ADDR_SIZE);
     rtc->ice.remote_candidates[idx].port = port;
+    rtc->ice.remote_candidates[idx].type = cand_type;
     rtc->ice.remote_candidate_count++;
 
     NANORTC_LOGI("RTC", "remote candidate added");
