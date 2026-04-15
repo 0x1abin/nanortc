@@ -28,6 +28,11 @@
 #if NANORTC_FEATURE_VIDEO
 #include "nano_h264.h"
 #include "nano_bwe.h"
+#if NANORTC_FEATURE_H265
+#include "nano_h265.h"
+#include "nano_base64.h"
+#include "nano_annex_b.h"
+#endif
 /* Internal video flags for RTP packetization */
 #define NANORTC_VIDEO_FLAG_KEYFRAME 0x01 /* NAL is part of a keyframe (IDR) */
 #define NANORTC_VIDEO_FLAG_MARKER   0x02 /* Last NAL in access unit (RTP marker bit) */
@@ -731,6 +736,7 @@ int nanortc_add_remote_candidate(nanortc_t *rtc, const char *candidate_str)
     const char *addr_str = NULL;
     size_t addr_len = 0;
     uint16_t port = 0;
+    uint8_t cand_type = NANORTC_ICE_CAND_HOST; /* default if "typ" attr missing */
 
     if (has_prefix) {
         /* SDP format: skip to field 5 (addr) and field 6 (port) */
@@ -758,6 +764,38 @@ int nanortc_add_remote_candidate(nanortc_t *rtc, const char *candidate_str)
         while (*p >= '0' && *p <= '9') {
             port = port * 10 + (uint16_t)(*p - '0');
             p++;
+        }
+
+        /* Optional "typ <type>" attribute (RFC 8839 §5.1). The candidate
+         * string may also carry "raddr/rport" and other extensions after
+         * the type — we only need the type token itself. F5: previously
+         * unparsed, leaving every remote candidate stuck at type=HOST. */
+        while (*p == ' ')
+            p++;
+        while (*p) {
+            if (p[0] == 't' && p[1] == 'y' && p[2] == 'p' && (p[3] == ' ' || p[3] == '\t')) {
+                p += 4;
+                while (*p == ' ' || *p == '\t')
+                    p++;
+                if (p[0] == 'h' && p[1] == 'o' && p[2] == 's' && p[3] == 't') {
+                    cand_type = NANORTC_ICE_CAND_HOST;
+                } else if (p[0] == 's' && p[1] == 'r' && p[2] == 'f' && p[3] == 'l' &&
+                           p[4] == 'x') {
+                    cand_type = NANORTC_ICE_CAND_SRFLX;
+                } else if (p[0] == 'p' && p[1] == 'r' && p[2] == 'f' && p[3] == 'l' &&
+                           p[4] == 'x') {
+                    cand_type = NANORTC_ICE_CAND_SRFLX; /* peer-reflexive: treat as srflx */
+                } else if (p[0] == 'r' && p[1] == 'e' && p[2] == 'l' && p[3] == 'a' &&
+                           p[4] == 'y') {
+                    cand_type = NANORTC_ICE_CAND_RELAY;
+                }
+                break;
+            }
+            /* Skip current token */
+            while (*p && *p != ' ' && *p != '\t')
+                p++;
+            while (*p == ' ' || *p == '\t')
+                p++;
         }
     } else {
         /* Simple format: "<addr> <port>" */
@@ -796,6 +834,7 @@ int nanortc_add_remote_candidate(nanortc_t *rtc, const char *candidate_str)
     memcpy(rtc->ice.remote_candidates[idx].addr, parsed_addr,
            family == 4 ? 4u : (size_t)NANORTC_ADDR_SIZE);
     rtc->ice.remote_candidates[idx].port = port;
+    rtc->ice.remote_candidates[idx].type = cand_type;
     rtc->ice.remote_candidate_count++;
 
     NANORTC_LOGI("RTC", "remote candidate added");
@@ -1364,17 +1403,16 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
             return NANORTC_OK;
         }
 
-        /* RTP packet — demux by SSRC → MID */
-        /* Make a mutable copy for SRTP unprotect (in-place) */
-        if (len > NANORTC_MEDIA_BUF_SIZE) {
-            return NANORTC_ERR_BUFFER_TOO_SMALL;
-        }
-
-        /* Use stun_buf as scratch for RTP unprotect (not used simultaneously) */
-        uint8_t *pkt = rtc->stun_buf;
+        /* RTP packet — demux by SSRC → MID.
+         * Use stun_buf as scratch for in-place SRTP unprotect: under Sans I/O
+         * single-threaded invocation, STUN/RTCP/RTP use of stun_buf is
+         * time-disjoint. In media builds stun_buf is sized to
+         * NANORTC_MEDIA_BUF_SIZE (see nanortc_config.h), so a full RTP packet
+         * fits; in DC-only builds this path is unreachable. */
         if (len > sizeof(rtc->stun_buf)) {
             return NANORTC_ERR_BUFFER_TOO_SMALL;
         }
+        uint8_t *pkt = rtc->stun_buf;
         memcpy(pkt, data, len);
         size_t pkt_len = len;
 
@@ -1551,6 +1589,13 @@ static int rtc_process_timers(nanortc_t *rtc, uint32_t now_ms)
             fice.type = NANORTC_EV_ICE_STATE_CHANGE;
             fice.ice_state = (uint16_t)NANORTC_ICE_STATE_FAILED;
             rtc_emit_event_full(rtc, &fice);
+            /* TD-018: emit DISCONNECTED symmetric to the consent-expiry path
+             * so applications see a consistent signal across both failure
+             * modes (ICE check exhaustion and consent loss). */
+            nanortc_event_t fdev;
+            memset(&fdev, 0, sizeof(fdev));
+            fdev.type = NANORTC_EV_DISCONNECTED;
+            rtc_emit_event_full(rtc, &fdev);
             rtc->state = NANORTC_STATE_CLOSED;
         }
     }
@@ -2242,7 +2287,14 @@ static int nanortc_add_track(nanortc_t *rtc, nanortc_track_kind_t kind,
             pt = 111; /* Opus dynamic PT */
         sdp_kind = SDP_MLINE_AUDIO;
     } else {
-        pt = NANORTC_VIDEO_DEFAULT_PT;
+#if NANORTC_FEATURE_H265
+        if (codec == NANORTC_CODEC_H265) {
+            pt = NANORTC_VIDEO_H265_DEFAULT_PT; /* 98 */
+        } else
+#endif
+        {
+            pt = NANORTC_VIDEO_DEFAULT_PT; /* 96 */
+        }
         sdp_kind = SDP_MLINE_VIDEO;
     }
 
@@ -2282,6 +2334,62 @@ int nanortc_add_video_track(nanortc_t *rtc, nanortc_direction_t direction, nanor
 {
     return nanortc_add_track(rtc, NANORTC_TRACK_VIDEO, direction, codec, 90000, 0);
 }
+
+#if NANORTC_FEATURE_H265
+/* Emit "<tag><base64(nal)>" into dst[*pos], advancing *pos. */
+static int h265_sprop_emit(char *dst, size_t cap, size_t *pos, const char *tag, size_t tag_len,
+                           const uint8_t *nal, size_t nal_len)
+{
+    if (*pos + tag_len > cap) {
+        return NANORTC_ERR_BUFFER_TOO_SMALL;
+    }
+    memcpy(dst + *pos, tag, tag_len);
+    *pos += tag_len;
+
+    size_t enc_len = 0;
+    int rc = nano_base64_encode(nal, nal_len, dst + *pos, cap - *pos, &enc_len);
+    if (rc != NANORTC_OK) {
+        return rc;
+    }
+    *pos += enc_len;
+    return NANORTC_OK;
+}
+
+int nanortc_video_set_h265_parameter_sets(nanortc_t *rtc, uint8_t mid, const uint8_t *vps,
+                                          size_t vps_len, const uint8_t *sps, size_t sps_len,
+                                          const uint8_t *pps, size_t pps_len)
+{
+    if (!rtc || !vps || vps_len < H265_NAL_HEADER_SIZE || !sps || sps_len < H265_NAL_HEADER_SIZE ||
+        !pps || pps_len < H265_NAL_HEADER_SIZE) {
+        return NANORTC_ERR_INVALID_PARAM;
+    }
+
+    nanortc_track_t *m = track_find_by_mid(rtc->media, rtc->media_count, mid);
+    if (!m || m->kind != NANORTC_TRACK_VIDEO || m->codec != NANORTC_CODEC_H265) {
+        return NANORTC_ERR_INVALID_PARAM;
+    }
+
+    nano_sdp_mline_t *ml = sdp_find_mline(&rtc->sdp, mid);
+    if (!ml) {
+        return NANORTC_ERR_INVALID_PARAM;
+    }
+
+    char *dst = ml->h265_sprop_fmtp;
+    const size_t cap = NANORTC_H265_SPROP_FMTP_SIZE;
+    size_t pos = 0;
+
+    int rc;
+    if ((rc = h265_sprop_emit(dst, cap, &pos, "sprop-vps=", 10, vps, vps_len)) != NANORTC_OK ||
+        (rc = h265_sprop_emit(dst, cap, &pos, ";sprop-sps=", 11, sps, sps_len)) != NANORTC_OK ||
+        (rc = h265_sprop_emit(dst, cap, &pos, ";sprop-pps=", 11, pps, pps_len)) != NANORTC_OK) {
+        return rc;
+    }
+
+    ml->h265_sprop_fmtp_len = (uint16_t)pos;
+    NANORTC_LOGI("SDP", "H265 sprop-vps/sps/pps stored");
+    return NANORTC_OK;
+}
+#endif /* NANORTC_FEATURE_H265 */
 
 /* Send audio: RTP pack → SRTP protect → enqueue */
 static int rtc_send_audio(nanortc_t *rtc, nanortc_track_t *m, uint32_t timestamp,
@@ -2426,6 +2534,46 @@ int nanortc_send_audio(nanortc_t *rtc, uint8_t mid, uint32_t pts_ms, const void 
     return rtc_send_audio(rtc, m, rtp_ts, (const uint8_t *)data, len);
 }
 
+#if NANORTC_FEATURE_VIDEO && NANORTC_FEATURE_H265
+/* RFC 7798 §4.4: h265_packetize_au greedy-packs Single NAL / AP / FU and
+ * sets the RTP marker bit on the final callback, so is_last_nal stays 1. */
+static int rtc_send_video_h265(nanortc_t *rtc, nanortc_track_t *m, uint32_t timestamp,
+                               const uint8_t *buf, size_t len)
+{
+    h265_nal_ref_t nals[NANORTC_MAX_NALS_PER_AU];
+    size_t n_nals = 0;
+    size_t offset = 0;
+
+    while (offset < len && n_nals < NANORTC_MAX_NALS_PER_AU) {
+        size_t nal_len = 0;
+        const uint8_t *nal = nano_annex_b_find_nal(buf, len, &offset, &nal_len);
+        if (!nal || nal_len == 0) {
+            break;
+        }
+        nals[n_nals].data = nal;
+        nals[n_nals].len = nal_len;
+        n_nals++;
+    }
+
+    if (n_nals == 0) {
+        return NANORTC_OK;
+    }
+
+    video_send_ctx_t ctx;
+    ctx.rtc = rtc;
+    ctx.media = m;
+    ctx.timestamp = timestamp;
+    ctx.last_rc = NANORTC_OK;
+    ctx.is_last_nal = 1; /* packetize_au drives the marker bit internally */
+
+    int rc = h265_packetize_au(nals, n_nals, NANORTC_VIDEO_MTU, video_send_fragment_cb, &ctx);
+    if (rc != NANORTC_OK) {
+        return rc;
+    }
+    return ctx.last_rc;
+}
+#endif /* NANORTC_FEATURE_VIDEO && NANORTC_FEATURE_H265 */
+
 #if NANORTC_FEATURE_VIDEO
 int nanortc_send_video(nanortc_t *rtc, uint8_t mid, uint32_t pts_ms, const void *data, size_t len)
 {
@@ -2444,6 +2592,14 @@ int nanortc_send_video(nanortc_t *rtc, uint8_t mid, uint32_t pts_ms, const void 
 
     uint32_t ts = pts_ms_to_rtp(pts_ms, 90000);
     const uint8_t *buf = (const uint8_t *)data;
+
+#if NANORTC_FEATURE_H265
+    if (m->codec == NANORTC_CODEC_H265) {
+        return rtc_send_video_h265(rtc, m, ts, buf, len);
+    }
+#endif
+
+    /* H.264: scan per NAL, dispatch to h264_packetize. */
     size_t offset = 0;
     size_t nal_len = 0;
     int last_rc = NANORTC_OK;

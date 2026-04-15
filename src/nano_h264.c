@@ -152,12 +152,14 @@ int h264_depkt_push(nano_h264_depkt_t *d, const uint8_t *payload, size_t len, in
         size_t offset = H264_STAPA_HEADER_SIZE;
         size_t buf_pos = 0;
 
-        /* Extract all sub-NALUs concatenated into buffer */
+        /* Extract all sub-NALUs concatenated into buffer.
+         * Bounds-check each length field with subtraction instead of
+         * addition to avoid any chance of size_t wrap (RFC 6184 §5.7). */
         while (offset + H264_STAPA_NALU_LEN_SIZE <= len) {
             uint16_t sub_len = (uint16_t)((uint16_t)payload[offset] << 8 | payload[offset + 1]);
             offset += H264_STAPA_NALU_LEN_SIZE;
 
-            if (offset + sub_len > len) {
+            if (sub_len > len - offset) {
                 NANORTC_LOGW("H264", "STAP-A sub-NAL exceeds packet");
                 return NANORTC_ERR_PARSE;
             }
@@ -263,14 +265,15 @@ int h264_is_keyframe(const uint8_t *rtp_payload, size_t len)
         return (nal_type == H264_NAL_IDR) ? 1 : 0;
     }
 
-    /* STAP-A (type 24): check each sub-NAL for IDR */
+    /* STAP-A (type 24): check each sub-NAL for IDR.
+     * Use subtraction in length checks to avoid any size_t wrap. */
     if (nal_type == H264_NAL_STAPA) {
         size_t offset = H264_STAPA_HEADER_SIZE;
         while (offset + H264_STAPA_NALU_LEN_SIZE <= len) {
             uint16_t sub_len =
                 (uint16_t)((uint16_t)rtp_payload[offset] << 8 | rtp_payload[offset + 1]);
             offset += H264_STAPA_NALU_LEN_SIZE;
-            if (offset + sub_len > len || sub_len == 0) {
+            if (sub_len == 0 || sub_len > len - offset) {
                 break;
             }
             if ((rtp_payload[offset] & H264_NAL_TYPE_MASK) == H264_NAL_IDR) {
@@ -296,56 +299,5 @@ int h264_is_keyframe(const uint8_t *rtp_payload, size_t len)
     return 0;
 }
 
-const uint8_t *h264_annex_b_find_nal(const uint8_t *data, size_t len, size_t *offset,
-                                     size_t *nal_len)
-{
-    if (!data || !offset || !nal_len) {
-        return NULL;
-    }
-
-    size_t i = *offset;
-
-    /* Scan for start code: 00 00 01 or 00 00 00 01 */
-    while (i + 2 < len) {
-        if (data[i] == 0 && data[i + 1] == 0) {
-            if (data[i + 2] == 1) {
-                i += 3;
-                break;
-            }
-            if (i + 3 < len && data[i + 2] == 0 && data[i + 3] == 1) {
-                i += 4;
-                break;
-            }
-        }
-        i++;
-    }
-
-    if (i >= len) {
-        return NULL;
-    }
-
-    const uint8_t *nal_start = data + i;
-
-    /* Find next start code or end of buffer */
-    size_t j = i;
-    while (j + 2 < len) {
-        if (data[j] == 0 && data[j + 1] == 0 &&
-            (data[j + 2] == 1 || (j + 3 < len && data[j + 2] == 0 && data[j + 3] == 1))) {
-            break;
-        }
-        j++;
-    }
-    if (j + 2 >= len) {
-        j = len;
-    }
-
-    /* Strip trailing zero padding between NALs */
-    size_t end = j;
-    while (end > i && data[end - 1] == 0) {
-        end--;
-    }
-
-    *nal_len = end - i;
-    *offset = j;
-    return nal_start;
-}
+/* h264_annex_b_find_nal() moved to nano_annex_b.c as nano_annex_b_find_nal().
+ * A #define alias in nano_h264.h preserves the legacy call-site name. */

@@ -80,11 +80,11 @@ add_executable(rk3588_uvc_camera
     media_queue.c
     media_pipeline.c
     sig_queue.c
-    session.c
     ${CAPTURE_SRC}
     ${COMMON}/run_loop_linux.c
     ${COMMON}/http_signaling.c
     ${COMMON}/sig_discovery.c
+    ${COMMON}/multi_session.c
 )
 
 target_compile_definitions(rk3588_uvc_camera PRIVATE ${CAPTURE_DEF})

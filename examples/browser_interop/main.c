@@ -17,8 +17,14 @@
 #include "run_loop.h"
 #include "http_signaling.h"
 #include "media_source.h"
+#include "media_pacer.h"
+#include "cli_helpers.h"
 #include "h264_utils.h"
 #include "ice_server_resolve.h"
+#if NANORTC_FEATURE_H265
+#include "nano_annex_b.h"
+#include "nano_h265.h"
+#endif
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -60,15 +66,6 @@ static void on_event(nanortc_t *rtc, const nanortc_event_t *evt, void *userdata)
     case NANORTC_EV_CONNECTED:
         fprintf(stderr, "[event] Connected\n");
         ctx->media_connected = 1;
-        /* Offerer must create the DataChannel after connection is ready */
-        if (ctx->offer_mode) {
-            int drc = nanortc_create_datachannel(rtc, "test", NULL);
-            if (drc >= 0) {
-                fprintf(stderr, "[event] Created DataChannel 'test'\n");
-            } else {
-                fprintf(stderr, "[event] Failed to create DataChannel: %d\n", drc);
-            }
-        }
         break;
 
     case NANORTC_EV_DATACHANNEL_OPEN:
@@ -111,13 +108,73 @@ static void usage(const char *prog)
     fprintf(stderr, "  -b IP          Bind/candidate IP (default: auto-detect)\n");
     fprintf(stderr, "  -s HOST:PORT   Signaling server (default: localhost:8765)\n");
     fprintf(stderr, "  -a DIR         Opus frame directory for audio send\n");
-    fprintf(stderr, "  -v DIR         H.264 frame directory for video send\n");
+    fprintf(stderr, "  -v DIR         Video frame directory for video send (H.264 or H.265)\n");
+    fprintf(stderr, "  --video-codec C  Video codec: h264 (default) or h265\n");
     fprintf(stderr, "  --turn-server IP:PORT  TURN relay server\n");
     fprintf(stderr, "  --turn-user USER       TURN username\n");
     fprintf(stderr, "  --turn-pass PASS       TURN password/credential\n");
     fprintf(stderr, "  --offer                Act as offerer (CONTROLLING)\n");
     fprintf(stderr, "  --answer               Act as answerer (CONTROLLED, default)\n");
 }
+
+#if NANORTC_FEATURE_H265
+/* Parse the first H.265 sample frame and extract the VPS/SPS/PPS NAL units
+ * so we can publish them as sprop-* in the SDP offer fmtp (RFC 7798 §7.1).
+ *
+ * Returns 0 on success and fills vps/sps/pps byte ranges (indices into the
+ * caller-owned scratch buffer). Returns -1 if any of the three is missing,
+ * in which case the caller falls back to in-band parameter sets. */
+static int h265_extract_parameter_sets(const char *sample_dir, uint8_t *scratch, size_t scratch_cap,
+                                       size_t *vps_off, size_t *vps_len, size_t *sps_off,
+                                       size_t *sps_len, size_t *pps_off, size_t *pps_len)
+{
+    char path[NANORTC_MEDIA_MAX_PATH + 32];
+    int n = snprintf(path, sizeof(path), "%s/frame-0001.h265", sample_dir);
+    if (n <= 0 || (size_t)n >= sizeof(path)) {
+        return -1;
+    }
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        return -1;
+    }
+    size_t got = fread(scratch, 1, scratch_cap, f);
+    fclose(f);
+    if (got == 0) {
+        return -1;
+    }
+
+    *vps_off = *sps_off = *pps_off = 0;
+    *vps_len = *sps_len = *pps_len = 0;
+    int found_mask = 0;
+    size_t offset = 0;
+    while (offset < got) {
+        size_t nal_len = 0;
+        const uint8_t *nal = nano_annex_b_find_nal(scratch, got, &offset, &nal_len);
+        if (!nal || nal_len < H265_NAL_HEADER_SIZE) {
+            break;
+        }
+        uint8_t type = H265_NAL_TYPE(nal);
+        size_t nal_index = (size_t)(nal - scratch);
+        if (type == H265_NAL_VPS_NUT && !(found_mask & 0x1)) {
+            *vps_off = nal_index;
+            *vps_len = nal_len;
+            found_mask |= 0x1;
+        } else if (type == H265_NAL_SPS_NUT && !(found_mask & 0x2)) {
+            *sps_off = nal_index;
+            *sps_len = nal_len;
+            found_mask |= 0x2;
+        } else if (type == H265_NAL_PPS_NUT && !(found_mask & 0x4)) {
+            *pps_off = nal_index;
+            *pps_len = nal_len;
+            found_mask |= 0x4;
+        }
+        if (found_mask == 0x7) {
+            return 0;
+        }
+    }
+    return (found_mask == 0x7) ? 0 : -1;
+}
+#endif /* NANORTC_FEATURE_H265 */
 
 /* ----------------------------------------------------------------
  * Signaling: answer mode (CONTROLLED)
@@ -249,6 +306,7 @@ int main(int argc, char *argv[])
     int offer_mode = 0;
     const char *audio_dir = NULL;
     const char *video_dir = NULL;
+    int video_codec = 0; /* 0 = H264 (default), 1 = H265 */
     char turn_ip[64] = "";
     uint16_t turn_port = 3478;
     const char *turn_user = NULL;
@@ -264,43 +322,23 @@ int main(int argc, char *argv[])
             memcpy(bind_ip, argv[i], len);
             bind_ip[len] = '\0';
         } else if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) {
-            i++;
-            char *colon = strrchr(argv[i], ':');
-            if (colon) {
-                size_t hlen = (size_t)(colon - argv[i]);
-                if (hlen >= sizeof(sig_host))
-                    hlen = sizeof(sig_host) - 1;
-                memcpy(sig_host, argv[i], hlen);
-                sig_host[hlen] = '\0';
-                sig_port = (uint16_t)atoi(colon + 1);
-            } else {
-                size_t hlen = strlen(argv[i]);
-                if (hlen >= sizeof(sig_host))
-                    hlen = sizeof(sig_host) - 1;
-                memcpy(sig_host, argv[i], hlen);
-                sig_host[hlen] = '\0';
-            }
+            nano_parse_host_port(argv[++i], sig_host, sizeof(sig_host), &sig_port);
         } else if (strcmp(argv[i], "-a") == 0 && i + 1 < argc) {
             audio_dir = argv[++i];
         } else if (strcmp(argv[i], "-v") == 0 && i + 1 < argc) {
             video_dir = argv[++i];
-        } else if (strcmp(argv[i], "--turn-server") == 0 && i + 1 < argc) {
-            i++;
-            char *colon = strrchr(argv[i], ':');
-            if (colon) {
-                size_t iplen = (size_t)(colon - argv[i]);
-                if (iplen < sizeof(turn_ip)) {
-                    memcpy(turn_ip, argv[i], iplen);
-                    turn_ip[iplen] = '\0';
-                }
-                turn_port = (uint16_t)atoi(colon + 1);
+        } else if (strcmp(argv[i], "--video-codec") == 0 && i + 1 < argc) {
+            const char *c = argv[++i];
+            if (strcmp(c, "h265") == 0 || strcmp(c, "H265") == 0) {
+                video_codec = 1;
+            } else if (strcmp(c, "h264") == 0 || strcmp(c, "H264") == 0) {
+                video_codec = 0;
             } else {
-                size_t len = strlen(argv[i]);
-                if (len < sizeof(turn_ip)) {
-                    memcpy(turn_ip, argv[i], len);
-                    turn_ip[len] = '\0';
-                }
+                fprintf(stderr, "Unknown --video-codec '%s' (expected h264 or h265)\n", c);
+                return 1;
             }
+        } else if (strcmp(argv[i], "--turn-server") == 0 && i + 1 < argc) {
+            nano_parse_host_port(argv[++i], turn_ip, sizeof(turn_ip), &turn_port);
         } else if (strcmp(argv[i], "--turn-user") == 0 && i + 1 < argc) {
             turn_user = argv[++i];
         } else if (strcmp(argv[i], "--turn-pass") == 0 && i + 1 < argc) {
@@ -396,9 +434,47 @@ int main(int argc, char *argv[])
 
 #if NANORTC_FEATURE_VIDEO
     if (video_dir) {
-        app_ctx.video_mid = nanortc_add_video_track(&rtc, NANORTC_DIR_SENDONLY, NANORTC_CODEC_H264);
+        nanortc_codec_t codec = NANORTC_CODEC_H264;
+#if NANORTC_FEATURE_H265
+        if (video_codec == 1) {
+            codec = NANORTC_CODEC_H265;
+        }
+#else
+        if (video_codec == 1) {
+            fprintf(stderr, "H.265 requested but NANORTC_FEATURE_H265 is disabled\n");
+            return 1;
+        }
+#endif
+        app_ctx.video_mid = nanortc_add_video_track(&rtc, NANORTC_DIR_SENDONLY, codec);
         if (app_ctx.video_mid < 0)
             fprintf(stderr, "nanortc_add_video_track failed: %d\n", app_ctx.video_mid);
+
+#if NANORTC_FEATURE_H265
+        /* Pull VPS/SPS/PPS from the first sample frame and publish them as
+         * sprop-* in the SDP fmtp so Chrome's decoder is configured before the
+         * first IDR arrives (RFC 7798 §7.1). */
+        if (codec == NANORTC_CODEC_H265 && app_ctx.video_mid >= 0) {
+            static uint8_t h265_scratch[NANORTC_MEDIA_MAX_FRAME_SIZE];
+            size_t vps_off = 0, vps_len = 0, sps_off = 0, sps_len = 0, pps_off = 0, pps_len = 0;
+            int erc =
+                h265_extract_parameter_sets(video_dir, h265_scratch, sizeof(h265_scratch), &vps_off,
+                                            &vps_len, &sps_off, &sps_len, &pps_off, &pps_len);
+            if (erc == 0) {
+                int src = nanortc_video_set_h265_parameter_sets(
+                    &rtc, (uint8_t)app_ctx.video_mid, h265_scratch + vps_off, vps_len,
+                    h265_scratch + sps_off, sps_len, h265_scratch + pps_off, pps_len);
+                if (src != NANORTC_OK) {
+                    fprintf(stderr, "nanortc_video_set_h265_parameter_sets failed: %d\n", src);
+                } else {
+                    fprintf(stderr, "[h265] sprop-* installed: vps=%zu sps=%zu pps=%zu bytes\n",
+                            vps_len, sps_len, pps_len);
+                }
+            } else {
+                fprintf(stderr, "[h265] could not extract VPS/SPS/PPS from frame-0001.h265 — "
+                                "falling back to in-band parameter sets\n");
+            }
+        }
+#endif
     }
 #endif
 
@@ -453,9 +529,17 @@ int main(int argc, char *argv[])
     int has_video_src = 0;
 #if NANORTC_FEATURE_VIDEO
     if (video_dir) {
-        if (nano_media_source_init(&video_src, NANORTC_MEDIA_H264, video_dir) == 0) {
+        nanortc_track_type_t media_type = NANORTC_MEDIA_H264;
+        const char *codec_label = "H.264";
+#if NANORTC_FEATURE_H265
+        if (video_codec == 1) {
+            media_type = NANORTC_MEDIA_H265;
+            codec_label = "H.265";
+        }
+#endif
+        if (nano_media_source_init(&video_src, media_type, video_dir) == 0) {
             has_video_src = 1;
-            fprintf(stderr, "Video source: %s (H.264, 25fps)\n", video_dir);
+            fprintf(stderr, "Video source: %s (%s, 25fps)\n", video_dir, codec_label);
         } else {
             fprintf(stderr, "Warning: failed to init video source from %s\n", video_dir);
         }
@@ -464,6 +548,19 @@ int main(int argc, char *argv[])
 
     fprintf(stderr, "nanortc browser_interop (mode=%s, udp=%s:%d, sig=%s:%u)\n",
             offer_mode ? "offer" : "answer", bind_ip, port, sig_host, sig_port);
+
+    /* Offerer must register the DataChannel m-line BEFORE create_offer
+     * so it appears in the generated SDP. DCEP OPEN is queued in the
+     * DC module's output buffer and flushed to SCTP once the SCTP
+     * association reaches the ESTABLISHED state. */
+    if (offer_mode) {
+        int drc = nanortc_create_datachannel(&rtc, "test", NULL);
+        if (drc >= 0) {
+            fprintf(stderr, "[event] Created DataChannel 'test'\n");
+        } else {
+            fprintf(stderr, "[event] Failed to create DataChannel: %d\n", drc);
+        }
+    }
 
     /* 5. SDP exchange */
     if (offer_mode) {
@@ -477,10 +574,8 @@ int main(int argc, char *argv[])
 
     /* 6. Event loop with trickle ICE polling + media send */
     fprintf(stderr, "Entering event loop...\n");
-    uint32_t audio_epoch_ms = 0;    /* wall-clock start time for audio */
-    uint32_t audio_frame_count = 0; /* frames sent since epoch */
-    uint32_t video_epoch_ms = 0;    /* wall-clock start time for video */
-    uint32_t video_frame_count = 0; /* frames sent since epoch */
+    nano_media_pacer_t audio_pacer = {.interval_ms = 20}; /* 20ms Opus */
+    nano_media_pacer_t video_pacer = {.interval_ms = 40}; /* 25fps = 40ms */
     if (has_audio_src || has_video_src) {
         loop.max_poll_ms = 5; /* 5ms poll for smooth media pacing */
     }
@@ -490,50 +585,38 @@ int main(int argc, char *argv[])
         poll_trickle_ice(&sig, &rtc);
 
 #if NANORTC_FEATURE_AUDIO
-        /* Send audio frames at 20ms intervals (epoch-based for drift-free timing) */
+        /* Send audio frames at 20ms intervals (drift-free epoch-based pacing) */
         if (has_audio_src && app_ctx.media_connected) {
-            uint32_t now = nano_get_millis();
-            if (audio_epoch_ms == 0)
-                audio_epoch_ms = now;
-            uint32_t target_frames = (now - audio_epoch_ms) / 20;
-            /* Prevent burst: if we fell behind by >2 frames, skip ahead */
-            if (target_frames - audio_frame_count > 2) {
-                audio_frame_count = target_frames - 1;
-            }
-            if (audio_frame_count < target_frames) {
+            uint32_t due = nano_media_pacer_due(&audio_pacer, nano_get_millis());
+            for (uint32_t i = 0; i < due; i++) {
                 uint8_t frame_buf[1024];
                 size_t frame_len = 0;
                 uint32_t ts_ms = 0;
                 if (nano_media_source_next_frame(&audio_src, frame_buf, sizeof(frame_buf),
-                                                 &frame_len, &ts_ms) == 0) {
-                    nanortc_send_audio(&rtc, (uint8_t)app_ctx.audio_mid, ts_ms, frame_buf,
-                                       frame_len);
-                    audio_frame_count++;
+                                                 &frame_len, &ts_ms) != 0) {
+                    break;
                 }
+                nanortc_send_audio(&rtc, (uint8_t)app_ctx.audio_mid, ts_ms, frame_buf, frame_len);
+                nano_media_pacer_advance(&audio_pacer);
             }
         }
 #endif
 
 #if NANORTC_FEATURE_VIDEO
-        /* Send video frames at 25fps (epoch-based for drift-free timing) */
+        /* Send video frames at 25fps (drift-free epoch-based pacing) */
         if (has_video_src && app_ctx.media_connected) {
-            uint32_t now = nano_get_millis();
-            if (video_epoch_ms == 0)
-                video_epoch_ms = now;
-            uint32_t target_frames = (now - video_epoch_ms) / 40; /* 25fps = 40ms */
-            if (target_frames - video_frame_count > 2) {
-                video_frame_count = target_frames - 1; /* skip burst */
-            }
-            if (video_frame_count < target_frames) {
+            uint32_t due = nano_media_pacer_due(&video_pacer, nano_get_millis());
+            for (uint32_t i = 0; i < due; i++) {
                 uint8_t frame_buf[NANORTC_MEDIA_MAX_FRAME_SIZE];
                 size_t frame_len = 0;
                 uint32_t ts_ms = 0;
                 if (nano_media_source_next_frame(&video_src, frame_buf, sizeof(frame_buf),
-                                                 &frame_len, &ts_ms) == 0) {
-                    nanortc_send_video(&rtc, (uint8_t)app_ctx.video_mid, nano_get_millis(),
-                                       frame_buf, frame_len);
-                    video_frame_count++;
+                                                 &frame_len, &ts_ms) != 0) {
+                    break;
                 }
+                nanortc_send_video(&rtc, (uint8_t)app_ctx.video_mid, nano_get_millis(), frame_buf,
+                                   frame_len);
+                nano_media_pacer_advance(&video_pacer);
             }
         }
 #endif

@@ -45,6 +45,9 @@ Per-module quality grades for NanoRTC. Updated as implementation progresses.
 | Module | File | Grade | Tests | Notes |
 |--------|------|-------|-------|-------|
 | H.264 packetizer | `nano_h264.c` | **A** | 32 tests (single NAL, FU-A fragment/reassembly, STAP-A, keyframe detection, Annex-B NAL finder, edge cases) | RFC 6184 FU-A packetizer + depacketizer. Fuzz-tested (`fuzz_h264`): 31M+ executions clean. 83% line coverage. Browser verified (H.264 → Chrome). |
+| H.265 packetizer | `nano_h265.c` | **B** | 51 tests (Single NAL §4.4.1, FU §4.4.3 with S/E/FuType + LayerId/TID/F-bit preservation, AP §4.4.2 with LayerId/TID min + F-bit union + greedy AU packer, keyframe detection for IRAP types 16–23, PACI §4.4.4 drop, AP/FU abort transitions) | RFC 7798 Single/AP/FU packetizer + depacketizer. Hand-crafted vectors (no reference-implementation byte copies). Fuzz harness `fuzz_h265` + 5 seed corpora ready; 50M+ target execs to reach A grade. Not yet wired to nano_rtc (PR-2). Not yet browser-verified (PR-3). |
+| Annex-B scanner | `nano_annex_b.c` | **A** | 6 tests (shared via `test_h264.c`) | Codec-agnostic start-code scanner. Extracted from `nano_h264.c` to be shared with H.265. Fuzz-tested via `fuzz_h264` (31M+ execs) and `fuzz_h265`. |
+| Base64 encoder | `nano_base64.c` | **A** | 12 tests (RFC 4648 §10 canonical 7 vectors + alphabet coverage + buffer overflow + NUL termination + encoded-size helper) | RFC 4648 §4 standard alphabet encoder. Single function, no decoder (not needed). Used by H.265 SDP sprop-vps/sps/pps emission. |
 | BWE | `nano_bwe.c` | **A** | 26 tests (REMB parse, byte vector, EMA smoothing, min/max clamp, event threshold, public API) | REMB parsing, EMA smoothing. Fuzz-tested (`fuzz_bwe`): 82M+ executions clean. 96% line coverage. |
 
 ### Infrastructure
@@ -89,3 +92,15 @@ Full-media `sizeof(nanortc_t)` reduced from 157 KB to 103 KB (**34% reduction**)
 - **TURN feature flag**: `NANORTC_FEATURE_TURN` saves 700B RAM + 13KB code when disabled
 - **SDP hardening**: `extract_value()` strips trailing whitespace, protecting exact-fit buffers
 - **Regression guard**: `test_sizeof.c` prevents accidental struct growth in CI
+
+## Phase 7 Summary (Stability & Performance Hardening)
+
+Single-session PR that fixed one latent bug and hardened the hot paths discovered by a full three-axis audit (memory / performance / stability). Every change is backward compatible; DC-only builds see zero memory impact. See [phase7-stability-performance-hardening.md](exec-plans/completed/phase7-stability-performance-hardening.md) for the full session log.
+
+- **Critical fix — C0 (RTP receive)**: the RTP RX path used `stun_buf` (256B) as scratch, silently dropping every inbound RTP packet > 256B. `NANORTC_STUN_BUF_SIZE` now auto-enlarges to `NANORTC_MEDIA_BUF_SIZE` under `NANORTC_HAVE_MEDIA_TRANSPORT` and a `#error` assertion in `nanortc_config.h` pins the invariant so a user-provided override below `NANORTC_MEDIA_BUF_SIZE` breaks the build instead of regressing the fix.
+- **SRTP hot path**: `srtp_compute_iv()` marked `static inline` (folds into the surrounding AES-CM call); `nano_srtp_t` gained `last_send_idx`/`last_recv_idx` cache slots so `srtp_get_ssrc_state()` becomes O(1) on the common BUNDLE hit path.
+- **SCTP padding**: three `nsctp_encode_*` byte-loops rewritten as `memset` — authoritative single-instruction padding across every target compiler, especially xtensa-gcc.
+- **Defensive integer guards**: RTP ext_len, SRTP ext_len (same logic), H.264 STAP-A sub-NAL length, and DCEP `label_len + protocol_len` all converted to subtraction-form bound checks (`a > max - b`). None of the old forms were exploitable on 32-bit size_t platforms, but the rewrite eliminates the implicit dependency on later-in-the-function length checks and lets fuzz directly exercise pathological values.
+- **Poll cadence documentation**: `nanortc_handle_input()` doxygen now spells out the minimum poll interval contract; `NANORTC_MIN_POLL_INTERVAL_MS=50` added to `nanortc_config.h`.
+- **Verification scope**: 19/19 ctest in default build, 93/93 across 6 feature combos × openssl, 46/46 across 3 combos × mbedtls, AddressSanitizer MEDIA build clean, clang-format clean, **768,656,267 fuzz executions (0 crashes)** across 8 harnesses, and 4/4 libdatachannel interop tests pass including audio + video (the direct end-to-end validation of the C0 fix). Cumulative fuzz budget now exceeds 1.2 billion executions on top of Phase 4's 456M base.
+- **No regressions**: `test_sizeof.c` upper bounds untouched, no API breakage, DC-only builds see zero memory growth.

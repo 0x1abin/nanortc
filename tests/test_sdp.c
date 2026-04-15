@@ -667,6 +667,92 @@ TEST(test_sdp_video_roundtrip)
     ASSERT_EQ(sdp2.mlines[0].remote_pt, 96);
 }
 
+#if NANORTC_FEATURE_H265
+/* RFC 7798 §7.1: H.265 m-line carries rtpmap H265/90000 and fmtp with
+ * profile-id=1, tier-flag=0, level-id=93, tx-mode=SRST. */
+TEST(test_sdp_generate_video_h265)
+{
+    nano_sdp_t sdp;
+    sdp_init(&sdp);
+    memcpy(sdp.local_ufrag, "h265uf", 6);
+    memcpy(sdp.local_pwd, "h265password123456", 18);
+    sdp.local_setup = NANORTC_SDP_SETUP_PASSIVE;
+    int vmid = sdp_add_mline(&sdp, SDP_MLINE_VIDEO, NANORTC_CODEC_H265,
+                             NANORTC_VIDEO_H265_DEFAULT_PT, 0, 0, NANORTC_DIR_SENDONLY);
+    ASSERT(vmid >= 0);
+
+    char buf[4096];
+    size_t out_len = 0;
+    ASSERT_OK(sdp_generate_answer(&sdp, buf, sizeof(buf), &out_len));
+
+    ASSERT_TRUE(strstr(buf, "m=video 9 UDP/TLS/RTP/SAVPF 98") != NULL);
+    ASSERT_TRUE(strstr(buf, "a=rtpmap:98 H265/90000") != NULL);
+    ASSERT_TRUE(strstr(buf, "a=fmtp:98 profile-id=1;tier-flag=0;level-id=93;tx-mode=SRST") != NULL);
+    ASSERT_TRUE(strstr(buf, "a=rtcp-fb:98 nack pli") != NULL);
+    ASSERT_TRUE(strstr(buf, "a=rtcp-mux") != NULL);
+    /* No sprop-* when caller has not set parameter sets. */
+    ASSERT_TRUE(strstr(buf, "sprop-vps=") == NULL);
+}
+
+/* When the caller has installed VPS/SPS/PPS via
+ * nanortc_video_set_h265_parameter_sets(), the generator must append the
+ * pre-formatted sprop-vps/sps/pps fragment after tx-mode=SRST. */
+TEST(test_sdp_generate_video_h265_with_sprop)
+{
+    nano_sdp_t sdp;
+    sdp_init(&sdp);
+    memcpy(sdp.local_ufrag, "h265sp", 6);
+    memcpy(sdp.local_pwd, "h265sppassword1234", 18);
+    sdp.local_setup = NANORTC_SDP_SETUP_PASSIVE;
+    int vmid = sdp_add_mline(&sdp, SDP_MLINE_VIDEO, NANORTC_CODEC_H265,
+                             NANORTC_VIDEO_H265_DEFAULT_PT, 0, 0, NANORTC_DIR_SENDONLY);
+    ASSERT(vmid >= 0);
+
+    /* Directly populate the sprop buffer (bypassing the RTC API). */
+    const char *frag = "sprop-vps=AAABAA==;sprop-sps=AAACAA==;sprop-pps=AAADAA==";
+    size_t frag_len = strlen(frag);
+    memcpy(sdp.mlines[0].h265_sprop_fmtp, frag, frag_len);
+    sdp.mlines[0].h265_sprop_fmtp_len = (uint16_t)frag_len;
+
+    char buf[4096];
+    size_t out_len = 0;
+    ASSERT_OK(sdp_generate_answer(&sdp, buf, sizeof(buf), &out_len));
+
+    ASSERT_TRUE(strstr(buf, "a=rtpmap:98 H265/90000") != NULL);
+    ASSERT_TRUE(
+        strstr(buf, "tx-mode=SRST;sprop-vps=AAABAA==;sprop-sps=AAACAA==;sprop-pps=AAADAA==") !=
+        NULL);
+}
+
+/* RFC 7798 §4.1: MSST and MSMT tx-modes are unsupported — parser must
+ * reject an SDP that declares them for our H.265 PT. */
+TEST(test_sdp_parse_reject_h265_msmt)
+{
+    static const char *offer =
+        "v=0\r\n"
+        "o=- 1 2 IN IP4 127.0.0.1\r\n"
+        "s=-\r\n"
+        "t=0 0\r\n"
+        "m=video 9 UDP/TLS/RTP/SAVPF 98\r\n"
+        "c=IN IP4 0.0.0.0\r\n"
+        "a=mid:0\r\n"
+        "a=ice-ufrag:msmtuf\r\n"
+        "a=ice-pwd:msmtpassword123456\r\n"
+        "a=fingerprint:sha-256 AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:"
+        "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99\r\n"
+        "a=setup:actpass\r\n"
+        "a=rtcp-mux\r\n"
+        "a=sendrecv\r\n"
+        "a=rtpmap:98 H265/90000\r\n"
+        "a=fmtp:98 profile-id=1;tier-flag=0;level-id=93;tx-mode=MSMT\r\n";
+
+    nano_sdp_t sdp;
+    sdp_init(&sdp);
+    int rc = sdp_parse(&sdp, offer, strlen(offer));
+    ASSERT_TRUE(rc != NANORTC_OK);
+}
+#endif /* NANORTC_FEATURE_H265 */
+
 #endif /* NANORTC_HAVE_MEDIA_TRANSPORT */
 
 /* ================================================================
@@ -865,7 +951,8 @@ TEST(test_sdp_parse_media_directions)
     nano_sdp_t sdp;
     sdp_init(&sdp);
     size_t len = 0;
-    while (sdp_sendonly[len]) len++;
+    while (sdp_sendonly[len])
+        len++;
     ASSERT_OK(sdp_parse(&sdp, sdp_sendonly, len));
     ASSERT_EQ(sdp.mlines[0].remote_direction, NANORTC_DIR_SENDONLY);
 
@@ -890,7 +977,8 @@ TEST(test_sdp_parse_media_directions)
     nano_sdp_t sdp2;
     sdp_init(&sdp2);
     len = 0;
-    while (sdp_recvonly[len]) len++;
+    while (sdp_recvonly[len])
+        len++;
     ASSERT_OK(sdp_parse(&sdp2, sdp_recvonly, len));
     ASSERT_EQ(sdp2.mlines[0].remote_direction, NANORTC_DIR_RECVONLY);
 
@@ -915,7 +1003,8 @@ TEST(test_sdp_parse_media_directions)
     nano_sdp_t sdp3;
     sdp_init(&sdp3);
     len = 0;
-    while (sdp_inactive[len]) len++;
+    while (sdp_inactive[len])
+        len++;
     ASSERT_OK(sdp_parse(&sdp3, sdp_inactive, len));
     ASSERT_EQ(sdp3.mlines[0].remote_direction, NANORTC_DIR_INACTIVE);
 }
@@ -1005,6 +1094,11 @@ RUN(test_sdp_parse_full_media_offer);
 RUN(test_sdp_generate_video_answer);
 RUN(test_sdp_video_roundtrip);
 RUN(test_sdp_parse_media_directions);
+#if NANORTC_FEATURE_H265
+RUN(test_sdp_generate_video_h265);
+RUN(test_sdp_generate_video_h265_with_sprop);
+RUN(test_sdp_parse_reject_h265_msmt);
+#endif
 #endif
 #if NANORTC_FEATURE_IPV6
 RUN(test_sdp_generate_ipv6_connection_line);

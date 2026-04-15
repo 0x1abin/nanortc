@@ -315,6 +315,28 @@
 #define NANORTC_ICE_CHECK_INTERVAL_MS 50
 #endif
 
+/* Maximum in-flight connectivity checks tracked per ICE agent (TD-018).
+ * Each slot holds a txid + pair indices + timestamp so out-of-order
+ * Binding Responses can be matched to the originating pair. Typical
+ * browser LAN RTT < 20 ms so 4 slots at 50 ms pacing cover 200 ms of
+ * in-flight budget per pair. */
+#ifndef NANORTC_ICE_MAX_PENDING_CHECKS
+#define NANORTC_ICE_MAX_PENDING_CHECKS 4
+#endif
+
+/* A pending connectivity check is considered stale and may be reaped
+ * after this many milliseconds without a matching Binding Response. */
+#ifndef NANORTC_ICE_CHECK_TIMEOUT_MS
+#define NANORTC_ICE_CHECK_TIMEOUT_MS 5000
+#endif
+
+/** @brief Recommended minimum poll interval for nanortc_handle_input() (ms).
+ *  Callers should tick the state machine at least this often so DTLS
+ *  handshake retransmits, ICE checks, and SCTP RTO timers fire on time. */
+#ifndef NANORTC_MIN_POLL_INTERVAL_MS
+#define NANORTC_MIN_POLL_INTERVAL_MS 50
+#endif
+
 /* Consent freshness interval in milliseconds (RFC 7675 §5.1).
  * A STUN Binding Request is sent periodically to verify path liveness.
  * Consent expires after NANORTC_ICE_CONSENT_TIMEOUT_MS without a response. */
@@ -386,11 +408,29 @@
 #endif
 
 /* ----------------------------------------------------------------
- * STUN scratch buffer size
+ * STUN / RTCP / RTP scratch buffer size
+ *
+ * Shared scratch buffer used for:
+ *   - STUN request/response encoding (ICE checks, consent, srflx)
+ *   - TURN allocate/refresh/channel framing
+ *   - RTCP generation (SR/RR) and SRTCP protect
+ *   - RTCP/RTP receive-side in-place unprotect
+ *
+ * With media transport enabled, must fit a full RTP packet including
+ * CSRC list + extension header + payload + SRTP auth tag. Otherwise
+ * 256 bytes is sufficient for all STUN-only use cases.
+ *
+ * The default is feature-gated: DC-only builds keep the small 256-byte
+ * default; AUDIO/VIDEO builds get NANORTC_MEDIA_BUF_SIZE automatically.
+ * Users may always override via NANORTC_CONFIG_FILE or a -D flag.
  * ---------------------------------------------------------------- */
 
 #ifndef NANORTC_STUN_BUF_SIZE
+#if NANORTC_HAVE_MEDIA_TRANSPORT
+#define NANORTC_STUN_BUF_SIZE NANORTC_MEDIA_BUF_SIZE
+#else
 #define NANORTC_STUN_BUF_SIZE 256
+#endif
 #endif
 
 /* ----------------------------------------------------------------
@@ -530,6 +570,48 @@
 #endif
 
 /* ----------------------------------------------------------------
+ * H.265/HEVC configuration (H265 sub-feature of VIDEO)
+ *
+ * RFC 7798 — "RTP Payload Format for High Efficiency Video Coding (HEVC)"
+ * ---------------------------------------------------------------- */
+
+/** @brief Enable H.265/HEVC video codec (RFC 7798). Sub-feature of VIDEO.
+ *  Disable to save ~11 KB of code on flash-constrained targets even when
+ *  NANORTC_FEATURE_VIDEO is on. Defaults to the VIDEO master switch. */
+#ifndef NANORTC_FEATURE_H265
+#define NANORTC_FEATURE_H265 NANORTC_FEATURE_VIDEO
+#endif
+
+#if NANORTC_FEATURE_H265 && !NANORTC_FEATURE_VIDEO
+#error "NANORTC_FEATURE_H265 requires NANORTC_FEATURE_VIDEO"
+#endif
+
+/** @brief Default dynamic Payload Type for H.265 (RFC 7798).
+ *  Intentionally disjoint from NANORTC_VIDEO_DEFAULT_PT (96) so a future
+ *  dual-codec m-line does not need to renumber. Falls in the dynamic range
+ *  96–127 per RFC 3551 §6. */
+#ifndef NANORTC_VIDEO_H265_DEFAULT_PT
+#define NANORTC_VIDEO_H265_DEFAULT_PT 98
+#endif
+
+/** @brief Maximum size of the pre-formatted sprop-vps/sps/pps fmtp fragment
+ *  stored per H.265 m-line (bytes). Holds the already-base64-encoded
+ *  parameter sets wrapped in "sprop-vps=..;sprop-sps=..;sprop-pps=.." form
+ *  so SDP generation is a single append. 512 bytes covers VPS(~32B) +
+ *  SPS(~128B) + PPS(~32B) after base64 expansion plus keys and separators. */
+#ifndef NANORTC_H265_SPROP_FMTP_SIZE
+#define NANORTC_H265_SPROP_FMTP_SIZE 512
+#endif
+
+/** @brief Maximum number of NAL units per H.265 access unit that the packer
+ *  will process in a single nanortc_send_video() call. The packer reference
+ *  array lives on the stack, so this also caps the stack cost. Typical VPS+
+ *  SPS+PPS+SEI+IDR access units have <= 8 NALs. */
+#ifndef NANORTC_MAX_NALS_PER_AU
+#define NANORTC_MAX_NALS_PER_AU 16
+#endif
+
+/* ----------------------------------------------------------------
  * Jitter buffer slots (AUDIO feature only)
  * ---------------------------------------------------------------- */
 
@@ -661,6 +743,16 @@ typedef enum {
 #error "NANORTC_STUN_BUF_SIZE must be at least 128"
 #endif
 
+/* When media transport is enabled, the shared scratch buffer is also used
+ * for in-place SRTP unprotect on inbound RTP packets, so it must be large
+ * enough to hold a full RTP packet (NANORTC_MEDIA_BUF_SIZE includes the
+ * RTP header, CSRC, extension, payload and SRTP auth tag).
+ * See the bug history in docs/exec-plans or git log for context. */
+#if NANORTC_HAVE_MEDIA_TRANSPORT && (NANORTC_STUN_BUF_SIZE < NANORTC_MEDIA_BUF_SIZE)
+#error \
+    "NANORTC_STUN_BUF_SIZE must be >= NANORTC_MEDIA_BUF_SIZE when audio or video transport is enabled"
+#endif
+
 #if NANORTC_SDP_MIN_BUF_SIZE < 128
 #error "NANORTC_SDP_MIN_BUF_SIZE must be at least 128"
 #endif
@@ -669,12 +761,32 @@ typedef enum {
 #error "NANORTC_MAX_LOCAL_CANDIDATES must be at least 1"
 #endif
 
+#if NANORTC_ICE_MAX_PENDING_CHECKS < 1
+#error "NANORTC_ICE_MAX_PENDING_CHECKS must be at least 1"
+#endif
+
+#if NANORTC_ICE_MAX_PENDING_CHECKS > 16
+#error "NANORTC_ICE_MAX_PENDING_CHECKS must be <= 16 (each slot uses ~20 B of nano_ice_t)"
+#endif
+
+#if NANORTC_ICE_CHECK_TIMEOUT_MS < NANORTC_ICE_CHECK_INTERVAL_MS
+#error "NANORTC_ICE_CHECK_TIMEOUT_MS must be >= NANORTC_ICE_CHECK_INTERVAL_MS"
+#endif
+
 #if NANORTC_MAX_MEDIA_TRACKS < 1
 #error "NANORTC_MAX_MEDIA_TRACKS must be at least 1"
 #endif
 
 #if NANORTC_MAX_SSRC_MAP < NANORTC_MAX_MEDIA_TRACKS
 #error "NANORTC_MAX_SSRC_MAP must be at least NANORTC_MAX_MEDIA_TRACKS"
+#endif
+
+/* nano_srtp_t uses int8_t cache indices (last_send_idx / last_recv_idx)
+ * to keep the struct compact. Silently wrapping the (int8_t)i cast in
+ * srtp_get_ssrc_state() would turn the cache into a no-op, so we refuse
+ * to build if the map is configured past the representable range. */
+#if NANORTC_MAX_SSRC_MAP > 127
+#error "NANORTC_MAX_SSRC_MAP must be <= 127 (nano_srtp_t uses int8_t SSRC cache indices)"
 #endif
 
 #endif /* NANORTC_CONFIG_H_ */

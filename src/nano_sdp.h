@@ -56,6 +56,14 @@ typedef struct nano_sdp_mline {
 
     /* H264 cross-validation */
     uint8_t video_h264_rtpmap_pt; /**< PT confirmed via a=rtpmap H264 (0=not yet). */
+#if NANORTC_FEATURE_H265
+    /* H265 cross-validation */
+    uint8_t video_h265_rtpmap_pt; /**< PT confirmed via a=rtpmap H265 (0=not yet). */
+    /* Pre-formatted "sprop-vps=..;sprop-sps=..;sprop-pps=.." fmtp fragment.
+     * Populated by nanortc_video_set_h265_parameter_sets(). Not zero-terminated. */
+    char h265_sprop_fmtp[NANORTC_H265_SPROP_FMTP_SIZE];
+    uint16_t h265_sprop_fmtp_len;
+#endif
 } nano_sdp_mline_t;
 #endif
 

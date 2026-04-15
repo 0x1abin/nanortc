@@ -38,7 +38,7 @@ Audio/Media modules (Phase 2-3):
 
 1. **RFC test vectors (mandatory)** — Hardcode the exact byte sequences from the RFC's test vector document (e.g., RFC 5769 for STUN, RFC 4960 §A for SCTP) as `static const uint8_t[]` arrays. Parse them and verify every field against the RFC's expected values.
 
-2. **External implementation captures (mandatory)** — Use real packet data from at least one reference implementation (str0m, browser pcap). This catches encoding quirks that RFC vectors may not cover (e.g., attribute ordering, padding style, unknown extensions).
+2. **External implementation captures (mandatory)** — Use real packet data from browser/wireshark captures. This catches encoding quirks that RFC vectors may not cover (e.g., attribute ordering, padding style, unknown extensions). Do not source captures from `.local-reference/` third-party source trees.
 
 3. **Integrity / checksum verification (mandatory if applicable)** — Verify MESSAGE-INTEGRITY (HMAC), FINGERPRINT (CRC), checksums against the RFC's known-good values using the documented password/key. Test with both correct and incorrect keys.
 
@@ -52,7 +52,7 @@ Audio/Media modules (Phase 2-3):
 
 | Module | RFC Test Vectors | Reference Captures | Interop |
 |--------|------------------|--------------------|---------|
-| STUN | RFC 5769 §2.1-2.3 (Request, IPv4/IPv6 Response) | str0m `stun.rs` test data | via ICE interop |
+| STUN | RFC 5769 §2.1-2.3 (Request, IPv4/IPv6 Response) | browser pcap | via ICE interop |
 | ICE | — | — | `test_interop_handshake` (libdatachannel) |
 | SCTP | RFC 4960 §A (INIT, INIT-ACK, DATA, SACK examples) | browser pcap | `test_interop_handshake` (libdatachannel) |
 | DTLS | — (use OpenSSL s_client captures) | browser DTLS handshake | `test_interop_handshake` (libdatachannel) |
@@ -109,6 +109,33 @@ Each module is one PR. A PR must include:
 - Internal header (`src/nano_<module>.h`)
 - Tests (`tests/test_<module>.c`)
 - Updated CLAUDE.md if build instructions change
+
+## Local CI loop
+
+`scripts/ci-check.sh` mirrors GitHub Actions but is tuned to run fast on a
+developer machine:
+
+- **`./scripts/ci-check.sh --fast`** — pre-push tier. Runs arch checks +
+  clang-format + DATA build + MEDIA build + ASan, skips the AUDIO_ONLY /
+  MEDIA_ONLY / CORE_ONLY combos, mbedtls combos, and the libdatachannel
+  interop suite. Cold build ≈ 40 s; warm (incremental) build ≈ 5 s.
+- **`./scripts/ci-check.sh`** — full matrix. Mirrors GitHub Actions
+  exactly: 6 feature combos × 2 crypto backends + ASan + libdatachannel
+  interop. Run before pushing to `main` or release branches.
+- **`./scripts/ci-check.sh --clean`** — wipe `.cache/ci/build-ci-*` first.
+  Use after a flag or toolchain change that may have left stale state.
+
+Two speedups make this work and are auto-detected:
+
+- **ccache** — install via `brew install ccache`. The script wires it in
+  as `CMAKE_C_COMPILER_LAUNCHER`; on a warm cache, identical TUs compile
+  in microseconds. Inspect with `ccache -s`.
+- **Persistent build dirs** — `.cache/ci/build-ci-*` are kept across
+  runs. cmake reuses `CMakeCache.txt` and the ninja/make incremental
+  graph, so unchanged TUs are skipped at the build-system level too.
+
+The full matrix without these speedups runs in 8-10 minutes; with them, a
+warm `--fast` run is under 10 seconds.
 
 ## RFC Reference by Module
 

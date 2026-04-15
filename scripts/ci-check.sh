@@ -4,9 +4,31 @@
 #
 # Runs the same checks as .github/workflows/ci.yml locally.
 # Use as pre-push verification:
-#   ./scripts/ci-check.sh
+#   ./scripts/ci-check.sh           # full matrix (mirrors GitHub CI)
+#   ./scripts/ci-check.sh --fast    # tier-1 subset for tight loops
+#   ./scripts/ci-check.sh --clean   # wipe build dirs before configure
 #
 # Exit code: 0 = all passed, 1 = failures detected
+#
+# ----------------------------------------------------------------
+# Speed knobs (these are the difference between an 8-minute pre-push
+# and a 30-second pre-push; see docs/engineering/development-workflow.md):
+#
+#   1. ccache — auto-detected. When present we wire it in as
+#      CMAKE_C_COMPILER_LAUNCHER, which cuts compile time ~5-10× on
+#      repeat builds. To inspect: `ccache -s`.
+#
+#   2. Incremental cmake — by default we DO NOT `rm -rf` build
+#      directories between runs. cmake reuses CMakeCache.txt and
+#      ninja/make incremental graphs, so unchanged TUs are skipped.
+#      Pass `--clean` to force a full rebuild.
+#
+#   3. `--fast` mode — runs only the tier that catches ~90% of
+#      regressions: arch checks + clang-format + DATA + MEDIA +
+#      ASan. Skips the AUDIO_ONLY/MEDIA_ONLY/CORE_ONLY combos and
+#      the slow libdatachannel interop suite. Use this in your tight
+#      pre-push loop; do a full run before pushing release branches.
+# ----------------------------------------------------------------
 
 set -euo pipefail
 
@@ -15,6 +37,52 @@ cd "$ROOT"
 
 CI_DIR="$ROOT/.cache/ci"
 mkdir -p "$CI_DIR"
+
+# ---- Argument parsing --------------------------------------------------
+FAST_MODE=0
+CLEAN_MODE=0
+for arg in "$@"; do
+    case "$arg" in
+        --fast)  FAST_MODE=1 ;;
+        --clean) CLEAN_MODE=1 ;;
+        -h|--help)
+            sed -n '2,32p' "$0"
+            exit 0
+            ;;
+        *)
+            echo "Unknown flag: $arg" >&2
+            echo "Run with --help for usage." >&2
+            exit 2
+            ;;
+    esac
+done
+
+# ---- ccache detection --------------------------------------------------
+LAUNCHER_FLAGS=""
+if command -v ccache > /dev/null 2>&1; then
+    LAUNCHER_FLAGS="-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache"
+    echo "  (ccache: $(ccache --version | head -1))"
+else
+    echo "  (ccache: not installed — install via 'brew install ccache' for ~5-10× speedup)"
+fi
+
+if [ $FAST_MODE -eq 1 ]; then
+    echo "  (mode: --fast — skipping AUDIO_ONLY/MEDIA_ONLY/CORE_ONLY combos and libdatachannel interop)"
+fi
+if [ $CLEAN_MODE -eq 1 ]; then
+    echo "  (mode: --clean — wiping build dirs before reconfigure)"
+fi
+
+# Helper: prepare a build directory. With --clean we always rm -rf;
+# without --clean we keep the dir so cmake can reuse its cache and the
+# compile cache (ccache or otherwise) can hit on identical TUs.
+prep_build_dir() {
+    local dir="$1"
+    if [ $CLEAN_MODE -eq 1 ]; then
+        rm -rf "$dir"
+    fi
+    mkdir -p "$dir"
+}
 
 PASS=0
 FAIL=0
@@ -97,16 +165,32 @@ COMBO_FLAGS=(
     "-DNANORTC_FEATURE_DATACHANNEL=OFF -DNANORTC_FEATURE_AUDIO=OFF -DNANORTC_FEATURE_VIDEO=OFF"
 )
 
+# In --fast mode, only the most representative combos are built. The skipped
+# combos are exotic (non-default flag intersections) and rarely catch bugs
+# that DATA / MEDIA don't already surface.
+FAST_COMBO_FILTER=" DATA MEDIA "
+
+JOBS=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+
 for crypto in "${CRYPTO_BACKENDS[@]}"; do
     CRYPTO_FLAG="-DNANORTC_CRYPTO=$crypto"
+    # In --fast mode, only exercise the first available crypto backend.
+    if [ $FAST_MODE -eq 1 ] && [ "$crypto" != "${CRYPTO_BACKENDS[0]}" ]; then
+        continue
+    fi
     for i in "${!COMBO_NAMES[@]}"; do
         combo="${COMBO_NAMES[$i]}"
         flags="${COMBO_FLAGS[$i]}"
+
+        if [ $FAST_MODE -eq 1 ] && [[ "$FAST_COMBO_FILTER" != *" $combo "* ]]; then
+            continue
+        fi
+
         build_dir="$CI_DIR/build-ci-${combo}-${crypto}"
-        rm -rf "$build_dir"
+        prep_build_dir "$build_dir"
 
         run_check "Build $combo / $crypto" \
-            bash -c "cmake -B '$build_dir' $flags $CRYPTO_FLAG -DCMAKE_BUILD_TYPE=Debug > /dev/null 2>&1 && cmake --build '$build_dir' -j\$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4) > /dev/null 2>&1"
+            bash -c "cmake -B '$build_dir' $flags $CRYPTO_FLAG $LAUNCHER_FLAGS -DCMAKE_BUILD_TYPE=Debug > /dev/null 2>&1 && cmake --build '$build_dir' -j${JOBS} > /dev/null 2>&1"
 
         run_check "Test  $combo / $crypto" \
             ctest --test-dir "$build_dir" --output-on-failure
@@ -119,11 +203,15 @@ done
 echo ""
 echo "=== Symbol Checks ==="
 
-# Use first available crypto backend for symbol checks
+# Symbol checks read libnanortc.a from a *previous* build dir. In --fast
+# mode we skip the AUDIO_ONLY combo entirely, so its .a is stale (or
+# missing); reading it would either lie or silently skip. Force-skip the
+# AUDIO_ONLY-derived check in --fast mode rather than risk a misleading
+# pass on out-of-date binaries.
 MEDIA_LIB="$CI_DIR/build-ci-MEDIA-${CRYPTO_BACKENDS[0]}/libnanortc.a"
 if [ -f "$MEDIA_LIB" ]; then
     # All symbols must use nano_ (public) or known module prefixes (internal)
-    ALLOWED='nano_|nanortc_|stun_|ice_|dtls_|nsctp_|sctp_|dc_|sdp_|rtp_|rtcp_|srtp_|jitter_|bwe_|h264_|media_|ssrc_map_|addr_|track_|turn_'
+    ALLOWED='nano_|nanortc_|stun_|ice_|dtls_|nsctp_|sctp_|dc_|sdp_|rtp_|rtcp_|srtp_|jitter_|bwe_|h264_|h265_|media_|ssrc_map_|addr_|track_|turn_'
     run_check "Symbols use allowed prefixes" \
         bash -c 'test -z "$(nm -g '"$MEDIA_LIB"' 2>/dev/null | grep " T " | awk "{print \$3}" | grep -v "^_" | grep -vE "^('"$ALLOWED"')")"'
 
@@ -133,13 +221,18 @@ else
     printf "  %-50s SKIP (MEDIA build failed)\n" "Symbol checks"
 fi
 
-# DataChannel-OFF builds should NOT contain nsctp_ symbols
-AUDIO_ONLY_LIB="$CI_DIR/build-ci-AUDIO_ONLY-${CRYPTO_BACKENDS[0]}/libnanortc.a"
-if [ -f "$AUDIO_ONLY_LIB" ]; then
-    run_check "AUDIO_ONLY: no nsctp_ symbols" \
-        bash -c 'test -z "$(nm '"$AUDIO_ONLY_LIB"' 2>/dev/null | grep " T " | grep "nsctp_")"'
+# DataChannel-OFF builds should NOT contain nsctp_ symbols. Skip in --fast
+# mode where AUDIO_ONLY is intentionally not rebuilt.
+if [ $FAST_MODE -eq 1 ]; then
+    printf "  %-50s SKIP (--fast mode skips AUDIO_ONLY rebuild)\n" "AUDIO_ONLY: no nsctp_ symbols"
 else
-    printf "  %-50s SKIP (AUDIO_ONLY build failed)\n" "AUDIO_ONLY: no nsctp_ symbols"
+    AUDIO_ONLY_LIB="$CI_DIR/build-ci-AUDIO_ONLY-${CRYPTO_BACKENDS[0]}/libnanortc.a"
+    if [ -f "$AUDIO_ONLY_LIB" ]; then
+        run_check "AUDIO_ONLY: no nsctp_ symbols" \
+            bash -c 'test -z "$(nm '"$AUDIO_ONLY_LIB"' 2>/dev/null | grep " T " | grep "nsctp_")"'
+    else
+        printf "  %-50s SKIP (AUDIO_ONLY build failed)\n" "AUDIO_ONLY: no nsctp_ symbols"
+    fi
 fi
 
 # ============================================================
@@ -149,10 +242,10 @@ echo ""
 echo "=== AddressSanitizer ==="
 
 asan_dir="$CI_DIR/build-ci-asan"
-rm -rf "$asan_dir"
+prep_build_dir "$asan_dir"
 
 run_check "Build MEDIA + ASan" \
-    bash -c "cmake -B '$asan_dir' -DNANORTC_FEATURE_DATACHANNEL=ON -DNANORTC_FEATURE_AUDIO=ON -DNANORTC_FEATURE_VIDEO=ON $CRYPTO_FLAG -DCMAKE_BUILD_TYPE=Debug -DADDRESS_SANITIZER=ON > /dev/null 2>&1 && cmake --build '$asan_dir' -j\$(nproc) > /dev/null 2>&1"
+    bash -c "cmake -B '$asan_dir' -DNANORTC_FEATURE_DATACHANNEL=ON -DNANORTC_FEATURE_AUDIO=ON -DNANORTC_FEATURE_VIDEO=ON $CRYPTO_FLAG $LAUNCHER_FLAGS -DCMAKE_BUILD_TYPE=Debug -DADDRESS_SANITIZER=ON > /dev/null 2>&1 && cmake --build '$asan_dir' -j${JOBS} > /dev/null 2>&1"
 
 run_check "Test  MEDIA + ASan" \
     ctest --test-dir "$asan_dir" --output-on-failure
@@ -168,12 +261,14 @@ for crypto in "${CRYPTO_BACKENDS[@]}"; do
     [ "$crypto" = "openssl" ] && HAS_OPENSSL=true
 done
 
-if $HAS_OPENSSL && command -v c++ > /dev/null 2>&1; then
+if [ $FAST_MODE -eq 1 ]; then
+    printf "  %-50s SKIP (--fast mode)\n" "Interop tests"
+elif $HAS_OPENSSL && command -v c++ > /dev/null 2>&1; then
     interop_dir="$CI_DIR/build-ci-interop"
-    rm -rf "$interop_dir"
+    prep_build_dir "$interop_dir"
 
     run_check "Build interop (libdatachannel)" \
-        bash -c "cmake -B '$interop_dir' -DNANORTC_BUILD_INTEROP_TESTS=ON -DNANORTC_CRYPTO=openssl -DCMAKE_BUILD_TYPE=Debug -DCMAKE_POLICY_VERSION_MINIMUM=3.5 > /dev/null 2>&1 && cmake --build '$interop_dir' -j\$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4) > /dev/null 2>&1"
+        bash -c "cmake -B '$interop_dir' -DNANORTC_BUILD_INTEROP_TESTS=ON -DNANORTC_CRYPTO=openssl $LAUNCHER_FLAGS -DCMAKE_BUILD_TYPE=Debug -DCMAKE_POLICY_VERSION_MINIMUM=3.5 > /dev/null 2>&1 && cmake --build '$interop_dir' -j${JOBS} > /dev/null 2>&1"
 
     run_check "Test  interop (libdatachannel)" \
         ctest --test-dir "$interop_dir" -R interop --output-on-failure
@@ -188,7 +283,9 @@ fi
 # ============================================================
 # Cleanup
 # ============================================================
-rm -rf "$CI_DIR"/build-ci-*
+# Build dirs are persistent across runs by default — ccache + cmake
+# incremental graphs need them. Pass --clean to wipe them next run, or
+# simply `rm -rf .cache/ci/build-ci-*` manually.
 
 # ============================================================
 # Summary

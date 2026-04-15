@@ -74,6 +74,9 @@ int nano_srtp_init(nano_srtp_t *srtp, const nanortc_crypto_provider_t *crypto, i
     memset(srtp, 0, sizeof(*srtp));
     srtp->crypto = crypto;
     srtp->is_client = is_client;
+    /* -1 means "no cached SSRC lookup yet" (0 is a valid slot index). */
+    srtp->last_send_idx = -1;
+    srtp->last_recv_idx = -1;
     return NANORTC_OK;
 }
 
@@ -192,9 +195,14 @@ int nano_srtp_derive_keys(nano_srtp_t *srtp, const uint8_t *keying_material, siz
  *   bytes 6-13:  XOR with packet_index (48-bit, as 8-byte big-endian)
  *   bytes 0-13:  XOR with session salt
  *   bytes 14-15: 0 (block counter, handled by AES-CM)
+ *
+ * Marked `static inline` so the compiler can fold the SSRC/index byte
+ * writes into the two AES-CM calls on every packet without paying a
+ * function-call prologue. The per-byte salt XOR is already vectorised
+ * by optimising compilers into two aligned 64-bit loads + XORs.
  */
-static void srtp_compute_iv(uint8_t iv[16], const uint8_t salt[NANORTC_SRTP_SALT_SIZE],
-                            uint32_t ssrc, uint64_t index)
+static inline void srtp_compute_iv(uint8_t iv[16], const uint8_t salt[NANORTC_SRTP_SALT_SIZE],
+                                   uint32_t ssrc, uint64_t index)
 {
     memset(iv, 0, 16);
 
@@ -225,22 +233,39 @@ static void srtp_compute_iv(uint8_t iv[16], const uint8_t salt[NANORTC_SRTP_SALT
 /*
  * Find or create per-SSRC state entry.
  * In BUNDLE, session keys are shared but ROC/seq tracking is per-SSRC.
+ *
+ * @p cache_idx points to the caller's last-used slot index cache
+ * (srtp->last_send_idx or srtp->last_recv_idx). On a cache hit this
+ * returns in O(1); on a miss we fall back to a linear scan and update
+ * the cache with the hit slot index.
  */
-static nano_srtp_ssrc_state_t *srtp_get_ssrc_state(nano_srtp_t *srtp, uint32_t ssrc)
+static nano_srtp_ssrc_state_t *srtp_get_ssrc_state(nano_srtp_t *srtp, uint32_t ssrc,
+                                                   int8_t *cache_idx)
 {
-    /* Look for existing entry */
+    /* Fast path: cached slot still valid for this SSRC */
+    int8_t hinted = *cache_idx;
+    if (hinted >= 0 && hinted < NANORTC_MAX_SSRC_MAP) {
+        nano_srtp_ssrc_state_t *s = &srtp->ssrc_states[hinted];
+        if (s->active && s->ssrc == ssrc) {
+            return s;
+        }
+    }
+
+    /* Slow path: scan for an existing entry */
     for (int i = 0; i < NANORTC_MAX_SSRC_MAP; i++) {
         if (srtp->ssrc_states[i].active && srtp->ssrc_states[i].ssrc == ssrc) {
+            *cache_idx = (int8_t)i;
             return &srtp->ssrc_states[i];
         }
     }
-    /* Allocate new entry */
+    /* Allocate a new entry */
     for (int i = 0; i < NANORTC_MAX_SSRC_MAP; i++) {
         if (!srtp->ssrc_states[i].active) {
             srtp->ssrc_states[i].ssrc = ssrc;
             srtp->ssrc_states[i].roc = 0;
             srtp->ssrc_states[i].seq_max = 0;
             srtp->ssrc_states[i].active = true;
+            *cache_idx = (int8_t)i;
             return &srtp->ssrc_states[i];
         }
     }
@@ -252,15 +277,24 @@ static int srtp_parse_hdr_len(const uint8_t *packet, size_t len, size_t *hdr_len
 {
     uint8_t cc = packet[0] & 0x0F;
     size_t hdr_len = RTP_HEADER_SIZE + (size_t)cc * 4;
-    if (packet[0] & 0x10) { /* X bit: extension header */
-        if (len < hdr_len + 4) {
+    if (hdr_len > len) {
+        return NANORTC_ERR_PARSE;
+    }
+    if (packet[0] & 0x10) { /* X bit: extension header (RFC 3550 §5.3.1) */
+        size_t remaining = len - hdr_len;
+        if (remaining < 4) {
             return NANORTC_ERR_PARSE;
         }
         uint16_t ext_words = nanortc_read_u16be(packet + hdr_len + 2);
-        hdr_len += 4 + (size_t)ext_words * 4;
-    }
-    if (len < hdr_len) {
-        return NANORTC_ERR_PARSE;
+        /* Overflow-safe bounding: mirrors rtp_unpack() — bound
+         * ext_words against the remaining buffer *before* the
+         * multiplication so (ext_words * 4) cannot wrap size_t on
+         * 16-bit targets. (remaining - 4) / 4 is safe because
+         * remaining >= 4. */
+        if ((size_t)ext_words > (remaining - 4) / 4) {
+            return NANORTC_ERR_PARSE;
+        }
+        hdr_len += 4u + (size_t)ext_words * 4u;
     }
     *hdr_len_out = hdr_len;
     return NANORTC_OK;
@@ -286,7 +320,7 @@ int nano_srtp_protect(nano_srtp_t *srtp, uint8_t *packet, size_t len, size_t *ou
     }
 
     /* Per-SSRC ROC tracking (RFC 3711 §3.3) */
-    nano_srtp_ssrc_state_t *ss = srtp_get_ssrc_state(srtp, ssrc);
+    nano_srtp_ssrc_state_t *ss = srtp_get_ssrc_state(srtp, ssrc, &srtp->last_send_idx);
     if (!ss) {
         return NANORTC_ERR_BUFFER_TOO_SMALL;
     }
@@ -467,7 +501,7 @@ int nano_srtp_unprotect(nano_srtp_t *srtp, uint8_t *packet, size_t len, size_t *
     }
 
     /* Per-SSRC ROC tracking */
-    nano_srtp_ssrc_state_t *ss = srtp_get_ssrc_state(srtp, ssrc);
+    nano_srtp_ssrc_state_t *ss = srtp_get_ssrc_state(srtp, ssrc, &srtp->last_recv_idx);
     if (!ss) {
         return NANORTC_ERR_BUFFER_TOO_SMALL;
     }

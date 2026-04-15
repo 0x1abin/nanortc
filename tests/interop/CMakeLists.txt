@@ -98,6 +98,34 @@ target_link_libraries(test_interop_turn PRIVATE
 add_test(NAME interop_turn COMMAND test_interop_turn)
 set_tests_properties(interop_turn PROPERTIES TIMEOUT 120 LABELS "network")
 
+# ---- TURN relay-only interop test ----
+# Forces the libdatachannel side into RTC_TRANSPORT_POLICY_RELAY so all
+# traffic must traverse the TURN server. Skipped at runtime if no TURN
+# server is reachable (default 127.0.0.1:3478, override with NANORTC_TURN_*).
+
+add_executable(test_interop_turn_relay
+    test_interop_turn_relay.c
+    interop_common.c
+    interop_nanortc_peer.c
+    interop_libdatachannel_peer.c
+    ${CMAKE_SOURCE_DIR}/examples/common/run_loop_linux.c
+    ${CMAKE_SOURCE_DIR}/examples/common/ice_server_resolve.c
+)
+
+target_include_directories(test_interop_turn_relay PRIVATE ${INTEROP_INCLUDE_DIRS})
+
+set_target_properties(test_interop_turn_relay PROPERTIES LINKER_LANGUAGE CXX)
+
+target_link_libraries(test_interop_turn_relay PRIVATE
+    nanortc
+    unity
+    LibDataChannel::LibDataChannelStatic
+    pthread
+)
+
+add_test(NAME interop_turn_relay COMMAND test_interop_turn_relay)
+set_tests_properties(interop_turn_relay PROPERTIES TIMEOUT 180 LABELS "network;turn-relay")
+
 # ---- Audio interop test (requires NANORTC_FEATURE_AUDIO) ----
 
 if(NANORTC_FEATURE_AUDIO)

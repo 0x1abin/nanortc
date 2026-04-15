@@ -34,7 +34,16 @@ static void test_sizeof_dtls(void)
 
 static void test_sizeof_sdp(void)
 {
+#if NANORTC_FEATURE_H265
+    /* Per-mline overhead: sprop scratch (NANORTC_H265_SPROP_FMTP_SIZE) +
+     * rtpmap_pt (1 B) + sprop_len (2 B) + struct padding. 16 B covers
+     * alignment up to the next 8-B boundary on 64-bit targets. */
+    const size_t h265_mline_overhead = NANORTC_H265_SPROP_FMTP_SIZE + 16;
+    TEST_ASSERT_LESS_OR_EQUAL_size_t(1500 + h265_mline_overhead * NANORTC_MAX_MEDIA_TRACKS,
+                                     sizeof(nano_sdp_t));
+#else
     TEST_ASSERT_LESS_OR_EQUAL_size_t(1500, sizeof(nano_sdp_t));
+#endif
 }
 
 #if NANORTC_FEATURE_TURN

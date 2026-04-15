@@ -14,6 +14,7 @@
 #define NANORTC_H264_H_
 
 #include "nanortc_config.h"
+#include "nano_annex_b.h"
 
 #include <stdint.h>
 #include <stddef.h>
@@ -123,15 +124,11 @@ int h264_is_keyframe(const uint8_t *rtp_payload, size_t len);
 
 /**
  * Find next NAL unit in an Annex-B bitstream.
- * Scans for 00 00 01 or 00 00 00 01 start codes.
  *
- * @param data    Annex-B buffer.
- * @param len     Buffer length.
- * @param offset  [in/out] Search offset; updated past the found NAL.
- * @param nal_len [out] Length of found NAL (excluding start code).
- * @return Pointer to NAL data (after start code), or NULL if no more NALs.
+ * The Annex-B scanner is codec-agnostic and now lives in nano_annex_b.{c,h}.
+ * This alias is preserved so existing H.264 call sites and tests continue to
+ * compile unchanged.
  */
-const uint8_t *h264_annex_b_find_nal(const uint8_t *data, size_t len, size_t *offset,
-                                     size_t *nal_len);
+#define h264_annex_b_find_nal nano_annex_b_find_nal
 
 #endif /* NANORTC_H264_H_ */

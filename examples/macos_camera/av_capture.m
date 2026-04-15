@@ -15,8 +15,8 @@
  * Delegate object: receives video and audio sample buffers
  * ---------------------------------------------------------------- */
 
-@interface AVCaptureHandler
-    : NSObject <AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptureAudioDataOutputSampleBufferDelegate>
+@interface AVCaptureHandler : NSObject <AVCaptureVideoDataOutputSampleBufferDelegate,
+                                        AVCaptureAudioDataOutputSampleBufferDelegate>
 @property(nonatomic) av_capture_video_cb videoCb;
 @property(nonatomic) av_capture_audio_cb audioCb;
 @property(nonatomic) void *userdata;
@@ -47,11 +47,13 @@
                 return;
 
             CMFormatDescriptionRef fmt = CMSampleBufferGetFormatDescription(sampleBuffer);
-            const AudioStreamBasicDescription *asbd = CMAudioFormatDescriptionGetStreamBasicDescription(fmt);
+            const AudioStreamBasicDescription *asbd =
+                CMAudioFormatDescriptionGetStreamBasicDescription(fmt);
             if (!asbd)
                 return;
 
-            size_t sample_count = totalLen / (asbd->mBitsPerChannel / 8) / (size_t)asbd->mChannelsPerFrame;
+            size_t sample_count =
+                totalLen / (asbd->mBitsPerChannel / 8) / (size_t)asbd->mChannelsPerFrame;
             CMTime pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);
             self.audioCb(self.userdata, (const int16_t *)dataPtr, sample_count, pts);
         }
@@ -70,6 +72,58 @@ static dispatch_queue_t s_video_queue;
 static dispatch_queue_t s_audio_queue;
 
 /* ----------------------------------------------------------------
+ * TCC authorization — macOS 10.14+ requires explicit consent for camera
+ * and microphone access. Each binary (identified by its code-signing
+ * identity or on-disk path) is tracked independently; grants for one
+ * binary do NOT carry over to another. When the process runs without a
+ * UI session (e.g. detached from the TTY, launched by another daemon)
+ * the system cannot display its consent prompt and silently denies.
+ *
+ * The symptom is the one most painful to debug: AVCaptureSession says
+ * "started", no error bubbles up, and the green camera LED stays off
+ * because no frames are actually produced.
+ *
+ * Here we probe the status up front, request access synchronously on a
+ * semaphore so we get a clear yes/no before touching AVCaptureDevice,
+ * and print an actionable message when permission is missing.
+ * ---------------------------------------------------------------- */
+static int ensure_tcc_access(AVMediaType mediaType, const char *label)
+{
+    AVAuthorizationStatus status = [AVCaptureDevice authorizationStatusForMediaType:mediaType];
+    if (status == AVAuthorizationStatusAuthorized) {
+        return 0;
+    }
+    if (status == AVAuthorizationStatusDenied || status == AVAuthorizationStatusRestricted) {
+        fprintf(stderr,
+                "[av_capture] %s access denied for this binary.\n"
+                "  Fix: System Settings → Privacy & Security → %s, then enable the\n"
+                "       terminal you launched this from (Terminal / iTerm / etc.)\n"
+                "  If this is a new binary path, run it once from an interactive\n"
+                "  Terminal so macOS can show the authorization prompt.\n",
+                label, label);
+        return -1;
+    }
+
+    /* status == NotDetermined: block on a completion handler until the user
+     * grants or denies. The prompt appears on the Dock / foreground only when
+     * there is a usable window server session. */
+    __block BOOL granted = NO;
+    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+    [AVCaptureDevice requestAccessForMediaType:mediaType
+                             completionHandler:^(BOOL ok) {
+                               granted = ok;
+                               dispatch_semaphore_signal(sem);
+                             }];
+    fprintf(stderr, "[av_capture] requesting %s access — approve the system prompt\n", label);
+    dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
+    if (!granted) {
+        fprintf(stderr, "[av_capture] %s access not granted; cannot capture.\n", label);
+        return -1;
+    }
+    return 0;
+}
+
+/* ----------------------------------------------------------------
  * Public API
  * ---------------------------------------------------------------- */
 
@@ -79,6 +133,11 @@ int av_capture_start(const av_capture_config_t *cfg)
         fprintf(stderr, "[av_capture] NULL config\n");
         return -1;
     }
+
+    if (ensure_tcc_access(AVMediaTypeVideo, "Camera") != 0)
+        return -1;
+    if (ensure_tcc_access(AVMediaTypeAudio, "Microphone") != 0)
+        return -1;
 
     @autoreleasepool {
         s_session = [[AVCaptureSession alloc] init];
@@ -97,16 +156,15 @@ int av_capture_start(const av_capture_config_t *cfg)
         s_handler.userdata = cfg->userdata;
 
         /* --- Video input --- */
-        AVCaptureDevice *videoDev =
-            [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeVideo];
+        AVCaptureDevice *videoDev = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeVideo];
         if (!videoDev) {
             fprintf(stderr, "[av_capture] No camera found\n");
             return -1;
         }
 
         NSError *err = nil;
-        AVCaptureDeviceInput *videoInput =
-            [AVCaptureDeviceInput deviceInputWithDevice:videoDev error:&err];
+        AVCaptureDeviceInput *videoInput = [AVCaptureDeviceInput deviceInputWithDevice:videoDev
+                                                                                 error:&err];
         if (!videoInput) {
             fprintf(stderr, "[av_capture] Camera input error: %s\n",
                     err.localizedDescription.UTF8String);
@@ -132,8 +190,8 @@ int av_capture_start(const av_capture_config_t *cfg)
         /* Video output (NV12 for zero-copy to VideoToolbox) */
         AVCaptureVideoDataOutput *videoOutput = [[AVCaptureVideoDataOutput alloc] init];
         videoOutput.videoSettings = @{
-            (NSString *)kCVPixelBufferPixelFormatTypeKey :
-                @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)
+            (NSString *)
+            kCVPixelBufferPixelFormatTypeKey : @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)
         };
         videoOutput.alwaysDiscardsLateVideoFrames = YES;
 
@@ -148,15 +206,14 @@ int av_capture_start(const av_capture_config_t *cfg)
         }
 
         /* --- Audio input --- */
-        AVCaptureDevice *audioDev =
-            [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeAudio];
+        AVCaptureDevice *audioDev = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeAudio];
         if (!audioDev) {
             fprintf(stderr, "[av_capture] No microphone found\n");
             return -1;
         }
 
-        AVCaptureDeviceInput *audioInput =
-            [AVCaptureDeviceInput deviceInputWithDevice:audioDev error:&err];
+        AVCaptureDeviceInput *audioInput = [AVCaptureDeviceInput deviceInputWithDevice:audioDev
+                                                                                 error:&err];
         if (!audioInput) {
             fprintf(stderr, "[av_capture] Microphone input error: %s\n",
                     err.localizedDescription.UTF8String);
@@ -196,8 +253,7 @@ int av_capture_start(const av_capture_config_t *cfg)
         /* --- Start --- */
         [s_session startRunning];
         fprintf(stderr, "[av_capture] Capture started (video=%dx%d@%dfps, audio=%dHz/%dch)\n",
-                cfg->video_width, cfg->video_height,
-                cfg->video_fps > 0 ? cfg->video_fps : 30,
+                cfg->video_width, cfg->video_height, cfg->video_fps > 0 ? cfg->video_fps : 30,
                 cfg->audio_sample_rate > 0 ? cfg->audio_sample_rate : 48000,
                 cfg->audio_channels > 0 ? cfg->audio_channels : 1);
     }

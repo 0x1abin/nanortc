@@ -62,6 +62,23 @@ typedef struct nano_ice_candidate {
     uint8_t type;   /* nano_ice_cand_type_t */
 } nano_ice_candidate_t;
 
+/**
+ * @brief Per-pair in-flight STUN Binding Request tracking (RFC 8445 §7.1.3).
+ *
+ * CONTROLLING role sends one check per pair every NANORTC_ICE_CHECK_INTERVAL_MS
+ * while rotating through candidate pairs. Browsers typically respond to those
+ * checks in bursts and possibly out of order, so we need to match each
+ * Binding Response to its originating pair by transaction ID. Storing only
+ * the most recent transaction (TD-018) loses every response except the last.
+ */
+typedef struct nano_ice_pending {
+    uint8_t txid[STUN_TXID_SIZE]; /**< 12-byte STUN transaction ID. */
+    uint32_t sent_at_ms;          /**< Wall clock at send time (for stale reaping). */
+    uint8_t local_idx;            /**< Index into local_candidates[]. */
+    uint8_t remote_idx;           /**< Index into remote_candidates[]. */
+    bool in_flight;               /**< True while awaiting a matching response. */
+} nano_ice_pending_t;
+
 typedef struct nano_ice {
     nano_ice_state_t state;
     int is_controlling; /* 0 = controlled (answerer), 1 = controlling (offerer) */
@@ -81,10 +98,12 @@ typedef struct nano_ice {
     uint32_t next_check_ms;
 
     /* Controlling role state */
-    uint64_t tie_breaker;              /* 8-byte random for ICE-CONTROLLING/CONTROLLED */
-    uint8_t last_txid[STUN_TXID_SIZE]; /* transaction ID of last outgoing request */
-    uint8_t check_count;               /* number of checks sent */
-    bool nominated;                    /* selected pair nominated */
+    uint64_t tie_breaker; /* 8-byte random for ICE-CONTROLLING/CONTROLLED */
+    uint8_t check_count;  /* number of checks sent */
+    bool nominated;       /* selected pair nominated */
+
+    /* Per-pair in-flight check tracking (TD-018, RFC 8445 §7.1.3) */
+    nano_ice_pending_t pending[NANORTC_ICE_MAX_PENDING_CHECKS];
 
     /* Local candidates array */
     nano_ice_candidate_t local_candidates[NANORTC_MAX_LOCAL_CANDIDATES];
@@ -94,16 +113,15 @@ typedef struct nano_ice {
     uint8_t selected_local_addr[NANORTC_ADDR_SIZE];
     uint16_t selected_local_port;
     uint8_t selected_local_family;
+    uint8_t selected_local_idx; /* index in local_candidates[]; used by consent path */
 
     /* Remote candidates array (trickle ICE support) */
     nano_ice_candidate_t remote_candidates[NANORTC_MAX_ICE_CANDIDATES];
     uint8_t remote_candidate_count;
 
     /* Pair iteration state (controlling role) */
-    uint8_t current_local;   /* index of local candidate being checked */
-    uint8_t current_remote;  /* index of remote candidate being checked */
-    uint8_t last_local_idx;  /* local index used in last outgoing check */
-    uint8_t last_remote_idx; /* remote index used in last outgoing check */
+    uint8_t current_local;  /* index of local candidate being checked */
+    uint8_t current_remote; /* index of remote candidate being checked */
 
     /* Trickle ICE (RFC 8838) */
     bool end_of_candidates; /**< Remote signaled no more candidates. */
