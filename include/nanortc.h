@@ -590,9 +590,41 @@ struct nanortc {
     uint16_t out_head;
     uint16_t out_tail;
 
+#if NANORTC_FEATURE_TURN
+    /* Per-output side-table for lazy TURN wrap (RFC 5766 §10/§11). When set,
+     * nanortc_poll_output() wraps out_queue[slot].transmit.data into turn_buf
+     * (ChannelData if a channel is bound, otherwise Send indication) just
+     * before handing the output back to the caller. Lazy wrap is used because
+     * the output queue stores only a pointer per slot — eagerly wrapping into
+     * a shared scratch at enqueue time would let later enqueues clobber the
+     * pending wraps from earlier callers in the same tick (e.g. video FU-A
+     * fragments overwriting each other). */
+    struct {
+        bool via_turn;            /**< Wrap data through TURN at dispatch time. */
+        nanortc_addr_t peer_dest; /**< Original peer destination (pre-wrap). */
+    } out_wrap_meta[NANORTC_OUT_QUEUE_SIZE];
+
+    /* Diagnostic counters for the TX dispatch path — readable directly by
+     * application glue (example: uipcat_client_broadcast_video) to figure
+     * out why media packets are or aren't flowing over the relay. */
+    uint32_t stats_enqueue_direct;   /**< Enqueues that bypass TURN wrap. */
+    uint32_t stats_enqueue_via_turn; /**< Enqueues flagged for TURN wrap. */
+    uint32_t stats_wrap_dropped;     /**< Lazy wrap failures in poll_output. */
+    uint32_t stats_tx_queue_full;    /**< rtc_enqueue_transmit out_queue overflow. */
+#endif
+
     /* Scratch buffer for STUN encode/decode.
      * Sans I/O contract: caller must drain outputs before next handle_receive. */
     uint8_t stun_buf[NANORTC_STUN_BUF_SIZE];
+
+    /* Dedicated scratch for TURN Allocate / Refresh / Permission / ChannelBind
+     * outputs. Separate from stun_buf so TURN packets are not clobbered by
+     * subsequent STUN srflx writes in the same rtc_process_timers tick —
+     * nanortc_output_t carries only a pointer, so both outputs would otherwise
+     * resolve to whichever writer wrote last when the caller drains them. */
+#if NANORTC_FEATURE_TURN
+    uint8_t turn_buf[NANORTC_TURN_BUF_SIZE];
+#endif
 
     /* Scratch buffer for DTLS output polling */
     uint8_t dtls_scratch[NANORTC_DTLS_BUF_SIZE];

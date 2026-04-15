@@ -137,10 +137,18 @@ typedef struct nano_ice {
 int ice_init(nano_ice_t *ice, int is_controlling);
 
 /* Handle incoming STUN message (both roles).
- * Writes response to resp_buf if needed; sets *resp_len to 0 if no response. */
+ * Writes response to resp_buf if needed; sets *resp_len to 0 if no response.
+ *
+ * @p via_turn must be true when @p data was just unwrapped from a TURN Data
+ * Indication or ChannelData (i.e. the OUTER source was the TURN server even
+ * though @p src is the inner peer address). When set, USE-CANDIDATE marks the
+ * selected pair as RELAY instead of HOST so subsequent transmits get wrapped
+ * back through the TURN relay (RFC 5766 §10/§11). Without this signal the
+ * controlled side has no way to tell a direct check from a relay-tunneled one,
+ * because in both cases @p src is the same peer. */
 int ice_handle_stun(nano_ice_t *ice, const uint8_t *data, size_t len, const nanortc_addr_t *src,
-                    const nanortc_crypto_provider_t *crypto, uint8_t *resp_buf, size_t resp_buf_len,
-                    size_t *resp_len);
+                    bool via_turn, const nanortc_crypto_provider_t *crypto, uint8_t *resp_buf,
+                    size_t resp_buf_len, size_t *resp_len);
 
 /* Generate outgoing STUN Binding Request (controlling role only).
  * Returns NANORTC_OK with *out_len=0 if not time to send yet. */

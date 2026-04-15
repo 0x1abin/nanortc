@@ -24,7 +24,15 @@ void tearDown(void)
 
 static void test_sizeof_ice(void)
 {
-    TEST_ASSERT_LESS_OR_EQUAL_size_t(600, sizeof(nano_ice_t));
+    /* Baseline 600 B was measured at NANORTC_MAX_ICE_CANDIDATES=8.
+     * Each extra candidate slot is ~22 B (addr + port + family + type +
+     * struct padding), so allow 24 B/slot of headroom for any extra
+     * candidates configured via NANORTC_CONFIG_FILE. */
+    const size_t base = 600;
+    const size_t extra = (NANORTC_MAX_ICE_CANDIDATES > 8)
+                             ? ((size_t)(NANORTC_MAX_ICE_CANDIDATES - 8) * 24u)
+                             : 0u;
+    TEST_ASSERT_LESS_OR_EQUAL_size_t(base + extra, sizeof(nano_ice_t));
 }
 
 static void test_sizeof_dtls(void)

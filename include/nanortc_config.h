@@ -433,6 +433,20 @@
 #endif
 #endif
 
+/* Scratch used by lazy TURN wrap at nanortc_poll_output() time. Must hold a
+ * full TURN-wrapped packet — Send indication adds up to ~48 B (STUN header +
+ * XOR-PEER-ADDRESS-IPv6 + DATA attr header + padding) on top of the largest
+ * payload the application may transmit. With media transport enabled the
+ * largest payload is a max-size SRTP packet (NANORTC_MEDIA_BUF_SIZE), so the
+ * default sums those. Without media this just shadows STUN_BUF_SIZE. */
+#ifndef NANORTC_TURN_BUF_SIZE
+#if NANORTC_HAVE_MEDIA_TRANSPORT
+#define NANORTC_TURN_BUF_SIZE (NANORTC_MEDIA_BUF_SIZE + 48)
+#else
+#define NANORTC_TURN_BUF_SIZE NANORTC_STUN_BUF_SIZE
+#endif
+#endif
+
 /* ----------------------------------------------------------------
  * SCTP configuration (RFC 4960)
  * ---------------------------------------------------------------- */
