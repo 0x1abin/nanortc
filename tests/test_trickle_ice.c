@@ -339,7 +339,8 @@ static void test_consent_response_clears_pending(void)
 
     uint8_t resp[256];
     size_t resp_len = 0;
-    rc = ice_handle_stun(&ctld, buf, out_len, &src, crypto(), resp, sizeof(resp), &resp_len);
+    rc = ice_handle_stun(&ctld, buf, out_len, &src, false, crypto(), resp, sizeof(resp),
+                         &resp_len);
     TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
     TEST_ASSERT_TRUE(resp_len > 0);
 
@@ -353,7 +354,7 @@ static void test_consent_response_clears_pending(void)
 
     uint8_t dummy[256];
     size_t dummy_len = 0;
-    rc = ice_handle_stun(&ctrl, resp, resp_len, &resp_src, crypto(), dummy, sizeof(dummy),
+    rc = ice_handle_stun(&ctrl, resp, resp_len, &resp_src, false, crypto(), dummy, sizeof(dummy),
                          &dummy_len);
     TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
     TEST_ASSERT_FALSE(ctrl.consent_pending);
@@ -458,6 +459,45 @@ static void test_api_end_of_candidates(void)
     nanortc_destroy(&rtc);
 }
 
+/* T19a: nanortc_add_remote_candidate parses "typ <type>" field */
+static void test_api_remote_candidate_parses_type(void)
+{
+    nanortc_t rtc;
+    memset(&rtc, 0, sizeof(rtc));
+    nanortc_config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.crypto = nano_test_crypto();
+    cfg.role = NANORTC_ROLE_CONTROLLING;
+    nanortc_init(&rtc, &cfg);
+
+    /* host candidate */
+    int rc = nanortc_add_remote_candidate(
+        &rtc, "candidate:1 1 UDP 2130706431 192.168.1.10 5000 typ host");
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
+    TEST_ASSERT_EQUAL_INT(NANORTC_ICE_CAND_HOST, rtc.ice.remote_candidates[0].type);
+
+    /* srflx candidate (with raddr/rport tail) */
+    rc = nanortc_add_remote_candidate(
+        &rtc,
+        "candidate:2 1 UDP 1694498815 203.0.113.5 6000 typ srflx raddr 192.168.1.10 rport 5000");
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
+    TEST_ASSERT_EQUAL_INT(NANORTC_ICE_CAND_SRFLX, rtc.ice.remote_candidates[1].type);
+
+    /* relay candidate */
+    rc = nanortc_add_remote_candidate(
+        &rtc,
+        "candidate:3 1 UDP 16777215 198.51.100.7 7000 typ relay raddr 0.0.0.0 rport 0");
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
+    TEST_ASSERT_EQUAL_INT(NANORTC_ICE_CAND_RELAY, rtc.ice.remote_candidates[2].type);
+
+    /* simple format (no candidate: prefix) defaults to HOST */
+    rc = nanortc_add_remote_candidate(&rtc, "10.0.0.1 8000");
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
+    TEST_ASSERT_EQUAL_INT(NANORTC_ICE_CAND_HOST, rtc.ice.remote_candidates[3].type);
+
+    nanortc_destroy(&rtc);
+}
+
 /* T19: nanortc_ice_restart resets state and generates new credentials */
 static void test_api_ice_restart(void)
 {
@@ -537,6 +577,7 @@ int main(void)
 
     /* Public API */
     RUN_TEST(test_api_end_of_candidates);
+    RUN_TEST(test_api_remote_candidate_parses_type);
     RUN_TEST(test_api_ice_restart);
 
     return UNITY_END();

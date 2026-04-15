@@ -138,11 +138,24 @@ nanortc_handle_input(rtc, now_ms, data, len, src)
 nanortc_poll_output(rtc, &out)
   │
   ├── NANORTC_OUTPUT_TRANSMIT → caller does sendto()
-  │     (if ICE selected relay pair: wrapped in ChannelData/Send indication,
-  │      dest = TURN server; otherwise dest = peer directly)
+  │     (if ICE selected pair is RELAY and TURN is allocated: lazy wrap into
+  │      ChannelData/Send indication using rtc->turn_buf, dest rewritten to
+  │      TURN server; otherwise dest = peer directly)
   ├── NANORTC_OUTPUT_EVENT    → caller processes event
   └── NANORTC_OUTPUT_TIMEOUT  → caller sets select() timeout
 ```
+
+The TURN wrap is **deferred** to `nanortc_poll_output()` rather than done at
+enqueue time: `rtc_enqueue_transmit()` stamps a `via_turn` flag + the original
+peer destination in a per-slot `out_wrap_meta[]` side-table and stores the
+unwrapped data. This avoids the eager-wrap collision a burst of N media
+packets would have caused into a single shared scratch buffer (each
+`nanortc_output_t` slot is just a pointer; eager wraps would all alias the
+last writer). The receive-side `via_turn` signal is plumbed through
+`rtc_process_receive` → `ice_handle_stun` so the controlled side correctly
+flips `selected_type=RELAY` when a USE-CANDIDATE check arrives unwrapped from
+a TURN Data Indication / ChannelData — see [docs/engineering/turn-rfc-compliance.md](docs/engineering/turn-rfc-compliance.md)
+Phase 5.2.
 
 ### NAT Traversal (ICE candidate types)
 
