@@ -70,7 +70,7 @@ Browser                          ESP32
   │  ←──── Video (H.264) ───────   │  25fps, sendonly
   │                                │
   │         SD Card ──→ read frame │  frame-NNNN.h264
-  │                    NAL split   │  annex_b_find_nal()
+  │                    NAL split   │  nano_annex_b_find_nal()
   │                    RTP pack    │  nanortc_send_video()
 ```
 

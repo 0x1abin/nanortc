@@ -19,7 +19,6 @@
 #include "media_source.h"
 #include "media_pacer.h"
 #include "cli_helpers.h"
-#include "h264_utils.h"
 #include "ice_server_resolve.h"
 #if NANORTC_FEATURE_H265
 #include "nano_annex_b.h"
