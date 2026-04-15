@@ -1580,10 +1580,39 @@ TEST(test_e2e_add_candidate_params)
     /* Valid local candidate */
     ASSERT_OK(nanortc_add_local_candidate(&rtc, "192.168.1.100", 5000));
 
-    /* Valid remote candidates in various formats */
+    /* Valid remote candidates in various formats. Each adds one entry to
+     * remote_candidates[], so we verify the type field (RFC 8839 §5.1
+     * parser added in the Phase 5.1 hardening pass). */
+    ASSERT_EQ(rtc.ice.remote_candidate_count, 0);
+
     ASSERT_OK(
         nanortc_add_remote_candidate(&rtc, "candidate:1 1 UDP 2122260223 10.0.0.1 9999 typ host"));
-    ASSERT_OK(nanortc_add_remote_candidate(&rtc, "10.0.0.2 8888"));
+    ASSERT_EQ(rtc.ice.remote_candidates[0].type, NANORTC_ICE_CAND_HOST);
+
+    ASSERT_OK(nanortc_add_remote_candidate(
+        &rtc, "candidate:2 1 UDP 1686052863 10.0.0.2 9998 typ srflx raddr 0.0.0.0 rport 0"));
+    ASSERT_EQ(rtc.ice.remote_candidates[1].type, NANORTC_ICE_CAND_SRFLX);
+
+    ASSERT_OK(nanortc_add_remote_candidate(
+        &rtc, "candidate:3 1 UDP 1685987071 10.0.0.3 9997 typ prflx"));
+    ASSERT_EQ(rtc.ice.remote_candidates[2].type, NANORTC_ICE_CAND_SRFLX); /* prflx → srflx */
+
+    ASSERT_OK(
+        nanortc_add_remote_candidate(&rtc, "candidate:4 1 UDP 8387583 10.0.0.4 9996 typ relay"));
+    ASSERT_EQ(rtc.ice.remote_candidates[3].type, NANORTC_ICE_CAND_RELAY);
+
+    /* Simple "<addr> <port>" format has no typ; defaults to host. */
+    ASSERT_OK(nanortc_add_remote_candidate(&rtc, "10.0.0.5 8888"));
+    ASSERT_EQ(rtc.ice.remote_candidates[4].type, NANORTC_ICE_CAND_HOST);
+
+    /* SDP candidate without "typ" attribute (spec-compliant minimum) also
+     * falls back to host. */
+    ASSERT_OK(nanortc_add_remote_candidate(&rtc, "candidate:5 1 UDP 1 10.0.0.6 9995"));
+    ASSERT_EQ(rtc.ice.remote_candidates[5].type, NANORTC_ICE_CAND_HOST);
+
+    /* An unknown type word after "typ" is left at the default (host). */
+    ASSERT_OK(nanortc_add_remote_candidate(&rtc, "candidate:6 1 UDP 1 10.0.0.7 9994 typ weird"));
+    ASSERT_EQ(rtc.ice.remote_candidates[6].type, NANORTC_ICE_CAND_HOST);
 
     /* Malformed remote candidate */
     ASSERT_FAIL(nanortc_add_remote_candidate(&rtc, ""));
