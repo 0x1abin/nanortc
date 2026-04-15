@@ -1236,6 +1236,30 @@ static void test_turn_refresh_zero_lifetime_deallocate(void)
     TEST_ASSERT_EQUAL_INT(NANORTC_ERR_STATE, rc);
 }
 
+/* H6b (F3): turn_deallocate() error paths */
+static void test_turn_deallocate_errors(void)
+{
+    uint8_t buf[512];
+    size_t out_len = 0;
+
+    /* NULL params */
+    TEST_ASSERT_EQUAL_INT(NANORTC_ERR_INVALID_PARAM,
+                          turn_deallocate(NULL, crypto(), buf, sizeof(buf), &out_len));
+
+    /* Uninitialised TURN state → ERR_STATE (not ALLOCATED) */
+    nano_turn_t turn;
+    turn_init(&turn);
+    TEST_ASSERT_EQUAL_INT(NANORTC_ERR_STATE,
+                          turn_deallocate(&turn, crypto(), buf, sizeof(buf), &out_len));
+
+    /* Valid state but undersized buffer */
+    setup_turn_allocated(&turn);
+    turn.relay_family = STUN_FAMILY_IPV4;
+    turn.relay_port = 49152;
+    TEST_ASSERT_EQUAL_INT(NANORTC_ERR_BUFFER_TOO_SMALL,
+                          turn_deallocate(&turn, crypto(), buf, 64, &out_len));
+}
+
 /* H7 (F1): Spoofed CreatePermission response with foreign txid is rejected */
 static void test_turn_create_permission_txid_validation(void)
 {
@@ -1411,6 +1435,7 @@ int main(void)
     RUN_TEST(test_turn_create_permission_has_integrity);
     RUN_TEST(test_turn_channel_bind_has_integrity);
     RUN_TEST(test_turn_refresh_zero_lifetime_deallocate);
+    RUN_TEST(test_turn_deallocate_errors);
     RUN_TEST(test_turn_create_permission_txid_validation);
     RUN_TEST(test_turn_message_integrity_hmac_vector);
 
