@@ -2,11 +2,14 @@
  * nanortc interop tests — TURN relay-only data path, nanortc side
  *
  * Mirror image of test_interop_turn_relay.c: this time nanortc is the TURN
- * client. nanortc is configured with STUN+TURN and runs in relay_only mode
- * (see interop_nanortc_ice_config_t.relay_only), which skips the host
- * candidate in the SDP — only the TURN-allocated relay candidate is
- * advertised. libdatachannel stays host-only, so the only reachable
- * address libdc has to talk to is nanortc's relay on coturn.
+ * client. nanortc is configured with TURN only (no STUN, intentionally —
+ * configuring STUN too would let nanortc discover its own srflx candidate
+ * and bake the public IP into the answer SDP, giving libdc a direct path
+ * that bypasses the relay) and runs in relay_only mode (see
+ * interop_nanortc_ice_config_t.relay_only), which skips the host candidate
+ * in the SDP — only the TURN-allocated relay candidate is advertised.
+ * libdatachannel stays host-only, so the only reachable address libdc has
+ * to talk to is nanortc's relay on coturn.
  *
  * Every byte nanortc sends must be wrapped through the TURN server:
  *   - outbound ICE connectivity checks → Send Indication / ChannelData
@@ -74,6 +77,41 @@ static void load_ice_config(void)
     turn_pass = (env && env[0]) ? env : "testpass";
 }
 
+/* Extract the host portion of a "turn:HOST:PORT" / "turns:HOST:PORT" /
+ * "turn:[HOST]:PORT" URI into @p out (NUL-terminated). Handles bracketed
+ * IPv6 per RFC 7065 §3.1. Returns 1 on success, 0 on malformed input. */
+static int parse_turn_host(const char *uri, char *out, size_t out_size)
+{
+    const char *p = uri;
+    if (strncmp(p, "turn:", 5) == 0)
+        p += 5;
+    else if (strncmp(p, "turns:", 6) == 0)
+        p += 6;
+    else
+        return 0;
+
+    const char *host_start = p;
+    const char *host_end;
+    if (*p == '[') {
+        /* Bracketed IPv6: turn:[::1]:3478 */
+        host_start = p + 1;
+        host_end = strchr(host_start, ']');
+        if (!host_end)
+            return 0;
+    } else {
+        /* Bare host[:port] — port is optional in the URI grammar */
+        host_end = strrchr(p, ':');
+        if (!host_end)
+            host_end = p + strlen(p); /* no port */
+    }
+    size_t host_len = (size_t)(host_end - host_start);
+    if (host_len == 0 || host_len >= out_size)
+        return 0;
+    memcpy(out, host_start, host_len);
+    out[host_len] = '\0';
+    return 1;
+}
+
 /* Return 1 if the TURN host resolves to a loopback address. Used to auto-skip
  * the strict relay-path assertions when the test can't actually force data
  * through the relay: on a same-host loopback setup, libdc's source IP as seen
@@ -83,32 +121,40 @@ static void load_ice_config(void)
  * which rejects loopback peer targets outright. The test body itself is sound
  * and runs strictly against any non-loopback TURN server — override via
  * NANORTC_TURN_URL, USER, PASS to point at a real relay and the assertions
- * will take effect. */
+ * will take effect.
+ *
+ * Uses getaddrinfo(AF_UNSPEC) so bracketed IPv6 URIs and DNS names both work. */
 static int is_loopback_turn(void)
 {
-    const char *p = turn_url;
-    if (strncmp(p, "turn:", 5) == 0)
-        p += 5;
-    else if (strncmp(p, "turns:", 6) == 0)
-        p += 6;
-    else
+    char host[256];
+    if (!parse_turn_host(turn_url, host, sizeof(host)))
         return 0;
 
-    const char *colon = strrchr(p, ':');
-    size_t host_len = colon ? (size_t)(colon - p) : strlen(p);
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_DGRAM;
+    struct addrinfo *res = NULL;
+    if (getaddrinfo(host, NULL, &hints, &res) != 0 || !res)
+        return 0;
 
-    /* Quick-check common forms. DNS resolve would be more thorough but
-     * overkill: the test's default is 127.0.0.1, and any CI TURN is very
-     * unlikely to be a hostname that resolves to loopback. */
-    if (host_len == 9 && memcmp(p, "127.0.0.1", 9) == 0)
-        return 1;
-    if (host_len == 9 && memcmp(p, "localhost", 9) == 0)
-        return 1;
-    if (host_len == 3 && memcmp(p, "::1", 3) == 0)
-        return 1;
-    if (host_len >= 4 && memcmp(p, "127.", 4) == 0)
-        return 1;
-    return 0;
+    int loopback = 0;
+    for (struct addrinfo *ai = res; ai && !loopback; ai = ai->ai_next) {
+        if (ai->ai_family == AF_INET) {
+            const struct sockaddr_in *sa = (const struct sockaddr_in *)ai->ai_addr;
+            /* 127.0.0.0/8 */
+            if ((ntohl(sa->sin_addr.s_addr) & 0xff000000u) == 0x7f000000u)
+                loopback = 1;
+        } else if (ai->ai_family == AF_INET6) {
+            const struct sockaddr_in6 *sa = (const struct sockaddr_in6 *)ai->ai_addr;
+            static const uint8_t loopback6[16] = {0, 0, 0, 0, 0, 0, 0, 0,
+                                                  0, 0, 0, 0, 0, 0, 0, 1};
+            if (memcmp(&sa->sin6_addr, loopback6, 16) == 0)
+                loopback = 1;
+        }
+    }
+    freeaddrinfo(res);
+    return loopback;
 }
 
 /* Probe whether the configured TURN server is live by sending a real STUN
@@ -323,25 +369,44 @@ static void teardown_relay_pair_nanortc(interop_sig_pipe_t *pipe, interop_nanort
  * plane traffic (Allocate, Refresh, CreatePermission, ChannelBind) is sent
  * direct-to-coturn, not wrapped through it, so stats_enqueue_direct > 0 is
  * both expected and healthy. */
+/* Relaxed-atomic read helpers.
+ *
+ * The peer thread concurrently writes ice.selected_type and the stats_*
+ * counters while the test thread reads them here. Plain reads would be
+ * a data race (UB under the C memory model) even though single aligned
+ * 8/32-bit loads are indivisible on all target CPUs. __atomic_load_n with
+ * relaxed ordering produces the same machine code while being well-defined
+ * for TSan and strict compilers. Monotonicity of the counters + singular
+ * write of selected_type on nomination means relaxed ordering is
+ * sufficient for our monotone/eventually-consistent assertions. */
+static inline uint8_t read_selected_type(const interop_nanortc_peer_t *nano)
+{
+    return __atomic_load_n(&nano->rtc.ice.selected_type, __ATOMIC_RELAXED);
+}
+static inline uint32_t read_stat_u32(const uint32_t *p)
+{
+    return __atomic_load_n(p, __ATOMIC_RELAXED);
+}
+
 static void assert_nanortc_relay_path(const interop_nanortc_peer_t *nano)
 {
-    const nano_ice_t *ice = &nano->rtc.ice;
+    uint8_t selected_type = read_selected_type(nano);
+    uint32_t via_turn = read_stat_u32(&nano->rtc.stats_enqueue_via_turn);
+    uint32_t wrap_dropped = read_stat_u32(&nano->rtc.stats_wrap_dropped);
+    uint32_t tx_queue_full = read_stat_u32(&nano->rtc.stats_tx_queue_full);
 
-    TEST_ASSERT_EQUAL_MESSAGE(NANORTC_ICE_CAND_RELAY, ice->selected_type,
+    TEST_ASSERT_EQUAL_MESSAGE(NANORTC_ICE_CAND_RELAY, selected_type,
                               "nanortc ice.selected_type != RELAY "
                               "(Phase 5.2 F6 via_turn signal not effective?)");
 
-    TEST_ASSERT_TRUE_MESSAGE(nano->rtc.stats_enqueue_via_turn > 0,
-                             "stats_enqueue_via_turn == 0 "
-                             "(Phase 5.2 F7 lazy wrap never fired?)");
+    TEST_ASSERT_TRUE_MESSAGE(via_turn > 0, "stats_enqueue_via_turn == 0 "
+                                           "(Phase 5.2 F7 lazy wrap never fired?)");
 
-    TEST_ASSERT_EQUAL_MESSAGE(0, nano->rtc.stats_wrap_dropped,
-                              "stats_wrap_dropped > 0 "
-                              "(lazy wrap lost packets, check turn_buf sizing)");
+    TEST_ASSERT_EQUAL_MESSAGE(0, wrap_dropped, "stats_wrap_dropped > 0 "
+                                               "(lazy wrap lost packets, check turn_buf sizing)");
 
-    TEST_ASSERT_EQUAL_MESSAGE(0, nano->rtc.stats_tx_queue_full,
-                              "stats_tx_queue_full > 0 "
-                              "(out_queue overflowed under test load)");
+    TEST_ASSERT_EQUAL_MESSAGE(0, tx_queue_full, "stats_tx_queue_full > 0 "
+                                                "(out_queue overflowed under test load)");
 }
 
 /* ----------------------------------------------------------------
