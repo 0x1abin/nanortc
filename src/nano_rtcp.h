@@ -8,8 +8,9 @@
 #ifndef NANORTC_RTCP_H_
 #define NANORTC_RTCP_H_
 
-#include <stdint.h>
+#include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 /* RTCP packet types (RFC 3550 §12.1) */
 #define RTCP_SR    200
@@ -69,6 +70,12 @@ typedef struct nano_rtcp_info {
     uint32_t nack_media_ssrc; /* SSRC of the media source whose packets were lost */
     uint16_t nack_pid;        /* Packet ID (first lost seq number) */
     uint16_t nack_blp;        /* Bitmask of following 16 lost packets */
+
+    /* RR/SR report block — only valid when block_valid is true.
+     * rb_source_ssrc is the SSRC of the stream the block reports on. */
+    bool rb_valid;
+    uint32_t rb_source_ssrc;
+    uint8_t rb_fraction_lost; /* 8-bit fixed-point (0..255 = 0..100 %) */
 } nano_rtcp_info_t;
 
 int rtcp_init(nano_rtcp_t *rtcp, uint32_t ssrc);

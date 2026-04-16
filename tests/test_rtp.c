@@ -338,6 +338,125 @@ TEST(test_rtp_padding_bit)
     ASSERT_TRUE(pkt[0] & 0x20);
 }
 
+/*
+ * Transport-wide CC (TWCC) header extension (RFC 8285 one-byte, draft-holmer-rmcat-twcc-01).
+ *
+ * When nano_rtp_t.twcc_ext_id is non-zero, rtp_pack must:
+ *   - set the X bit in byte 0
+ *   - emit profile=0xBEDE, length=1 at the start of the extension area
+ *   - emit ID|len + 16-bit seq + pad for exactly 8 bytes of overhead
+ *   - auto-increment twcc_seq after each packet
+ */
+TEST(test_rtp_pack_twcc_extension)
+{
+    nano_rtp_t rtp;
+    rtp_init(&rtp, 0xDEADBEEF, 96);
+    rtp.marker = 0; /* clear talk-spurt marker from rtp_init for deterministic bit check */
+    rtp.seq = 0x1000;
+    rtp.twcc_ext_id = 3;
+    rtp.twcc_seq = 0x0042;
+
+    uint8_t buf[64];
+    size_t out_len = 0;
+    const uint8_t payload[] = {'H', 'I'};
+    ASSERT_OK(rtp_pack(&rtp, 0x11223344, payload, sizeof(payload), buf, sizeof(buf), &out_len));
+    ASSERT_EQ(out_len, (size_t)(RTP_HEADER_SIZE + RTP_TWCC_EXT_OVERHEAD + sizeof(payload)));
+
+    /* Fixed RTP header with X bit set. */
+    ASSERT_EQ(buf[0], 0x90); /* V=2, P=0, X=1, CC=0 */
+    ASSERT_EQ(buf[1], 96);   /* M=0, PT=96 */
+
+    /* Extension profile + length. */
+    ASSERT_EQ(buf[12], 0xBE);
+    ASSERT_EQ(buf[13], 0xDE);
+    ASSERT_EQ(buf[14], 0x00);
+    ASSERT_EQ(buf[15], 0x01); /* length = 1 word */
+
+    /* One-byte header: (ID=3 << 4) | (len=1) = 0x31. */
+    ASSERT_EQ(buf[16], 0x31);
+    ASSERT_EQ(buf[17], 0x00);
+    ASSERT_EQ(buf[18], 0x42); /* seq = 0x0042 */
+    ASSERT_EQ(buf[19], 0x00); /* pad */
+
+    /* Payload follows. */
+    ASSERT_EQ(buf[20], 'H');
+    ASSERT_EQ(buf[21], 'I');
+
+    /* twcc_seq auto-incremented. */
+    ASSERT_EQ(rtp.twcc_seq, 0x0043);
+}
+
+TEST(test_rtp_pack_no_twcc_when_id_zero)
+{
+    nano_rtp_t rtp;
+    rtp_init(&rtp, 0x1, 96);
+    rtp.twcc_ext_id = 0;
+
+    uint8_t buf[64];
+    size_t out_len = 0;
+    ASSERT_OK(rtp_pack(&rtp, 1, (const uint8_t *)"x", 1, buf, sizeof(buf), &out_len));
+    ASSERT_EQ(out_len, (size_t)(RTP_HEADER_SIZE + 1));
+    ASSERT_EQ(buf[0], 0x80); /* X bit cleared */
+}
+
+TEST(test_rtp_pack_twcc_rejects_invalid_id)
+{
+    /* IDs outside 1..14 are reserved per RFC 8285; treat as disabled. */
+    nano_rtp_t rtp;
+    rtp_init(&rtp, 0x1, 96);
+    rtp.twcc_ext_id = 15;
+
+    uint8_t buf[64];
+    size_t out_len = 0;
+    ASSERT_OK(rtp_pack(&rtp, 1, (const uint8_t *)"x", 1, buf, sizeof(buf), &out_len));
+    ASSERT_EQ(out_len, (size_t)(RTP_HEADER_SIZE + 1));
+    ASSERT_EQ(buf[0] & 0x10, 0); /* X bit cleared */
+}
+
+TEST(test_rtp_pack_twcc_seq_increments_per_packet)
+{
+    nano_rtp_t rtp;
+    rtp_init(&rtp, 0x1, 96);
+    rtp.twcc_ext_id = 5;
+    rtp.twcc_seq = 100;
+
+    uint8_t buf[64];
+    size_t out_len = 0;
+    for (int i = 0; i < 4; i++) {
+        ASSERT_OK(rtp_pack(&rtp, (uint32_t)(1000 + i), (const uint8_t *)"y", 1, buf, sizeof(buf),
+                           &out_len));
+        uint16_t seq_in_ext = (uint16_t)((buf[17] << 8) | buf[18]);
+        ASSERT_EQ(seq_in_ext, (uint16_t)(100 + i));
+    }
+    ASSERT_EQ(rtp.twcc_seq, 104);
+}
+
+TEST(test_rtp_unpack_skips_twcc_extension)
+{
+    /* A packet with TWCC extension should still yield the correct payload
+     * pointer via rtp_unpack (existing X-bit logic). */
+    nano_rtp_t rtp;
+    rtp_init(&rtp, 0xABCD, 97);
+    rtp.twcc_ext_id = 7;
+    rtp.twcc_seq = 1;
+
+    uint8_t buf[64];
+    size_t out_len = 0;
+    const uint8_t original[] = {0xCA, 0xFE, 0xBA, 0xBE};
+    ASSERT_OK(rtp_pack(&rtp, 1, original, sizeof(original), buf, sizeof(buf), &out_len));
+
+    uint8_t pt;
+    uint16_t seq;
+    uint32_t ts, ssrc;
+    const uint8_t *pl;
+    size_t pl_len;
+    ASSERT_OK(rtp_unpack(buf, out_len, &pt, &seq, &ts, &ssrc, &pl, &pl_len));
+    ASSERT_EQ(pt, 97);
+    ASSERT_EQ(ssrc, 0xABCDu);
+    ASSERT_EQ(pl_len, sizeof(original));
+    ASSERT_MEM_EQ(pl, original, sizeof(original));
+}
+
 /* ---- Runner ---- */
 
 TEST_MAIN_BEGIN("RTP tests")
@@ -354,4 +473,10 @@ RUN(test_rtp_csrc_list);
 RUN(test_rtp_extension_header);
 RUN(test_rtp_csrc_and_extension);
 RUN(test_rtp_padding_bit);
+/* Transport-wide CC header extension (RFC 8285, draft-holmer-rmcat-twcc-01) */
+RUN(test_rtp_pack_twcc_extension);
+RUN(test_rtp_pack_no_twcc_when_id_zero);
+RUN(test_rtp_pack_twcc_rejects_invalid_id);
+RUN(test_rtp_pack_twcc_seq_increments_per_packet);
+RUN(test_rtp_unpack_skips_twcc_extension);
 TEST_MAIN_END

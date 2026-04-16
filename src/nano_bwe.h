@@ -50,6 +50,15 @@ typedef struct nano_bwe {
     uint32_t last_remb_bitrate;  /* bps — last raw REMB value received */
     uint32_t last_update_ms;     /* monotonic time of last REMB update */
     uint32_t remb_count;         /* number of REMB packets processed */
+    uint32_t twcc_count;         /* number of TWCC feedbacks processed */
+    uint8_t last_source;         /* nanortc_bwe_source_t of most recent update */
+
+    /* Runtime-tunable parameters (0 means "use compile-time default").
+     * Changed via nanortc_set_bitrate_bounds/_initial_bitrate/
+     * _bwe_event_threshold. */
+    uint32_t runtime_min_bps;
+    uint32_t runtime_max_bps;
+    uint8_t runtime_event_threshold_pct;
 } nano_bwe_t;
 
 /**
@@ -106,5 +115,27 @@ int bwe_parse_remb(const uint8_t *data, size_t len, uint32_t *bitrate);
  * @return true if an event should be emitted.
  */
 int bwe_should_emit_event(nano_bwe_t *bwe);
+
+/**
+ * @brief Feed a loss-based TWCC signal into the bandwidth estimator.
+ *
+ * Implements a legacy libwebrtc-style loss-based controller:
+ *   - loss_fraction_q8 <  5  (< ~2%): increase estimate by 8 %.
+ *   - loss_fraction_q8 in [5, 25] (2 %–10 %): hold estimate.
+ *   - loss_fraction_q8 >  25 (> ~10%): decrease estimate by (0.5 * loss).
+ *
+ * The resulting value is clamped to [NANORTC_BWE_MIN_BITRATE,
+ * NANORTC_BWE_MAX_BITRATE] and then combined with the existing estimate
+ * via the same EMA used for REMB (alpha = NANORTC_BWE_EMA_ALPHA / 256).
+ * This parallels bwe_on_rtcp_feedback() so the two signal paths stay
+ * coherent.
+ *
+ * @param bwe               Bandwidth estimator state.
+ * @param loss_fraction_q8  Packet loss as an unsigned 8-bit fraction
+ *                          (count * 256 / total). 0 = no loss, 256 = all.
+ * @param now_ms            Current monotonic time in milliseconds.
+ * @return NANORTC_OK on success, NANORTC_ERR_INVALID_PARAM if @p bwe is NULL.
+ */
+int bwe_on_twcc_loss(nano_bwe_t *bwe, uint16_t loss_fraction_q8, uint32_t now_ms);
 
 #endif /* NANORTC_BWE_H_ */

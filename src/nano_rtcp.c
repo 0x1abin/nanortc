@@ -251,10 +251,30 @@ int rtcp_parse(const uint8_t *data, size_t len, nano_rtcp_info_t *info)
         info->rtp_ts = nanortc_read_u32be(data + 16);
         info->sr_packets = nanortc_read_u32be(data + 20);
         info->sr_octets = nanortc_read_u32be(data + 24);
+        /* Optional report block follows sender info at offset 28
+         * (RFC 3550 §6.4.1). Present when RC field >= 1. */
+        {
+            uint8_t rc_count = data[0] & 0x1F;
+            if (rc_count >= 1 && pkt_size >= RTCP_SR_WITH_RB_SIZE) {
+                info->rb_source_ssrc = nanortc_read_u32be(data + 28);
+                info->rb_fraction_lost = data[32];
+                info->rb_valid = true;
+            }
+        }
         break;
 
     case RTCP_RR:
-        /* Receiver Report: at least header (8 bytes) is valid */
+        /* Receiver Report (RFC 3550 §6.4.2): the report block sits at
+         * offset 8 when RC >= 1. We only keep the first block — nanortc
+         * one-SSRC-per-track makes multi-block RRs rare in practice. */
+        {
+            uint8_t rc_count = data[0] & 0x1F;
+            if (rc_count >= 1 && pkt_size >= RTCP_RR_SIZE) {
+                info->rb_source_ssrc = nanortc_read_u32be(data + 8);
+                info->rb_fraction_lost = data[12];
+                info->rb_valid = true;
+            }
+        }
         break;
 
     case RTCP_RTPFB: {

@@ -28,6 +28,7 @@
 #if NANORTC_FEATURE_VIDEO
 #include "nano_h264.h"
 #include "nano_bwe.h"
+#include "nano_twcc.h"
 #if NANORTC_FEATURE_H265
 #include "nano_h265.h"
 #include "nano_base64.h"
@@ -520,6 +521,16 @@ static void rtc_apply_negotiated_media(nanortc_t *rtc)
             ml->pt = ml->remote_pt;
             NANORTC_LOGD("SDP", "media using remote PT");
         }
+
+#if NANORTC_FEATURE_VIDEO
+        /* Apply negotiated TWCC header extension ID (PR-2). Video only for
+         * now; audio TWCC can be enabled later once the BWE consumer learns
+         * to distinguish audio vs video streams. Mutual-negotiation check
+         * (only enable when both sides advertised) is a follow-up refinement. */
+        if (ml->kind == SDP_MLINE_VIDEO) {
+            m->rtp.twcc_ext_id = ml->twcc_ext_id;
+        }
+#endif
     }
 #endif
     (void)rtc;
@@ -1383,6 +1394,19 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
                             m->rtcp.last_sr_ntp =
                                 ((info.ntp_sec & 0xFFFFu) << 16) | (info.ntp_frac >> 16);
                             m->rtcp.last_sr_recv_ms = rtc->now_ms;
+                            if (info.rb_valid) {
+                                m->fraction_lost = info.rb_fraction_lost;
+                            }
+                        }
+                    }
+                } else if (info.type == RTCP_RR && info.rb_valid) {
+                    /* Receiver Report addressed at our outbound SSRC. Store
+                     * fraction_lost so nanortc_get_track_stats() can surface it. */
+                    for (uint8_t i = 0; i < rtc->media_count; i++) {
+                        nanortc_track_t *m = &rtc->media[i];
+                        if (m->active && m->rtp.ssrc == info.rb_source_ssrc) {
+                            m->fraction_lost = info.rb_fraction_lost;
+                            break;
                         }
                     }
                 } else if (info.type == RTCP_PSFB) {
@@ -1398,8 +1422,14 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
                             nanortc_event_t bwe_evt;
                             memset(&bwe_evt, 0, sizeof(bwe_evt));
                             bwe_evt.type = NANORTC_EV_BITRATE_ESTIMATE;
-                            bwe_evt.bitrate_estimate.bitrate_bps = rtc->bwe.estimated_bitrate;
+                            uint32_t cur_bps = rtc->bwe.estimated_bitrate;
+                            bwe_evt.bitrate_estimate.bitrate_bps = cur_bps;
                             bwe_evt.bitrate_estimate.prev_bitrate_bps = prev_bps;
+                            bwe_evt.bitrate_estimate.direction =
+                                (cur_bps > prev_bps)   ? (uint8_t)NANORTC_BWE_DIR_UP
+                                : (cur_bps < prev_bps) ? (uint8_t)NANORTC_BWE_DIR_DOWN
+                                                       : (uint8_t)NANORTC_BWE_DIR_STABLE;
+                            bwe_evt.bitrate_estimate.source = (uint8_t)NANORTC_BWE_SRC_REMB;
                             rtc_emit_event_full(rtc, &bwe_evt);
                         }
                     } else
@@ -1448,6 +1478,35 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
                         }
                         if (retx > 0) {
                             NANORTC_LOGD("NACK", "retransmitted packet(s)");
+                        }
+                    } else if (rtpfb_fmt == TWCC_FMT) {
+                        /* Transport-wide CC feedback (draft-holmer-rmcat-twcc-01).
+                         * Parse into a summary and drive the loss-based controller
+                         * in BWE. Any delay-based refinement is deferred (see plan). */
+                        nano_twcc_summary_t sum;
+                        int prc = twcc_parse_feedback(rtc->stun_buf, rtcp_len, &sum, NULL, NULL);
+                        if (prc == NANORTC_OK && sum.packet_status_count > 0) {
+                            uint16_t lost =
+                                (uint16_t)(sum.packet_status_count - sum.received_count);
+                            uint16_t loss_q8 =
+                                (uint16_t)(((uint32_t)lost * 256u) / sum.packet_status_count);
+                            uint32_t prev_bps = rtc->bwe.estimated_bitrate;
+                            bwe_on_twcc_loss(&rtc->bwe, loss_q8, rtc->now_ms);
+                            if (bwe_should_emit_event(&rtc->bwe)) {
+                                nanortc_event_t bwe_evt;
+                                memset(&bwe_evt, 0, sizeof(bwe_evt));
+                                bwe_evt.type = NANORTC_EV_BITRATE_ESTIMATE;
+                                uint32_t cur_bps = rtc->bwe.estimated_bitrate;
+                                bwe_evt.bitrate_estimate.bitrate_bps = cur_bps;
+                                bwe_evt.bitrate_estimate.prev_bitrate_bps = prev_bps;
+                                bwe_evt.bitrate_estimate.direction =
+                                    (cur_bps > prev_bps)   ? (uint8_t)NANORTC_BWE_DIR_UP
+                                    : (cur_bps < prev_bps) ? (uint8_t)NANORTC_BWE_DIR_DOWN
+                                                           : (uint8_t)NANORTC_BWE_DIR_STABLE;
+                                bwe_evt.bitrate_estimate.source =
+                                    (uint8_t)NANORTC_BWE_SRC_TWCC_LOSS;
+                                rtc_emit_event_full(rtc, &bwe_evt);
+                            }
                         }
                     }
 #endif /* NANORTC_FEATURE_VIDEO */
@@ -2554,6 +2613,11 @@ static int video_send_fragment_cb(const uint8_t *payload, size_t len, int marker
     m->rtcp.packets_sent++;
     m->rtcp.octets_sent += (uint32_t)len;
 
+    /* Feed the per-track rate window. We count post-SRTP wire bytes to
+     * include RTP header + extension + auth tag — that's what the network
+     * actually sees and what the app should compare against the BWE estimate. */
+    rate_window_on_bytes(&m->rate_window, rtc->now_ms, (uint32_t)srtp_len);
+
     /* Record NACK retransmission metadata for this slot.
      * rtp_pack() increments seq after writing, so the seq in the packet
      * is (m->rtp.seq - 1). */
@@ -2689,6 +2753,11 @@ int nanortc_send_video(nanortc_t *rtc, uint8_t mid, uint32_t pts_ms, const void 
         return NANORTC_ERR_INVALID_PARAM;
     }
 
+    /* One call = one encoded frame for fps accounting. Callers that split
+     * a frame across multiple send calls will over-report, which we accept
+     * because the API contract is "caller passes one complete frame". */
+    rate_window_on_frame(&m->rate_window, rtc->now_ms);
+
     uint32_t ts = pts_ms_to_rtp(pts_ms, 90000);
     const uint8_t *buf = (const uint8_t *)data;
 
@@ -2803,7 +2872,17 @@ int nanortc_get_track_stats(const nanortc_t *rtc, uint8_t mid, nanortc_track_sta
 
 #if NANORTC_FEATURE_VIDEO
     stats->bitrate_bps = rtc->bwe.estimated_bitrate;
+    stats->estimated_bitrate_bps = rtc->bwe.estimated_bitrate;
 #endif
+
+    /* Phase 9: roll the send-rate window lazily so the snapshot reflects
+     * the most recent completed second even when no send has happened
+     * recently. Rolling is a no-op if the bucket is still filling. */
+    nanortc_track_t *mw = (nanortc_track_t *)m;
+    rate_window_roll(&mw->rate_window, rtc->now_ms);
+    stats->send_bitrate_bps = m->rate_window.prev_bps;
+    stats->send_fps_q8 = m->rate_window.prev_fps_q8;
+    stats->fraction_lost = m->fraction_lost;
 
     return NANORTC_OK;
 }
@@ -2815,6 +2894,56 @@ uint32_t nanortc_get_estimated_bitrate(const nanortc_t *rtc)
         return 0;
     }
     return bwe_get_bitrate(&rtc->bwe);
+}
+
+int nanortc_set_bitrate_bounds(nanortc_t *rtc, uint32_t min_bps, uint32_t max_bps)
+{
+    if (!rtc) {
+        return NANORTC_ERR_INVALID_PARAM;
+    }
+    /* Reject inverted bounds when both are non-zero; 0 means "revert to default". */
+    if (min_bps != 0 && max_bps != 0 && min_bps > max_bps) {
+        return NANORTC_ERR_INVALID_PARAM;
+    }
+    rtc->bwe.runtime_min_bps = min_bps;
+    rtc->bwe.runtime_max_bps = max_bps;
+
+    /* Clamp the current estimate to the new bounds so stats/events reflect
+     * the new envelope immediately, without waiting for the next feedback. */
+    uint32_t eff_min =
+        rtc->bwe.runtime_min_bps ? rtc->bwe.runtime_min_bps : (uint32_t)NANORTC_BWE_MIN_BITRATE;
+    uint32_t eff_max =
+        rtc->bwe.runtime_max_bps ? rtc->bwe.runtime_max_bps : (uint32_t)NANORTC_BWE_MAX_BITRATE;
+    if (rtc->bwe.estimated_bitrate < eff_min) {
+        rtc->bwe.estimated_bitrate = eff_min;
+    } else if (rtc->bwe.estimated_bitrate > eff_max) {
+        rtc->bwe.estimated_bitrate = eff_max;
+    }
+    return NANORTC_OK;
+}
+
+int nanortc_set_initial_bitrate(nanortc_t *rtc, uint32_t bps)
+{
+    if (!rtc) {
+        return NANORTC_ERR_INVALID_PARAM;
+    }
+    /* Initial only applies before any feedback has driven the estimate
+     * (remb_count == 0 && twcc_count == 0). After that the estimate is
+     * tracking live feedback and the API is a no-op. */
+    if (rtc->bwe.remb_count == 0 && rtc->bwe.twcc_count == 0) {
+        rtc->bwe.estimated_bitrate = bps ? bps : (uint32_t)NANORTC_BWE_INITIAL_BITRATE;
+        rtc->bwe.prev_event_bitrate = rtc->bwe.estimated_bitrate;
+    }
+    return NANORTC_OK;
+}
+
+int nanortc_set_bwe_event_threshold(nanortc_t *rtc, uint8_t pct)
+{
+    if (!rtc || pct > 100) {
+        return NANORTC_ERR_INVALID_PARAM;
+    }
+    rtc->bwe.runtime_event_threshold_pct = pct;
+    return NANORTC_OK;
 }
 #endif /* NANORTC_FEATURE_VIDEO */
 

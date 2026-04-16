@@ -37,6 +37,14 @@ Authoritative protocol specifications for NanoRTC. RFCs are the **sole** authori
 | H.265 RTP | [RFC 7798](https://www.rfc-editor.org/rfc/rfc7798) | RTP Payload Format for HEVC | §1.1.4 (NAL header), §4.4.1 (Single NAL), §4.4.2 (Aggregation Packet), §4.4.3 (Fragmentation Unit), §7.1 (SDP parameters) | Phase 3.5 |
 | Base64 | [RFC 4648](https://www.rfc-editor.org/rfc/rfc4648) | The Base16, Base32, and Base64 Data Encodings | §4 (base64 alphabet), §10 (test vectors) | Phase 3.5 (sprop-vps/sps/pps fmtp) |
 
+## Bandwidth Estimation (Phase 3 / 9)
+
+| Module | Reference | Title | Key Sections | Priority |
+|--------|-----------|-------|--------------|----------|
+| REMB | [draft-alvestrand-rmcat-remb-03](https://datatracker.ietf.org/doc/html/draft-alvestrand-rmcat-remb-03) | RTCP message for Receiver Estimated Maximum Bitrate | §2 (packet format: FMT=15, PT=206 PSFB, "REMB" identifier, exp/mantissa encoding) | Phase 3 |
+| TWCC | [draft-holmer-rmcat-transport-wide-cc-extensions-01](https://datatracker.ietf.org/doc/html/draft-holmer-rmcat-transport-wide-cc-extensions-01) | RTP Extensions for Transport-wide Congestion Control | §2 (RTP header extension, 16-bit sequence number), §3.1 (feedback message format: PT=205 FMT=15, chunk types, receive deltas) | Phase 9 |
+| RTP Ext | [RFC 8285](https://www.rfc-editor.org/rfc/rfc8285) | A General Mechanism for RTP Header Extensions | §4.2 (one-byte header, 0xBEDE), §5 (a=extmap SDP attribute) | Phase 9 |
+
 ## Security
 
 | RFC | Title | Relevance |

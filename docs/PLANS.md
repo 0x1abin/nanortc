@@ -14,8 +14,9 @@ NanoRTC is built by AI coding agents. Estimates use **agent sessions** (one focu
 | [Phase 3.5: H.265/HEVC](exec-plans/active/phase3-5-h265.md) | 3.5 | **Active** — PR-1 (module + tests + fuzz) in flight; PR-2 (SDP/RTC wiring) + PR-3 (interop + browser) pending | 2–3 sessions | H.265 video codec via RFC 7798, bidirectional send+receive |
 | [Phase 5: Network Traversal](exec-plans/active/phase5-network-traversal.md) | 5 | **Active** — Sessions 1-4 complete. All acceptance criteria met. | 3 sessions | NAT traversal for production |
 | [Phase 8: Continued Optimization & Stability](exec-plans/active/phase8-continued-optimization.md) | 8 | **Active** — Planning. 5 independent PRs (PR-1…PR-5) + P2 series on demand. | 4–6 sessions | IoT memory profile, stability propagation, video pkt_ring decoupling, H.264 zero-copy, ICE CONTROLLING per-pair transaction fix |
+| [Phase 9: BWE Perception for IoT Camera](exec-plans/active/phase9-bwe-perception.md) | 9 | **Active** — PR-1…PR-5 landed. Browser interop snapshot pending. | 1–2 sessions | TWCC parser + SDP/RTP wiring, loss-based BWE controller, runtime bounds/threshold API, send_fps + send_bitrate + fraction_lost stats |
 
-**Total Phase 1-8:** ~22-27 agent sessions
+**Total Phase 1-9:** ~23-29 agent sessions
 
 ## Completed Plans
 

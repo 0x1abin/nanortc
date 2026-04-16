@@ -316,10 +316,31 @@ typedef struct {
 } nanortc_ev_keyframe_request_t;
 
 #if NANORTC_FEATURE_VIDEO
-/** @brief Data for NANORTC_EV_BITRATE_ESTIMATE: BWE estimate changed. */
+/** @brief BWE estimate change direction. Lets applications distinguish
+ *  "we can push more" from "we must back off" without diffing the bps
+ *  value themselves. */
+typedef enum {
+    NANORTC_BWE_DIR_STABLE = 0, /**< Change is inside the no-event threshold. */
+    NANORTC_BWE_DIR_UP = 1,     /**< Bitrate estimate increased. */
+    NANORTC_BWE_DIR_DOWN = 2,   /**< Bitrate estimate decreased. */
+} nanortc_bwe_direction_t;
+
+/** @brief Which congestion-control signal produced the estimate update. */
+typedef enum {
+    NANORTC_BWE_SRC_REMB = 0,      /**< REMB feedback (draft-alvestrand-rmcat-remb-03). */
+    NANORTC_BWE_SRC_TWCC_LOSS = 1, /**< TWCC loss-based signal (draft-holmer-rmcat-twcc-01). */
+} nanortc_bwe_source_t;
+
+/** @brief Data for NANORTC_EV_BITRATE_ESTIMATE: BWE estimate changed.
+ *
+ *  The @c direction and @c source fields were added in Phase 9. Existing
+ *  event consumers that ignore them remain source-compatible; the struct
+ *  grows only by appending to the end. */
 typedef struct {
     uint32_t bitrate_bps;      /**< Current estimated bitrate (bps). */
     uint32_t prev_bitrate_bps; /**< Previous estimated bitrate (bps). */
+    uint8_t direction;         /**< nanortc_bwe_direction_t value. */
+    uint8_t source;            /**< nanortc_bwe_source_t value. */
 } nanortc_ev_bitrate_estimate_t;
 #endif
 
@@ -970,7 +991,12 @@ NANORTC_API int nanortc_request_keyframe(nanortc_t *rtc, uint8_t mid);
  * Media statistics and bandwidth estimation
  * ---------------------------------------------------------------- */
 
-/** @brief Per-track RTCP statistics snapshot. */
+/** @brief Per-track RTCP statistics snapshot.
+ *
+ * Only grows by appending fields to the tail so embedded applications
+ * built against an older header continue to read the leading fields
+ * correctly. The Phase-9 additions (send_bitrate_bps, send_fps_q8,
+ * fraction_lost, estimated_bitrate_bps) sit after the legacy ones. */
 typedef struct {
     uint8_t mid;               /**< Media track ID. */
     uint32_t packets_sent;     /**< Total RTP packets sent. */
@@ -980,8 +1006,17 @@ typedef struct {
     uint32_t jitter;           /**< Interarrival jitter (RFC 3550 §6.4.1). */
     uint32_t rtt_ms;           /**< Round-trip time estimate from DLSR (ms). */
 #if NANORTC_FEATURE_VIDEO
-    uint32_t bitrate_bps; /**< BWE estimated bitrate (bps, video only). */
+    uint32_t bitrate_bps; /**< BWE estimated bitrate (bps, video only).
+                               Alias of estimated_bitrate_bps below. */
 #endif
+    /* Phase 9 additions (always present; zero when the feature that
+     * populates them is disabled). */
+    uint32_t estimated_bitrate_bps; /**< Current BWE estimate (bps). */
+    uint32_t send_bitrate_bps;      /**< Outgoing RTP bytes/s, 1-second sliding window. */
+    uint16_t send_fps_q8;           /**< Outgoing video frames/s as unsigned Q8.8
+                                         fixed-point (send_fps_q8 / 256.0). */
+    uint8_t fraction_lost;          /**< Last RTCP RR fraction lost (0-255 = 0-100 %). */
+    uint8_t reserved_pad;           /**< Reserved; pad to keep explicit layout. */
 } nanortc_track_stats_t;
 
 /**
@@ -1000,13 +1035,62 @@ NANORTC_API int nanortc_get_track_stats(const nanortc_t *rtc, uint8_t mid,
 /**
  * @brief Get current BWE estimated bitrate.
  *
- * Returns the receiver-estimated maximum bitrate from REMB feedback.
+ * Returns the receiver-estimated maximum bitrate from REMB / TWCC feedback.
  * Applications should use this to adapt encoder bitrate/quality.
  *
  * @param rtc  Initialized RTC state.
  * @return Estimated bitrate in bps, or 0 if unavailable.
  */
 NANORTC_API uint32_t nanortc_get_estimated_bitrate(const nanortc_t *rtc);
+
+/**
+ * @brief Override BWE min/max bitrate bounds at runtime.
+ *
+ * The new bounds take effect immediately on the next feedback sample. If
+ * the current estimate falls outside the new range it is clamped.
+ * Passing 0 for a bound reverts that bound to its compile-time default
+ * (NANORTC_BWE_MIN_BITRATE or NANORTC_BWE_MAX_BITRATE).
+ *
+ * Typical use: embedded camera learns its hardware encoder can only hit
+ * 1.5 Mbps and calls nanortc_set_bitrate_bounds(rtc, 100000, 1500000) at
+ * init so BWE never suggests a rate the encoder cannot deliver.
+ *
+ * @param rtc      Initialized RTC state.
+ * @param min_bps  New minimum bitrate in bps, or 0 to keep the default.
+ * @param max_bps  New maximum bitrate in bps, or 0 to keep the default.
+ * @return NANORTC_OK on success, NANORTC_ERR_INVALID_PARAM if @p rtc is
+ *         NULL or if @p min_bps > @p max_bps (both non-zero).
+ */
+NANORTC_API int nanortc_set_bitrate_bounds(nanortc_t *rtc, uint32_t min_bps, uint32_t max_bps);
+
+/**
+ * @brief Set the initial BWE estimate before any feedback arrives.
+ *
+ * Only effective when called before the first REMB or TWCC feedback is
+ * received. After that the estimate is driven by feedback. Pass 0 to
+ * reset to the compile-time default (NANORTC_BWE_INITIAL_BITRATE).
+ *
+ * @param rtc  Initialized RTC state.
+ * @param bps  Initial estimate in bps, or 0 to reset to default.
+ * @return NANORTC_OK on success, NANORTC_ERR_INVALID_PARAM if @p rtc is
+ *         NULL.
+ */
+NANORTC_API int nanortc_set_initial_bitrate(nanortc_t *rtc, uint32_t bps);
+
+/**
+ * @brief Set the percentage change that triggers NANORTC_EV_BITRATE_ESTIMATE.
+ *
+ * Applications polling stats less often may want a larger threshold to
+ * avoid event churn; applications doing tight closed-loop control want a
+ * smaller one. Pass 0 to reset to the compile-time default
+ * (NANORTC_BWE_EVENT_THRESHOLD_PCT).
+ *
+ * @param rtc  Initialized RTC state.
+ * @param pct  Percent threshold (0..100), or 0 to reset to default.
+ * @return NANORTC_OK on success, NANORTC_ERR_INVALID_PARAM if @p rtc is
+ *         NULL or @p pct > 100.
+ */
+NANORTC_API int nanortc_set_bwe_event_threshold(nanortc_t *rtc, uint8_t pct);
 #endif /* NANORTC_FEATURE_VIDEO */
 
 #endif /* NANORTC_HAVE_MEDIA_TRANSPORT */

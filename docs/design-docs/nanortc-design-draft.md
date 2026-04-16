@@ -480,7 +480,32 @@ CLOSED ──(收到 INIT)──> COOKIE_WAIT
 - 接收方报告（RR）生成
 - NACK（通用否定确认，RFC 4585）
 - PLI（图片丢失指示）— 关键帧请求（NANORTC_FEATURE_VIDEO）
-- REMB（接收方估计最大带宽）— 可选，NANORTC_FEATURE_VIDEO
+- REMB（接收方估计最大带宽）— NANORTC_FEATURE_VIDEO
+- Transport-wide CC feedback 解析（RTCP PT=205 FMT=15，draft-holmer-rmcat-twcc-01）— NANORTC_FEATURE_VIDEO
+
+### 3.6.1 带宽估计（nano_bwe.c / nano_twcc.c）— NANORTC_FEATURE_VIDEO
+
+NanoRTC 只做**感知**，不做**执行**：BWE 消费 REMB 和 TWCC 反馈得出一个建议码率，应用层自行据此驱动编码器。库内不做 pacer、不做主动丢帧、不做 GCC delay-based 控制。
+
+**输入：**
+- RTCP PSFB FMT=15 REMB — 直接给出目标码率，EMA 平滑。
+- RTCP RTPFB FMT=15 TWCC — 从 chunk + delta 序列重建 `received_count / packet_status_count`，套 loss-based 控制器：
+  - loss < ~2 %：估计 × 1.08
+  - 2 %–10 %：保持
+  - \> 10 %：估计 × (512 − loss_q8) / 512
+  
+  再与现有估计做 EMA 融合。
+
+**发送侧协商：** 视频 m-line 在 SDP 里发布 `a=extmap:<id> http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01`（默认 ID 3，可回显对端）。RTP 发送时在 one-byte header extension（`0xBEDE`）里写入 transport-cc 16-bit 序列号，每包开销 8 字节。
+
+**输出：**
+- `NANORTC_EV_BITRATE_ESTIMATE` 事件：含 `bitrate_bps / prev_bitrate_bps / direction (UP/DOWN/STABLE) / source (REMB/TWCC_LOSS)`。
+- `nanortc_get_estimated_bitrate(rtc)` 查询。
+- `nanortc_track_stats_t`：`estimated_bitrate_bps`、`send_bitrate_bps`（1 秒滑窗）、`send_fps_q8`（Q8.8）、`fraction_lost`（从 RR/SR report block 提取）。
+
+**运行时调参：** `nanortc_set_bitrate_bounds(rtc, min, max)` / `nanortc_set_initial_bitrate(rtc, bps)` / `nanortc_set_bwe_event_threshold(rtc, pct)` 覆盖编译期 `NANORTC_BWE_*` 宏。适用于 IoT 设备启动后才知道硬件编码器能力的场景。
+
+**不做：** 发送 TWCC feedback 包（接收端需要，Phase 10 候选）、GCC/trendline 延迟控制、pacer、独立 NACK/PLI/FIR 事件（当前 `NANORTC_EV_KEYFRAME_REQUEST` 足够）。
 
 ### 3.7 SRTP（nano_srtp.c）— NANORTC_HAVE_MEDIA_TRANSPORT
 

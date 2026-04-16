@@ -1059,6 +1059,141 @@ TEST(test_sdp_generate_with_candidates)
     ASSERT_TRUE(strstr(buf, "a=setup:actpass") != NULL);
 }
 
+#if NANORTC_FEATURE_VIDEO
+/* ================================================================
+ * Transport-wide CC extmap negotiation (PR-2)
+ *
+ * The generator emits the TWCC extmap on video m-lines, and the
+ * parser stores the remote ID in nano_sdp_mline_t.twcc_ext_id so
+ * rtc_apply_negotiated_media() can wire it into the RTP state.
+ * ================================================================ */
+
+TEST(test_sdp_generate_video_has_twcc_extmap)
+{
+    nano_sdp_t sdp;
+    sdp_init(&sdp);
+    memcpy(sdp.local_ufrag, "twccufrag", 9);
+    memcpy(sdp.local_pwd, "twccpassword123456", 18);
+    sdp.local_setup = NANORTC_SDP_SETUP_PASSIVE;
+    ASSERT(sdp_add_mline(&sdp, SDP_MLINE_VIDEO, NANORTC_CODEC_H264, 96, 0, 0,
+                         NANORTC_DIR_SENDRECV) >= 0);
+
+    char buf[4096];
+    size_t out_len = 0;
+    ASSERT_OK(sdp_generate_answer(&sdp, buf, sizeof(buf), &out_len));
+
+    /* Default ID when we are the offerer / answerer picks it up. */
+    ASSERT_TRUE(strstr(buf, "a=extmap:3 " NANORTC_TWCC_EXT_URI) != NULL);
+    /* Persisted into mline for downstream wiring. */
+    ASSERT_EQ(sdp.mlines[0].twcc_ext_id, (uint8_t)NANORTC_TWCC_EXT_ID);
+}
+
+TEST(test_sdp_parse_twcc_extmap)
+{
+    const char *offer = "v=0\r\n"
+                        "o=- 1 1 IN IP4 127.0.0.1\r\n"
+                        "s=-\r\n"
+                        "t=0 0\r\n"
+                        "a=ice-ufrag:remoteuf\r\n"
+                        "a=ice-pwd:remotepassword12345\r\n"
+                        "a=fingerprint:sha-256 AA:BB:CC\r\n"
+                        "a=setup:actpass\r\n"
+                        "m=video 9 UDP/TLS/RTP/SAVPF 96\r\n"
+                        "c=IN IP4 0.0.0.0\r\n"
+                        "a=rtcp-mux\r\n"
+                        "a=rtpmap:96 H264/90000\r\n"
+                        "a=fmtp:96 packetization-mode=1;profile-level-id=42e01f\r\n"
+                        "a=extmap:7 " NANORTC_TWCC_EXT_URI "\r\n"
+                        "a=sendrecv\r\n";
+
+    nano_sdp_t sdp;
+    sdp_init(&sdp);
+    ASSERT_OK(sdp_parse(&sdp, offer, strlen(offer)));
+    ASSERT_TRUE(sdp.mline_count >= 1);
+    ASSERT_EQ(sdp.mlines[0].kind, SDP_MLINE_VIDEO);
+    ASSERT_EQ(sdp.mlines[0].twcc_ext_id, 7);
+}
+
+TEST(test_sdp_parse_twcc_extmap_with_direction)
+{
+    /* RFC 5285/8285 permits optional "/direction" suffix after the ID. */
+    const char *offer = "v=0\r\n"
+                        "o=- 1 1 IN IP4 127.0.0.1\r\n"
+                        "s=-\r\n"
+                        "t=0 0\r\n"
+                        "a=ice-ufrag:dirufrag\r\n"
+                        "a=ice-pwd:dirpassword123456789\r\n"
+                        "a=fingerprint:sha-256 AA:BB\r\n"
+                        "a=setup:actpass\r\n"
+                        "m=video 9 UDP/TLS/RTP/SAVPF 96\r\n"
+                        "c=IN IP4 0.0.0.0\r\n"
+                        "a=rtpmap:96 H264/90000\r\n"
+                        "a=fmtp:96 packetization-mode=1\r\n"
+                        "a=extmap:5/recvonly " NANORTC_TWCC_EXT_URI "\r\n";
+
+    nano_sdp_t sdp;
+    sdp_init(&sdp);
+    ASSERT_OK(sdp_parse(&sdp, offer, strlen(offer)));
+    ASSERT_EQ(sdp.mlines[0].twcc_ext_id, 5);
+}
+
+TEST(test_sdp_parse_non_twcc_extmap_ignored)
+{
+    /* Non-TWCC extmap URIs must not set twcc_ext_id. */
+    const char *offer = "v=0\r\n"
+                        "o=- 1 1 IN IP4 127.0.0.1\r\n"
+                        "s=-\r\n"
+                        "t=0 0\r\n"
+                        "a=ice-ufrag:notwccuf\r\n"
+                        "a=ice-pwd:notwccpassword123456\r\n"
+                        "a=fingerprint:sha-256 AA:BB\r\n"
+                        "a=setup:actpass\r\n"
+                        "m=video 9 UDP/TLS/RTP/SAVPF 96\r\n"
+                        "c=IN IP4 0.0.0.0\r\n"
+                        "a=rtpmap:96 H264/90000\r\n"
+                        "a=fmtp:96 packetization-mode=1\r\n"
+                        "a=extmap:4 urn:ietf:params:rtp-hdrext:toffset\r\n";
+
+    nano_sdp_t sdp;
+    sdp_init(&sdp);
+    ASSERT_OK(sdp_parse(&sdp, offer, strlen(offer)));
+    ASSERT_EQ(sdp.mlines[0].twcc_ext_id, 0);
+}
+
+TEST(test_sdp_twcc_roundtrip)
+{
+    /* Answerer receives offer with ID=9, echoes same ID in answer. */
+    const char *offer = "v=0\r\n"
+                        "o=- 1 1 IN IP4 127.0.0.1\r\n"
+                        "s=-\r\n"
+                        "t=0 0\r\n"
+                        "a=ice-ufrag:rtripuf1\r\n"
+                        "a=ice-pwd:rtrippassword1234567\r\n"
+                        "a=fingerprint:sha-256 AA\r\n"
+                        "a=setup:actpass\r\n"
+                        "m=video 9 UDP/TLS/RTP/SAVPF 96\r\n"
+                        "c=IN IP4 0.0.0.0\r\n"
+                        "a=rtpmap:96 H264/90000\r\n"
+                        "a=fmtp:96 packetization-mode=1;profile-level-id=42e01f\r\n"
+                        "a=extmap:9 " NANORTC_TWCC_EXT_URI "\r\n"
+                        "a=sendrecv\r\n";
+
+    nano_sdp_t sdp;
+    sdp_init(&sdp);
+    ASSERT_OK(sdp_parse(&sdp, offer, strlen(offer)));
+    ASSERT_EQ(sdp.mlines[0].twcc_ext_id, 9);
+
+    memcpy(sdp.local_ufrag, "rtripuf2", 8);
+    memcpy(sdp.local_pwd, "rtripanspassword1234", 20);
+    sdp.local_setup = NANORTC_SDP_SETUP_PASSIVE;
+
+    char buf[4096];
+    size_t out_len = 0;
+    ASSERT_OK(sdp_generate_answer(&sdp, buf, sizeof(buf), &out_len));
+    ASSERT_TRUE(strstr(buf, "a=extmap:9 " NANORTC_TWCC_EXT_URI) != NULL);
+}
+#endif /* NANORTC_FEATURE_VIDEO */
+
 /* ================================================================
  * Test runner
  * ================================================================ */
@@ -1094,6 +1229,13 @@ RUN(test_sdp_parse_full_media_offer);
 RUN(test_sdp_generate_video_answer);
 RUN(test_sdp_video_roundtrip);
 RUN(test_sdp_parse_media_directions);
+#if NANORTC_FEATURE_VIDEO
+RUN(test_sdp_generate_video_has_twcc_extmap);
+RUN(test_sdp_parse_twcc_extmap);
+RUN(test_sdp_parse_twcc_extmap_with_direction);
+RUN(test_sdp_parse_non_twcc_extmap_ignored);
+RUN(test_sdp_twcc_roundtrip);
+#endif
 #if NANORTC_FEATURE_H265
 RUN(test_sdp_generate_video_h265);
 RUN(test_sdp_generate_video_h265_with_sprop);
