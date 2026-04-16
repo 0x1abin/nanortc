@@ -63,28 +63,62 @@ Audio/Media modules (Phase 2-3):
 
 ## Interop Testing Workflow
 
-The interop test framework (`tests/interop/`) validates nanortc against libdatachannel over real localhost UDP sockets. This is a **mandatory acceptance gate** for Phase 1 completion and all subsequent phases.
+Two interop suites exercise nanortc against independent third-party WebRTC
+stacks over real localhost UDP. Either one passing is a **mandatory acceptance
+gate** for Phase 1 completion and all subsequent phases; for new DataChannel
+work the aiortc suite is preferred because its iteration loop is dramatically
+faster.
 
-### Architecture
+### libdatachannel (C++) suite — `tests/interop/`
+
+Historical authoritative suite. FetchContent builds libdatachannel v0.22.5 and
+drives it in-process alongside nanortc.
 
 - **Single process, dual-threaded**: nanortc runs as answerer (CONTROLLED) with a select()-based event loop; libdatachannel runs as offerer (CONTROLLING) with its internal thread pool
 - **Signaling**: SDP offer/answer and ICE candidates exchanged via a socketpair pipe
 - **Transport**: Real UDP on 127.0.0.1 — exercises the full protocol stack (ICE → DTLS → SCTP → DCEP)
-
-### Running interop tests
+- **Hard requirements**: OpenSSL + C++17 compiler
 
 ```bash
-# Build (requires OpenSSL + C++ compiler for libdatachannel)
 cmake -B build -DNANORTC_CRYPTO=openssl \
       -DNANORTC_BUILD_INTEROP_TESTS=ON -DCMAKE_BUILD_TYPE=Debug
 cmake --build build -j$(nproc)
-
-# Run interop tests only
 ctest --test-dir build -R interop --output-on-failure
-
-# Run all tests (unit + interop)
-ctest --test-dir build --output-on-failure
 ```
+
+### aiortc (Python) suite — `tests/interop/py/`
+
+Python-driven suite that spawns a small C helper (`nanortc_peer_cli`) as a
+subprocess, drives it over stdin/stdout with a line-oriented text protocol,
+and runs `aiortc.RTCPeerConnection` in the same pytest process as the reference
+peer. Much faster to build and iterate — no libdatachannel compile, no C++, no
+OpenSSL. Nanortc uses its default crypto backend (mbedtls) on this path.
+
+- Gating flag: `NANORTC_BUILD_INTEROP_TESTS_PY` (orthogonal to the libdatachannel flag)
+- Wire protocol: `tests/interop/py/protocol.md`
+- The CMake build creates a Python venv under `build/tests/interop/py/.venv`
+  and `pip install`s the pins in `tests/interop/py/requirements.txt` once per
+  requirement change
+
+```bash
+cmake -B build -DNANORTC_BUILD_INTEROP_TESTS_PY=ON -DCMAKE_BUILD_TYPE=Debug
+cmake --build build -j$(nproc)
+ctest --test-dir build -R interop_py --output-on-failure
+```
+
+On first run, pip install takes tens of seconds while aiortc's wheels are
+downloaded; subsequent runs reuse the cached venv.
+
+Debugging knobs for `nanortc_peer_cli`:
+
+- `NANORTC_PEER_CLI_LOG={warn|info|debug|trace}` — forward nanortc log messages to stderr
+- `NANORTC_PEER_CLI_DUMP_SDP=1` — dump the exchanged offer/answer SDPs to stderr
+
+The Python harness also monkey-patches `aioice.ice.get_host_addresses` in
+[`conftest.py`](../../tests/interop/py/conftest.py) so that aiortc only gathers
+loopback candidates — see the comment there for why (localhost tests with a
+wildcard-bound nanortc socket hit a source-address-mismatch ICE failure
+otherwise).
 
 ### When to add interop tests
 
@@ -93,14 +127,21 @@ Add a new interop test case when:
 - A new DataChannel feature is implemented (e.g., multiple channels, large messages)
 - A bug is found via browser testing that the unit tests did not catch
 
+For DataChannel changes, mirror new scenarios into both `tests/interop/test_interop_dc.c`
+and `tests/interop/py/test_datachannel.py` until the libdatachannel suite is retired.
+
 ### Interop test files
 
 | File | Purpose |
 |------|---------|
-| `interop_common.{h,c}` | Signaling pipe (socketpair) + timing utilities |
-| `interop_nanortc_peer.{h,c}` | nanortc thread wrapper (reuses `run_loop_linux.c`) |
+| `interop_common.{h,c}` | libdatachannel suite: signaling pipe (socketpair) + timing utilities |
+| `interop_nanortc_peer.{h,c}` | libdatachannel suite: nanortc thread wrapper (reuses `run_loop_linux.c`) |
 | `interop_libdatachannel_peer.{h,c}` | libdatachannel C API wrapper (callback-based) |
-| `test_interop_dc.c` | DataChannel interop test cases |
+| `test_interop_dc.c` | libdatachannel suite: DataChannel test cases |
+| `py/nanortc_peer_cli.c` | aiortc suite: stdin/stdout-driven answerer helper binary |
+| `py/harness/nanortc_peer.py` | aiortc suite: async wrapper around the CLI subprocess |
+| `py/test_datachannel.py` | aiortc suite: DataChannel test cases (mirrors `test_interop_dc.c`) |
+| `py/protocol.md` | aiortc suite: CLI ↔ pytest wire protocol spec |
 
 ## PR Workflow
 

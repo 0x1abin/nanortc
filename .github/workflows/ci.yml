@@ -225,3 +225,31 @@ jobs:
 
       - name: Test
         run: ctest --test-dir build -R interop -LE network --output-on-failure
+
+  interop_py:
+    name: Interop (aiortc / Python)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: interop-py-pip-${{ hashFiles('tests/interop/py/requirements.txt') }}
+
+      - name: Configure
+        run: |
+          cmake -B build \
+            -DNANORTC_BUILD_INTEROP_TESTS_PY=ON \
+            -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        run: cmake --build build -j$(nproc)
+
+      - name: Test
+        run: ctest --test-dir build -R interop_py --output-on-failure

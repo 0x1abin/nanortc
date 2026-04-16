@@ -236,6 +236,8 @@ endif()
 
 # ---- Interop tests (requires network + C++ compiler, not default) ----
 option(NANORTC_BUILD_INTEROP_TESTS "Build interop tests against libdatachannel" OFF)
-if(NANORTC_BUILD_INTEROP_TESTS)
+option(NANORTC_BUILD_INTEROP_TESTS_PY
+       "Build aiortc-based Python-driven interop tests (requires Python 3.10+)" OFF)
+if(NANORTC_BUILD_INTEROP_TESTS OR NANORTC_BUILD_INTEROP_TESTS_PY)
     add_subdirectory(tests/interop)
 endif()

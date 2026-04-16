@@ -1,8 +1,14 @@
-# nanortc interop tests — libdatachannel as reference peer
+# nanortc interop tests
 #
-# Build: cmake -B build -DNANORTC_BUILD_INTEROP_TESTS=ON -DNANORTC_CRYPTO=openssl
+# Two independent suites share this directory:
+#   - libdatachannel-based C/C++ tests, gated on NANORTC_BUILD_INTEROP_TESTS
+#     Build: cmake -B build -DNANORTC_BUILD_INTEROP_TESTS=ON -DNANORTC_CRYPTO=openssl
+#   - aiortc-based Python tests, gated on NANORTC_BUILD_INTEROP_TESTS_PY (see py/)
+#     Build: cmake -B build -DNANORTC_BUILD_INTEROP_TESTS_PY=ON
 #
 # SPDX-License-Identifier: MIT
+
+if(NANORTC_BUILD_INTEROP_TESTS)
 
 # libdatachannel is C++17; enable CXX for this subdirectory
 enable_language(CXX)
@@ -174,4 +180,11 @@ if(NANORTC_FEATURE_VIDEO)
 
     add_test(NAME interop_video COMMAND test_interop_video)
     set_tests_properties(interop_video PROPERTIES TIMEOUT 120)
+endif()
+
+endif() # NANORTC_BUILD_INTEROP_TESTS
+
+# ---- aiortc-based Python-driven interop tests ----
+if(NANORTC_BUILD_INTEROP_TESTS_PY)
+    add_subdirectory(py)
 endif()

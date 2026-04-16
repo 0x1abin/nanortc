@@ -281,6 +281,27 @@ else
 fi
 
 # ============================================================
+# 7. Interop tests — aiortc / Python (no openssl, no C++)
+# ============================================================
+echo ""
+echo "=== Interop Tests (aiortc / Python) ==="
+
+if [ $FAST_MODE -eq 1 ]; then
+    printf "  %-50s SKIP (--fast mode)\n" "Interop tests (py)"
+elif command -v python3 > /dev/null 2>&1; then
+    interop_py_dir="$CI_DIR/build-ci-interop-py"
+    prep_build_dir "$interop_py_dir"
+
+    run_check "Build interop_py (aiortc)" \
+        bash -c "cmake -B '$interop_py_dir' -DNANORTC_BUILD_INTEROP_TESTS_PY=ON $LAUNCHER_FLAGS -DCMAKE_BUILD_TYPE=Debug > /dev/null 2>&1 && cmake --build '$interop_py_dir' -j${JOBS} > /dev/null 2>&1"
+
+    run_check "Test  interop_py (aiortc)" \
+        ctest --test-dir "$interop_py_dir" -R interop_py --output-on-failure
+else
+    printf "  %-50s SKIP (python3 not available)\n" "Interop tests (py)"
+fi
+
+# ============================================================
 # Cleanup
 # ============================================================
 # Build dirs are persistent across runs by default — ccache + cmake
