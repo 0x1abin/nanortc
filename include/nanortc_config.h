@@ -207,6 +207,14 @@
 #endif
 #endif
 
+#if defined(IDF_VER) && !defined(NANORTC_FEATURE_H265)
+#ifdef CONFIG_NANORTC_FEATURE_H265
+#define NANORTC_FEATURE_H265 1
+#else
+#define NANORTC_FEATURE_H265 0
+#endif
+#endif
+
 /* ----------------------------------------------------------------
  * Feature flags (orthogonal, user-configurable)
  *
@@ -590,10 +598,11 @@
  * ---------------------------------------------------------------- */
 
 /** @brief Enable H.265/HEVC video codec (RFC 7798). Sub-feature of VIDEO.
- *  Disable to save ~11 KB of code on flash-constrained targets even when
- *  NANORTC_FEATURE_VIDEO is on. Defaults to the VIDEO master switch. */
+ *  Default: 0. Must be explicitly enabled even when NANORTC_FEATURE_VIDEO=1;
+ *  H.264 is the only video codec offered by default. Adds ~11 KB of code
+ *  when enabled. */
 #ifndef NANORTC_FEATURE_H265
-#define NANORTC_FEATURE_H265 NANORTC_FEATURE_VIDEO
+#define NANORTC_FEATURE_H265 0
 #endif
 
 #if NANORTC_FEATURE_H265 && !NANORTC_FEATURE_VIDEO

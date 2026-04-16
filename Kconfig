@@ -36,7 +36,17 @@ menu "NanoRTC Configuration"
         default n
         help
             Enable video media transport. Compiles RTP, RTCP, SRTP,
-            and bandwidth estimation modules.
+            and bandwidth estimation modules. H.264 is always offered
+            when video is enabled; H.265 is opt-in (see below).
+
+    config NANORTC_FEATURE_H265
+        bool "Enable H.265/HEVC video codec (RFC 7798)"
+        default n
+        depends on NANORTC_FEATURE_VIDEO
+        help
+            Enable H.265/HEVC RTP packetization (RFC 7798). Adds ~11 KB
+            of code on top of NANORTC_FEATURE_VIDEO. Disabled by default;
+            only H.264 is offered when off.
 
     config NANORTC_FEATURE_IPV6
         bool "Enable IPv6 address support"

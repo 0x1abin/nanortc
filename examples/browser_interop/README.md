@@ -141,9 +141,15 @@ cmake --build build -j$(nproc)
 cmake -B build -DNANORTC_CRYPTO=openssl -DNANORTC_BUILD_EXAMPLES=ON -DNANORTC_FEATURE_AUDIO=ON
 cmake --build build -j$(nproc)
 
-# Build with full media (audio + video)
+# Build with full media (audio + video). Only H.264 is offered by default;
+# H.265 is opt-in via -DNANORTC_FEATURE_H265=ON.
 cmake -B build -DNANORTC_CRYPTO=openssl -DNANORTC_BUILD_EXAMPLES=ON \
     -DNANORTC_FEATURE_AUDIO=ON -DNANORTC_FEATURE_VIDEO=ON
+cmake --build build -j$(nproc)
+
+# Build with H.265 enabled (required to use --codec h265)
+cmake -B build -DNANORTC_CRYPTO=openssl -DNANORTC_BUILD_EXAMPLES=ON \
+    -DNANORTC_FEATURE_AUDIO=ON -DNANORTC_FEATURE_VIDEO=ON -DNANORTC_FEATURE_H265=ON
 cmake --build build -j$(nproc)
 ```
 

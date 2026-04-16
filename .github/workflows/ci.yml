@@ -14,12 +14,13 @@ jobs:
       fail-fast: false
       matrix:
         combo:
-          - { name: DATA,       dc: ON,  audio: OFF, video: OFF }
-          - { name: AUDIO,      dc: ON,  audio: ON,  video: OFF }
-          - { name: MEDIA,      dc: ON,  audio: ON,  video: ON  }
-          - { name: AUDIO_ONLY, dc: OFF, audio: ON,  video: OFF }
-          - { name: MEDIA_ONLY, dc: OFF, audio: ON,  video: ON  }
-          - { name: CORE_ONLY,  dc: OFF, audio: OFF, video: OFF }
+          - { name: DATA,       dc: ON,  audio: OFF, video: OFF, h265: OFF }
+          - { name: AUDIO,      dc: ON,  audio: ON,  video: OFF, h265: OFF }
+          - { name: MEDIA,      dc: ON,  audio: ON,  video: ON,  h265: OFF }
+          - { name: MEDIA_H265, dc: ON,  audio: ON,  video: ON,  h265: ON  }
+          - { name: AUDIO_ONLY, dc: OFF, audio: ON,  video: OFF, h265: OFF }
+          - { name: MEDIA_ONLY, dc: OFF, audio: ON,  video: ON,  h265: OFF }
+          - { name: CORE_ONLY,  dc: OFF, audio: OFF, video: OFF, h265: OFF }
         crypto: [mbedtls, openssl]
     steps:
       - uses: actions/checkout@v4
@@ -33,6 +34,7 @@ jobs:
             -DNANORTC_FEATURE_DATACHANNEL=${{ matrix.combo.dc }} \
             -DNANORTC_FEATURE_AUDIO=${{ matrix.combo.audio }} \
             -DNANORTC_FEATURE_VIDEO=${{ matrix.combo.video }} \
+            -DNANORTC_FEATURE_H265=${{ matrix.combo.h265 }} \
             -DNANORTC_CRYPTO=${{ matrix.crypto }} \
             -DCMAKE_BUILD_TYPE=Debug
 
@@ -81,7 +83,7 @@ jobs:
 
       - name: "Check: symbol naming"
         run: |
-          cmake -B build -DNANORTC_FEATURE_DATACHANNEL=ON -DNANORTC_FEATURE_AUDIO=ON -DNANORTC_FEATURE_VIDEO=ON -DCMAKE_BUILD_TYPE=Debug
+          cmake -B build -DNANORTC_FEATURE_DATACHANNEL=ON -DNANORTC_FEATURE_AUDIO=ON -DNANORTC_FEATURE_VIDEO=ON -DNANORTC_FEATURE_H265=ON -DCMAKE_BUILD_TYPE=Debug
           cmake --build build -j$(nproc)
           # All symbols must start with nano_/nanortc_ (public API) or a known module prefix (internal)
           ALLOWED='nano_|nanortc_|stun_|ice_|dtls_|nsctp_|sctp_|dc_|sdp_|rtp_|rtcp_|srtp_|jitter_|bwe_|h264_|h265_|media_|ssrc_map_|addr_|track_|turn_'
@@ -123,7 +125,7 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y -qq libmbedtls-dev
 
       - name: Configure (MEDIA + ASan)
-        run: cmake -B build -DNANORTC_FEATURE_DATACHANNEL=ON -DNANORTC_FEATURE_AUDIO=ON -DNANORTC_FEATURE_VIDEO=ON -DCMAKE_BUILD_TYPE=Debug -DADDRESS_SANITIZER=ON
+        run: cmake -B build -DNANORTC_FEATURE_DATACHANNEL=ON -DNANORTC_FEATURE_AUDIO=ON -DNANORTC_FEATURE_VIDEO=ON -DNANORTC_FEATURE_H265=ON -DCMAKE_BUILD_TYPE=Debug -DADDRESS_SANITIZER=ON
 
       - name: Build
         run: cmake --build build -j$(nproc)
@@ -148,6 +150,7 @@ jobs:
             -DNANORTC_FEATURE_DATACHANNEL=ON \
             -DNANORTC_FEATURE_AUDIO=ON \
             -DNANORTC_FEATURE_VIDEO=ON \
+            -DNANORTC_FEATURE_H265=ON \
             -DCMAKE_C_COMPILER=clang \
             -DCMAKE_BUILD_TYPE=Debug
 
@@ -180,6 +183,7 @@ jobs:
             -DNANORTC_FEATURE_DATACHANNEL=ON \
             -DNANORTC_FEATURE_AUDIO=ON \
             -DNANORTC_FEATURE_VIDEO=ON \
+            -DNANORTC_FEATURE_H265=ON \
             -DCMAKE_BUILD_TYPE=Debug
 
       - name: Build
