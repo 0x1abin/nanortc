@@ -155,18 +155,36 @@ static void *nanortc_thread_fn(void *arg)
     if (peer->has_ice) {
         fprintf(stderr, "[nanortc] TURN warmup: waiting for relay candidate...\n");
         uint32_t warmup_start = interop_get_millis();
+        int relay_ready = 0;
         while (atomic_load(&peer->running)) {
             nano_run_loop_step(&peer->loop);
             if (peer->rtc.sdp.has_relay_candidate) {
                 fprintf(stderr, "[nanortc] TURN warmup: relay candidate ready (%u ms)\n",
                         interop_get_millis() - warmup_start);
+                relay_ready = 1;
                 break;
             }
             if (interop_get_millis() - warmup_start > 5000) {
-                fprintf(stderr,
-                        "[nanortc] TURN warmup: timeout after 5s (continuing without relay)\n");
+                fprintf(stderr, "[nanortc] TURN warmup: timeout after 5s\n");
                 break;
             }
+        }
+        if (!relay_ready && peer->relay_only) {
+            /* relay_only mode skipped the host candidate at init time. Without
+             * a relay candidate the answer SDP would have no viable ICE
+             * candidates and signaling would deadlock at the test's
+             * INTEROP_TURN_TIMEOUT_MS. Fail fast instead so the test errors
+             * out deterministically. */
+            fprintf(stderr,
+                    "[nanortc] relay-only mode requires a successful TURN warmup; "
+                    "aborting thread (signaling would hang with no candidates)\n");
+            atomic_store(&peer->running, 0);
+            return NULL;
+        }
+        if (!relay_ready) {
+            /* Non-relay-only: the host candidate is already registered, so
+             * signaling can still proceed without the relay (existing behavior). */
+            fprintf(stderr, "[nanortc] continuing without relay\n");
         }
     }
 
@@ -227,6 +245,7 @@ int interop_nanortc_start(interop_nanortc_peer_t *peer, int sig_fd, uint16_t por
     peer->sig_fd = sig_fd;
     peer->port = port;
     peer->has_ice = (ice_cfg != NULL);
+    peer->relay_only = (ice_cfg != NULL && ice_cfg->relay_only);
     pthread_mutex_init(&peer->msg_mutex, NULL);
 
     /* Resolve ICE server domain names to IPs */
@@ -267,8 +286,12 @@ int interop_nanortc_start(interop_nanortc_peer_t *peer, int sig_fd, uint16_t por
         memcpy(local_ip, "127.0.0.1", 10);
     }
 
-    nanortc_add_local_candidate(&peer->rtc, local_ip, port);
-    fprintf(stderr, "[nanortc] Local candidate: %s:%d\n", local_ip, port);
+    if (!ice_cfg || !ice_cfg->relay_only) {
+        nanortc_add_local_candidate(&peer->rtc, local_ip, port);
+        fprintf(stderr, "[nanortc] Local candidate: %s:%d\n", local_ip, port);
+    } else {
+        fprintf(stderr, "[nanortc] relay-only mode: skipping host candidate\n");
+    }
 
     /* Init run loop (binds UDP socket on INADDR_ANY) */
     rc = nano_run_loop_init(&peer->loop, &peer->rtc, port);

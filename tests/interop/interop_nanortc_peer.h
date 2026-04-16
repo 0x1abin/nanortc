@@ -28,6 +28,10 @@ typedef struct {
     size_t ice_server_count;
     void *resolve_scratch; /* Buffer for DNS resolution (caller-owned) */
     size_t resolve_scratch_size;
+    /* When non-zero, skip the host candidate; the SDP will advertise only
+     * the TURN relay candidate produced during warmup. Forces every byte
+     * nanortc sends to be wrapped through the TURN server. */
+    int relay_only;
 } interop_nanortc_ice_config_t;
 
 typedef struct {
@@ -55,7 +59,8 @@ typedef struct {
     pthread_t thread;
     atomic_int running;
     uint16_t port;
-    int has_ice; /* True if ICE servers are configured (enables TURN warmup) */
+    int has_ice;    /* True if ICE servers are configured (enables TURN warmup) */
+    int relay_only; /* True if SDP must advertise only the TURN relay candidate */
 } interop_nanortc_peer_t;
 
 /*
