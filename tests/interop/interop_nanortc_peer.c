@@ -267,8 +267,12 @@ int interop_nanortc_start(interop_nanortc_peer_t *peer, int sig_fd, uint16_t por
         memcpy(local_ip, "127.0.0.1", 10);
     }
 
-    nanortc_add_local_candidate(&peer->rtc, local_ip, port);
-    fprintf(stderr, "[nanortc] Local candidate: %s:%d\n", local_ip, port);
+    if (!ice_cfg || !ice_cfg->relay_only) {
+        nanortc_add_local_candidate(&peer->rtc, local_ip, port);
+        fprintf(stderr, "[nanortc] Local candidate: %s:%d\n", local_ip, port);
+    } else {
+        fprintf(stderr, "[nanortc] relay-only mode: skipping host candidate\n");
+    }
 
     /* Init run loop (binds UDP socket on INADDR_ANY) */
     rc = nano_run_loop_init(&peer->loop, &peer->rtc, port);

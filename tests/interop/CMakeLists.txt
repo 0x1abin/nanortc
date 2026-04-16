@@ -126,6 +126,36 @@ target_link_libraries(test_interop_turn_relay PRIVATE
 add_test(NAME interop_turn_relay COMMAND test_interop_turn_relay)
 set_tests_properties(interop_turn_relay PROPERTIES TIMEOUT 180 LABELS "network;turn-relay")
 
+# ---- TURN relay-only interop test, nanortc side ----
+# Mirror image of test_interop_turn_relay: nanortc is the TURN client this
+# time. nanortc's SDP advertises only the relay candidate (see relay_only
+# flag in interop_nanortc_ice_config_t); libdatachannel stays host-only.
+# Exercises the Phase 5.2 client-side relay fixes (via_turn signal, lazy
+# wrap, permission fan-out, stats counters). Skipped if no TURN reachable.
+
+add_executable(test_interop_turn_relay_nanortc
+    test_interop_turn_relay_nanortc.c
+    interop_common.c
+    interop_nanortc_peer.c
+    interop_libdatachannel_peer.c
+    ${CMAKE_SOURCE_DIR}/examples/common/run_loop_linux.c
+    ${CMAKE_SOURCE_DIR}/examples/common/ice_server_resolve.c
+)
+
+target_include_directories(test_interop_turn_relay_nanortc PRIVATE ${INTEROP_INCLUDE_DIRS})
+
+set_target_properties(test_interop_turn_relay_nanortc PROPERTIES LINKER_LANGUAGE CXX)
+
+target_link_libraries(test_interop_turn_relay_nanortc PRIVATE
+    nanortc
+    unity
+    LibDataChannel::LibDataChannelStatic
+    pthread
+)
+
+add_test(NAME interop_turn_relay_nanortc COMMAND test_interop_turn_relay_nanortc)
+set_tests_properties(interop_turn_relay_nanortc PROPERTIES TIMEOUT 180 LABELS "network;turn-relay")
+
 # ---- Audio interop test (requires NANORTC_FEATURE_AUDIO) ----
 
 if(NANORTC_FEATURE_AUDIO)

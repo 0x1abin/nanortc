@@ -149,9 +149,19 @@ static inline int rtc_enqueue_output(nanortc_t *rtc, const nanortc_output_t *out
  * The wrap decision (selected_type == RELAY) is made here and stamped into
  * out_wrap_meta; the actual ChannelData / Send-indication encoding happens
  * in nanortc_poll_output().
+ *
+ * @p force_via_turn is the RFC 8445 §7.2.2 symmetric-path override. When a
+ * Binding Request was received via a TURN Data Indication / ChannelData
+ * unwrap, its response MUST be returned through the same relay even before
+ * USE-CANDIDATE has flipped selected_type to RELAY. Without this override,
+ * the first few pre-nomination responses leak direct to the peer's host
+ * address; on cellular NAT blocks them silently so F6 appears to work, but
+ * on loopback / LAN it opens a peer-reflexive direct path and ICE selects
+ * HOST instead of RELAY. rtc_process_receive passes the inbound via_turn
+ * here. All other callers pass false and rely on selected_type.
  */
 static int rtc_enqueue_transmit(nanortc_t *rtc, const uint8_t *data, size_t len,
-                                const nanortc_addr_t *peer_dest)
+                                const nanortc_addr_t *peer_dest, bool force_via_turn)
 {
     nanortc_output_t out;
     memset(&out, 0, sizeof(out));
@@ -179,21 +189,30 @@ static int rtc_enqueue_transmit(nanortc_t *rtc, const uint8_t *data, size_t len,
     }
 
 #if NANORTC_FEATURE_TURN
-    /* selected_type → RELAY is set in ice_handle_stun() when a USE-CANDIDATE
-     * check arrives via a TURN Data Indication / ChannelData unwrap (see the
-     * via_turn arg plumbed through rtc_process_receive). Permission existence
-     * alone is NOT a sufficient signal — we create permissions for every
-     * remote candidate including LAN ones, and routing same-LAN responses
-     * through a remote TURN server makes them appear from the wrong source
-     * IP and the controlling browser drops them as ICE pair mismatches. */
+    /* Wrap decision:
+     *   - selected_type == RELAY: steady-state once USE-CANDIDATE nominated
+     *     a relay pair (F6 from Phase 5.2).
+     *   - force_via_turn: RFC 8445 §7.2.2 symmetric-path override used by
+     *     rtc_process_receive when responding to a Binding Request that
+     *     arrived via a TURN unwrap, before USE-CANDIDATE has had a chance
+     *     to flip selected_type. Without this, the first pre-nomination
+     *     responses leak direct and, on loopback / LAN, the peer builds a
+     *     prflx direct candidate and ICE selects HOST instead of RELAY.
+     * Permission existence alone is NOT a sufficient signal — we create
+     * permissions for every remote candidate including LAN ones, and
+     * routing same-LAN responses through a remote TURN server makes them
+     * appear from the wrong source IP and the controlling browser drops
+     * them as ICE pair mismatches. */
     if (rtc->turn.configured && rtc->turn.state == NANORTC_TURN_ALLOCATED &&
-        rtc->ice.selected_type == NANORTC_ICE_CAND_RELAY) {
+        (rtc->ice.selected_type == NANORTC_ICE_CAND_RELAY || force_via_turn)) {
         rtc->out_wrap_meta[slot].via_turn = true;
         rtc->out_wrap_meta[slot].peer_dest = *peer_dest;
         rtc->stats_enqueue_via_turn++;
     } else {
         rtc->stats_enqueue_direct++;
     }
+#else
+    (void)force_via_turn;
 #endif
 
     return NANORTC_OK;
@@ -305,7 +324,7 @@ static void rtc_drain_dtls_output(nanortc_t *rtc, const nanortc_addr_t *dest)
     while (dtls_poll_output(&rtc->dtls, rtc->dtls_scratch, sizeof(rtc->dtls_scratch), &dout_len) ==
                NANORTC_OK &&
            dout_len > 0) {
-        rtc_enqueue_transmit(rtc, rtc->dtls_scratch, dout_len, dest);
+        rtc_enqueue_transmit(rtc, rtc->dtls_scratch, dout_len, dest, false);
         dout_len = 0;
     }
 }
@@ -988,7 +1007,7 @@ static void rtc_pump_sctp_through_dtls(nanortc_t *rtc, const nanortc_addr_t *des
         while (dtls_poll_output(&rtc->dtls, rtc->dtls_scratch, sizeof(rtc->dtls_scratch),
                                 &enc_len) == NANORTC_OK &&
                enc_len > 0) {
-            rtc_enqueue_transmit(rtc, rtc->dtls_scratch, enc_len, dest);
+            rtc_enqueue_transmit(rtc, rtc->dtls_scratch, enc_len, dest, false);
             enc_len = 0;
         }
         nsctp_out = 0;
@@ -1155,7 +1174,13 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
          * relay. Direct sendto() on a NAT'd cellular peer address has no
          * route from the device. */
         if (resp_len > 0) {
-            rtc_enqueue_transmit(rtc, rtc->stun_buf, resp_len, src);
+            /* RFC 8445 §7.2.2: response follows the request's arrival path.
+             * If the Binding Request came in via a TURN unwrap (via_turn),
+             * the response must also go back through the relay — even before
+             * USE-CANDIDATE has flipped selected_type. Without this, the
+             * first pre-nomination responses leak direct and the peer ICE
+             * stack builds a prflx direct candidate on loopback / LAN. */
+            rtc_enqueue_transmit(rtc, rtc->stun_buf, resp_len, src, via_turn);
         }
 
         /* Check for ICE state transition → init DTLS + emit event */
@@ -1415,7 +1440,7 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
                                     rtc->pkt_ring_meta[s].seq == lost[i]) {
                                     rtc_enqueue_transmit(rtc, rtc->pkt_ring[s],
                                                          rtc->pkt_ring_meta[s].len,
-                                                         &rtc->remote_addr);
+                                                         &rtc->remote_addr, false);
                                     retx++;
                                     break;
                                 }
@@ -1661,7 +1686,7 @@ static int rtc_process_timers(nanortc_t *rtc, uint32_t now_ms)
                 consent_dest.family = rtc->ice.selected_family;
                 memcpy(consent_dest.addr, rtc->ice.selected_addr, NANORTC_ADDR_SIZE);
                 consent_dest.port = rtc->ice.selected_port;
-                rtc_enqueue_transmit(rtc, rtc->stun_buf, consent_len, &consent_dest);
+                rtc_enqueue_transmit(rtc, rtc->stun_buf, consent_len, &consent_dest, false);
             }
         }
     }
@@ -1889,7 +1914,7 @@ static int rtc_process_timers(nanortc_t *rtc, uint32_t now_ms)
             if (sr_rc != NANORTC_OK)
                 continue;
 
-            rtc_enqueue_transmit(rtc, rtc->stun_buf, srtcp_len, &rtc->remote_addr);
+            rtc_enqueue_transmit(rtc, rtc->stun_buf, srtcp_len, &rtc->remote_addr, false);
         }
     }
 #endif
@@ -2482,7 +2507,7 @@ static int rtc_send_audio(nanortc_t *rtc, nanortc_track_t *m, uint32_t timestamp
     m->rtcp.packets_sent++;
     m->rtcp.octets_sent += (uint32_t)len;
 
-    return rtc_enqueue_transmit(rtc, m->media_buf, srtp_len, &rtc->remote_addr);
+    return rtc_enqueue_transmit(rtc, m->media_buf, srtp_len, &rtc->remote_addr, false);
 }
 
 #if NANORTC_FEATURE_VIDEO
@@ -2535,7 +2560,7 @@ static int video_send_fragment_cb(const uint8_t *payload, size_t len, int marker
     rtc->pkt_ring_meta[slot].seq = (uint16_t)(m->rtp.seq - 1);
     rtc->pkt_ring_meta[slot].len = (uint16_t)srtp_len;
 
-    ctx->last_rc = rtc_enqueue_transmit(rtc, pkt_buf, srtp_len, &rtc->remote_addr);
+    ctx->last_rc = rtc_enqueue_transmit(rtc, pkt_buf, srtp_len, &rtc->remote_addr, false);
     return ctx->last_rc;
 }
 
@@ -2735,7 +2760,7 @@ int nanortc_request_keyframe(nanortc_t *rtc, uint8_t mid)
         return prc;
     }
 
-    return rtc_enqueue_transmit(rtc, pli_buf, srtcp_len, &rtc->remote_addr);
+    return rtc_enqueue_transmit(rtc, pli_buf, srtcp_len, &rtc->remote_addr, false);
 }
 
 /* ================================================================
