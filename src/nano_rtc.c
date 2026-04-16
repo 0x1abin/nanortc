@@ -508,10 +508,9 @@ static void rtc_apply_negotiated_media(nanortc_t *rtc)
         ml->direction = m->direction;
 
         /* Apply negotiated PT.
-         * For video: fmtp parsing already selected the correct H264 PT from
-         * the offer's codec list (matching packetization-mode=1).  Don't
-         * overwrite it with remote_pt, which is just the *first* PT on the
-         * m= line (often VP8, not H264). */
+         * For video: parse_rtpmap / fmtp parsing already selected the codec
+         * PT from the offer. Don't overwrite with remote_pt (first PT on
+         * m= line, often VP8). */
         if (ml->kind == SDP_MLINE_VIDEO && ml->pt != 0) {
             m->rtp.payload_type = ml->pt;
             NANORTC_LOGD("SDP", "video using negotiated H264 PT");
@@ -2485,6 +2484,63 @@ int nanortc_video_set_h265_parameter_sets(nanortc_t *rtc, uint8_t mid, const uin
     }
 
     ml->h265_sprop_fmtp_len = (uint16_t)pos;
+
+    /* Extract profile_space / tier_flag / profile_idc / level_idc from the
+     * VPS profile_tier_level() so the SDP fmtp advertises the actual stream
+     * level. Safari's WebRTC decoder drops frames silently when SDP level-id
+     * understates the stream's general_level_idc.
+     *
+     * RBSP layout (H.265 §7.3.2.1 with max_sub_layers_minus1 = 0), logical
+     * byte offsets (i.e. after stripping emulation-prevention 0x03 bytes
+     * per §7.4.1.1):
+     *   [0..1] NAL header (2 bytes)
+     *   [2] vps_video_parameter_set_id(4) | base_layer_internal(1) |
+     *       base_layer_available(1) | max_layers_minus1[5:4](2 MSB)
+     *   [3] max_layers_minus1[3:0](4) | max_sub_layers_minus1(3) |
+     *       temporal_id_nesting(1)
+     *   [4..5] vps_reserved_0xffff_16bits
+     *   [6] general_profile_space(2) | general_tier_flag(1) |
+     *       general_profile_idc(5)
+     *   [7..10] general_profile_compatibility_flag[0..31]
+     *   [11..16] progressive/interlaced/non_packed/frame_only + 43 reserved
+     *            bits + inbld = 48 bits total
+     *   [17] general_level_idc
+     *
+     * The caller hands us the raw NAL (with EP bytes still in). Our range
+     * of interest (up to byte 17) can contain up to three 00 00 03 triples
+     * on real encoders, so we must scan logically rather than index. */
+    if (vps_len >= 18) {
+        uint8_t ptl0 = 0;
+        uint8_t level = 0;
+        size_t logical = 0;
+        bool got_ptl0 = false;
+        uint8_t prev2 = 0xFF, prev1 = 0xFF;
+        for (size_t i = 0; i < vps_len; i++) {
+            uint8_t b = vps[i];
+            if (i >= 2 && prev2 == 0x00 && prev1 == 0x00 && b == 0x03) {
+                /* Skip emulation-prevention byte; does not count toward
+                 * logical offset. */
+                prev2 = prev1;
+                prev1 = b;
+                continue;
+            }
+            if (logical == 6) {
+                ptl0 = b;
+                got_ptl0 = true;
+            } else if (logical == 17) {
+                level = b;
+                break;
+            }
+            logical++;
+            prev2 = prev1;
+            prev1 = b;
+        }
+        if (got_ptl0) {
+            ml->h265_profile_id = (uint8_t)(ptl0 & 0x1F);
+            ml->h265_tier_flag = (uint8_t)((ptl0 >> 5) & 0x01);
+            ml->h265_level_id = level;
+        }
+    }
     NANORTC_LOGI("SDP", "H265 sprop-vps/sps/pps stored");
     return NANORTC_OK;
 }

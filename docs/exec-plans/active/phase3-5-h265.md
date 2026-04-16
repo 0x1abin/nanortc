@@ -220,3 +220,38 @@ H.265 defaults to **PT = 98**, disjoint from H.264's PT = 96, so a future same-m
 
 - **2026-04-13** — Planning. User selected: bidirectional H.265 (not recvonly-first), full AP send+receive (not receive-only), `NANORTC_FEATURE_H265` sub-flag default ON. PT = 98 (disjoint from H.264 = 96). DON handling: reject non-zero `sprop-max-don-diff` rather than silently skip bytes. Annex-B scanner shared via alias, not duplicated.
 - **2026-04-13** — PR-1 complete: module + tests + fuzz harness + CI check pass. PR-2 and PR-3 pending.
+- **2026-04-16** — Browser interop hardening (post-PR-2). Four bugs surfaced once
+  `uipcat-camera-rk3588` started driving real Chrome / Safari viewers at
+  1920×1080 H.265:
+
+  1. **`sdp_parse()` wiped local m-line state.** The `memset(ml, 0, sizeof(*ml))`
+     on each `m=audio` / `m=video` line cleared `ml->codec` and
+     `ml->h265_sprop_fmtp` that the caller had set via `add_video_track()` and
+     `set_h265_parameter_sets()`. The answer fell back to H.264 / omitted
+     sprop-*. Fix: snapshot the preserved fields at parse entry, restore them
+     by index when re-creating each m=line.
+  2. **H.265 rtpmap without fmtp left `ml->pt` at the local default.** Safari
+     advertises H.265 with only `a=rtpmap:N H265/90000` and no companion
+     `a=fmtp:N ...`. The fmtp-driven PT selection never triggered, so the
+     answerer echoed PT=98 — but PT 98 on Safari's side maps to H.264, so
+     Safari discarded every RTP packet. Fix: set `ml->pt` inside
+     `parse_rtpmap()` whenever an H.265 rtpmap is seen and the local track is
+     H.265. The H.265 fmtp branch still overrides when present.
+  3. **H.264 preferred-profile match hijacked H.265 tracks.** Chrome's offer
+     carries both H.264 `profile-level-id=42e01f` and an H.265 block. The
+     existing `is_valid_h264 && has_preferred_profile` selector would set
+     `ml->pt` to the H.264 PT even when the local track was explicitly H.265.
+     Fix: gate that branch with `ml->codec != NANORTC_CODEC_H265`.
+  4. **`level-id` hardcoded to 93 broke Safari.** The SDP emitter wrote
+     `level-id=93` (Level 3.1) even for 1080p30 streams (actually Level 4.0,
+     `level_idc=120`). Safari's HEVC decoder drops frames when SDP level-id
+     understates the stream level. Fix: `set_h265_parameter_sets()` now parses
+     the VPS `profile_tier_level()` — stripping H.265 §7.4.1.1 emulation-
+     prevention 0x03 bytes along the way — and stores `h265_profile_id` /
+     `h265_tier_flag` / `h265_level_id` on the m-line. The emitter uses those
+     values when set, falling back to the compile-time defaults otherwise.
+
+  Regression coverage: `tests/test_sdp.c` gained
+  `test_sdp_h265_rtpmap_without_fmtp_picks_remote_pt`,
+  `test_sdp_h265_local_track_not_hijacked_by_h264_fmtp`, and
+  `test_sdp_parse_preserves_local_h265_state`.
