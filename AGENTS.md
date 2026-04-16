@@ -40,6 +40,7 @@ cmake -B build -DNANORTC_FEATURE_DC_RELIABLE=OFF    # Disable retransmit (sub-fe
 cmake -B build -DNANORTC_FEATURE_DC_ORDERED=OFF     # Disable ordered delivery (sub-feature of DC)
 cmake -B build -DNANORTC_FEATURE_IPV6=OFF           # Disable IPv6 address support (saves ~300 bytes)
 cmake -B build -DNANORTC_FEATURE_TURN=OFF           # Disable TURN relay (saves ~700B RAM + ~13KB code)
+cmake -B build -DNANORTC_FEATURE_ICE_SRFLX=OFF      # Skip srflx local-candidate registration (LAN-only)
 
 # Common combinations
 cmake -B build -DNANORTC_FEATURE_DATACHANNEL=ON -DNANORTC_FEATURE_AUDIO=ON -DNANORTC_FEATURE_VIDEO=ON  # Full media (H.264 only)
@@ -105,7 +106,7 @@ These rules are mechanically enforced. Violations will break the build or CI.
 
 **Byte order:** Use `nanortc_htons`/`nanortc_ntohs`/`nanortc_htonl`/`nanortc_ntohl` from `nanortc.h`. Never platform `htons`.
 
-**Feature guards:** Code guarded by orthogonal feature flags: `#if NANORTC_FEATURE_DATACHANNEL`, `#if NANORTC_FEATURE_AUDIO`, `#if NANORTC_FEATURE_VIDEO`, `#if NANORTC_FEATURE_H265`, `#if NANORTC_FEATURE_IPV6`, `#if NANORTC_FEATURE_TURN`, `#if NANORTC_HAVE_MEDIA_TRANSPORT`. All 7 feature combinations must compile and pass tests (DATA, AUDIO, MEDIA, MEDIA_H265, AUDIO_ONLY, MEDIA_ONLY, CORE_ONLY). H.265 is opt-in: `NANORTC_FEATURE_VIDEO=ON` offers only H.264; set `NANORTC_FEATURE_H265=ON` to add H.265. TURN can be independently disabled in any combination.
+**Feature guards:** Code guarded by orthogonal feature flags: `#if NANORTC_FEATURE_DATACHANNEL`, `#if NANORTC_FEATURE_AUDIO`, `#if NANORTC_FEATURE_VIDEO`, `#if NANORTC_FEATURE_H265`, `#if NANORTC_FEATURE_IPV6`, `#if NANORTC_FEATURE_TURN`, `#if NANORTC_FEATURE_ICE_SRFLX`, `#if NANORTC_HAVE_MEDIA_TRANSPORT`. All 7 feature combinations must compile and pass tests (DATA, AUDIO, MEDIA, MEDIA_H265, AUDIO_ONLY, MEDIA_ONLY, CORE_ONLY). H.265 is opt-in: `NANORTC_FEATURE_VIDEO=ON` offers only H.264; set `NANORTC_FEATURE_H265=ON` to add H.265. TURN and ICE_SRFLX can be independently disabled in any combination.
 
 **No global state:** All state in `nanortc_t`. Multiple instances must coexist.
 

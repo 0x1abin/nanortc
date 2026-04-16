@@ -55,6 +55,13 @@ typedef enum {
  */
 #define ICE_HOST_PRIORITY(idx) ((uint32_t)((126u << 24) | ((uint32_t)(65535u - (idx)) << 8) | 255u))
 
+/** @brief Server-reflexive priority (RFC 8445 §5.1.2.2: type_pref = 100). */
+#define ICE_SRFLX_PRIORITY(idx) \
+    ((uint32_t)((100u << 24) | ((uint32_t)(65535u - (idx)) << 8) | 255u))
+
+/** @brief Relay priority (RFC 8445 §5.1.2.2: type_pref = 0). */
+#define ICE_RELAY_PRIORITY(idx) ((uint32_t)((0u << 24) | ((uint32_t)(65535u - (idx)) << 8) | 255u))
+
 typedef struct nano_ice_candidate {
     uint8_t addr[NANORTC_ADDR_SIZE];
     uint16_t port;
@@ -113,7 +120,8 @@ typedef struct nano_ice {
     uint8_t selected_local_addr[NANORTC_ADDR_SIZE];
     uint16_t selected_local_port;
     uint8_t selected_local_family;
-    uint8_t selected_local_idx; /* index in local_candidates[]; used by consent path */
+    uint8_t selected_local_idx;  /* index in local_candidates[]; used by consent path */
+    uint8_t selected_local_type; /* nano_ice_cand_type_t of the local side of the selected pair */
 
     /* Remote candidates array (trickle ICE support) */
     nano_ice_candidate_t remote_candidates[NANORTC_MAX_ICE_CANDIDATES];
@@ -145,10 +153,17 @@ int ice_init(nano_ice_t *ice, int is_controlling);
  * selected pair as RELAY instead of HOST so subsequent transmits get wrapped
  * back through the TURN relay (RFC 5766 §10/§11). Without this signal the
  * controlled side has no way to tell a direct check from a relay-tunneled one,
- * because in both cases @p src is the same peer. */
+ * because in both cases @p src is the same peer.
+ *
+ * @p local_idx is the index into local_candidates[] that received this packet.
+ * Used by the controlled-role USE-CANDIDATE nomination to record which local
+ * candidate was selected (so consent freshness uses the correct PRIORITY).
+ * Pass NANORTC_ICE_LOCAL_IDX_UNKNOWN when the caller cannot determine it; the
+ * controlled-side fallback is to record idx 0, preserving prior behavior. */
+#define NANORTC_ICE_LOCAL_IDX_UNKNOWN 0xFFu
 int ice_handle_stun(nano_ice_t *ice, const uint8_t *data, size_t len, const nanortc_addr_t *src,
-                    bool via_turn, const nanortc_crypto_provider_t *crypto, uint8_t *resp_buf,
-                    size_t resp_buf_len, size_t *resp_len);
+                    uint8_t local_idx, bool via_turn, const nanortc_crypto_provider_t *crypto,
+                    uint8_t *resp_buf, size_t resp_buf_len, size_t *resp_len);
 
 /* Generate outgoing STUN Binding Request (controlling role only).
  * Returns NANORTC_OK with *out_len=0 if not time to send yet. */

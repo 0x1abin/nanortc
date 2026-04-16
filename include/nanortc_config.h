@@ -265,6 +265,17 @@
 #define NANORTC_FEATURE_IPV6 1
 #endif
 
+/** @brief Enable server-reflexive (srflx) candidate registration. Default: 1.
+ *  STUN Binding Request/Response and trickle emission of the discovered srflx
+ *  candidate happen unconditionally when a stun: server is configured. This
+ *  flag controls whether the srflx candidate is also added to the local
+ *  candidate set so the ICE agent can use it in connectivity checks (RFC 8445
+ *  §5.1.1.2). Disable for strict LAN-only deployments where srflx pairing
+ *  is never needed; the saving is small (a dedup loop + a few macros). */
+#ifndef NANORTC_FEATURE_ICE_SRFLX
+#define NANORTC_FEATURE_ICE_SRFLX 1
+#endif
+
 /* Derived (internal): true when any media transport is needed */
 #if NANORTC_FEATURE_AUDIO || NANORTC_FEATURE_VIDEO
 #define NANORTC_HAVE_MEDIA_TRANSPORT 1

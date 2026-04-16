@@ -156,6 +156,36 @@ target_link_libraries(test_interop_turn_relay_nanortc PRIVATE
 add_test(NAME interop_turn_relay_nanortc COMMAND test_interop_turn_relay_nanortc)
 set_tests_properties(interop_turn_relay_nanortc PROPERTIES TIMEOUT 180 LABELS "network;turn-relay")
 
+# ---- srflx interop test ----
+# Local fake STUN responder + libdatachannel host, with nanortc forced into
+# srflx-only mode (no host candidate). Verifies that srflx is actually used
+# for the connectivity check (selected_local_type == SRFLX) and DataChannel
+# data flows over the srflx-selected pair. No external network required.
+
+add_executable(test_interop_srflx
+    test_interop_srflx.c
+    interop_common.c
+    interop_fake_stun.c
+    interop_nanortc_peer.c
+    interop_libdatachannel_peer.c
+    ${CMAKE_SOURCE_DIR}/examples/common/run_loop_linux.c
+    ${CMAKE_SOURCE_DIR}/examples/common/ice_server_resolve.c
+)
+
+target_include_directories(test_interop_srflx PRIVATE ${INTEROP_INCLUDE_DIRS})
+
+set_target_properties(test_interop_srflx PROPERTIES LINKER_LANGUAGE CXX)
+
+target_link_libraries(test_interop_srflx PRIVATE
+    nanortc
+    unity
+    LibDataChannel::LibDataChannelStatic
+    pthread
+)
+
+add_test(NAME interop_srflx COMMAND test_interop_srflx)
+set_tests_properties(interop_srflx PROPERTIES TIMEOUT 60)
+
 # ---- Audio interop test (requires NANORTC_FEATURE_AUDIO) ----
 
 if(NANORTC_FEATURE_AUDIO)

@@ -1027,7 +1027,7 @@ static void rtc_pump_sctp_through_dtls(nanortc_t *rtc, const nanortc_addr_t *des
  * ---------------------------------------------------------------- */
 
 static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
-                               const nanortc_addr_t *src, bool via_turn)
+                               const nanortc_addr_t *src, uint8_t local_idx, bool via_turn)
 {
     uint8_t first = data[0];
 
@@ -1049,7 +1049,13 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
                 peer_src.family = (peer_family == STUN_FAMILY_IPV4) ? 4 : 6;
                 memcpy(peer_src.addr, peer_addr, NANORTC_ADDR_SIZE);
                 peer_src.port = peer_port;
-                return rtc_process_receive(rtc, cd_payload, cd_len, &peer_src, true);
+                /* Propagate the outer packet's local_idx so USE-CANDIDATE on
+                 * a relay-delivered Binding Request records the correct local
+                 * candidate (the socket that received the ChannelData from
+                 * the TURN server) instead of silently degrading to idx 0 on
+                 * multi-candidate setups. If the outer packet already had an
+                 * UNKNOWN idx, that propagates unchanged. */
+                return rtc_process_receive(rtc, cd_payload, cd_len, &peer_src, local_idx, true);
             }
         }
         return NANORTC_OK;
@@ -1079,7 +1085,8 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
                 peer_src.family = (peer_family == STUN_FAMILY_IPV4) ? 4 : 6;
                 memcpy(peer_src.addr, peer_addr, NANORTC_ADDR_SIZE);
                 peer_src.port = peer_port;
-                return rtc_process_receive(rtc, payload, payload_len, &peer_src, true);
+                /* See ChannelData branch above for local_idx rationale. */
+                return rtc_process_receive(rtc, payload, payload_len, &peer_src, local_idx, true);
             }
 
             /* Not a Data indication — try as TURN response */
@@ -1140,6 +1147,36 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
                     rtc_emit_ice_candidate(rtc, rtc->srflx_cand_str);
 
                     NANORTC_LOGI("RTC", "srflx candidate discovered");
+
+#if NANORTC_FEATURE_ICE_SRFLX
+                    /* RFC 8445 §5.1.1.2: pair srflx with all remote candidates
+                     * by adding it to the local candidate set. Without this,
+                     * connectivity checks never traverse srflx — they stay
+                     * pinned to the host candidate that was added at startup.
+                     * Dedup against existing entries so repeated Binding
+                     * Responses (multiple STUN servers, retries) don't
+                     * accumulate duplicate slots. */
+                    if (rtc->ice.local_candidate_count < NANORTC_MAX_LOCAL_CANDIDATES) {
+                        bool dup = false;
+                        for (uint8_t i = 0; i < rtc->ice.local_candidate_count; i++) {
+                            const nano_ice_candidate_t *c = &rtc->ice.local_candidates[i];
+                            if (c->family == mapped_fam && c->port == smsg.mapped_port &&
+                                memcmp(c->addr, smsg.mapped_addr, NANORTC_ADDR_SIZE) == 0) {
+                                dup = true;
+                                break;
+                            }
+                        }
+                        if (!dup) {
+                            uint8_t idx = rtc->ice.local_candidate_count;
+                            rtc->ice.local_candidates[idx].family = mapped_fam;
+                            memcpy(rtc->ice.local_candidates[idx].addr, smsg.mapped_addr,
+                                   NANORTC_ADDR_SIZE);
+                            rtc->ice.local_candidates[idx].port = smsg.mapped_port;
+                            rtc->ice.local_candidates[idx].type = NANORTC_ICE_CAND_SRFLX;
+                            rtc->ice.local_candidate_count = (uint8_t)(idx + 1);
+                        }
+                    }
+#endif /* NANORTC_FEATURE_ICE_SRFLX */
                 }
                 return NANORTC_OK;
             }
@@ -1147,7 +1184,7 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
 
         bool was_consent_pending = rtc->ice.consent_pending;
         size_t resp_len = 0;
-        int rc = ice_handle_stun(&rtc->ice, data, len, src, via_turn, rtc->config.crypto,
+        int rc = ice_handle_stun(&rtc->ice, data, len, src, local_idx, via_turn, rtc->config.crypto,
                                  rtc->stun_buf, sizeof(rtc->stun_buf), &resp_len);
         if (rc != NANORTC_OK) {
             return rc;
@@ -1926,24 +1963,80 @@ static int rtc_process_timers(nanortc_t *rtc, uint32_t now_ms)
  * nanortc_handle_input — unified input entry point
  * ---------------------------------------------------------------- */
 
-int nanortc_handle_input(nanortc_t *rtc, uint32_t now_ms, const uint8_t *data, size_t len,
-                         const nanortc_addr_t *src)
+/*
+ * Resolve a local destination address to a local_candidates[] index.
+ *
+ * Two-pass match so a specific-typed candidate (e.g. srflx on the same
+ * port as a wildcard host) wins over the wildcard:
+ *
+ *   1. Exact pass  — family + port + full addr match. This is the
+ *      deterministic case; if any candidate stores a concrete address
+ *      that equals dst, pick it first.
+ *   2. Wildcard pass — family + port, with the candidate's stored addr
+ *      being all-zeros (INADDR_ANY / IN6ADDR_ANY from a wildcard bind).
+ *      Used as a fallback on single-socket setups where the registered
+ *      host candidate has no specific IP.
+ *
+ * Returns NANORTC_ICE_LOCAL_IDX_UNKNOWN when no candidate matches;
+ * ice_handle_stun then falls back to idx 0 for legacy behaviour.
+ */
+static uint8_t rtc_resolve_local_idx(const nanortc_t *rtc, const nanortc_addr_t *dst)
 {
-    if (!rtc) {
+    if (!dst || dst->family == 0) {
+        return NANORTC_ICE_LOCAL_IDX_UNKNOWN;
+    }
+    /* Pass 1: exact family + port + addr match. */
+    for (uint8_t i = 0; i < rtc->ice.local_candidate_count; i++) {
+        const nano_ice_candidate_t *c = &rtc->ice.local_candidates[i];
+        if (c->family != dst->family || c->port != dst->port) {
+            continue;
+        }
+        if (memcmp(c->addr, dst->addr, NANORTC_ADDR_SIZE) == 0) {
+            return i;
+        }
+    }
+    /* Pass 2: wildcard (all-zero addr) fallback. */
+    for (uint8_t i = 0; i < rtc->ice.local_candidate_count; i++) {
+        const nano_ice_candidate_t *c = &rtc->ice.local_candidates[i];
+        if (c->family != dst->family || c->port != dst->port) {
+            continue;
+        }
+        bool addr_wild = true;
+        for (size_t k = 0; k < NANORTC_ADDR_SIZE; k++) {
+            if (c->addr[k] != 0) {
+                addr_wild = false;
+                break;
+            }
+        }
+        if (addr_wild) {
+            return i;
+        }
+    }
+    return NANORTC_ICE_LOCAL_IDX_UNKNOWN;
+}
+
+int nanortc_handle_input(nanortc_t *rtc, const nanortc_input_t *in)
+{
+    if (!rtc || !in) {
         return NANORTC_ERR_INVALID_PARAM;
     }
 
-    rtc->now_ms = now_ms;
+    rtc->now_ms = in->now_ms;
 
     /* Always process timers (ICE checks, SCTP retransmits) */
-    int trc = rtc_process_timers(rtc, now_ms);
+    int trc = rtc_process_timers(rtc, in->now_ms);
     if (trc != NANORTC_OK) {
         return trc;
     }
 
-    /* If packet data provided, process the incoming UDP packet */
-    if (data && len > 0 && src) {
-        return rtc_process_receive(rtc, data, len, src, false);
+    /* If packet data provided, process the incoming UDP packet. family==0
+     * on src is treated as "no packet" (timer-only tick). family==0 on dst
+     * means the caller can't identify the local socket — equivalent to
+     * passing dst=NULL in the previous API. */
+    if (in->data && in->len > 0 && in->src.family != 0) {
+        const nanortc_addr_t *dst_p = (in->dst.family != 0) ? &in->dst : NULL;
+        uint8_t local_idx = rtc_resolve_local_idx(rtc, dst_p);
+        return rtc_process_receive(rtc, in->data, in->len, &in->src, local_idx, false);
     }
 
     return NANORTC_OK;

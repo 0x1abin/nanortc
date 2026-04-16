@@ -53,7 +53,7 @@ static void setup_ice_controlling(nano_ice_t *ice)
 }
 
 static void add_candidate(nano_ice_t *ice, uint8_t a, uint8_t b, uint8_t c, uint8_t d,
-                           uint16_t port)
+                          uint16_t port)
 {
     uint8_t idx = ice->remote_candidate_count;
     TEST_ASSERT_TRUE_MESSAGE(idx < NANORTC_MAX_ICE_CANDIDATES, "candidate array full");
@@ -339,8 +339,8 @@ static void test_consent_response_clears_pending(void)
 
     uint8_t resp[256];
     size_t resp_len = 0;
-    rc = ice_handle_stun(&ctld, buf, out_len, &src, false, crypto(), resp, sizeof(resp),
-                         &resp_len);
+    rc = ice_handle_stun(&ctld, buf, out_len, &src, NANORTC_ICE_LOCAL_IDX_UNKNOWN, false, crypto(),
+                         resp, sizeof(resp), &resp_len);
     TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
     TEST_ASSERT_TRUE(resp_len > 0);
 
@@ -354,8 +354,8 @@ static void test_consent_response_clears_pending(void)
 
     uint8_t dummy[256];
     size_t dummy_len = 0;
-    rc = ice_handle_stun(&ctrl, resp, resp_len, &resp_src, false, crypto(), dummy, sizeof(dummy),
-                         &dummy_len);
+    rc = ice_handle_stun(&ctrl, resp, resp_len, &resp_src, NANORTC_ICE_LOCAL_IDX_UNKNOWN, false,
+                         crypto(), dummy, sizeof(dummy), &dummy_len);
     TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
     TEST_ASSERT_FALSE(ctrl.consent_pending);
 }
@@ -381,20 +381,19 @@ static void test_sdp_end_of_candidates_parsed(void)
     nano_sdp_t sdp;
     sdp_init(&sdp);
 
-    const char *sdp_str =
-        "v=0\r\n"
-        "o=- 0 0 IN IP4 10.0.0.1\r\n"
-        "s=-\r\n"
-        "t=0 0\r\n"
-        "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n"
-        "c=IN IP4 10.0.0.1\r\n"
-        "a=ice-ufrag:abcd\r\n"
-        "a=ice-pwd:efghijklmnopqr\r\n"
-        "a=fingerprint:sha-256 AA:BB:CC:DD\r\n"
-        "a=setup:actpass\r\n"
-        "a=sctp-port:5000\r\n"
-        "a=candidate:1 1 UDP 2130706431 10.0.0.1 5000 typ host\r\n"
-        "a=end-of-candidates\r\n";
+    const char *sdp_str = "v=0\r\n"
+                          "o=- 0 0 IN IP4 10.0.0.1\r\n"
+                          "s=-\r\n"
+                          "t=0 0\r\n"
+                          "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n"
+                          "c=IN IP4 10.0.0.1\r\n"
+                          "a=ice-ufrag:abcd\r\n"
+                          "a=ice-pwd:efghijklmnopqr\r\n"
+                          "a=fingerprint:sha-256 AA:BB:CC:DD\r\n"
+                          "a=setup:actpass\r\n"
+                          "a=sctp-port:5000\r\n"
+                          "a=candidate:1 1 UDP 2130706431 10.0.0.1 5000 typ host\r\n"
+                          "a=end-of-candidates\r\n";
 
     size_t len = 0;
     while (sdp_str[len])
@@ -412,18 +411,17 @@ static void test_sdp_no_end_of_candidates(void)
     nano_sdp_t sdp;
     sdp_init(&sdp);
 
-    const char *sdp_str =
-        "v=0\r\n"
-        "o=- 0 0 IN IP4 10.0.0.1\r\n"
-        "s=-\r\n"
-        "t=0 0\r\n"
-        "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n"
-        "c=IN IP4 10.0.0.1\r\n"
-        "a=ice-ufrag:abcd\r\n"
-        "a=ice-pwd:efghijklmnopqr\r\n"
-        "a=fingerprint:sha-256 AA:BB:CC:DD\r\n"
-        "a=setup:actpass\r\n"
-        "a=sctp-port:5000\r\n";
+    const char *sdp_str = "v=0\r\n"
+                          "o=- 0 0 IN IP4 10.0.0.1\r\n"
+                          "s=-\r\n"
+                          "t=0 0\r\n"
+                          "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n"
+                          "c=IN IP4 10.0.0.1\r\n"
+                          "a=ice-ufrag:abcd\r\n"
+                          "a=ice-pwd:efghijklmnopqr\r\n"
+                          "a=fingerprint:sha-256 AA:BB:CC:DD\r\n"
+                          "a=setup:actpass\r\n"
+                          "a=sctp-port:5000\r\n";
 
     size_t len = 0;
     while (sdp_str[len])
@@ -485,8 +483,7 @@ static void test_api_remote_candidate_parses_type(void)
 
     /* relay candidate */
     rc = nanortc_add_remote_candidate(
-        &rtc,
-        "candidate:3 1 UDP 16777215 198.51.100.7 7000 typ relay raddr 0.0.0.0 rport 0");
+        &rtc, "candidate:3 1 UDP 16777215 198.51.100.7 7000 typ relay raddr 0.0.0.0 rport 0");
     TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
     TEST_ASSERT_EQUAL_INT(NANORTC_ICE_CAND_RELAY, rtc.ice.remote_candidates[2].type);
 

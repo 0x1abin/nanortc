@@ -211,7 +211,7 @@ Enable `-flto` for Release builds and mark hot crypto provider functions `__attr
 Public API returning the minimum time until the next timer (ICE check, consent freshness, DTLS retransmit, SCTP RTO, RTCP send). Lets callers replace fixed-interval poll with `epoll_wait(fd, ..., timeout)`. Purely additive.
 
 ### P2-D — Mutable RX buffer zero-copy
-Change `nanortc_handle_input(rtc, const uint8_t *data, ...)` to `nanortc_handle_input(rtc, uint8_t *data, ...)` so inbound SRTP can be unprotected in place without the scratch copy. Breaking API change — requires major version bump. Defer until profiling proves the RX memcpy is a bottleneck.
+Change `nanortc_input_t.data` from `const uint8_t *` to `uint8_t *` so inbound SRTP can be unprotected in place without the scratch copy. Breaking API change — requires major version bump. Defer until profiling proves the RX memcpy is a bottleneck.
 
 ---
 

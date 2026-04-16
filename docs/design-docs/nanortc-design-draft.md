@@ -121,9 +121,8 @@ int  nanortc_add_remote_candidate(nanortc_t *rtc,
 
 // ---- 事件循环（Sans I/O 核心）----
 int  nanortc_poll_output(nanortc_t *rtc, nanortc_output_t *out);
-int  nanortc_handle_input(nanortc_t *rtc, uint32_t now_ms,
-                         const uint8_t *data, size_t len,
-                         const nanortc_addr_t *src);
+int  nanortc_handle_input(nanortc_t *rtc, const nanortc_input_t *in);
+//   nanortc_input_t { now_ms, data, len, src, dst } — 与 nanortc_output_t.transmit 对称
 
 // ---- DataChannel (flat API — no handle needed) ----
 #if NANORTC_FEATURE_DATACHANNEL
@@ -730,10 +729,11 @@ void nanortc_task(void *arg) {
             int n = recvfrom(fd, buf, sizeof(buf), 0,
                             (struct sockaddr *)&src.sa, &slen);
             if (n > 0) {
-                nanortc_handle_input(&rtc, now, buf, n, &src);
+                nanortc_handle_input(&rtc, &(nanortc_input_t){
+                    .now_ms = now, .data = buf, .len = n, .src = src});
             }
         } else {
-            nanortc_handle_input(&rtc, now, NULL, 0, NULL);
+            nanortc_handle_input(&rtc, &(nanortc_input_t){.now_ms = now});
         }
     }
 }
@@ -913,12 +913,13 @@ void test_sctp_handshake(void) {
 
     // 客户端生成 INIT
     nanortc_output_t out;
-    nanortc_handle_input(&client, 0, NULL, 0, NULL);
+    nanortc_handle_input(&client, &(nanortc_input_t){.now_ms = 0});
     nanortc_poll_output(&client, &out);
     assert(out.type == NANORTC_OUTPUT_TRANSMIT);
 
     // 将 INIT 送给服务端
-    nanortc_handle_input(&server, 0, out.transmit.data, out.transmit.len, &fake_addr);
+    nanortc_handle_input(&server, &(nanortc_input_t){
+        .now_ms = 0, .data = out.transmit.data, .len = out.transmit.len, .src = fake_addr});
 
     // 服务端生成 INIT-ACK
     nanortc_poll_output(&server, &out);

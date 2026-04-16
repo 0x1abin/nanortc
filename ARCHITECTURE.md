@@ -108,7 +108,7 @@ Six CI-tested combinations: DATA, AUDIO, MEDIA, AUDIO_ONLY, MEDIA_ONLY, CORE_ONL
 ### Inbound (UDP → application event)
 
 ```
-nanortc_handle_input(rtc, now_ms, data, len, src)
+nanortc_handle_input(rtc, &(nanortc_input_t){.now_ms, .data, .len, .src, .dst})
   │
   ├── byte[0] ∈ [0x40-0x7F] → nano_turn ChannelData unwrap
   │                              └── re-dispatch inner packet with peer address
