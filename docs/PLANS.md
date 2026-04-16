@@ -32,7 +32,7 @@ NanoRTC is built by AI coding agents. Estimates use **agent sessions** (one focu
 
 Tracked in [tech-debt-tracker.md](exec-plans/tech-debt-tracker.md).
 
-**Current status: 0 active items.** 18 resolved (most recently `TD-018` — ICE CONTROLLING per-pair pending transaction table, Phase 8 / PR-5, resolved 2026-04-13).
+**Current status: 0 active items.** 19 resolved (most recently `TD-019` — Phase 5.2 nanortc-as-TURN-client outbound data path: F6 `via_turn` signal through `ice_handle_stun`, F7 lazy TURN wrap deferred to `nanortc_poll_output()`, F8 consent freshness via wrap path, F9 per-tick `CreatePermission` fan-out, F10 stats counters; resolved 2026-04-15).
 
 ## Plan Lifecycle
 

@@ -97,8 +97,8 @@ static uint8_t addr_to_stun_family(uint8_t addr_family)
  * ---------------------------------------------------------------- */
 
 int ice_handle_stun(nano_ice_t *ice, const uint8_t *data, size_t len, const nanortc_addr_t *src,
-                    const nanortc_crypto_provider_t *crypto, uint8_t *resp_buf, size_t resp_buf_len,
-                    size_t *resp_len)
+                    bool via_turn, const nanortc_crypto_provider_t *crypto, uint8_t *resp_buf,
+                    size_t resp_buf_len, size_t *resp_len)
 {
     if (!ice || !data || !src || !crypto || !resp_buf || !resp_len) {
         return NANORTC_ERR_INVALID_PARAM;
@@ -159,7 +159,17 @@ int ice_handle_stun(nano_ice_t *ice, const uint8_t *data, size_t len, const nano
             memcpy(ice->selected_addr, src->addr, NANORTC_ADDR_SIZE);
             ice->selected_port = src->port;
             ice->selected_family = src->family;
-            ice->selected_type = NANORTC_ICE_CAND_HOST; /* incoming STUN = host path */
+            /* via_turn=true means this Binding Request was unwrapped from a
+             * TURN Data Indication / ChannelData (RFC 5766 §10/§11) — i.e. the
+             * remote reached us through our relay. Mark the pair as RELAY so
+             * rtc_enqueue_transmit() routes the response back through the
+             * relay; otherwise a direct sendto() lands on a NAT'd peer
+             * address with no return route and the browser drops the reply
+             * because the source IP doesn't match the (local→relay) pair it
+             * sent the check on. */
+            __atomic_store_n(&ice->selected_type,
+                             (uint8_t)(via_turn ? NANORTC_ICE_CAND_RELAY : NANORTC_ICE_CAND_HOST),
+                             __ATOMIC_RELAXED);
             /*
              * TD-018: consent path (RFC 7675) reads selected_local_idx to
              * compute ICE_HOST_PRIORITY. In lite mode we cannot tell which
@@ -250,7 +260,9 @@ int ice_handle_stun(nano_ice_t *ice, const uint8_t *data, size_t len, const nano
                    NANORTC_ADDR_SIZE);
             ice->selected_port = ice->remote_candidates[sel_remote_idx].port;
             ice->selected_family = ice->remote_candidates[sel_remote_idx].family;
-            ice->selected_type = ice->remote_candidates[sel_remote_idx].type;
+            __atomic_store_n(&ice->selected_type,
+                             (uint8_t)ice->remote_candidates[sel_remote_idx].type,
+                             __ATOMIC_RELAXED);
         }
         if (sel_local_idx < ice->local_candidate_count) {
             memcpy(ice->selected_local_addr, ice->local_candidates[sel_local_idx].addr,

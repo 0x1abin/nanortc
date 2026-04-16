@@ -207,6 +207,14 @@
 #endif
 #endif
 
+#if defined(IDF_VER) && !defined(NANORTC_FEATURE_H265)
+#ifdef CONFIG_NANORTC_FEATURE_H265
+#define NANORTC_FEATURE_H265 1
+#else
+#define NANORTC_FEATURE_H265 0
+#endif
+#endif
+
 /* ----------------------------------------------------------------
  * Feature flags (orthogonal, user-configurable)
  *
@@ -433,6 +441,20 @@
 #endif
 #endif
 
+/* Scratch used by lazy TURN wrap at nanortc_poll_output() time. Must hold a
+ * full TURN-wrapped packet — Send indication adds up to ~48 B (STUN header +
+ * XOR-PEER-ADDRESS-IPv6 + DATA attr header + padding) on top of the largest
+ * payload the application may transmit. With media transport enabled the
+ * largest payload is a max-size SRTP packet (NANORTC_MEDIA_BUF_SIZE), so the
+ * default sums those. Without media this just shadows STUN_BUF_SIZE. */
+#ifndef NANORTC_TURN_BUF_SIZE
+#if NANORTC_HAVE_MEDIA_TRANSPORT
+#define NANORTC_TURN_BUF_SIZE (NANORTC_MEDIA_BUF_SIZE + 48)
+#else
+#define NANORTC_TURN_BUF_SIZE NANORTC_STUN_BUF_SIZE
+#endif
+#endif
+
 /* ----------------------------------------------------------------
  * SCTP configuration (RFC 4960)
  * ---------------------------------------------------------------- */
@@ -576,10 +598,11 @@
  * ---------------------------------------------------------------- */
 
 /** @brief Enable H.265/HEVC video codec (RFC 7798). Sub-feature of VIDEO.
- *  Disable to save ~11 KB of code on flash-constrained targets even when
- *  NANORTC_FEATURE_VIDEO is on. Defaults to the VIDEO master switch. */
+ *  Default: 0. Must be explicitly enabled even when NANORTC_FEATURE_VIDEO=1;
+ *  H.264 is the only video codec offered by default. Adds ~11 KB of code
+ *  when enabled. */
 #ifndef NANORTC_FEATURE_H265
-#define NANORTC_FEATURE_H265 NANORTC_FEATURE_VIDEO
+#define NANORTC_FEATURE_H265 0
 #endif
 
 #if NANORTC_FEATURE_H265 && !NANORTC_FEATURE_VIDEO
