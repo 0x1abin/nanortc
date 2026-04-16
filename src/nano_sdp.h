@@ -63,6 +63,14 @@ typedef struct nano_sdp_mline {
      * Populated by nanortc_video_set_h265_parameter_sets(). Not zero-terminated. */
     char h265_sprop_fmtp[NANORTC_H265_SPROP_FMTP_SIZE];
     uint16_t h265_sprop_fmtp_len;
+    /* H.265 profile-tier-level extracted from the VPS NAL by
+     * nanortc_video_set_h265_parameter_sets(). When level_id == 0, the SDP
+     * emitter falls back to the compile-time default. Safari WebRTC is
+     * strict about level — a stream-SDP mismatch (e.g. emitting 3.1 while
+     * the stream is 4.0) causes the HEVC decoder to drop all frames. */
+    uint8_t h265_profile_id;
+    uint8_t h265_tier_flag;
+    uint8_t h265_level_id;
 #endif
 } nano_sdp_mline_t;
 #endif

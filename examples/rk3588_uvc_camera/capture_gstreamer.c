@@ -2,8 +2,9 @@
  * capture_gstreamer — GStreamer backend for capture.h
  *
  * Compile with RK3588_CAPTURE_GSTREAMER defined.
- * Default encoder: mpph264enc (RK3588 hardware).
- * Fallback: openh264enc (software).
+ * Default encoder: mpph264enc (RK3588 hardware H.264).
+ * Also supported: mpph265enc (RK3588 hardware H.265/HEVC).
+ * Fallback: openh264enc (software H.264).
  *
  * SPDX-License-Identifier: MIT
  */
@@ -97,11 +98,16 @@ int capture_start(const capture_config_t *cfg)
 
     int gop = cfg->fps * (cfg->keyframe_interval_s > 0 ? cfg->keyframe_interval_s : 2);
 
-    /* Encoder selection: mpph264enc (RK3588 hardware, default) or
-     * openh264enc (software fallback). The pipeline differs because
-     * the property names diverge between the two elements. */
+    /* Encoder selection: mpph264enc / mpph265enc (RK3588 hardware) or
+     * openh264enc (software H.264 fallback). The hardware branch shares
+     * property names (`header-mode`, `rc-mode`, `bps`, `gop`) between
+     * mpph264enc and mpph265enc, so only the element name and output caps
+     * differ. The software branch stays H.264-only. */
     const char *enc = (cfg->encoder && cfg->encoder[0]) ? cfg->encoder : "mpph264enc";
-    int use_mpp = (strcmp(enc, "mpph264enc") == 0);
+    int use_mpp_h264 = (strcmp(enc, "mpph264enc") == 0);
+    int use_mpp_h265 = (strcmp(enc, "mpph265enc") == 0);
+    int use_mpp = use_mpp_h264 || use_mpp_h265;
+    const char *mpp_caps = use_mpp_h265 ? "video/x-h265" : "video/x-h264";
 
     /* Full-hardware pipeline: MJPG capture → mppjpegdec → mpph264enc.
      *
@@ -145,12 +151,12 @@ int capture_start(const capture_config_t *cfg)
                      "! jpegparse "
                      "! queue max-size-buffers=4 leaky=downstream "
                      "! mppjpegdec "
-                     "! mpph264enc name=enc header-mode=each-idr "
+                     "! %s name=enc header-mode=each-idr "
                      "rc-mode=cbr bps=%d bps-max=%d gop=%d "
-                     "! video/x-h264,stream-format=byte-stream,alignment=au "
+                     "! %s,stream-format=byte-stream,alignment=au "
                      "! appsink name=sink sync=false max-buffers=2 drop=true",
-                     cfg->device, cfg->width, cfg->height, cfg->fps, cfg->bitrate_bps,
-                     cfg->bitrate_bps * 3 / 2, gop);
+                     cfg->device, cfg->width, cfg->height, cfg->fps, enc, cfg->bitrate_bps,
+                     cfg->bitrate_bps * 3 / 2, gop, mpp_caps);
     } else {
         n = snprintf(pipeline_str, sizeof(pipeline_str),
                      "v4l2src device=%s do-timestamp=true "
