@@ -92,7 +92,10 @@ static bool ice_verify_username(const nano_ice_t *ice, const stun_msg_t *msg)
 static uint32_t ice_compute_local_priority(const nano_ice_t *ice, uint8_t idx)
 {
     if (idx >= ice->local_candidate_count) {
-        return ICE_HOST_PRIORITY(idx);
+        /* Unknown / out-of-range idx (incl. 0xFF sentinel): collapse to host
+         * slot 0 so the priority stays in a sane range even if a caller
+         * forgets to normalise the sentinel before reaching this path. */
+        return ICE_HOST_PRIORITY(0);
     }
     switch (ice->local_candidates[idx].type) {
 #if NANORTC_FEATURE_ICE_SRFLX

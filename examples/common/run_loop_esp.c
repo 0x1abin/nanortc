@@ -190,6 +190,11 @@ int nano_run_loop_step(nano_run_loop_t *loop)
         socklen_t fromlen = sizeof(from6);
         int n = recvfrom(loop->fds[0], buf, sizeof(buf), 0, (struct sockaddr *)&from6, &fromlen);
         if (n > 0) {
+            /* TODO(multi-socket): when ESP gains multiple bound sockets, track
+             * each socket's bound addr (see run_loop_linux.c: loop->local_addrs[i])
+             * and fill in.dst here so controlled-side USE-CANDIDATE records the
+             * right local candidate. Single-socket builds fall back to idx 0
+             * correctly via rtc_resolve_local_idx(). */
             nanortc_input_t in = {.now_ms = now, .data = buf, .len = (size_t)n};
             /* Check for IPv4-mapped IPv6 (::ffff:x.x.x.x) */
             const uint8_t *a = from6.sin6_addr.s6_addr;
@@ -211,6 +216,9 @@ int nano_run_loop_step(nano_run_loop_t *loop)
         socklen_t fromlen = sizeof(from);
         int n = recvfrom(loop->fds[0], buf, sizeof(buf), 0, (struct sockaddr *)&from, &fromlen);
         if (n > 0) {
+            /* TODO(multi-socket): see run_loop_linux.c: loop->local_addrs[i].
+             * Fill in.dst once ESP grows past a single bound socket so the
+             * controlled-side nomination records the right local candidate. */
             nanortc_input_t in = {.now_ms = now, .data = buf, .len = (size_t)n};
             in.src.family = 4;
             memcpy(in.src.addr, &from.sin_addr, 4);

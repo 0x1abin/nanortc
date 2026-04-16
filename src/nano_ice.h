@@ -160,6 +160,10 @@ int ice_init(nano_ice_t *ice, int is_controlling);
  * candidate was selected (so consent freshness uses the correct PRIORITY).
  * Pass NANORTC_ICE_LOCAL_IDX_UNKNOWN when the caller cannot determine it; the
  * controlled-side fallback is to record idx 0, preserving prior behavior. */
+#if NANORTC_MAX_LOCAL_CANDIDATES >= 0xFFu
+#error \
+    "NANORTC_MAX_LOCAL_CANDIDATES must be < 255; 0xFF is reserved as NANORTC_ICE_LOCAL_IDX_UNKNOWN sentinel"
+#endif
 #define NANORTC_ICE_LOCAL_IDX_UNKNOWN 0xFFu
 int ice_handle_stun(nano_ice_t *ice, const uint8_t *data, size_t len, const nanortc_addr_t *src,
                     uint8_t local_idx, bool via_turn, const nanortc_crypto_provider_t *crypto,
