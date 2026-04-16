@@ -45,6 +45,22 @@
 #define VIDEO_BITRATE_KBPS 3000
 #define VIDEO_KEYFRAME_S   2
 
+/* BWE envelope advertised to nanortc at session init. The lower bound
+ * matches what the hardware encoder can still produce usable video at;
+ * the upper bound caps the estimator so a pathologically generous REMB
+ * cannot demand a bitrate the link or the encoder cannot sustain. */
+#define BWE_MIN_BITRATE_BPS ( 500 * 1000)
+#define BWE_MAX_BITRATE_BPS (5000 * 1000)
+
+/* Debounce interval between successive encoder-bitrate updates. BWE
+ * events already only fire past the 15 % threshold, but a single viewer
+ * can still generate two updates within a few hundred milliseconds and
+ * we do not need to re-arm the encoder that often. */
+#define BWE_APPLY_INTERVAL_MS 500
+
+/* Period for the per-session stats snapshot dumped to stderr. */
+#define STATS_LOG_INTERVAL_MS 2000
+
 #define OPUS_SAMPLE_RATE   48000
 #define OPUS_CHANNELS      1
 #define OPUS_FRAME_MS      20
@@ -182,9 +198,86 @@ static int macos_track_setup(nano_session_t *s, void *userdata)
 #if NANORTC_FEATURE_VIDEO
     s->video_mid = nanortc_add_video_track(&s->rtc, NANORTC_DIR_SENDONLY,
                                            NANORTC_CODEC_H264);
+
+    /* Phase 9: clamp BWE to what the VideoToolbox encoder can realistically
+     * deliver, and seed the initial estimate with our compile-time target so
+     * the first packets go out at a sensible rate before any feedback
+     * arrives. Must run before the session reaches any feedback exchange. */
+    nanortc_set_bitrate_bounds(&s->rtc, BWE_MIN_BITRATE_BPS, BWE_MAX_BITRATE_BPS);
+    nanortc_set_initial_bitrate(&s->rtc, VIDEO_BITRATE_KBPS * 1000);
 #endif
     return 0;
 }
+
+/* ----------------------------------------------------------------
+ * BWE coordinator (Phase 9)
+ *
+ * One camera + one VideoToolbox encoder feeds every viewer, so we drive
+ * the encoder at the minimum of the per-session bitrate estimates: the
+ * slowest link is the bottleneck for a shared encoder. This coordinator
+ * runs whenever any session emits NANORTC_EV_BITRATE_ESTIMATE, plus
+ * periodically from the stats log so we converge even without events.
+ * ---------------------------------------------------------------- */
+
+static uint32_t g_last_bwe_apply_ms;
+static uint32_t g_applied_bitrate_kbps;
+
+static const char *bwe_dir_str(uint8_t dir)
+{
+    switch (dir) {
+    case NANORTC_BWE_DIR_UP:   return "UP";
+    case NANORTC_BWE_DIR_DOWN: return "DOWN";
+    default:                   return "STABLE";
+    }
+}
+
+static const char *bwe_src_str(uint8_t src)
+{
+    switch (src) {
+    case NANORTC_BWE_SRC_TWCC_LOSS: return "TWCC";
+    default:                        return "REMB";
+    }
+}
+
+static void apply_aggregate_bwe(uint32_t now_ms)
+{
+    if (now_ms - g_last_bwe_apply_ms < BWE_APPLY_INTERVAL_MS) {
+        return;
+    }
+
+    /* Take the smallest live estimate across active sessions. */
+    uint32_t min_bps = 0;
+    int contributors = 0;
+    for (int i = 0; i < MAX_SESSIONS; i++) {
+        nano_session_t *ss = &g_sessions[i];
+        if (!ss->active || !ss->media_connected) continue;
+        uint32_t est = nanortc_get_estimated_bitrate(&ss->rtc);
+        if (est == 0) continue;
+        if (min_bps == 0 || est < min_bps) min_bps = est;
+        contributors++;
+    }
+    if (min_bps == 0) return;
+
+    uint32_t new_kbps = min_bps / 1000;
+    /* Ignore churn inside 5 % of the currently applied value — the 15 %
+     * event threshold already filters noisy updates, but multiple viewers
+     * can each emit their own threshold crossings that average out. */
+    if (g_applied_bitrate_kbps) {
+        uint32_t diff = new_kbps > g_applied_bitrate_kbps
+                            ? new_kbps - g_applied_bitrate_kbps
+                            : g_applied_bitrate_kbps - new_kbps;
+        if (diff * 100 / g_applied_bitrate_kbps < 5) return;
+    }
+
+    if (vt_encoder_set_bitrate((int)new_kbps) == 0) {
+        fprintf(stderr, "[bwe] encoder target → %u kbps (min of %d viewer%s)\n",
+                new_kbps, contributors, contributors == 1 ? "" : "s");
+        g_applied_bitrate_kbps = new_kbps;
+        g_last_bwe_apply_ms = now_ms;
+    }
+}
+
+uint32_t nano_get_millis(void); /* forward declaration */
 
 static void macos_on_event(nano_session_t *s, const nanortc_event_t *evt, void *userdata)
 {
@@ -203,12 +296,56 @@ static void macos_on_event(nano_session_t *s, const nanortc_event_t *evt, void *
         fprintf(stderr, "[session %d] Keyframe requested (PLI)\n", s->viewer_id);
         vt_encoder_force_keyframe();
         break;
+#if NANORTC_FEATURE_VIDEO
+    case NANORTC_EV_BITRATE_ESTIMATE:
+        fprintf(stderr, "[session %d] BWE %s via %s: %u kbps (was %u kbps)\n",
+                s->viewer_id,
+                bwe_dir_str(evt->bitrate_estimate.direction),
+                bwe_src_str(evt->bitrate_estimate.source),
+                evt->bitrate_estimate.bitrate_bps / 1000,
+                evt->bitrate_estimate.prev_bitrate_bps / 1000);
+        apply_aggregate_bwe(nano_get_millis());
+        break;
+#endif
     case NANORTC_EV_DISCONNECTED:
         fprintf(stderr, "[session %d] Disconnected\n", s->viewer_id);
         break;
     default:
         break;
     }
+}
+
+/* Dump one stats line per active session. Cheap: each call pulls the
+ * already-cached values out of nanortc_t without touching the network. */
+static void log_session_stats(uint32_t now_ms)
+{
+    static uint32_t last_log_ms;
+    if (now_ms - last_log_ms < STATS_LOG_INTERVAL_MS) return;
+    last_log_ms = now_ms;
+
+    for (int i = 0; i < MAX_SESSIONS; i++) {
+        nano_session_t *ss = &g_sessions[i];
+        if (!ss->active || !ss->media_connected || ss->video_mid < 0) continue;
+
+        nanortc_track_stats_t stats;
+        if (nanortc_get_track_stats(&ss->rtc, (uint8_t)ss->video_mid, &stats) != 0) continue;
+
+        /* send_fps_q8 → integer fps for a compact log line. */
+        uint32_t fps_whole = stats.send_fps_q8 / 256;
+        uint32_t fps_frac = ((uint32_t)stats.send_fps_q8 * 10 / 256) % 10;
+        uint32_t loss_pct_x10 = (uint32_t)stats.fraction_lost * 1000 / 256;
+        fprintf(stderr, "[stats %d] fps=%u.%u send=%u kbps est=%u kbps loss=%u.%u%% rtt=%u ms\n",
+                ss->viewer_id,
+                fps_whole, fps_frac,
+                stats.send_bitrate_bps / 1000,
+                stats.estimated_bitrate_bps / 1000,
+                loss_pct_x10 / 10, loss_pct_x10 % 10,
+                stats.rtt_ms);
+    }
+
+    /* Periodic re-apply in case events stopped firing (stable network)
+     * but we still want the encoder to converge to the current minimum. */
+    apply_aggregate_bwe(now_ms);
 }
 
 /* ----------------------------------------------------------------
@@ -367,6 +504,9 @@ static void run_event_loop(app_ctx_t *ctx, http_sig_t *sig,
 
         /* Poll signaling for new offers / ICE candidates */
         poll_signaling(sig, cfg);
+
+        /* Phase 9 stats: dump send/estimated rates + apply aggregate BWE. */
+        log_session_stats(now);
     }
 }
 

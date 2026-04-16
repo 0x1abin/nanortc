@@ -61,6 +61,18 @@ void vt_encoder_encode(CVPixelBufferRef pixbuf, CMTime pts);
 void vt_encoder_force_keyframe(void);
 
 /**
+ * @brief Update the encoder target bitrate at runtime.
+ *
+ * Drives kVTCompressionPropertyKey_AverageBitRate on the active
+ * VTCompressionSession so BWE feedback (REMB / TWCC) can steer the
+ * hardware encoder. Values outside a reasonable range are clamped.
+ *
+ * @param bitrate_kbps New target bitrate in kbps.
+ * @return 0 on success, -1 if the encoder is not initialised.
+ */
+int vt_encoder_set_bitrate(int bitrate_kbps);
+
+/**
  * @brief Destroy the encoder and release resources.
  */
 void vt_encoder_destroy(void);
