@@ -182,7 +182,7 @@ static int rtc_enqueue_transmit(nanortc_t *rtc, const uint8_t *data, size_t len,
     int rc = rtc_enqueue_output(rtc, &out);
     if (rc != NANORTC_OK) {
 #if NANORTC_FEATURE_TURN
-        rtc->stats_tx_queue_full++;
+        __atomic_fetch_add(&rtc->stats_tx_queue_full, 1, __ATOMIC_RELAXED);
 #endif
         NANORTC_LOGW("RTC", "tx queue full, dropping output");
         return rc;
@@ -204,12 +204,13 @@ static int rtc_enqueue_transmit(nanortc_t *rtc, const uint8_t *data, size_t len,
      * appear from the wrong source IP and the controlling browser drops
      * them as ICE pair mismatches. */
     if (rtc->turn.configured && rtc->turn.state == NANORTC_TURN_ALLOCATED &&
-        (rtc->ice.selected_type == NANORTC_ICE_CAND_RELAY || force_via_turn)) {
+        (__atomic_load_n(&rtc->ice.selected_type, __ATOMIC_RELAXED) == NANORTC_ICE_CAND_RELAY ||
+         force_via_turn)) {
         rtc->out_wrap_meta[slot].via_turn = true;
         rtc->out_wrap_meta[slot].peer_dest = *peer_dest;
-        rtc->stats_enqueue_via_turn++;
+        __atomic_fetch_add(&rtc->stats_enqueue_via_turn, 1, __ATOMIC_RELAXED);
     } else {
-        rtc->stats_enqueue_direct++;
+        __atomic_fetch_add(&rtc->stats_enqueue_direct, 1, __ATOMIC_RELAXED);
     }
 #else
     (void)force_via_turn;
@@ -513,7 +514,7 @@ static void rtc_apply_negotiated_media(nanortc_t *rtc)
          * m= line, often VP8). */
         if (ml->kind == SDP_MLINE_VIDEO && ml->pt != 0) {
             m->rtp.payload_type = ml->pt;
-            NANORTC_LOGD("SDP", "video using negotiated H264 PT");
+            NANORTC_LOGD("SDP", "video using negotiated PT");
         } else if (ml->remote_pt != 0) {
             m->rtp.payload_type = ml->remote_pt;
             ml->pt = ml->remote_pt;
@@ -905,7 +906,7 @@ int nanortc_poll_output(nanortc_t *rtc, nanortc_output_t *out)
                 /* Wrap failed (e.g. payload bigger than turn_buf). Drop the
                  * output silently and try the next one — the caller never
                  * needs to know about TURN-internal errors. */
-                rtc->stats_wrap_dropped++;
+                __atomic_fetch_add(&rtc->stats_wrap_dropped, 1, __ATOMIC_RELAXED);
                 NANORTC_LOGW("TURN", "lazy wrap failed, dropping output");
                 rtc->out_head++;
                 continue;

@@ -167,7 +167,9 @@ int ice_handle_stun(nano_ice_t *ice, const uint8_t *data, size_t len, const nano
              * address with no return route and the browser drops the reply
              * because the source IP doesn't match the (local→relay) pair it
              * sent the check on. */
-            ice->selected_type = via_turn ? NANORTC_ICE_CAND_RELAY : NANORTC_ICE_CAND_HOST;
+            __atomic_store_n(&ice->selected_type,
+                             (uint8_t)(via_turn ? NANORTC_ICE_CAND_RELAY : NANORTC_ICE_CAND_HOST),
+                             __ATOMIC_RELAXED);
             /*
              * TD-018: consent path (RFC 7675) reads selected_local_idx to
              * compute ICE_HOST_PRIORITY. In lite mode we cannot tell which
@@ -258,7 +260,9 @@ int ice_handle_stun(nano_ice_t *ice, const uint8_t *data, size_t len, const nano
                    NANORTC_ADDR_SIZE);
             ice->selected_port = ice->remote_candidates[sel_remote_idx].port;
             ice->selected_family = ice->remote_candidates[sel_remote_idx].family;
-            ice->selected_type = ice->remote_candidates[sel_remote_idx].type;
+            __atomic_store_n(&ice->selected_type,
+                             (uint8_t)ice->remote_candidates[sel_remote_idx].type,
+                             __ATOMIC_RELAXED);
         }
         if (sel_local_idx < ice->local_candidate_count) {
             memcpy(ice->selected_local_addr, ice->local_candidates[sel_local_idx].addr,

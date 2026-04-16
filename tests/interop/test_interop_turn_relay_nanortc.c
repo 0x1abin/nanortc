@@ -165,19 +165,24 @@ static int is_loopback_turn(void)
  * Returns 1 if reachable, 0 otherwise. Same logic as test_interop_turn_relay.c. */
 static int probe_turn_server(void)
 {
-    const char *p = turn_url;
-    if (strncmp(p, "turn:", 5) != 0 && strncmp(p, "turns:", 6) != 0) {
-        return 0;
-    }
-    p += (p[4] == ':') ? 5 : 6;
-
     char host[256];
-    const char *colon = strrchr(p, ':');
-    if (!colon || (size_t)(colon - p) >= sizeof(host)) {
+    if (!parse_turn_host(turn_url, host, sizeof(host))) {
         return 0;
     }
-    memcpy(host, p, (size_t)(colon - p));
-    host[colon - p] = '\0';
+
+    /* Extract port: skip the scheme prefix, then locate the last ':' AFTER
+     * the optional bracketed-IPv6 closer. parse_turn_host has already
+     * validated the host portion. */
+    const char *p = turn_url;
+    p += (strncmp(p, "turns:", 6) == 0) ? 6 : 5;
+    const char *port_anchor = (*p == '[') ? strchr(p, ']') : p;
+    if (!port_anchor) {
+        return 0;
+    }
+    const char *colon = strrchr(port_anchor, ':');
+    if (!colon || colon < port_anchor) {
+        return 0;
+    }
     int port = atoi(colon + 1);
     if (port <= 0 || port > 65535) {
         return 0;
@@ -185,22 +190,36 @@ static int probe_turn_server(void)
 
     struct addrinfo hints;
     memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_INET;
+    hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_DGRAM;
     struct addrinfo *res = NULL;
     if (getaddrinfo(host, NULL, &hints, &res) != 0 || !res) {
         return 0;
     }
 
-    int fd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (fd < 0) {
-        freeaddrinfo(res);
+    int fd = -1;
+    struct sockaddr_storage sa;
+    socklen_t sa_len = 0;
+    memset(&sa, 0, sizeof(sa));
+    for (struct addrinfo *ai = res; ai != NULL; ai = ai->ai_next) {
+        if (ai->ai_addr == NULL || ai->ai_addrlen > sizeof(sa))
+            continue;
+        fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+        if (fd < 0)
+            continue;
+        memcpy(&sa, ai->ai_addr, ai->ai_addrlen);
+        sa_len = (socklen_t)ai->ai_addrlen;
+        if (ai->ai_family == AF_INET) {
+            ((struct sockaddr_in *)&sa)->sin_port = htons((uint16_t)port);
+        } else if (ai->ai_family == AF_INET6) {
+            ((struct sockaddr_in6 *)&sa)->sin6_port = htons((uint16_t)port);
+        }
+        break;
+    }
+    freeaddrinfo(res);
+    if (fd < 0 || sa_len == 0) {
         return 0;
     }
-    struct sockaddr_in sa;
-    memcpy(&sa, res->ai_addr, sizeof(sa));
-    sa.sin_port = htons((uint16_t)port);
-    freeaddrinfo(res);
 
     /* Build a 20-byte STUN Binding Request: type=0x0001, length=0,
      * magic cookie 0x2112A442, random 12-byte transaction id. RFC 8489 §5. */
@@ -220,7 +239,7 @@ static int probe_turn_server(void)
     int reachable = 0;
     int attempts;
     for (attempts = 0; attempts < 3 && !reachable; attempts++) {
-        if (sendto(fd, req, sizeof(req), 0, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
+        if (sendto(fd, req, sizeof(req), 0, (struct sockaddr *)&sa, sa_len) < 0) {
             break;
         }
         struct timeval tv = {.tv_sec = 0, .tv_usec = 250000}; /* 250 ms */
@@ -371,14 +390,16 @@ static void teardown_relay_pair_nanortc(interop_sig_pipe_t *pipe, interop_nanort
  * both expected and healthy. */
 /* Relaxed-atomic read helpers.
  *
- * The peer thread concurrently writes ice.selected_type and the stats_*
- * counters while the test thread reads them here. Plain reads would be
- * a data race (UB under the C memory model) even though single aligned
- * 8/32-bit loads are indivisible on all target CPUs. __atomic_load_n with
- * relaxed ordering produces the same machine code while being well-defined
- * for TSan and strict compilers. Monotonicity of the counters + singular
- * write of selected_type on nomination means relaxed ordering is
- * sufficient for our monotone/eventually-consistent assertions. */
+ * The peer thread concurrently updates ice.selected_type and the stats_*
+ * counters while the test thread reads them here. Both sides use
+ * __atomic_* with relaxed ordering — writers in src/nano_rtc.c and
+ * src/nano_ice.c (__atomic_fetch_add for the monotone counters,
+ * __atomic_store_n for selected_type), readers here. That makes the
+ * access well-defined under the C memory model and TSan-clean while
+ * compiling to the same machine code as plain ++ / = on every supported
+ * target. Monotonicity of the counters + the single nomination write of
+ * selected_type means relaxed ordering is sufficient for our
+ * eventually-consistent assertions. */
 static inline uint8_t read_selected_type(const interop_nanortc_peer_t *nano)
 {
     return __atomic_load_n(&nano->rtc.ice.selected_type, __ATOMIC_RELAXED);
@@ -498,7 +519,7 @@ TEST(test_relay_nanortc_dc_string_bidirectional)
 
     /* nanortc → libdatachannel: this is the direction we care about most.
      * Capture the via_turn counter before the send and verify it grew. */
-    uint32_t via_before = nano.rtc.stats_enqueue_via_turn;
+    uint32_t via_before = read_stat_u32(&nano.rtc.stats_enqueue_via_turn);
 
     const char *to_ldc = "ack from nanortc relay-client";
     int initial_ldc = atomic_load(&ldc.msg_count);
@@ -517,7 +538,7 @@ TEST(test_relay_nanortc_dc_string_bidirectional)
     ASSERT_TRUE(memcmp(ldc.last_msg, to_ldc, strlen(to_ldc)) == 0);
     pthread_mutex_unlock(&ldc.msg_mutex);
 
-    TEST_ASSERT_TRUE_MESSAGE(nano.rtc.stats_enqueue_via_turn > via_before,
+    TEST_ASSERT_TRUE_MESSAGE(read_stat_u32(&nano.rtc.stats_enqueue_via_turn) > via_before,
                              "stats_enqueue_via_turn did not grow after nanortc send "
                              "(bytes leaked direct instead of wrapping through TURN)");
 
@@ -550,7 +571,7 @@ TEST(test_relay_nanortc_channel_data_burst)
      * hammered with back-to-back enqueues, exercising F7's side-table. */
     const int burst = 30;
     int initial = atomic_load(&ldc.msg_count);
-    uint32_t via_before = nano.rtc.stats_enqueue_via_turn;
+    uint32_t via_before = read_stat_u32(&nano.rtc.stats_enqueue_via_turn);
 
     char buf[64];
     for (int i = 0; i < burst; i++) {
@@ -568,7 +589,8 @@ TEST(test_relay_nanortc_channel_data_burst)
 
     ASSERT_EQ(atomic_load(&ldc.msg_count), initial + burst);
 
-    TEST_ASSERT_TRUE_MESSAGE(nano.rtc.stats_enqueue_via_turn >= via_before + (uint32_t)burst,
+    TEST_ASSERT_TRUE_MESSAGE(read_stat_u32(&nano.rtc.stats_enqueue_via_turn) >=
+                                 via_before + (uint32_t)burst,
                              "stats_enqueue_via_turn did not grow by at least burst count "
                              "(some outbound bytes did not take the wrap path)");
 
@@ -605,7 +627,7 @@ TEST(test_relay_nanortc_large_payload)
         payload[i] = (char)('a' + (i % 26));
     }
 
-    uint32_t via_before = nano.rtc.stats_enqueue_via_turn;
+    uint32_t via_before = read_stat_u32(&nano.rtc.stats_enqueue_via_turn);
     int initial = atomic_load(&ldc.msg_count);
     rc = nanortc_datachannel_send(&nano.rtc, 0, payload, sizeof(payload));
     ASSERT_OK(rc);
@@ -622,7 +644,7 @@ TEST(test_relay_nanortc_large_payload)
     ASSERT_TRUE(memcmp(ldc.last_msg, payload, sizeof(payload)) == 0);
     pthread_mutex_unlock(&ldc.msg_mutex);
 
-    TEST_ASSERT_TRUE_MESSAGE(nano.rtc.stats_enqueue_via_turn > via_before,
+    TEST_ASSERT_TRUE_MESSAGE(read_stat_u32(&nano.rtc.stats_enqueue_via_turn) > via_before,
                              "stats_enqueue_via_turn did not grow after large send");
 
     assert_nanortc_relay_path(&nano);
@@ -667,7 +689,7 @@ TEST(test_relay_nanortc_echo_roundtrip)
     pthread_mutex_unlock(&nano.msg_mutex);
 
     /* nanortc echoes back — this hop is wrapped through TURN. */
-    uint32_t via_before = nano.rtc.stats_enqueue_via_turn;
+    uint32_t via_before = read_stat_u32(&nano.rtc.stats_enqueue_via_turn);
     const char *reply = "echo-reply-relay-nanortc";
     int initial_ldc = atomic_load(&ldc.msg_count);
     rc = nanortc_datachannel_send_string(&nano.rtc, 0, reply);
@@ -684,7 +706,7 @@ TEST(test_relay_nanortc_echo_roundtrip)
     ASSERT_TRUE(memcmp(ldc.last_msg, reply, strlen(reply)) == 0);
     pthread_mutex_unlock(&ldc.msg_mutex);
 
-    TEST_ASSERT_TRUE_MESSAGE(nano.rtc.stats_enqueue_via_turn > via_before,
+    TEST_ASSERT_TRUE_MESSAGE(read_stat_u32(&nano.rtc.stats_enqueue_via_turn) > via_before,
                              "echo reply did not take the wrap path");
 
     assert_nanortc_relay_path(&nano);
