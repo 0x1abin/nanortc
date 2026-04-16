@@ -421,7 +421,8 @@ typedef struct nanortc_output {
  * unset:
  *   - @c src.family==0 disables packet processing (treated as timer-only).
  *   - @c dst.family==0 falls back to the legacy "selected_local_idx=0"
- *     behaviour, correct on single-host-candidate setups.
+ *     behaviour, correct on single-host-candidate setups. See
+ *     rtc_resolve_local_idx() in src/nano_rtc.c for the matching rules.
  */
 typedef struct nanortc_input {
     uint32_t now_ms;     /**< Current monotonic time in milliseconds. */
