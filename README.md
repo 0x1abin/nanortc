@@ -112,7 +112,6 @@ for (;;) {
 One input struct in, one output struct out. No hidden state, no background threads.
 
 For complete runnable examples — browser interop, macOS camera streaming, ESP32 DataChannel — see [examples/](examples/).
-```
 
 ## Platform Support
 
@@ -135,8 +134,11 @@ tests/                      Unit tests + end-to-end tests (no network needed)
 tests/interop/              Interop tests against libdatachannel (C++)
 examples/                   Application templates
   common/                   Reusable event loop, signaling, media source
-  browser_interop/          Browser-based interop test harness
-  macos_camera/             macOS camera/mic → browser streaming (multi-viewer)
+  browser_interop/          DataChannel + media browser harness
+  macos_camera/             macOS camera/mic → browser streaming
+  esp32_{datachannel,audio,video,camera}/   ESP-IDF targets
+  rk3588_uvc_camera/        RK3588 UVC camera demo
+  tools/                    Dev utilities
   sample_data/              Media samples (git submodule)
 docs/                       Design docs, execution plans, engineering standards
 ```
@@ -151,7 +153,7 @@ What this means in practice:
 
 - **Architecture & design** — Human decisions, captured in `docs/design-docs/`
 - **All code** — Written by AI agents: library source, tests, CI, build system, documentation
-- **Quality gates** — Mechanically enforced via CI: forbidden includes, no malloc, symbol naming, format checks, 6-combo feature flag build matrix, AddressSanitizer
+- **Quality gates** — Mechanically enforced via CI: forbidden includes, no malloc, symbol naming, format checks, 7-combo feature flag build matrix, AddressSanitizer
 - **RFC compliance** — Protocol implementations follow RFCs as the authoritative standard, not reference code
 - **Continuous verification** — `./scripts/ci-check.sh` runs the same checks locally that run in GitHub Actions. Auto-detects `ccache`, keeps build dirs across runs for incremental compilation, and exposes `--fast` for tight pre-push loops (skips low-yield combos and the libdatachannel interop suite — seconds rather than minutes)
 
@@ -175,7 +177,7 @@ The repository structure itself is designed for agent legibility: [AGENTS.md](AG
 
 ## Contributing
 
-NanoRTC is in active development. Phases 1-5 complete (DataChannel, Audio, Video, Quality, Network Traversal). All 18 modules at A grade — fuzz-tested, browser-verified, interop-verified, 80%+ coverage. Resource optimization pass reduces full-media RAM by 34%.
+NanoRTC is in active development. Phases 1-7 complete (DataChannel, Audio, Video, Quality, Network Traversal, resource optimization). All 18 library modules at A grade — fuzz-tested, browser-verified, interop-verified, 80%+ coverage. Full-media `sizeof(nanortc_t)` reduced by 34% (157 KB → 103 KB).
 
 Contributions welcome. Please read [AGENTS.md](AGENTS.md) for build instructions and mandatory rules before submitting changes.
 
