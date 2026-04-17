@@ -24,6 +24,7 @@
 #include "multi_session.h"
 #include "av_capture.h"
 #include "vt_encoder.h"
+#include "bwe_coordinator.h"
 
 #include <opus.h>
 
@@ -57,6 +58,10 @@
  * can still generate two updates within a few hundred milliseconds and
  * we do not need to re-arm the encoder that often. */
 #define BWE_APPLY_INTERVAL_MS 500
+
+/* Dead-band around the currently applied target. Anything inside this
+ * range is treated as "close enough" and does not trigger a re-arm. */
+#define BWE_APPLY_DAMPEN_PCT 5
 
 /* Period for the per-session stats snapshot dumped to stderr. */
 #define STATS_LOG_INTERVAL_MS 2000
@@ -219,33 +224,20 @@ static int macos_track_setup(nano_session_t *s, void *userdata)
  * periodically from the stats log so we converge even without events.
  * ---------------------------------------------------------------- */
 
-static uint32_t g_last_bwe_apply_ms;
-static uint32_t g_applied_bitrate_kbps;
-
-static const char *bwe_dir_str(uint8_t dir)
+static int macos_bwe_apply(uint32_t new_bps, void *ctx)
 {
-    switch (dir) {
-    case NANORTC_BWE_DIR_UP:   return "UP";
-    case NANORTC_BWE_DIR_DOWN: return "DOWN";
-    default:                   return "STABLE";
-    }
+    (void)ctx;
+    /* vt_encoder_set_bitrate takes kbps; coordinator hands bps. Convert
+     * and forward the return (0 = ok) straight through. */
+    return vt_encoder_set_bitrate((int)(new_bps / 1000));
 }
 
-static const char *bwe_src_str(uint8_t src)
-{
-    switch (src) {
-    case NANORTC_BWE_SRC_TWCC_LOSS: return "TWCC";
-    default:                        return "REMB";
-    }
-}
+static bwe_coordinator_t g_bwe;
 
 static void apply_aggregate_bwe(uint32_t now_ms)
 {
-    if (now_ms - g_last_bwe_apply_ms < BWE_APPLY_INTERVAL_MS) {
-        return;
-    }
-
-    /* Take the smallest live estimate across active sessions. */
+    /* Take the smallest live estimate across active sessions. The
+     * slowest link is the bottleneck for a shared encoder. */
     uint32_t min_bps = 0;
     int contributors = 0;
     for (int i = 0; i < MAX_SESSIONS; i++) {
@@ -256,24 +248,11 @@ static void apply_aggregate_bwe(uint32_t now_ms)
         if (min_bps == 0 || est < min_bps) min_bps = est;
         contributors++;
     }
-    if (min_bps == 0) return;
 
-    uint32_t new_kbps = min_bps / 1000;
-    /* Ignore churn inside 5 % of the currently applied value — the 15 %
-     * event threshold already filters noisy updates, but multiple viewers
-     * can each emit their own threshold crossings that average out. */
-    if (g_applied_bitrate_kbps) {
-        uint32_t diff = new_kbps > g_applied_bitrate_kbps
-                            ? new_kbps - g_applied_bitrate_kbps
-                            : g_applied_bitrate_kbps - new_kbps;
-        if (diff * 100 / g_applied_bitrate_kbps < 5) return;
-    }
-
-    if (vt_encoder_set_bitrate((int)new_kbps) == 0) {
+    int rc = bwe_coordinator_try_apply(&g_bwe, min_bps, contributors, now_ms);
+    if (rc == BWE_APPLY_OK) {
         fprintf(stderr, "[bwe] encoder target → %u kbps (min of %d viewer%s)\n",
-                new_kbps, contributors, contributors == 1 ? "" : "s");
-        g_applied_bitrate_kbps = new_kbps;
-        g_last_bwe_apply_ms = now_ms;
+                min_bps / 1000, contributors, contributors == 1 ? "" : "s");
     }
 }
 
@@ -587,6 +566,8 @@ int main(int argc, char *argv[])
         nano_session_pool_init(&g_pool, g_sessions, MAX_SESSIONS);
         g_pool.track_setup = macos_track_setup;
         g_pool.on_event = macos_on_event;
+        bwe_coordinator_init(&g_bwe, BWE_APPLY_INTERVAL_MS, BWE_APPLY_DAMPEN_PCT,
+                             macos_bwe_apply, NULL);
 
         int local_ip_count;
         if (bind_ip[0] != '\0') {
