@@ -8,6 +8,7 @@
  */
 
 #include "nano_ice.h"
+#include "nano_log.h"
 #include "nano_stun.h"
 #include "nanortc_crypto.h"
 #include "nanortc.h"
@@ -155,6 +156,30 @@ static bool ice_advance_to_same_family_pair(nano_ice_t *ice)
 }
 
 /* ----------------------------------------------------------------
+ * ice_find_local_idx_by_family
+ *
+ * Find the first local candidate matching @p family. Used as a fallback in
+ * ice_handle_stun() when the caller cannot identify the receiving interface
+ * (dst.family==0) — RFC 8445 §6.1.2.2 mandates same-family pairing, so on a
+ * dual-stack host with multiple registered candidates we must avoid blindly
+ * latching idx 0 (typically v4 on Linux enumeration order) against an IPv6
+ * remote. Returns NANORTC_ICE_LOCAL_IDX_UNKNOWN when no candidate matches.
+ * ---------------------------------------------------------------- */
+
+static uint8_t ice_find_local_idx_by_family(const nano_ice_t *ice, uint8_t family)
+{
+    if (!ice || family == 0) {
+        return NANORTC_ICE_LOCAL_IDX_UNKNOWN;
+    }
+    for (uint8_t i = 0; i < ice->local_candidate_count; i++) {
+        if (ice->local_candidates[i].family == family) {
+            return i;
+        }
+    }
+    return NANORTC_ICE_LOCAL_IDX_UNKNOWN;
+}
+
+/* ----------------------------------------------------------------
  * ice_handle_stun — process incoming STUN message (both roles)
  * ---------------------------------------------------------------- */
 
@@ -243,13 +268,21 @@ int ice_handle_stun(nano_ice_t *ice, const uint8_t *data, size_t len, const nano
              * address to a local_candidates[] index; pass-through preserves
              * srflx/relay typing so consent freshness uses the right PRIORITY
              * (RFC 7675 §5.1). When the caller cannot determine the index
-             * (NANORTC_ICE_LOCAL_IDX_UNKNOWN), fall back to 0 — the historical
-             * behavior, correct on single-candidate single-interface setups.
+             * (NANORTC_ICE_LOCAL_IDX_UNKNOWN), prefer a same-family candidate
+             * before falling back to idx 0 — the latter is correct on
+             * single-candidate setups but violates RFC 8445 §6.1.2.2 the
+             * moment local candidates span multiple address families
+             * (e.g. dual-stack hosts with an IPv4 candidate at idx 0 plus
+             * one or more IPv6 candidates registered later).
              */
-            uint8_t resolved_idx = (local_idx == NANORTC_ICE_LOCAL_IDX_UNKNOWN ||
-                                    local_idx >= ice->local_candidate_count)
-                                       ? 0
-                                       : local_idx;
+            uint8_t resolved_idx = local_idx;
+            if (resolved_idx == NANORTC_ICE_LOCAL_IDX_UNKNOWN ||
+                resolved_idx >= ice->local_candidate_count) {
+                resolved_idx = ice_find_local_idx_by_family(ice, src->family);
+                if (resolved_idx == NANORTC_ICE_LOCAL_IDX_UNKNOWN) {
+                    resolved_idx = 0;
+                }
+            }
             ice->selected_local_idx = resolved_idx;
             if (resolved_idx < ice->local_candidate_count) {
                 memcpy(ice->selected_local_addr, ice->local_candidates[resolved_idx].addr,
@@ -266,6 +299,15 @@ int ice_handle_stun(nano_ice_t *ice, const uint8_t *data, size_t len, const nano
             ice->nominated = true;
             ice->state = NANORTC_ICE_STATE_CONNECTED;
             /* Arm consent freshness (RFC 7675) — caller sets now_ms-based times */
+
+            /* One-line nomination summary so operators can tell at a glance
+             * whether ICE picked a direct (HOST) or a relay (TURN) pair and
+             * which family — needed to diagnose dual-stack pair selection
+             * without enabling DEBUG-level packet traces. */
+            NANORTC_LOGI("ICE", via_turn ? (src->family == 6 ? "nominated: pair=RELAY family=v6"
+                                                             : "nominated: pair=RELAY family=v4")
+                                         : (src->family == 6 ? "nominated: pair=HOST family=v6"
+                                                             : "nominated: pair=HOST family=v4"));
         }
 
         return NANORTC_OK;

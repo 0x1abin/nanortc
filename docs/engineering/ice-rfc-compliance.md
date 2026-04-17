@@ -85,7 +85,7 @@ What this means for readers of this table: `OK` means on-spec and interop-verifi
 
 | RFC §                 | Requirement                                                   | Status             | Implementation |
 |-----------------------|---------------------------------------------------------------|--------------------|----------------|
-| 8445 §6.1.2.2         | Same-family pairs only                                        | OK                 | `ice_advance_to_same_family_pair` |
+| 8445 §6.1.2.2         | Same-family pairs only                                        | OK                 | `ice_advance_to_same_family_pair` for outbound check pairing; `ice_find_local_idx_by_family` resolves the same-family local candidate when controlled-side USE-CANDIDATE arrives without an interface hint (`dst.family==0` from a wildcard-socket caller), preventing dual-stack hosts from latching the wrong-family idx 0. |
 | 8489 §14.2            | STUN XOR-MAPPED-ADDRESS for IPv4 and IPv6                     | OK                 | `stun_decode_xor_addr` handles both families |
 | 4291 / 5952           | IPv6 address parse + format                                   | OK                 | `src/nano_addr.c` RFC 5952 canonical form, 70M+ fuzz execs clean |
 | 6156 §4               | TURN REQUESTED-ADDRESS-FAMILY                                  | Out of scope       | Explicit per [rfc-index.md](../references/rfc-index.md). TURN server family is taken as-is. |
@@ -106,7 +106,8 @@ Unit tests ([tests/test_ice.c](../../tests/test_ice.c), [tests/test_trickle_ice.
 - `test_ice_request_without_fingerprint_rejected` / `test_ice_response_without_integrity_rejected` — mandatory MI + FP.
 - `test_ice_binding_error_frees_pending_slot` — 0x0111 slot accounting.
 - `test_ice_controlling_multi_pair_response_out_of_order` / `test_ice_controlling_pending_table_full` — pending transaction table (TD-018).
-- `test_ice_pair_family_filter_*` — RFC 8445 §6.1.2.2.
+- `test_ice_pair_family_filter_*` — RFC 8445 §6.1.2.2 outbound pair selection.
+- `test_ice_controlled_dual_stack_local_fallback` / `test_ice_controlled_single_v4_local_fallback_keeps_idx_0` — RFC 8445 §6.1.2.2 same-family fallback on the controlled-side nomination path when `dst.family==0`.
 - `test_e2e_tie_breaker_is_randomised` — §5.2 random tie-breaker.
 - `test_e2e_ipv6_loopback_connects` — end-to-end ICE + DTLS over `[::1]`.
 - `test_consent_expired_when_unarmed` — unarmed timer surfaces as expired.
