@@ -565,8 +565,10 @@
 #endif
 
 /* Media scratch buffer size (for RTP/SRTP processing).
- * Must hold: RTP header (12) + max payload (NANORTC_VIDEO_MTU) + SRTP tag (10).
- * Total overhead: 22 bytes. +32 provides safe headroom for extensions. */
+ * Must hold: RTP header (12) + optional TWCC extension (8) + max payload
+ * (NANORTC_VIDEO_MTU) + SRTP auth tag (10). Total overhead: 30 bytes.
+ * +32 leaves 2 bytes headroom. Override to NANORTC_VIDEO_MTU + 48 if you
+ * enable additional header extensions. */
 #ifndef NANORTC_MEDIA_BUF_SIZE
 #define NANORTC_MEDIA_BUF_SIZE (NANORTC_VIDEO_MTU + 32)
 #endif
@@ -584,6 +586,22 @@
  *  only when the estimate changes by more than this percentage. Default: 15. */
 #ifndef NANORTC_BWE_EVENT_THRESHOLD_PCT
 #define NANORTC_BWE_EVENT_THRESHOLD_PCT 15
+#endif
+
+/** @brief Preferred RTP header extension ID for Transport-wide Congestion
+ *  Control when nanortc is the offerer. Chrome/libdatachannel commonly
+ *  advertise ID 3. Valid range: 1..14 (RFC 8285 one-byte header). When
+ *  answering an offer, the offerer's ID is echoed unchanged regardless
+ *  of this value. */
+#ifndef NANORTC_TWCC_EXT_ID
+#define NANORTC_TWCC_EXT_ID 3
+#endif
+
+/** @brief URI identifying the Transport-wide CC header extension in SDP
+ *  a=extmap lines (draft-holmer-rmcat-transport-wide-cc-extensions-01). */
+#ifndef NANORTC_TWCC_EXT_URI
+#define NANORTC_TWCC_EXT_URI \
+    "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01"
 #endif
 
 /* ----------------------------------------------------------------

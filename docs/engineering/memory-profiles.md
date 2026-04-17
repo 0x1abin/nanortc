@@ -76,6 +76,29 @@ overrides in your `NANORTC_CONFIG_FILE` header:
 #define NANORTC_SDP_BUF_SIZE        1024
 ```
 
+## Phase 9 additions (BWE perception)
+
+Shipping TWCC parsing, loss-based controller, runtime tunables, and the
+extended stats fields costs roughly:
+
+| Addition | Per-instance | Per-video-track | Stack only |
+|---|---|---|---|
+| `nano_rtp_t.twcc_{ext_id,seq}` | — | +4 B | — |
+| `nano_bwe_t` runtime fields (`twcc_count`, `last_source`, `runtime_min/max`, `runtime_event_threshold_pct`) | +16 B | — | — |
+| `nanortc_track_t.rate_window` (1 s bucket, prev-second snapshot) | — | +20 B | — |
+| `nanortc_track_t.fraction_lost` | — | +4 B (incl. pad) | — |
+| TWCC parser per-packet status scratch | — | — | `NANORTC_TWCC_MAX_PACKETS_PER_FB` × 1 B (default 128) |
+| RTP wire overhead when TWCC negotiated | — | — | +8 B per outgoing RTP packet on the wire |
+
+Totals for a single-video-track IoT camera: **~44 B** of long-lived RAM and
+up to **128 B** on the stack during `twcc_parse_feedback()`. Well inside the
+`NANORTC_MEDIA_BUF_SIZE + 32` headroom and the default ESP32 task stack.
+
+To disable TWCC to claw back the 8 B/packet wire overhead (at the cost of
+losing bandwidth feedback against modern browsers), set
+`NANORTC_TWCC_EXT_ID=0` — the SDP generator will then skip the `a=extmap`
+line and `rtp_pack()` will not emit the extension.
+
 ## Optimization Techniques Applied
 
 The following techniques were used to reduce RAM by 34% (full-media: 157→103 KB):

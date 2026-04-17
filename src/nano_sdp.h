@@ -56,6 +56,11 @@ typedef struct nano_sdp_mline {
 
     /* H264 cross-validation */
     uint8_t video_h264_rtpmap_pt; /**< PT confirmed via a=rtpmap H264 (0=not yet). */
+
+    /* Transport-CC (TWCC) header extension ID negotiated for this m-line.
+     * 0 means not negotiated. Valid IDs are 1..14 per RFC 8285 §4.2. When
+     * answering, this holds the offerer's ID so we echo it unchanged. */
+    uint8_t twcc_ext_id;
 #if NANORTC_FEATURE_H265
     /* H265 cross-validation */
     uint8_t video_h265_rtpmap_pt; /**< PT confirmed via a=rtpmap H265 (0=not yet). */

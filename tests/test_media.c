@@ -132,6 +132,96 @@ TEST(test_ssrc_map_null)
 }
 
 /* ================================================================
+ * Rate window (PR-5) — 1-second bucket reporting previous completed second.
+ * Verifies: lazy init, no rollover before 1 s, rollover at 1 s,
+ * subsequent bucket reset, Q8.8 fps encoding.
+ * ================================================================ */
+
+TEST(test_rate_window_lazy_init)
+{
+    nano_rate_window_t w;
+    memset(&w, 0, sizeof(w));
+
+    /* First touch sets epoch to now_ms but does not emit rates yet. */
+    rate_window_on_frame(&w, 5000);
+    ASSERT_EQ(w.bucket_start_ms, 5000u);
+    ASSERT_EQ(w.cur_frames, 1u);
+    ASSERT_EQ(w.prev_bps, 0u);
+    ASSERT_EQ(w.prev_fps_q8, 0);
+}
+
+TEST(test_rate_window_holds_within_second)
+{
+    nano_rate_window_t w;
+    memset(&w, 0, sizeof(w));
+
+    rate_window_on_frame(&w, 1000);       /* init epoch */
+    rate_window_on_bytes(&w, 1100, 1000); /* 100 ms in */
+    rate_window_on_frame(&w, 1200);
+    rate_window_on_bytes(&w, 1999, 500); /* 999 ms in, still same bucket */
+
+    ASSERT_EQ(w.cur_frames, 2u);
+    ASSERT_EQ(w.cur_bytes, 1500u);
+    ASSERT_EQ(w.prev_bps, 0u); /* no bucket completed yet */
+}
+
+TEST(test_rate_window_rolls_at_second)
+{
+    nano_rate_window_t w;
+    memset(&w, 0, sizeof(w));
+
+    /* One call to init the bucket. */
+    rate_window_on_frame(&w, 0);
+    /* 30 fps × 1 s at ~100 kbps. */
+    for (int i = 0; i < 30; i++) {
+        rate_window_on_frame(&w, (uint32_t)(100 + i * 30));
+    }
+    rate_window_on_bytes(&w, 500, 12500); /* 12500 bytes = 100 kbps/s */
+
+    /* Now cross the 1-second boundary. The next call rolls. */
+    rate_window_on_frame(&w, 1100);
+
+    /* Previous bucket now reports 31 frames/s (Q8.8) and 100 kbps. */
+    ASSERT_EQ(w.prev_fps_q8, (uint16_t)(31 * 256));
+    ASSERT_EQ(w.prev_bps, 12500u * 8u);
+    /* Current bucket is the new frame count. */
+    ASSERT_EQ(w.cur_frames, 1u);
+    ASSERT_EQ(w.cur_bytes, 0u);
+    ASSERT_EQ(w.bucket_start_ms, 1100u);
+}
+
+TEST(test_rate_window_roll_noop_without_frames_or_bytes)
+{
+    nano_rate_window_t w;
+    memset(&w, 0, sizeof(w));
+
+    /* Calling rate_window_roll alone, without any on_frame/on_bytes, also
+     * should move the bucket forward. Useful for get_track_stats which
+     * queries rates out-of-band. */
+    rate_window_on_frame(&w, 0); /* init epoch */
+    rate_window_on_bytes(&w, 100, 5000);
+    rate_window_roll(&w, 1500); /* >= 1000 ms since bucket start */
+    ASSERT_EQ(w.prev_bps, 5000u * 8u);
+    ASSERT_EQ(w.cur_bytes, 0u);
+    ASSERT_EQ(w.bucket_start_ms, 1500u);
+}
+
+TEST(test_rate_window_fps_saturates)
+{
+    nano_rate_window_t w;
+    memset(&w, 0, sizeof(w));
+
+    rate_window_on_frame(&w, 0);
+    /* Artificially pump 300 frames into one second (above uint16 Q8 cap
+     * of 255.99 fps). The window must saturate rather than wrap. */
+    for (int i = 0; i < 300; i++) {
+        rate_window_on_frame(&w, (uint32_t)(i * 2));
+    }
+    rate_window_on_frame(&w, 1500); /* forces roll */
+    ASSERT_EQ(w.prev_fps_q8, 0xFFFFu);
+}
+
+/* ================================================================
  * Test runner
  * ================================================================ */
 
@@ -150,4 +240,10 @@ RUN(test_ssrc_map_register_lookup);
 RUN(test_ssrc_map_update);
 RUN(test_ssrc_map_full);
 RUN(test_ssrc_map_null);
+/* Rate window (PR-5) */
+RUN(test_rate_window_lazy_init);
+RUN(test_rate_window_holds_within_second);
+RUN(test_rate_window_rolls_at_second);
+RUN(test_rate_window_roll_noop_without_frames_or_bytes);
+RUN(test_rate_window_fps_saturates);
 TEST_MAIN_END

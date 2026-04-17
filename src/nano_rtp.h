@@ -15,11 +15,26 @@
 #define RTP_HEADER_SIZE 12
 #define RTP_VERSION     2
 
+/* RFC 8285 one-byte header extension profile marker. */
+#define RTP_EXT_PROFILE_ONE_BYTE 0xBEDE
+
+/* Bytes appended to each RTP packet when the TWCC extension is active:
+ * 4 bytes profile+length header + 4 bytes of one 1-byte-header extension
+ * (1 byte ID|len + 2 bytes seq + 1 byte pad). Kept here so callers sizing
+ * scratch buffers can account for the worst case. */
+#define RTP_TWCC_EXT_OVERHEAD 8
+
 typedef struct nano_rtp {
     uint16_t seq;
     uint32_t ssrc;
     uint8_t payload_type;
     uint8_t marker; /* M bit for current/next packet */
+
+    /* TWCC (Transport-Wide CC) RTP header extension state.
+     * twcc_ext_id == 0 disables the extension (no bytes added).
+     * Valid IDs are 1..14 per RFC 8285 one-byte header. */
+    uint8_t twcc_ext_id;
+    uint16_t twcc_seq;
 } nano_rtp_t;
 
 int rtp_init(nano_rtp_t *rtp, uint32_t ssrc, uint8_t pt);

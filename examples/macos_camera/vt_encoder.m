@@ -291,6 +291,29 @@ void vt_encoder_force_keyframe(void)
     s_force_keyframe = true;
 }
 
+int vt_encoder_set_bitrate(int bitrate_kbps)
+{
+    if (!s_session) {
+        return -1;
+    }
+    /* Clamp to a sane envelope. The lower bound mirrors what the browser
+     * typically probes down to; the upper bound is an arbitrary safety
+     * rail that lets us catch runaway BWE estimates. */
+    if (bitrate_kbps < 100) bitrate_kbps = 100;
+    if (bitrate_kbps > 10000) bitrate_kbps = 10000;
+
+    int bitrate_bps = bitrate_kbps * 1000;
+    CFNumberRef bitrateRef = CFNumberCreate(NULL, kCFNumberIntType, &bitrate_bps);
+    OSStatus st = VTSessionSetProperty(s_session, kVTCompressionPropertyKey_AverageBitRate,
+                                       bitrateRef);
+    CFRelease(bitrateRef);
+    if (st != noErr) {
+        fprintf(stderr, "[vt_encoder] set bitrate failed: %d\n", (int)st);
+        return -1;
+    }
+    return 0;
+}
+
 void vt_encoder_destroy(void)
 {
     if (s_session) {

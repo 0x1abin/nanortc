@@ -19,6 +19,7 @@ add_executable(macos_camera
     ${COMMON}/run_loop_linux.c
     ${COMMON}/http_signaling.c
     ${COMMON}/multi_session.c
+    ${COMMON}/bwe_coordinator.c
 )
 
 target_include_directories(macos_camera PRIVATE

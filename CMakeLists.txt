@@ -132,6 +132,7 @@ endif()
 if(NANORTC_FEATURE_VIDEO)
     list(APPEND NANORTC_SOURCES
         src/nano_bwe.c
+        src/nano_twcc.c
         src/nano_annex_b.c
         src/nano_h264.c
     )

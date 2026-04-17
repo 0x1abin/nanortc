@@ -96,6 +96,23 @@ void capture_stop(void);
  */
 void capture_force_keyframe(void);
 
+/**
+ * @brief Update the encoder target bitrate at runtime (bits/s).
+ *
+ * Safe to call from any thread after @ref capture_start. Intended for
+ * BWE-driven adaptation: the caller computes a new target from RTCP
+ * feedback and this function pushes it to the underlying encoder.
+ *
+ * GStreamer backend:  @c g_object_set on the @c mpph264enc/mpph265enc
+ *                     element's @c bps (+ @c bps-max for CBR).
+ * FFmpeg backend:     @c av_opt_set_int on the @c h264_rkmpp private
+ *                     context (@c rc_max_rate).
+ *
+ * Returns 0 on success, -1 if the encoder handle is not available or
+ * the backend could not apply the new rate.
+ */
+int capture_set_bitrate(int bps);
+
 #ifdef __cplusplus
 }
 #endif

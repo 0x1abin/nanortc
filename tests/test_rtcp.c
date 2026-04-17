@@ -462,6 +462,62 @@ TEST(test_rtcp_sr_independent_vector)
 }
 
 /* ================================================================
+ * Report-block extraction from RR/SR (PR-5)
+ * ================================================================ */
+
+TEST(test_rtcp_parse_rr_fraction_lost)
+{
+    /* Build a minimal RR with one report block carrying fraction_lost=0x40. */
+    nano_rtcp_t rtcp;
+    rtcp_init(&rtcp, 0x11111111);
+    rtcp.packets_lost = 0;
+    rtcp.packets_received = 100;
+    rtcp.jitter = 50;
+
+    uint8_t buf[64];
+    size_t out_len = 0;
+    ASSERT_OK(rtcp_generate_rr(&rtcp, 0x22222222, buf, sizeof(buf), &out_len));
+    /* Overwrite the fraction_lost byte (first byte of the report block at offset 12). */
+    buf[12] = 0x40;
+
+    nano_rtcp_info_t info;
+    ASSERT_OK(rtcp_parse(buf, out_len, &info));
+    ASSERT_EQ(info.type, (uint8_t)RTCP_RR);
+    ASSERT_TRUE(info.rb_valid);
+    ASSERT_EQ(info.rb_source_ssrc, 0x22222222u);
+    ASSERT_EQ(info.rb_fraction_lost, 0x40);
+}
+
+TEST(test_rtcp_parse_sr_with_report_block)
+{
+    /* SR with RC=1 and one report block. Parser must surface fraction_lost. */
+    uint8_t buf[RTCP_SR_WITH_RB_SIZE] = {0};
+    buf[0] = (2 << 6) | 1; /* V=2, RC=1 */
+    buf[1] = RTCP_SR;
+    buf[2] = 0x00;
+    buf[3] = (RTCP_SR_WITH_RB_SIZE / 4) - 1; /* length field */
+    /* Sender SSRC */
+    nanortc_write_u32be(buf + 4, 0xAAAAAAAAu);
+    /* Sender info (20 bytes) — values not checked here, just nonzero. */
+    nanortc_write_u32be(buf + 8, 1);
+    nanortc_write_u32be(buf + 12, 2);
+    nanortc_write_u32be(buf + 16, 3);
+    nanortc_write_u32be(buf + 20, 4);
+    nanortc_write_u32be(buf + 24, 5);
+    /* Report block (24 bytes): source SSRC, fraction lost, cumulative loss... */
+    nanortc_write_u32be(buf + 28, 0xBBBBBBBBu);
+    buf[32] = 0xA0; /* fraction lost ≈ 62.5 % */
+    /* cumulative loss (3B) + ext seq + jitter + LSR + DLSR — zeros OK */
+
+    nano_rtcp_info_t info;
+    ASSERT_OK(rtcp_parse(buf, sizeof(buf), &info));
+    ASSERT_EQ(info.type, (uint8_t)RTCP_SR);
+    ASSERT_TRUE(info.rb_valid);
+    ASSERT_EQ(info.rb_source_ssrc, 0xBBBBBBBBu);
+    ASSERT_EQ(info.rb_fraction_lost, 0xA0);
+}
+
+/* ================================================================
  * Test runner
  * ================================================================ */
 
@@ -490,4 +546,7 @@ RUN(test_rtcp_sr_header_fields);
 RUN(test_rtcp_rr_extended_seq_field);
 RUN(test_rtcp_nack_bitmask_vector);
 RUN(test_rtcp_sr_independent_vector);
+/* PR-5: report-block (fraction_lost) extraction */
+RUN(test_rtcp_parse_rr_fraction_lost);
+RUN(test_rtcp_parse_sr_with_report_block);
 TEST_MAIN_END

@@ -422,6 +422,37 @@ int sdp_parse(nano_sdp_t *sdp, const char *sdp_str, size_t len)
                 }
             }
 #endif
+        } else if (current_mline_idx >= 0 && line_starts_with(line, line_len, "a=extmap:")) {
+            /* a=extmap:<id>[/<direction>] <URI> [<extension-attributes>] (RFC 8285 §5).
+             * We only recognise the TWCC URI; other extensions are ignored so
+             * they do not collide with our negotiated ID. */
+            const char *p = line + 9; /* skip "a=extmap:" */
+            const char *end = line + line_len;
+            const char *next;
+            uint32_t ext_id = parse_u32(p, end, &next);
+            if (ext_id >= 1 && ext_id <= 14) {
+                p = next;
+                if (p < end && *p == '/') {
+                    p++;
+                    while (p < end && *p != ' ' && *p != '\t') {
+                        p++;
+                    }
+                }
+                while (p < end && (*p == ' ' || *p == '\t')) {
+                    p++;
+                }
+                const char *uri = NANORTC_TWCC_EXT_URI;
+                size_t uri_len = 0;
+                while (uri[uri_len]) {
+                    uri_len++;
+                }
+                size_t remain = (size_t)(end - p);
+                if (remain >= uri_len && memcmp(p, uri, uri_len) == 0 &&
+                    (remain == uri_len || p[uri_len] == ' ' || p[uri_len] == '\t' ||
+                     p[uri_len] == '\r' || p[uri_len] == '\n')) {
+                    sdp->mlines[current_mline_idx].twcc_ext_id = (uint8_t)ext_id;
+                }
+            }
         } else if (current_mline_idx >= 0 && (line_starts_with(line, line_len, "a=sendrecv") ||
                                               line_starts_with(line, line_len, "a=sendonly") ||
                                               line_starts_with(line, line_len, "a=recvonly") ||
@@ -923,6 +954,21 @@ static bool sdp_append_video_mline(nano_sdp_t *sdp, nano_sdp_mline_t *ml, char *
         return false;
     if (!sdp_append(buf, buf_len, pos, " nack pli\r\n"))
         return false;
+
+    /* Transport-wide CC extmap (RFC 8285 / draft-holmer-rmcat-twcc-01).
+     * When answering, ml->twcc_ext_id is the offerer's ID (parsed from
+     * the remote SDP). When offering, it starts at 0 — fall back to the
+     * compile-time preferred ID so the offer actually advertises TWCC. */
+    uint8_t twcc_id = ml->twcc_ext_id ? ml->twcc_ext_id : (uint8_t)NANORTC_TWCC_EXT_ID;
+    if (twcc_id >= 1 && twcc_id <= 14) {
+        if (!sdp_append(buf, buf_len, pos, "a=extmap:"))
+            return false;
+        if (!sdp_append_u16(buf, buf_len, pos, twcc_id))
+            return false;
+        if (!sdp_append(buf, buf_len, pos, " " NANORTC_TWCC_EXT_URI "\r\n"))
+            return false;
+        ml->twcc_ext_id = twcc_id; /* persist for RTP-side wiring */
+    }
     return true;
 }
 #endif /* NANORTC_HAVE_MEDIA_TRANSPORT */

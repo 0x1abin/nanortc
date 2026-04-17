@@ -6,6 +6,7 @@
 
 #include "nano_rtp.h"
 #include "nanortc.h"
+#include <stdbool.h>
 #include <string.h>
 
 int rtp_init(nano_rtp_t *rtp, uint32_t ssrc, uint8_t pt)
@@ -27,21 +28,51 @@ int rtp_pack(nano_rtp_t *rtp, uint32_t timestamp, const uint8_t *payload, size_t
         return NANORTC_ERR_INVALID_PARAM;
     }
 
-    size_t total = RTP_HEADER_SIZE + payload_len;
+    /* TWCC header extension (RFC 8285 §4.2, one-byte header form).
+     *
+     * Layout when twcc_ext_id is non-zero:
+     *   bytes 0..11  : RTP fixed header (X bit set to 1)
+     *   bytes 12..13 : profile = 0xBEDE
+     *   bytes 14..15 : length  = 1 word of ext data
+     *   byte  16     : (ID<<4) | len  where len=1 means 2 bytes of data
+     *   bytes 17..18 : transport-CC sequence number (big-endian)
+     *   byte  19     : zero padding to 4-byte alignment
+     *
+     * Extension IDs outside 1..14 are reserved by RFC 8285 and silently
+     * disable the extension, so mis-negotiated values do not corrupt
+     * the packet. */
+    bool has_twcc = (rtp->twcc_ext_id != 0 && rtp->twcc_ext_id <= 14);
+    size_t ext_bytes = has_twcc ? (size_t)RTP_TWCC_EXT_OVERHEAD : 0;
+
+    size_t total = RTP_HEADER_SIZE + ext_bytes + payload_len;
     if (buf_len < total) {
         return NANORTC_ERR_BUFFER_TOO_SMALL;
     }
 
-    /* RFC 3550 section 5.1: V=2, P=0, X=0, CC=0 */
-    buf[0] = (RTP_VERSION << 6); /* V=2, P=0, X=0, CC=0 */
+    /* RFC 3550 section 5.1: V=2, P=0, X=(ext?1:0), CC=0 */
+    buf[0] = (uint8_t)((RTP_VERSION << 6) | (has_twcc ? 0x10 : 0));
     buf[1] = (uint8_t)((rtp->marker ? 0x80 : 0) | (rtp->payload_type & 0x7F));
 
     nanortc_write_u16be(buf + 2, rtp->seq);
     nanortc_write_u32be(buf + 4, timestamp);
     nanortc_write_u32be(buf + 8, rtp->ssrc);
 
+    size_t off = RTP_HEADER_SIZE;
+
+    if (has_twcc) {
+        nanortc_write_u16be(buf + off, RTP_EXT_PROFILE_ONE_BYTE);
+        off += 2;
+        nanortc_write_u16be(buf + off, 1); /* length = 1 × 32-bit word of ext data */
+        off += 2;
+        buf[off++] = (uint8_t)((rtp->twcc_ext_id & 0x0F) << 4) | 0x01; /* len=1 → 2 bytes */
+        nanortc_write_u16be(buf + off, rtp->twcc_seq);
+        off += 2;
+        buf[off++] = 0; /* pad to word boundary */
+        rtp->twcc_seq++;
+    }
+
     if (payload && payload_len > 0) {
-        memcpy(buf + RTP_HEADER_SIZE, payload, payload_len);
+        memcpy(buf + off, payload, payload_len);
     }
 
     rtp->seq++;

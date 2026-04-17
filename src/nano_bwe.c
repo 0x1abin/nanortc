@@ -28,6 +28,7 @@
 #include "nano_bwe.h"
 #include "nano_log.h"
 #include "nanortc.h"
+#include <stdbool.h>
 #include <string.h>
 
 /* ================================================================
@@ -111,6 +112,54 @@ int bwe_parse_remb(const uint8_t *data, size_t len, uint32_t *bitrate)
  * RTCP feedback handler
  * ================================================================ */
 
+/* REMB source ID = 0 (NANORTC_BWE_SRC_REMB),
+ * TWCC loss source ID = 1 (NANORTC_BWE_SRC_TWCC_LOSS).
+ * We keep the numeric values here rather than including the public
+ * header so src/ stays free of public-API inclusion cycles. */
+#define BWE_SRC_REMB      0
+#define BWE_SRC_TWCC_LOSS 1
+
+static uint32_t bwe_effective_min(const nano_bwe_t *bwe)
+{
+    return bwe->runtime_min_bps ? bwe->runtime_min_bps : (uint32_t)NANORTC_BWE_MIN_BITRATE;
+}
+
+static uint32_t bwe_effective_max(const nano_bwe_t *bwe)
+{
+    return bwe->runtime_max_bps ? bwe->runtime_max_bps : (uint32_t)NANORTC_BWE_MAX_BITRATE;
+}
+
+static uint32_t bwe_clamp(const nano_bwe_t *bwe, uint32_t bps)
+{
+    uint32_t min_bps = bwe_effective_min(bwe);
+    uint32_t max_bps = bwe_effective_max(bwe);
+    if (bps < min_bps) {
+        return min_bps;
+    }
+    if (bps > max_bps) {
+        return max_bps;
+    }
+    return bps;
+}
+
+static void bwe_apply(nano_bwe_t *bwe, uint32_t candidate_bps, uint8_t source, uint32_t now_ms,
+                      bool first_sample)
+{
+    candidate_bps = bwe_clamp(bwe, candidate_bps);
+
+    if (first_sample) {
+        bwe->estimated_bitrate = candidate_bps;
+    } else {
+        uint32_t alpha = NANORTC_BWE_EMA_ALPHA;
+        uint64_t smoothed =
+            ((uint64_t)alpha * candidate_bps + (uint64_t)(256 - alpha) * bwe->estimated_bitrate) /
+            256;
+        bwe->estimated_bitrate = (uint32_t)smoothed;
+    }
+    bwe->last_update_ms = now_ms;
+    bwe->last_source = source;
+}
+
 int bwe_on_rtcp_feedback(nano_bwe_t *bwe, const uint8_t *data, size_t len, uint32_t now_ms)
 {
     if (!bwe || !data) {
@@ -123,34 +172,56 @@ int bwe_on_rtcp_feedback(nano_bwe_t *bwe, const uint8_t *data, size_t len, uint3
         return rc; /* Not a REMB packet or parse error */
     }
 
-    /* Clamp to configured min/max */
-    if (remb_bitrate < NANORTC_BWE_MIN_BITRATE) {
-        remb_bitrate = NANORTC_BWE_MIN_BITRATE;
-    } else if (remb_bitrate > NANORTC_BWE_MAX_BITRATE) {
-        remb_bitrate = NANORTC_BWE_MAX_BITRATE;
-    }
-
-    bwe->last_remb_bitrate = remb_bitrate;
     bwe->remb_count++;
+    bwe->last_remb_bitrate = bwe_clamp(bwe, remb_bitrate);
 
-    /* Exponential moving average (EMA) smoothing:
-     * new = (alpha * remb + (256 - alpha) * old) / 256
-     *
-     * On first REMB, jump directly to the received value. */
-    if (bwe->remb_count == 1) {
-        bwe->estimated_bitrate = remb_bitrate;
-    } else {
-        uint32_t alpha = NANORTC_BWE_EMA_ALPHA;
-        uint64_t smoothed =
-            ((uint64_t)alpha * remb_bitrate + (uint64_t)(256 - alpha) * bwe->estimated_bitrate) /
-            256;
-        bwe->estimated_bitrate = (uint32_t)smoothed;
-    }
-
-    bwe->last_update_ms = now_ms;
+    bwe_apply(bwe, remb_bitrate, BWE_SRC_REMB, now_ms, bwe->remb_count == 1);
 
     NANORTC_LOGD("BWE", "REMB received, estimate updated");
 
+    return NANORTC_OK;
+}
+
+int bwe_on_twcc_loss(nano_bwe_t *bwe, uint16_t loss_fraction_q8, uint32_t now_ms)
+{
+    if (!bwe) {
+        return NANORTC_ERR_INVALID_PARAM;
+    }
+    if (loss_fraction_q8 > 256) {
+        loss_fraction_q8 = 256; /* saturate */
+    }
+
+    uint32_t max_bps = bwe_effective_max(bwe);
+    uint32_t min_bps = bwe_effective_min(bwe);
+
+    /* Loss-based controller, legacy libwebrtc flavour. Thresholds measured
+     * in 256-ths of a packet so we stay in integer math. */
+    uint32_t target = bwe->estimated_bitrate;
+    if (target == 0) {
+        target = NANORTC_BWE_INITIAL_BITRATE;
+    }
+
+    if (loss_fraction_q8 < 5) {
+        /* Low loss: grow aggressively, +8 % per feedback. Cap at max. */
+        uint64_t grown = (uint64_t)target * 108u / 100u;
+        target = (grown > max_bps) ? max_bps : (uint32_t)grown;
+    } else if (loss_fraction_q8 > 25) {
+        /* High loss: new = old * (1 - 0.5 * loss_fraction).
+         * loss_fraction = loss_q8 / 256, so new = old * (512 - loss_q8) / 512. */
+        uint64_t shrunk = (uint64_t)target * (uint64_t)(512 - loss_fraction_q8) / 512u;
+        if (shrunk < min_bps) {
+            shrunk = min_bps;
+        }
+        target = (uint32_t)shrunk;
+    }
+    /* else: hold */
+
+    bwe->twcc_count++;
+    /* First TWCC sample jumps directly to target (like REMB) so the first
+     * feedback is not blended with the compile-time initial estimate. */
+    bwe_apply(bwe, target, BWE_SRC_TWCC_LOSS, now_ms, bwe->twcc_count == 1);
+
+    NANORTC_LOGD("BWE", "TWCC loss sample processed");
     return NANORTC_OK;
 }
 
@@ -182,9 +253,12 @@ int bwe_should_emit_event(nano_bwe_t *bwe)
     uint32_t prev = bwe->prev_event_bitrate;
     uint32_t diff = (cur > prev) ? (cur - prev) : (prev - cur);
 
+    uint8_t threshold_pct = bwe->runtime_event_threshold_pct ? bwe->runtime_event_threshold_pct
+                                                             : NANORTC_BWE_EVENT_THRESHOLD_PCT;
+
     /* Use integer math: diff * 100 / prev > threshold
      * Rearranged to avoid overflow: diff > prev * threshold / 100 */
-    uint32_t threshold_abs = prev / 100 * NANORTC_BWE_EVENT_THRESHOLD_PCT;
+    uint32_t threshold_abs = prev / 100 * threshold_pct;
 
     if (diff > threshold_abs) {
         bwe->prev_event_bitrate = cur;

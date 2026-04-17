@@ -436,6 +436,191 @@ TEST(test_bwe_init_sets_prev_event_bitrate)
  * Runner
  * ================================================================ */
 
+/* ================================================================
+ * TWCC loss-based controller (PR-3)
+ *
+ * bwe_on_twcc_loss() gets a 0..256 loss fraction and nudges the
+ * estimate up on low loss, holds in the middle band, and pulls it
+ * down on high loss. The first sample should jump directly to the
+ * computed target (no EMA blending against the compile-time initial).
+ * ================================================================ */
+
+TEST(test_bwe_twcc_loss_null)
+{
+    ASSERT_FAIL(bwe_on_twcc_loss(NULL, 0, 0));
+}
+
+TEST(test_bwe_twcc_loss_low_grows_estimate)
+{
+    nano_bwe_t bwe;
+    bwe_init(&bwe);
+    /* Seed the state as if one REMB gave us 500 kbps. */
+    uint8_t buf[32];
+    size_t plen = build_remb(buf, sizeof(buf), 0, 500000, 0);
+    bwe_on_rtcp_feedback(&bwe, buf, plen, 1000);
+    uint32_t before = bwe_get_bitrate(&bwe);
+
+    /* Low loss (1/256 ≈ 0.4 %) → +8 %, but EMA blends. After many
+     * feedbacks the estimate should monotonically approach the cap. */
+    for (int i = 0; i < 30; i++) {
+        ASSERT_OK(bwe_on_twcc_loss(&bwe, 1, (uint32_t)(2000 + i * 100)));
+    }
+    uint32_t after = bwe_get_bitrate(&bwe);
+    ASSERT_TRUE(after > before);
+    ASSERT_TRUE(after <= NANORTC_BWE_MAX_BITRATE);
+}
+
+TEST(test_bwe_twcc_loss_mid_band_holds)
+{
+    nano_bwe_t bwe;
+    bwe_init(&bwe);
+    uint8_t buf[32];
+    size_t plen = build_remb(buf, sizeof(buf), 0, 800000, 0);
+    bwe_on_rtcp_feedback(&bwe, buf, plen, 1000);
+    uint32_t before = bwe_get_bitrate(&bwe);
+
+    /* Loss 15/256 ≈ 5.9 % → inside [5, 25] → hold. */
+    for (int i = 0; i < 10; i++) {
+        ASSERT_OK(bwe_on_twcc_loss(&bwe, 15, (uint32_t)(2000 + i * 100)));
+    }
+    uint32_t after = bwe_get_bitrate(&bwe);
+    /* Small EMA drift is acceptable but should stay within ±1 %. */
+    uint32_t diff = (after > before) ? (after - before) : (before - after);
+    ASSERT_TRUE(diff < before / 100);
+}
+
+TEST(test_bwe_twcc_loss_high_shrinks_estimate)
+{
+    nano_bwe_t bwe;
+    bwe_init(&bwe);
+    uint8_t buf[32];
+    size_t plen = build_remb(buf, sizeof(buf), 0, 1000000, 0);
+    bwe_on_rtcp_feedback(&bwe, buf, plen, 1000);
+    uint32_t before = bwe_get_bitrate(&bwe);
+
+    /* Loss 80/256 ≈ 31 % → new = old × (512-80)/512 ≈ old × 0.84 per call. */
+    ASSERT_OK(bwe_on_twcc_loss(&bwe, 80, 2000));
+    uint32_t after = bwe_get_bitrate(&bwe);
+    ASSERT_TRUE(after < before);
+}
+
+TEST(test_bwe_twcc_loss_first_sample_jumps)
+{
+    /* No REMB has seeded the state. First TWCC sample should move the
+     * estimate to the computed target directly (counter==1 path). */
+    nano_bwe_t bwe;
+    bwe_init(&bwe);
+    uint32_t initial = bwe_get_bitrate(&bwe);
+
+    ASSERT_OK(bwe_on_twcc_loss(&bwe, 0, 1000));
+    /* 0 loss is +8 % path. Expect estimated ≈ initial * 1.08. */
+    uint32_t expected_low = initial * 107 / 100;
+    uint32_t expected_high = initial * 109 / 100;
+    uint32_t got = bwe_get_bitrate(&bwe);
+    ASSERT_TRUE(got >= expected_low && got <= expected_high);
+    ASSERT_EQ(bwe.twcc_count, 1u);
+}
+
+TEST(test_bwe_twcc_loss_clamps_to_min)
+{
+    nano_bwe_t bwe;
+    bwe_init(&bwe);
+    uint8_t buf[32];
+    size_t plen = build_remb(buf, sizeof(buf), 0, NANORTC_BWE_MIN_BITRATE + 1000, 0);
+    bwe_on_rtcp_feedback(&bwe, buf, plen, 1000);
+
+    /* Apply extreme loss many times. Must never fall below MIN. */
+    for (int i = 0; i < 50; i++) {
+        bwe_on_twcc_loss(&bwe, 255, (uint32_t)(2000 + i * 100));
+    }
+    ASSERT_TRUE(bwe_get_bitrate(&bwe) >= NANORTC_BWE_MIN_BITRATE);
+}
+
+TEST(test_bwe_twcc_saturates_over_256)
+{
+    /* loss_fraction_q8 greater than 256 is saturated to 256 (no wrap). */
+    nano_bwe_t bwe;
+    bwe_init(&bwe);
+    uint8_t buf[32];
+    size_t plen = build_remb(buf, sizeof(buf), 0, 1000000, 0);
+    bwe_on_rtcp_feedback(&bwe, buf, plen, 1000);
+
+    ASSERT_OK(bwe_on_twcc_loss(&bwe, 10000, 2000));
+    /* Must still be within valid range (not wrapped to some huge value). */
+    ASSERT_TRUE(bwe_get_bitrate(&bwe) >= NANORTC_BWE_MIN_BITRATE);
+    ASSERT_TRUE(bwe_get_bitrate(&bwe) <= NANORTC_BWE_MAX_BITRATE);
+}
+
+/* ================================================================
+ * Runtime setters (PR-4)
+ *
+ * Overrides are stored on nano_bwe_t as runtime_*; zero means
+ * "use compile-time default". The public setters live on nanortc_t
+ * so they are not reachable from this unit test, but we exercise
+ * the underlying fields directly to assert the clamping/threshold
+ * behaviour changes as expected.
+ * ================================================================ */
+
+TEST(test_bwe_runtime_bounds_clamp_on_feedback)
+{
+    nano_bwe_t bwe;
+    bwe_init(&bwe);
+    /* Tighten the envelope to [200k, 800k]. */
+    bwe.runtime_min_bps = 200000;
+    bwe.runtime_max_bps = 800000;
+
+    /* REMB way above the max should clamp down. */
+    uint8_t buf[32];
+    size_t plen = build_remb(buf, sizeof(buf), 0, 5000000, 0);
+    bwe_on_rtcp_feedback(&bwe, buf, plen, 1000);
+    ASSERT_EQ(bwe.estimated_bitrate, 800000u);
+
+    /* REMB way below the min should clamp up. */
+    plen = build_remb(buf, sizeof(buf), 0, 10000, 0);
+    bwe_on_rtcp_feedback(&bwe, buf, plen, 2000);
+    /* After EMA smoothing with alpha=0.8 the result is not exactly 200k
+     * but must not drop below it. */
+    ASSERT_TRUE(bwe.estimated_bitrate >= 200000);
+}
+
+TEST(test_bwe_runtime_event_threshold_tighter)
+{
+    nano_bwe_t bwe;
+    bwe_init(&bwe);
+    /* Drop the threshold to 1 % so even tiny changes fire. */
+    bwe.runtime_event_threshold_pct = 1;
+
+    /* Seed estimate with one REMB. */
+    uint8_t buf[32];
+    size_t plen = build_remb(buf, sizeof(buf), 0, 500000, 0);
+    bwe_on_rtcp_feedback(&bwe, buf, plen, 1000);
+    ASSERT_TRUE(bwe_should_emit_event(&bwe));
+
+    /* A 2 % change would be below the default 15 % threshold but above 1 %. */
+    plen = build_remb(buf, sizeof(buf), 0, 510000, 0);
+    bwe_on_rtcp_feedback(&bwe, buf, plen, 2000);
+    ASSERT_TRUE(bwe_should_emit_event(&bwe));
+}
+
+TEST(test_bwe_runtime_event_threshold_looser)
+{
+    nano_bwe_t bwe;
+    bwe_init(&bwe);
+    /* Crank threshold up to 50 % so only big jumps fire. */
+    bwe.runtime_event_threshold_pct = 50;
+
+    uint8_t buf[32];
+    size_t plen = build_remb(buf, sizeof(buf), 0, 500000, 0);
+    bwe_on_rtcp_feedback(&bwe, buf, plen, 1000);
+    /* Initial 300k → 500k is 67 %, fires. */
+    ASSERT_TRUE(bwe_should_emit_event(&bwe));
+
+    /* Now 500k → 600k is 20 %, below 50 %. */
+    plen = build_remb(buf, sizeof(buf), 0, 600000, 0);
+    bwe_on_rtcp_feedback(&bwe, buf, plen, 2000);
+    ASSERT_FALSE(bwe_should_emit_event(&bwe));
+}
+
 TEST_MAIN_BEGIN("BWE bandwidth estimation tests")
 RUN(test_bwe_init);
 RUN(test_bwe_init_null);
@@ -463,4 +648,16 @@ RUN(test_bwe_event_threshold_decrease);
 RUN(test_bwe_event_null);
 RUN(test_bwe_public_get_estimated_bitrate);
 RUN(test_bwe_init_sets_prev_event_bitrate);
+/* TWCC loss-based BWE (PR-3) */
+RUN(test_bwe_twcc_loss_null);
+RUN(test_bwe_twcc_loss_low_grows_estimate);
+RUN(test_bwe_twcc_loss_mid_band_holds);
+RUN(test_bwe_twcc_loss_high_shrinks_estimate);
+RUN(test_bwe_twcc_loss_first_sample_jumps);
+RUN(test_bwe_twcc_loss_clamps_to_min);
+RUN(test_bwe_twcc_saturates_over_256);
+/* Runtime setters (PR-4) */
+RUN(test_bwe_runtime_bounds_clamp_on_feedback);
+RUN(test_bwe_runtime_event_threshold_tighter);
+RUN(test_bwe_runtime_event_threshold_looser);
 TEST_MAIN_END

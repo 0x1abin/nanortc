@@ -34,6 +34,34 @@ typedef enum {
 } nanortc_track_kind_t;
 
 /**
+ * @brief 1-second rate window for send frame / byte counting.
+ *
+ * Reports the rate of the *previous completed second*. This trades a
+ * one-second reporting latency for trivial integer math and avoids the
+ * floating-point or multi-bucket ring that a true sliding window needs.
+ * Adequate for IoT monitoring / encoder-driving feedback loops.
+ *
+ * Both counters advance whenever bytes or frames are added; the
+ * bucket is rolled when `now_ms - bucket_start_ms >= 1000`.
+ */
+typedef struct nano_rate_window {
+    uint32_t bucket_start_ms; /**< Monotonic start of the current bucket. */
+    uint32_t cur_frames;      /**< Frames added in the current bucket. */
+    uint32_t cur_bytes;       /**< Bytes added in the current bucket. */
+    uint32_t prev_bps;        /**< Bits-per-second from the last completed second. */
+    uint16_t prev_fps_q8;     /**< Frames-per-second as Q8.8 from the last completed second. */
+} nano_rate_window_t;
+
+/** Roll the window forward if at least one second has elapsed. */
+void rate_window_roll(nano_rate_window_t *w, uint32_t now_ms);
+
+/** Record one frame sent at @p now_ms (also rolls the window). */
+void rate_window_on_frame(nano_rate_window_t *w, uint32_t now_ms);
+
+/** Record @p nbytes of payload sent at @p now_ms (also rolls the window). */
+void rate_window_on_bytes(nano_rate_window_t *w, uint32_t now_ms, uint32_t nbytes);
+
+/**
  * @brief Per-track media state.
  *
  * One instance per SDP m-line. Contains all RTP/RTCP state, codec info,
@@ -47,6 +75,12 @@ typedef struct nano_media {
 
     nano_rtp_t rtp;   /**< Per-track RTP state (SSRC, seq, PT). */
     nano_rtcp_t rtcp; /**< Per-track RTCP stats. */
+
+    /* Outgoing send-rate + fps window used to populate stats. */
+    nano_rate_window_t rate_window;
+
+    /* Latest fraction_lost byte copied from inbound RTCP RR. */
+    uint8_t fraction_lost;
 
     /* Codec configuration */
     uint8_t codec;        /**< nanortc_codec_t value. */

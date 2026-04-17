@@ -117,7 +117,48 @@ Waiting for viewers (Ctrl+C to stop)...
 [session] Created session for viewer 1 (udp=192.168.1.100:51234)
 [session 1] ICE connected
 [session 1] Media connected — forcing keyframe
+[stats 1] fps=30.0 send=2980 kbps est=3000 kbps loss=0.0% rtt=12 ms
+[session 1] BWE DOWN via TWCC: 1800 kbps (was 3000 kbps)
+[bwe] encoder target → 1800 kbps (min of 1 viewer)
+[stats 1] fps=30.0 send=1760 kbps est=1800 kbps loss=7.8% rtt=35 ms
 ```
+
+## Adaptive Bitrate (Phase 9)
+
+The example ties the nanortc BWE signal path to the VideoToolbox hardware
+encoder so the sending bitrate tracks live network conditions:
+
+- **Bounds**: each session advertises `[500 kbps, 5 Mbps]` to BWE via
+  `nanortc_set_bitrate_bounds()` (see `BWE_MIN_BITRATE_BPS` /
+  `BWE_MAX_BITRATE_BPS` in `main.m`). REMB / TWCC estimates outside this
+  range are clamped.
+- **Initial estimate** is seeded with `VIDEO_BITRATE_KBPS` so the first
+  keyframe goes out at the configured target instead of the compile-time
+  BWE default.
+- **BWE event handler** (`NANORTC_EV_BITRATE_ESTIMATE`) logs the direction
+  (`UP`/`DOWN`/`STABLE`) and source (`REMB` or `TWCC`) of each update,
+  then recomputes the aggregate minimum across all active viewers and
+  drives `vt_encoder_set_bitrate()`. A shared encoder serves every
+  viewer, so the slowest link wins.
+- **Stats tick** every 2 seconds dumps `fps`, `send_bitrate`,
+  `estimated_bitrate`, `fraction_lost`, and `rtt` per session using
+  `nanortc_get_track_stats()`.
+
+### Verifying the loop end-to-end
+
+1. Start the app and connect a Chrome viewer on the same LAN. You should
+   see `BWE ... via REMB` events or (against recent Chrome builds)
+   `BWE ... via TWCC` events within a few seconds of media flowing.
+2. Throttle the link (e.g. `pfctl` / `dnctl` on macOS, or browser
+   DevTools → Network throttling in the receiving tab) and watch:
+   - `BWE DOWN via TWCC` events fire,
+   - `[bwe] encoder target → NNN kbps` applies a lower rate,
+   - `[stats N] send=... kbps` converges to the new target,
+   - `loss=...%` climbs transiently and then recedes.
+3. Lift the throttle; expect `BWE UP` events and the encoder returning
+   to the upper bound. The `[bwe]` line only prints when the aggregate
+   changes by ≥5 % and no more than once per 500 ms to keep the
+   hardware encoder from thrashing.
 
 ## Signaling Protocol (Host Mode)
 
