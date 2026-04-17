@@ -55,10 +55,10 @@ Per-module quality grades for NanoRTC. Updated as implementation progresses.
 | Component | Grade | Notes |
 |-----------|-------|-------|
 | Crypto provider interface | **A** | HMAC-SHA1 + CSPRNG + DTLS + AES-128-CM + `dtls_close_notify`. DTLS-SRTP `use_srtp` in both backends. mbedTLS 3-tier compat. Browser + interop verified. |
-| Build system (CMake) | **A** | 6 feature combos, 2 crypto backends, ESP-IDF, fuzz build, coverage build, `-Wall -Wextra -Werror` |
+| Build system (CMake) | **A** | 7 feature combos, 2 crypto backends, ESP-IDF, fuzz build, coverage build, `-Wall -Wextra -Werror` |
 | Test infrastructure | **A** | Unity test framework (vendored), 400+ tests across 16 suites, RFC vectors, e2e loopback, 80%+ line coverage |
 | Interop test framework | **A** | libdatachannel v0.22.5 reference, 5/5 interop tests pass (DC + audio + video) + 3 TURN interop tests with coturn |
-| CI pipeline | **A** | GitHub Actions: 6-combo × 2-crypto matrix, constraints, ASan, fuzz (30s per harness), coverage (80% threshold) |
+| CI pipeline | **A** | GitHub Actions: 7-combo × 2-crypto matrix, constraints, ASan, fuzz (30s per harness), coverage (80% threshold) |
 | Examples | **B** | Linux browser interop, ESP32 DC/audio/camera. Browser audio+video verified. |
 | Documentation | **A** | AGENTS.md, ARCHITECTURE.md, exec plans, quality scores, memory profiles, safe-C guide, coding standards |
 | Resource optimization | **A** | 34% RAM reduction, zero-copy CRC, struct padding elimination, TURN feature flag, sizeof regression tests |

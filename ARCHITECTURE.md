@@ -101,7 +101,7 @@ Sub-features (only when `DATACHANNEL=1`):
 
 `NANORTC_FEATURE_IPV6` (default ON) controls IPv6 address string parsing in `nano_addr`. When OFF, IPv6 candidates are silently rejected. IPv4 parsing is always compiled.
 
-Six CI-tested combinations: DATA, AUDIO, MEDIA, AUDIO_ONLY, MEDIA_ONLY, CORE_ONLY.
+Seven CI-tested combinations: DATA, AUDIO, MEDIA, MEDIA_H265, AUDIO_ONLY, MEDIA_ONLY, CORE_ONLY.
 
 ## Data Flow (packet lifecycle)
 
