@@ -75,74 +75,43 @@ idf.py build
 
 ## Usage
 
-### Answerer (Controlled)
+> Signatures below are simplified for readability — optional out-parameters are omitted. See [include/nanortc.h](include/nanortc.h) for the full API.
+
+**Configure, negotiate, drive:**
 
 ```c
 #include "nanortc.h"
 
 nanortc_t rtc;
-nanortc_config_t cfg = {0};
-cfg.crypto = nanortc_crypto_mbedtls();  // or nanortc_crypto_openssl()
-cfg.role   = NANORTC_ROLE_CONTROLLED;
-nanortc_init(&rtc, &cfg);
+nanortc_init(&rtc, &(nanortc_config_t){
+    .crypto = nanortc_crypto_mbedtls(),   // or nanortc_crypto_openssl()
+    .role   = NANORTC_ROLE_CONTROLLED,    // or _CONTROLLING to offer
+});
+nanortc_add_local_candidate(&rtc, local_ip, local_port);
 
-nanortc_add_local_candidate(&rtc, "192.168.1.100", 9999);
-
-char answer[4096];
-nanortc_accept_offer(&rtc, remote_offer, answer, sizeof(answer), NULL);
-// send answer back via signaling
+char sdp[4096];
+nanortc_accept_offer(&rtc, remote_offer, sdp);
+// Offerer: create_datachannel("chat") → create_offer(sdp) → accept_answer(remote_answer)
 ```
 
-### Offerer (Controlling)
-
-```c
-nanortc_config_t cfg = {0};
-cfg.crypto = nanortc_crypto_mbedtls();
-cfg.role   = NANORTC_ROLE_CONTROLLING;
-nanortc_init(&rtc, &cfg);
-
-nanortc_add_local_candidate(&rtc, "192.168.1.200", 9999);
-nanortc_create_datachannel(&rtc, "chat", NULL);  // register DataChannel before offer
-
-char offer[4096];
-nanortc_create_offer(&rtc, offer, sizeof(offer), NULL);
-// send offer, receive answer via signaling
-nanortc_accept_answer(&rtc, remote_answer);
-```
-
-### Event Loop
-
-Your application drives the event loop — NanoRTC never touches sockets or clocks:
+The event loop is symmetric — **drain outputs, feed inputs.** You own the socket and clock:
 
 ```c
 for (;;) {
     nanortc_output_t out;
-    while (nanortc_poll_output(&rtc, &out) == NANORTC_OK) {
-        switch (out.type) {
-        case NANORTC_OUTPUT_TRANSMIT:
-            sendto(fd, out.transmit.data, out.transmit.len, ...);
-            break;
-        case NANORTC_OUTPUT_EVENT:
-            if (out.event.type == NANORTC_EV_DATACHANNEL_DATA && !out.event.datachannel_data.binary) {
-                nanortc_datachannel_send_string(&rtc, out.event.datachannel_data.id,
-                                               (const char *)out.event.datachannel_data.data);
-            } else if (out.event.type == NANORTC_EV_DISCONNECTED) {
-                goto done;
-            }
-            break;
-        case NANORTC_OUTPUT_TIMEOUT:
-            break;  // set select()/poll() timeout to out.timeout_ms
-        }
-    }
+    while (nanortc_poll_output(&rtc, &out) == NANORTC_OK)
+        handle_output(&out);              // send UDP, fire app event, note next wake-up
 
-    // Wait for network data or timeout, then:
+    size_t len = recv_udp(fd, buf, sizeof buf, &src, wake_ms);
     nanortc_handle_input(&rtc, &(nanortc_input_t){
-        .now_ms = now_ms, .data = buf, .len = len, .src = src });   // got data
-    nanortc_handle_input(&rtc, &(nanortc_input_t){ .now_ms = now_ms }); // timeout only
+        .now_ms = now_ms(), .data = buf, .len = len, .src = src,
+    });
 }
-done:
-nanortc_disconnect(&rtc);
-nanortc_destroy(&rtc);
+```
+
+One input struct in, one output struct out. No hidden state, no background threads.
+
+For complete runnable examples — browser interop, macOS camera streaming, ESP32 DataChannel — see [examples/](examples/).
 ```
 
 ## Platform Support
