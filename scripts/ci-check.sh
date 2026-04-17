@@ -254,6 +254,23 @@ run_check "Test  MEDIA + ASan" \
     ctest --test-dir "$asan_dir" --output-on-failure
 
 # ============================================================
+# 5b. Feature-OFF builds (catch dead code / leaked refs)
+# ============================================================
+# ICE_SRFLX is the only feature flag added recently that gates code outside
+# its own module — verify the OFF path still compiles and tests pass.
+echo ""
+echo "=== Feature-OFF Builds ==="
+
+srflx_off_dir="$CI_DIR/build-ci-srflx-off"
+prep_build_dir "$srflx_off_dir"
+
+run_check "Build DATA + ICE_SRFLX=OFF" \
+    bash -c "cmake -B '$srflx_off_dir' -DNANORTC_FEATURE_DATACHANNEL=ON -DNANORTC_FEATURE_AUDIO=OFF -DNANORTC_FEATURE_VIDEO=OFF -DNANORTC_FEATURE_ICE_SRFLX=OFF $CRYPTO_FLAG $LAUNCHER_FLAGS -DCMAKE_BUILD_TYPE=Debug > /dev/null 2>&1 && cmake --build '$srflx_off_dir' -j${JOBS} > /dev/null 2>&1"
+
+run_check "Test  DATA + ICE_SRFLX=OFF" \
+    ctest --test-dir "$srflx_off_dir" --output-on-failure
+
+# ============================================================
 # 6. Interop tests (requires openssl + C++ compiler)
 # ============================================================
 echo ""

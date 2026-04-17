@@ -82,8 +82,8 @@ static int do_ice_roundtrip(nano_ice_t *ctrl, nano_ice_t *ctld, uint32_t now_ms)
     src.addr[3] = 1;
     src.port = 4000;
 
-    rc = ice_handle_stun(ctld, req_buf, req_len, &src, false, crypto(), resp_buf, sizeof(resp_buf),
-                         &resp_len);
+    rc = ice_handle_stun(ctld, req_buf, req_len, &src, NANORTC_ICE_LOCAL_IDX_UNKNOWN, false,
+                         crypto(), resp_buf, sizeof(resp_buf), &resp_len);
     if (rc != NANORTC_OK)
         return rc;
 
@@ -94,8 +94,8 @@ static int do_ice_roundtrip(nano_ice_t *ctrl, nano_ice_t *ctld, uint32_t now_ms)
     resp_src.addr[3] = 2;
     resp_src.port = 5000;
 
-    return ice_handle_stun(ctrl, resp_buf, resp_len, &resp_src, false, crypto(), dummy, sizeof(dummy),
-                           &dummy_len);
+    return ice_handle_stun(ctrl, resp_buf, resp_len, &resp_src, NANORTC_ICE_LOCAL_IDX_UNKNOWN,
+                           false, crypto(), dummy, sizeof(dummy), &dummy_len);
 }
 
 /* ================================================================
@@ -241,8 +241,8 @@ TEST(test_ice_controlled_handle_request)
 
     uint8_t resp_buf[256];
     size_t resp_len = 0;
-    ASSERT_OK(ice_handle_stun(&ctld, req_buf, req_len, &src, false, crypto(), resp_buf, sizeof(resp_buf),
-                              &resp_len));
+    ASSERT_OK(ice_handle_stun(&ctld, req_buf, req_len, &src, NANORTC_ICE_LOCAL_IDX_UNKNOWN, false,
+                              crypto(), resp_buf, sizeof(resp_buf), &resp_len));
     ASSERT_TRUE(resp_len > 0);
 
     /* Verify response is valid Binding Response */
@@ -288,8 +288,8 @@ TEST(test_ice_reject_bad_username)
 
     uint8_t resp_buf[256];
     size_t resp_len = 0;
-    ASSERT_FAIL(ice_handle_stun(&ctld, req_buf, req_len, &src, false, crypto(), resp_buf, sizeof(resp_buf),
-                                &resp_len));
+    ASSERT_FAIL(ice_handle_stun(&ctld, req_buf, req_len, &src, NANORTC_ICE_LOCAL_IDX_UNKNOWN, false,
+                                crypto(), resp_buf, sizeof(resp_buf), &resp_len));
 }
 
 TEST(test_ice_reject_bad_password)
@@ -316,8 +316,8 @@ TEST(test_ice_reject_bad_password)
 
     uint8_t resp_buf[256];
     size_t resp_len = 0;
-    ASSERT_FAIL(ice_handle_stun(&ctld, req_buf, req_len, &src, false, crypto(), resp_buf, sizeof(resp_buf),
-                                &resp_len));
+    ASSERT_FAIL(ice_handle_stun(&ctld, req_buf, req_len, &src, NANORTC_ICE_LOCAL_IDX_UNKNOWN, false,
+                                crypto(), resp_buf, sizeof(resp_buf), &resp_len));
 }
 
 /* ================================================================
@@ -351,8 +351,8 @@ TEST(test_ice_use_candidate_nominates)
 
     uint8_t resp_buf[256];
     size_t resp_len = 0;
-    ASSERT_OK(ice_handle_stun(&ctld, req_buf, req_len, &src, false, crypto(), resp_buf, sizeof(resp_buf),
-                              &resp_len));
+    ASSERT_OK(ice_handle_stun(&ctld, req_buf, req_len, &src, NANORTC_ICE_LOCAL_IDX_UNKNOWN, false,
+                              crypto(), resp_buf, sizeof(resp_buf), &resp_len));
 
     /* Controlled should be CONNECTED with selected address */
     ASSERT_EQ(ctld.state, NANORTC_ICE_STATE_CONNECTED);
@@ -398,8 +398,8 @@ TEST(test_ice_no_use_candidate_no_nomination)
 
     uint8_t resp_buf[256];
     size_t resp_len = 0;
-    ASSERT_OK(ice_handle_stun(&ctld, req_buf, req_len, &src, false, crypto(), resp_buf, sizeof(resp_buf),
-                              &resp_len));
+    ASSERT_OK(ice_handle_stun(&ctld, req_buf, req_len, &src, NANORTC_ICE_LOCAL_IDX_UNKNOWN, false,
+                              crypto(), resp_buf, sizeof(resp_buf), &resp_len));
 
     /* Response generated but NOT nominated */
     ASSERT_TRUE(resp_len > 0);
@@ -456,8 +456,8 @@ TEST(test_ice_controlling_rejects_wrong_txid)
 
     uint8_t resp_buf[256];
     size_t resp_len = 0;
-    ASSERT_OK(ice_handle_stun(&ctld, req_buf, req_len, &src, false, crypto(), resp_buf, sizeof(resp_buf),
-                              &resp_len));
+    ASSERT_OK(ice_handle_stun(&ctld, req_buf, req_len, &src, NANORTC_ICE_LOCAL_IDX_UNKNOWN, false,
+                              crypto(), resp_buf, sizeof(resp_buf), &resp_len));
 
     /* Feed response to controlling — should fail (txid mismatch) */
     uint8_t dummy[256];
@@ -465,8 +465,8 @@ TEST(test_ice_controlling_rejects_wrong_txid)
     nanortc_addr_t resp_src;
     memset(&resp_src, 0, sizeof(resp_src));
     resp_src.family = 4;
-    ASSERT_FAIL(ice_handle_stun(&ctrl, resp_buf, resp_len, &resp_src, false, crypto(), dummy,
-                                sizeof(dummy), &dummy_len));
+    ASSERT_FAIL(ice_handle_stun(&ctrl, resp_buf, resp_len, &resp_src, NANORTC_ICE_LOCAL_IDX_UNKNOWN,
+                                false, crypto(), dummy, sizeof(dummy), &dummy_len));
 
     /* Should NOT be connected */
     ASSERT_NEQ(ctrl.state, NANORTC_ICE_STATE_CONNECTED);
@@ -535,9 +535,8 @@ TEST(test_ice_controlling_multi_pair_response_out_of_order)
 
     uint8_t resp2[256];
     size_t resp2_len = 0;
-    ASSERT_OK(
-        ice_handle_stun(&ctld, req2, req2_len, &src, false, crypto(), resp2, sizeof(resp2),
-                        &resp2_len));
+    ASSERT_OK(ice_handle_stun(&ctld, req2, req2_len, &src, NANORTC_ICE_LOCAL_IDX_UNKNOWN, false,
+                              crypto(), resp2, sizeof(resp2), &resp2_len));
     ASSERT_TRUE(resp2_len > 0);
 
     /* Feed resp2 back to ctrl. Pre-fix this returned NANORTC_ERR_PROTOCOL
@@ -551,9 +550,8 @@ TEST(test_ice_controlling_multi_pair_response_out_of_order)
 
     uint8_t dummy[256];
     size_t dummy_len = 0;
-    ASSERT_OK(ice_handle_stun(&ctrl, resp2, resp2_len, &resp_src, false, crypto(), dummy,
-                              sizeof(dummy),
-                              &dummy_len));
+    ASSERT_OK(ice_handle_stun(&ctrl, resp2, resp2_len, &resp_src, NANORTC_ICE_LOCAL_IDX_UNKNOWN,
+                              false, crypto(), dummy, sizeof(dummy), &dummy_len));
 
     /* The 2nd pair (remote_idx=1, addr .20, port 5001) must be the one
      * selected — NOT whichever `last_remote_idx` happened to hold. */
@@ -739,8 +737,8 @@ TEST(test_ice_credential_usage)
 
     uint8_t resp_buf[256];
     size_t resp_len = 0;
-    ASSERT_OK(ice_handle_stun(&ctld, req_buf, req_len, &src, false, crypto(), resp_buf, sizeof(resp_buf),
-                              &resp_len));
+    ASSERT_OK(ice_handle_stun(&ctld, req_buf, req_len, &src, NANORTC_ICE_LOCAL_IDX_UNKNOWN, false,
+                              crypto(), resp_buf, sizeof(resp_buf), &resp_len));
 
     stun_msg_t resp;
     ASSERT_OK(stun_parse(resp_buf, resp_len, &resp));
@@ -903,8 +901,9 @@ TEST(test_ice_stun_indication_handling)
     size_t resp_len = 0;
 
     /* Should either succeed (ignored) or fail gracefully — no crash */
-    int rc = ice_handle_stun(&ice, indication, sizeof(indication), &src, false, crypto(), resp_buf,
-                             sizeof(resp_buf), &resp_len);
+    int rc =
+        ice_handle_stun(&ice, indication, sizeof(indication), &src, NANORTC_ICE_LOCAL_IDX_UNKNOWN,
+                        false, crypto(), resp_buf, sizeof(resp_buf), &resp_len);
     /* Indications don't generate responses */
     (void)rc;
 }

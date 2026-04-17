@@ -80,6 +80,36 @@ static bool ice_verify_username(const nano_ice_t *ice, const stun_msg_t *msg)
     return memcmp(msg->username, ice->local_ufrag, local_len) == 0;
 }
 
+/*
+ * Compute the priority of a local candidate (RFC 8445 §5.1.2.1).
+ *
+ * Used by both outgoing connectivity checks (ice_generate_check) and
+ * consent freshness (ice_generate_consent), so the PRIORITY attribute
+ * sent on a srflx-paired check correctly reflects type_pref=100, not
+ * the host preference. Falls back to HOST priority for unknown idx so
+ * legacy callers that pre-fill local_candidates as HOST keep working.
+ */
+static uint32_t ice_compute_local_priority(const nano_ice_t *ice, uint8_t idx)
+{
+    if (idx >= ice->local_candidate_count) {
+        /* Unknown / out-of-range idx (incl. 0xFF sentinel): collapse to host
+         * slot 0 so the priority stays in a sane range even if a caller
+         * forgets to normalise the sentinel before reaching this path. */
+        return ICE_HOST_PRIORITY(0);
+    }
+    switch (ice->local_candidates[idx].type) {
+#if NANORTC_FEATURE_ICE_SRFLX
+    case NANORTC_ICE_CAND_SRFLX:
+        return ICE_SRFLX_PRIORITY(idx);
+#endif
+    case NANORTC_ICE_CAND_RELAY:
+        return ICE_RELAY_PRIORITY(idx);
+    case NANORTC_ICE_CAND_HOST:
+    default:
+        return ICE_HOST_PRIORITY(idx);
+    }
+}
+
 /* Map nanortc_addr_t family to STUN family constant */
 static uint8_t addr_to_stun_family(uint8_t addr_family)
 {
@@ -97,8 +127,8 @@ static uint8_t addr_to_stun_family(uint8_t addr_family)
  * ---------------------------------------------------------------- */
 
 int ice_handle_stun(nano_ice_t *ice, const uint8_t *data, size_t len, const nanortc_addr_t *src,
-                    bool via_turn, const nanortc_crypto_provider_t *crypto, uint8_t *resp_buf,
-                    size_t resp_buf_len, size_t *resp_len)
+                    uint8_t local_idx, bool via_turn, const nanortc_crypto_provider_t *crypto,
+                    uint8_t *resp_buf, size_t resp_buf_len, size_t *resp_len)
 {
     if (!ice || !data || !src || !crypto || !resp_buf || !resp_len) {
         return NANORTC_ERR_INVALID_PARAM;
@@ -171,15 +201,31 @@ int ice_handle_stun(nano_ice_t *ice, const uint8_t *data, size_t len, const nano
                              (uint8_t)(via_turn ? NANORTC_ICE_CAND_RELAY : NANORTC_ICE_CAND_HOST),
                              __ATOMIC_RELAXED);
             /*
-             * TD-018: consent path (RFC 7675) reads selected_local_idx to
-             * compute ICE_HOST_PRIORITY. In lite mode we cannot tell which
-             * local candidate the remote targeted — only src (the remote
-             * side) is exposed — so fall back to index 0. This matches the
-             * historical behavior of silently reading last_local_idx == 0;
-             * a future fix would need to plumb the local socket identity
-             * into ice_handle_stun.
+             * Resolve the local candidate that received this Binding Request.
+             * The caller (rtc_process_receive) maps the receive socket's bound
+             * address to a local_candidates[] index; pass-through preserves
+             * srflx/relay typing so consent freshness uses the right PRIORITY
+             * (RFC 7675 §5.1). When the caller cannot determine the index
+             * (NANORTC_ICE_LOCAL_IDX_UNKNOWN), fall back to 0 — the historical
+             * behavior, correct on single-candidate single-interface setups.
              */
-            ice->selected_local_idx = 0;
+            uint8_t resolved_idx = (local_idx == NANORTC_ICE_LOCAL_IDX_UNKNOWN ||
+                                    local_idx >= ice->local_candidate_count)
+                                       ? 0
+                                       : local_idx;
+            ice->selected_local_idx = resolved_idx;
+            if (resolved_idx < ice->local_candidate_count) {
+                memcpy(ice->selected_local_addr, ice->local_candidates[resolved_idx].addr,
+                       NANORTC_ADDR_SIZE);
+                ice->selected_local_port = ice->local_candidates[resolved_idx].port;
+                ice->selected_local_family = ice->local_candidates[resolved_idx].family;
+                /* Atomic write — read concurrently from test threads via
+                 * __atomic_load_n. Mirrors the treatment of selected_type
+                 * (see Binding Response path / PR #41 fix). */
+                __atomic_store_n(&ice->selected_local_type,
+                                 (uint8_t)ice->local_candidates[resolved_idx].type,
+                                 __ATOMIC_RELAXED);
+            }
             ice->nominated = true;
             ice->state = NANORTC_ICE_STATE_CONNECTED;
             /* Arm consent freshness (RFC 7675) — caller sets now_ms-based times */
@@ -269,6 +315,9 @@ int ice_handle_stun(nano_ice_t *ice, const uint8_t *data, size_t len, const nano
                    NANORTC_ADDR_SIZE);
             ice->selected_local_port = ice->local_candidates[sel_local_idx].port;
             ice->selected_local_family = ice->local_candidates[sel_local_idx].family;
+            /* Atomic write — see USE-CANDIDATE branch above. */
+            __atomic_store_n(&ice->selected_local_type,
+                             (uint8_t)ice->local_candidates[sel_local_idx].type, __ATOMIC_RELAXED);
         }
         ice->selected_local_idx = sel_local_idx;
         ice->pending[pending_slot].in_flight = false; /* free slot */
@@ -374,8 +423,9 @@ int ice_generate_check(nano_ice_t *ice, uint32_t now_ms, const nanortc_crypto_pr
 
     /* Encode Binding Request — sign with remote_pwd (RFC 8445 §7.1.1) */
     int rc = stun_encode_binding_request(
-        username, ulen, ICE_HOST_PRIORITY(ice->current_local), true, /* use_candidate */
-        true,                                                        /* is_controlling */
+        username, ulen, ice_compute_local_priority(ice, ice->current_local),
+        true, /* use_candidate */
+        true, /* is_controlling */
         ice->tie_breaker, ice->pending[slot].txid, (const uint8_t *)ice->remote_pwd,
         ice->remote_pwd_len, crypto->hmac_sha1, buf, buf_len, out_len);
     if (rc != NANORTC_OK) {
@@ -485,7 +535,8 @@ int ice_generate_consent(nano_ice_t *ice, uint32_t now_ms, const nanortc_crypto_
 
     /* Consent check = Binding Request without USE-CANDIDATE (RFC 7675 §5.1) */
     int rc = stun_encode_binding_request(
-        username, ulen, ICE_HOST_PRIORITY(ice->selected_local_idx), false, /* no use_candidate */
+        username, ulen, ice_compute_local_priority(ice, ice->selected_local_idx),
+        false, /* no use_candidate */
         ice->is_controlling, ice->tie_breaker, ice->consent_txid, (const uint8_t *)ice->remote_pwd,
         ice->remote_pwd_len, crypto->hmac_sha1, buf, buf_len, out_len);
     if (rc != NANORTC_OK) {

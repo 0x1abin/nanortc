@@ -57,7 +57,10 @@ static int e2e_relay(nanortc_t *from, nanortc_t *to, uint32_t now_ms)
             src.addr[3] = 1;
             src.port = 9999;
 
-            int rc = nanortc_handle_input(to, now_ms, out.transmit.data, out.transmit.len, &src);
+            int rc = nanortc_handle_input(to, &(nanortc_input_t){.now_ms = now_ms,
+                                                                  .data = out.transmit.data,
+                                                                  .len = out.transmit.len,
+                                                                  .src = src});
             (void)rc;
             relayed++;
         }
@@ -251,28 +254,40 @@ TEST(test_e2e_demux_byte_ranges)
 
     /* STUN range: 0x00-0x03 (malformed — no valid STUN, returns parse error) */
     uint8_t stun_pkt[20] = {0x00, 0x01, 0x00, 0x00};
-    int rc = nanortc_handle_input(&rtc, 0, stun_pkt, sizeof(stun_pkt), &addr);
+    int rc = nanortc_handle_input(
+        &rtc, &(nanortc_input_t){
+                  .now_ms = 0, .data = stun_pkt, .len = sizeof(stun_pkt), .src = addr});
     ASSERT_TRUE(rc < 0); /* parse error expected for malformed STUN */
 
     /* DTLS range: 0x14-0x40 — rejected before ICE connects */
     uint8_t dtls_pkt[20] = {0x14, 0xFE, 0xFD};
-    ASSERT_EQ(nanortc_handle_input(&rtc, 0, dtls_pkt, sizeof(dtls_pkt), &addr), NANORTC_ERR_STATE);
+    ASSERT_EQ(nanortc_handle_input(
+                  &rtc, &(nanortc_input_t){
+                            .now_ms = 0, .data = dtls_pkt, .len = sizeof(dtls_pkt), .src = addr}),
+              NANORTC_ERR_STATE);
 
     /* SRTP range: 0x80-0xBF — silently consumed (no decode path yet) */
     uint8_t srtp_pkt[20] = {0x80, 0x60};
 #if NANORTC_HAVE_MEDIA_TRANSPORT
-    ASSERT_EQ(nanortc_handle_input(&rtc, 0, srtp_pkt, sizeof(srtp_pkt), &addr),
+    ASSERT_EQ(nanortc_handle_input(
+                  &rtc, &(nanortc_input_t){
+                            .now_ms = 0, .data = srtp_pkt, .len = sizeof(srtp_pkt), .src = addr}),
               NANORTC_OK); /* pre-DTLS media silently dropped */
 #else
-    ASSERT_EQ(nanortc_handle_input(&rtc, 0, srtp_pkt, sizeof(srtp_pkt), &addr), NANORTC_OK);
+    ASSERT_EQ(nanortc_handle_input(
+                  &rtc, &(nanortc_input_t){
+                            .now_ms = 0, .data = srtp_pkt, .len = sizeof(srtp_pkt), .src = addr}),
+              NANORTC_OK);
 #endif
 
     /* Edge cases: null data = timeout-only (valid in unified API) */
-    ASSERT_EQ(nanortc_handle_input(&rtc, 0, NULL, 0, NULL), NANORTC_OK);
+    ASSERT_EQ(nanortc_handle_input(&rtc, &(nanortc_input_t){.now_ms = 0}), NANORTC_OK);
 
     /* Unknown byte range */
     uint8_t one = 0xFF;
-    ASSERT_EQ(nanortc_handle_input(&rtc, 0, &one, 1, &addr), NANORTC_ERR_PROTOCOL);
+    ASSERT_EQ(nanortc_handle_input(
+                  &rtc, &(nanortc_input_t){.now_ms = 0, .data = &one, .len = 1, .src = addr}),
+              NANORTC_ERR_PROTOCOL);
 
     nanortc_destroy(&rtc);
 }
@@ -336,7 +351,7 @@ TEST(test_e2e_ice_loopback)
 
     /* Step 1: offerer generates STUN Binding Request via timeout */
     uint32_t now_ms = 100;
-    ASSERT_OK(nanortc_handle_input(&offerer, now_ms, NULL, 0, NULL));
+    ASSERT_OK(nanortc_handle_input(&offerer, &(nanortc_input_t){.now_ms = now_ms}));
     ASSERT_EQ(offerer.ice.state, NANORTC_ICE_STATE_CHECKING);
 
     /* Step 2: relay offerer's STUN request to answerer */
@@ -371,7 +386,11 @@ TEST(test_e2e_ice_loopback)
     offerer_addr.addr[3] = 1;
     offerer_addr.port = 9999;
 
-    ASSERT_OK(nanortc_handle_input(&answerer, now_ms, saved_req, saved_req_len, &offerer_addr));
+    ASSERT_OK(
+        nanortc_handle_input(&answerer, &(nanortc_input_t){.now_ms = now_ms,
+                                                            .data = saved_req,
+                                                            .len = saved_req_len,
+                                                            .src = offerer_addr}));
 
     /* Answerer: ICE connected → DTLS handshaking (server waits for ClientHello) */
     ASSERT_EQ(answerer.ice.state, NANORTC_ICE_STATE_CONNECTED);
@@ -404,7 +423,11 @@ TEST(test_e2e_ice_loopback)
     answerer_addr.addr[3] = 2;
     answerer_addr.port = 5000;
 
-    ASSERT_OK(nanortc_handle_input(&offerer, now_ms, saved_resp, saved_resp_len, &answerer_addr));
+    ASSERT_OK(
+        nanortc_handle_input(&offerer, &(nanortc_input_t){.now_ms = now_ms,
+                                                           .data = saved_resp,
+                                                           .len = saved_resp_len,
+                                                           .src = answerer_addr}));
 
     /* Offerer: ICE connected → DTLS handshaking (client sends ClientHello) */
     ASSERT_EQ(offerer.ice.state, NANORTC_ICE_STATE_CONNECTED);
@@ -489,7 +512,7 @@ TEST(test_e2e_ice_dtls_loopback)
 
     /* Step 1: ICE handshake */
     uint32_t now_ms = 100;
-    ASSERT_OK(nanortc_handle_input(&offerer, now_ms, NULL, 0, NULL));
+    ASSERT_OK(nanortc_handle_input(&offerer, &(nanortc_input_t){.now_ms = now_ms}));
 
     /* Pump ICE + DTLS: relay packets until both DTLS_CONNECTED */
     int connected = 0;
@@ -702,7 +725,7 @@ TEST(test_e2e_full_sdp_to_dtls)
 
     /* Kick off ICE on the controlling side */
     uint32_t now_ms = 100;
-    ASSERT_OK(nanortc_handle_input(&offerer, now_ms, NULL, 0, NULL));
+    ASSERT_OK(nanortc_handle_input(&offerer, &(nanortc_input_t){.now_ms = now_ms}));
 
     /* Pump ICE + DTLS: relay packets between the two instances */
     int connected = 0;
@@ -917,7 +940,7 @@ TEST(test_e2e_ice_multi_candidate)
 
     /* First timeout: should send check to candidate 0 */
     uint32_t now_ms = 100;
-    ASSERT_OK(nanortc_handle_input(&rtc, now_ms, NULL, 0, NULL));
+    ASSERT_OK(nanortc_handle_input(&rtc, &(nanortc_input_t){.now_ms = now_ms}));
 
     nanortc_output_t out;
     ASSERT_OK(nanortc_poll_output(&rtc, &out));
@@ -931,7 +954,7 @@ TEST(test_e2e_ice_multi_candidate)
 
     /* Second timeout: should advance to candidate 1 */
     now_ms += rtc.ice.check_interval_ms + 1;
-    ASSERT_OK(nanortc_handle_input(&rtc, now_ms, NULL, 0, NULL));
+    ASSERT_OK(nanortc_handle_input(&rtc, &(nanortc_input_t){.now_ms = now_ms}));
 
     ASSERT_OK(nanortc_poll_output(&rtc, &out));
     ASSERT_EQ(out.type, NANORTC_OUTPUT_TRANSMIT);
@@ -973,8 +996,8 @@ static int e2e_full_connect(nanortc_t *offerer, nanortc_t *answerer)
     /* Pump until both reach CONNECTED (SCTP established) */
     for (int round = 0; round < 200; round++) {
         /* Trigger timeouts to drive ICE checks and SCTP retransmits */
-        nanortc_handle_input(offerer, now_ms, NULL, 0, NULL);
-        nanortc_handle_input(answerer, now_ms, NULL, 0, NULL);
+        nanortc_handle_input(offerer, &(nanortc_input_t){.now_ms = now_ms});
+        nanortc_handle_input(answerer, &(nanortc_input_t){.now_ms = now_ms});
 
         /* Relay packets between the two instances */
         e2e_pump(offerer, answerer, now_ms, 20);
@@ -1088,8 +1111,8 @@ TEST(test_e2e_full_lifecycle)
     uint32_t now_ms = 100;
     int dtls_reached = 0;
     for (int round = 0; round < 100; round++) {
-        nanortc_handle_input(&offerer, now_ms, NULL, 0, NULL);
-        nanortc_handle_input(&answerer, now_ms, NULL, 0, NULL);
+        nanortc_handle_input(&offerer, &(nanortc_input_t){.now_ms = now_ms});
+        nanortc_handle_input(&answerer, &(nanortc_input_t){.now_ms = now_ms});
         e2e_pump(&offerer, &answerer, now_ms, 20);
 
         if (offerer.state >= NANORTC_STATE_DTLS_CONNECTED) {
@@ -1150,7 +1173,7 @@ TEST(test_e2e_ice_connection_timeout)
     int got_disconnected = 0;
     uint32_t now_ms = 100;
     for (int i = 0; i < NANORTC_ICE_MAX_CHECKS + 5; i++) {
-        nanortc_handle_input(&rtc, now_ms, NULL, 0, NULL);
+        nanortc_handle_input(&rtc, &(nanortc_input_t){.now_ms = now_ms});
         nanortc_output_t out;
         while (nanortc_poll_output(&rtc, &out) == NANORTC_OK) {
             if (out.type == NANORTC_OUTPUT_EVENT) {
@@ -1593,8 +1616,8 @@ TEST(test_e2e_add_candidate_params)
         &rtc, "candidate:2 1 UDP 1686052863 10.0.0.2 9998 typ srflx raddr 0.0.0.0 rport 0"));
     ASSERT_EQ(rtc.ice.remote_candidates[1].type, NANORTC_ICE_CAND_SRFLX);
 
-    ASSERT_OK(nanortc_add_remote_candidate(
-        &rtc, "candidate:3 1 UDP 1685987071 10.0.0.3 9997 typ prflx"));
+    ASSERT_OK(
+        nanortc_add_remote_candidate(&rtc, "candidate:3 1 UDP 1685987071 10.0.0.3 9997 typ prflx"));
     ASSERT_EQ(rtc.ice.remote_candidates[2].type, NANORTC_ICE_CAND_SRFLX); /* prflx → srflx */
 
     ASSERT_OK(
@@ -1627,10 +1650,10 @@ TEST(test_e2e_handle_input_params)
     nanortc_config_t cfg = e2e_default_config();
     ASSERT_OK(nanortc_init(&rtc, &cfg));
 
-    ASSERT_FAIL(nanortc_handle_input(NULL, 0, NULL, 0, NULL));
+    ASSERT_FAIL(nanortc_handle_input(NULL, &(nanortc_input_t){.now_ms = 0}));
 
     /* NULL data is OK — just processes timers */
-    ASSERT_OK(nanortc_handle_input(&rtc, 100, NULL, 0, NULL));
+    ASSERT_OK(nanortc_handle_input(&rtc, &(nanortc_input_t){.now_ms = 100}));
 
     nanortc_destroy(&rtc);
 }
@@ -1793,7 +1816,7 @@ TEST(test_e2e_srflx_discovery)
 
     /* Tick timers → should send a STUN Binding Request to 8.8.8.8:3478 */
     uint32_t now = 100;
-    ASSERT_OK(nanortc_handle_input(&rtc, now, NULL, 0, NULL));
+    ASSERT_OK(nanortc_handle_input(&rtc, &(nanortc_input_t){.now_ms = now}));
 
     /* Poll the Binding Request output */
     nanortc_output_t out;
@@ -1824,7 +1847,8 @@ TEST(test_e2e_srflx_discovery)
     stun_src.addr[3] = 8;
     stun_src.port = 3478;
     now += 50;
-    ASSERT_OK(nanortc_handle_input(&rtc, now, resp, resp_len, &stun_src));
+    ASSERT_OK(nanortc_handle_input(
+        &rtc, &(nanortc_input_t){.now_ms = now, .data = resp, .len = resp_len, .src = stun_src}));
 
     /* Verify srflx was discovered */
     ASSERT_TRUE(rtc.srflx_discovered);
@@ -1866,7 +1890,7 @@ TEST(test_e2e_srflx_retry)
 
     /* First request */
     uint32_t now = 100;
-    ASSERT_OK(nanortc_handle_input(&rtc, now, NULL, 0, NULL));
+    ASSERT_OK(nanortc_handle_input(&rtc, &(nanortc_input_t){.now_ms = now}));
     ASSERT_EQ(rtc.stun_retries, 1);
 
     /* Drain output */
@@ -1876,12 +1900,12 @@ TEST(test_e2e_srflx_retry)
 
     /* Not enough time for retry */
     now += 200;
-    ASSERT_OK(nanortc_handle_input(&rtc, now, NULL, 0, NULL));
+    ASSERT_OK(nanortc_handle_input(&rtc, &(nanortc_input_t){.now_ms = now}));
     ASSERT_EQ(rtc.stun_retries, 1); /* still 1, not time yet */
 
     /* After 500ms → retry */
     now = 100 + 500;
-    ASSERT_OK(nanortc_handle_input(&rtc, now, NULL, 0, NULL));
+    ASSERT_OK(nanortc_handle_input(&rtc, &(nanortc_input_t){.now_ms = now}));
     ASSERT_EQ(rtc.stun_retries, 2);
 
     /* Drain */
@@ -1890,15 +1914,256 @@ TEST(test_e2e_srflx_retry)
 
     /* Third retry */
     now += 500;
-    ASSERT_OK(nanortc_handle_input(&rtc, now, NULL, 0, NULL));
+    ASSERT_OK(nanortc_handle_input(&rtc, &(nanortc_input_t){.now_ms = now}));
     ASSERT_EQ(rtc.stun_retries, 3);
 
     /* No more retries after max */
     while (nanortc_poll_output(&rtc, &out) == NANORTC_OK) {
     }
     now += 500;
-    ASSERT_OK(nanortc_handle_input(&rtc, now, NULL, 0, NULL));
+    ASSERT_OK(nanortc_handle_input(&rtc, &(nanortc_input_t){.now_ms = now}));
     ASSERT_EQ(rtc.stun_retries, 3); /* capped at 3 */
+
+    nanortc_destroy(&rtc);
+}
+
+/* T: SRFLX is added to local_candidates[] after Binding Response (NANORTC_FEATURE_ICE_SRFLX) */
+TEST(test_e2e_srflx_joins_local_candidates)
+{
+#if NANORTC_FEATURE_ICE_SRFLX
+    nanortc_t rtc;
+    nanortc_config_t cfg = e2e_default_config();
+    ASSERT_OK(nanortc_init(&rtc, &cfg));
+
+    const char *stun_url = "stun:8.8.8.8:3478";
+    nanortc_ice_server_t servers[] = {{.urls = &stun_url, .url_count = 1}};
+    ASSERT_OK(nanortc_set_ice_servers(&rtc, servers, 1));
+
+    /* Tick to send the Binding Request, then drain output. */
+    uint32_t now = 100;
+    ASSERT_OK(nanortc_handle_input(&rtc, &(nanortc_input_t){.now_ms = now}));
+    nanortc_output_t out;
+    while (nanortc_poll_output(&rtc, &out) == NANORTC_OK) {
+    }
+
+    uint8_t initial_count = rtc.ice.local_candidate_count;
+
+    /* Feed Binding Response — XOR-MAPPED-ADDRESS = 203.0.113.50:12345 */
+    uint8_t resp[64];
+    uint8_t mapped_addr[4] = {203, 0, 113, 50};
+    size_t resp_len = build_stun_binding_response(resp, rtc.stun_txid, mapped_addr, 4, 12345);
+    nanortc_addr_t stun_src = {.family = 4, .port = 3478};
+    stun_src.addr[0] = 8;
+    stun_src.addr[1] = 8;
+    stun_src.addr[2] = 8;
+    stun_src.addr[3] = 8;
+    now += 50;
+    ASSERT_OK(nanortc_handle_input(
+        &rtc, &(nanortc_input_t){.now_ms = now, .data = resp, .len = resp_len, .src = stun_src}));
+
+    /* SRFLX must now appear in local_candidates with type=SRFLX. */
+    ASSERT_EQ(rtc.ice.local_candidate_count, (uint8_t)(initial_count + 1));
+    nano_ice_candidate_t *c = &rtc.ice.local_candidates[initial_count];
+    ASSERT_EQ(c->type, NANORTC_ICE_CAND_SRFLX);
+    ASSERT_EQ(c->family, 4);
+    ASSERT_EQ(c->port, 12345);
+    ASSERT_EQ(c->addr[0], 203);
+    ASSERT_EQ(c->addr[3], 50);
+
+    /* Subsequent identical Binding Response must NOT add a duplicate slot. */
+    rtc.srflx_discovered = false; /* re-arm the parser path */
+    ASSERT_OK(nanortc_handle_input(&rtc, &(nanortc_input_t){.now_ms = now + 50,
+                                                            .data = resp,
+                                                            .len = resp_len,
+                                                            .src = stun_src}));
+    ASSERT_EQ(rtc.ice.local_candidate_count, (uint8_t)(initial_count + 1));
+
+    nanortc_destroy(&rtc);
+#endif
+}
+
+/* T: ICE_SRFLX_PRIORITY math (RFC 8445 §5.1.2.2 type_pref=100) */
+TEST(test_e2e_srflx_priority_macro)
+{
+    /* type_pref=100, local_pref=65535-idx, component=1 → (256-1)=255 */
+    uint32_t expected_idx0 = (100u << 24) | (65535u << 8) | 255u;
+    uint32_t expected_idx1 = (100u << 24) | ((65535u - 1u) << 8) | 255u;
+    ASSERT_EQ(ICE_SRFLX_PRIORITY(0), expected_idx0);
+    ASSERT_EQ(ICE_SRFLX_PRIORITY(1), expected_idx1);
+
+    /* HOST priority should keep using type_pref=126. */
+    ASSERT_EQ(ICE_HOST_PRIORITY(0), (uint32_t)((126u << 24) | (65535u << 8) | 255u));
+}
+
+/* T: dst plumbing — controlled-side USE-CANDIDATE records selected_local_idx
+ * matching the dst we passed in, not the historical 0 fallback. */
+TEST(test_e2e_handle_input_dst_resolves_local_idx)
+{
+    nanortc_t rtc;
+    nanortc_config_t cfg = e2e_default_config();
+    cfg.role = NANORTC_ROLE_CONTROLLED;
+    ASSERT_OK(nanortc_init(&rtc, &cfg));
+
+    /* Put two local host candidates on different ports so dst selects index 1. */
+    ASSERT_OK(nanortc_add_local_candidate(&rtc, "127.0.0.1", 5001));
+    ASSERT_OK(nanortc_add_local_candidate(&rtc, "127.0.0.1", 5002));
+    ASSERT_EQ(rtc.ice.local_candidate_count, 2);
+
+    /* Set ICE credentials directly (test-only access to internal state). */
+    memcpy(rtc.ice.remote_ufrag, "REMO", 4);
+    rtc.ice.remote_ufrag_len = 4;
+    const char *remote_pwd = "remotepasswordlong";
+    size_t remote_pwd_len = strlen(remote_pwd);
+    memcpy(rtc.ice.remote_pwd, remote_pwd, remote_pwd_len);
+    rtc.ice.remote_pwd_len = (uint16_t)remote_pwd_len;
+
+    /* Build a Binding Request signed with our local_pwd, USE-CANDIDATE set,
+     * local_ufrag : remote_ufrag in the USERNAME (RFC 8445 §7.2.1.1):
+     * the remote sends "ours:theirs" to us. */
+    char username[64];
+    int n = snprintf(username, sizeof(username), "%.*s:REMO", (int)rtc.ice.local_ufrag_len,
+                     rtc.ice.local_ufrag);
+    size_t ulen = (size_t)n;
+    uint8_t txid[STUN_TXID_SIZE] = {0xa1, 0xb2, 0xc3, 0xd4, 0xe5, 0xf6,
+                                    0x07, 0x18, 0x29, 0x3a, 0x4b, 0x5c};
+    uint8_t req[256];
+    size_t req_len = 0;
+    ASSERT_OK(stun_encode_binding_request(
+        username, ulen, ICE_HOST_PRIORITY(0), true, /* use_candidate */
+        true,                                       /* is_controlling — remote is controlling */
+        0x1122334455667788ull, txid, (const uint8_t *)rtc.ice.local_pwd, rtc.ice.local_pwd_len,
+        cfg.crypto->hmac_sha1, req, sizeof(req), &req_len));
+
+    /* Feed the request as if it arrived on local socket bound to 127.0.0.1:5002.
+     * dst resolves to local_candidates[1]; selected_local_idx must be 1. */
+    nanortc_addr_t src = {.family = 4, .port = 9000};
+    src.addr[0] = 192;
+    src.addr[1] = 168;
+    src.addr[2] = 1;
+    src.addr[3] = 50;
+    nanortc_addr_t dst = {.family = 4, .port = 5002};
+    dst.addr[0] = 127;
+    dst.addr[1] = 0;
+    dst.addr[2] = 0;
+    dst.addr[3] = 1;
+
+    ASSERT_OK(nanortc_handle_input(
+        &rtc,
+        &(nanortc_input_t){.now_ms = 100, .data = req, .len = req_len, .src = src, .dst = dst}));
+    ASSERT_EQ(rtc.ice.state, NANORTC_ICE_STATE_CONNECTED);
+    ASSERT_EQ(rtc.ice.selected_local_idx, 1);
+    ASSERT_EQ(rtc.ice.selected_local_type, NANORTC_ICE_CAND_HOST);
+
+    nanortc_destroy(&rtc);
+}
+
+/* T: dst plumbing — exact addr match wins over wildcard (0.0.0.0) candidate
+ * on the same port. Regression for the "wildcard always wins" bug that hid
+ * srflx (concrete addr) behind a wildcard-bound host candidate. */
+TEST(test_e2e_handle_input_dst_exact_beats_wildcard)
+{
+    nanortc_t rtc;
+    nanortc_config_t cfg = e2e_default_config();
+    cfg.role = NANORTC_ROLE_CONTROLLED;
+    ASSERT_OK(nanortc_init(&rtc, &cfg));
+
+    /* Slot 0 = wildcard (0.0.0.0) host on port 5200. Slot 1 = concrete
+     * srflx candidate on the same port (mirrors how nanortc registers a
+     * wildcard-bound host plus a discovered srflx). */
+    ASSERT_OK(nanortc_add_local_candidate(&rtc, "0.0.0.0", 5200));
+    rtc.ice.local_candidates[1].family = 4;
+    rtc.ice.local_candidates[1].port = 5200;
+    rtc.ice.local_candidates[1].type = NANORTC_ICE_CAND_SRFLX;
+    rtc.ice.local_candidates[1].addr[0] = 203;
+    rtc.ice.local_candidates[1].addr[1] = 0;
+    rtc.ice.local_candidates[1].addr[2] = 113;
+    rtc.ice.local_candidates[1].addr[3] = 7;
+    rtc.ice.local_candidate_count = 2;
+
+    memcpy(rtc.ice.remote_ufrag, "REMO", 4);
+    rtc.ice.remote_ufrag_len = 4;
+    const char *remote_pwd = "remotepasswordlong";
+    size_t remote_pwd_len = strlen(remote_pwd);
+    memcpy(rtc.ice.remote_pwd, remote_pwd, remote_pwd_len);
+    rtc.ice.remote_pwd_len = (uint16_t)remote_pwd_len;
+
+    char username[64];
+    int n = snprintf(username, sizeof(username), "%.*s:REMO", (int)rtc.ice.local_ufrag_len,
+                     rtc.ice.local_ufrag);
+    size_t ulen = (size_t)n;
+    uint8_t txid[STUN_TXID_SIZE] = {0xc1, 0xc2, 0xc3, 0xc4, 0xc5, 0xc6,
+                                    0xc7, 0xc8, 0xc9, 0xca, 0xcb, 0xcc};
+    uint8_t req[256];
+    size_t req_len = 0;
+    ASSERT_OK(stun_encode_binding_request(username, ulen, ICE_HOST_PRIORITY(0),
+                                          true, /* use_candidate */
+                                          true, /* remote is controlling */
+                                          0x1000200030004000ull, txid,
+                                          (const uint8_t *)rtc.ice.local_pwd, rtc.ice.local_pwd_len,
+                                          cfg.crypto->hmac_sha1, req, sizeof(req), &req_len));
+
+    nanortc_addr_t src = {.family = 4, .port = 9100};
+    src.addr[0] = 10;
+    src.addr[3] = 9;
+    /* dst == srflx's concrete addr; exact match must win over slot 0. */
+    nanortc_addr_t dst = {.family = 4, .port = 5200};
+    dst.addr[0] = 203;
+    dst.addr[1] = 0;
+    dst.addr[2] = 113;
+    dst.addr[3] = 7;
+
+    ASSERT_OK(nanortc_handle_input(
+        &rtc,
+        &(nanortc_input_t){.now_ms = 100, .data = req, .len = req_len, .src = src, .dst = dst}));
+    ASSERT_EQ(rtc.ice.state, NANORTC_ICE_STATE_CONNECTED);
+    ASSERT_EQ(rtc.ice.selected_local_idx, 1);
+    ASSERT_EQ(rtc.ice.selected_local_type, NANORTC_ICE_CAND_SRFLX);
+
+    nanortc_destroy(&rtc);
+}
+
+/* T: dst plumbing — NULL dst falls back to selected_local_idx=0 (legacy). */
+TEST(test_e2e_handle_input_dst_null_falls_back)
+{
+    nanortc_t rtc;
+    nanortc_config_t cfg = e2e_default_config();
+    cfg.role = NANORTC_ROLE_CONTROLLED;
+    ASSERT_OK(nanortc_init(&rtc, &cfg));
+
+    ASSERT_OK(nanortc_add_local_candidate(&rtc, "127.0.0.1", 5101));
+    ASSERT_OK(nanortc_add_local_candidate(&rtc, "127.0.0.1", 5102));
+
+    memcpy(rtc.ice.remote_ufrag, "REMO", 4);
+    rtc.ice.remote_ufrag_len = 4;
+    const char *remote_pwd = "remotepasswordlong";
+    size_t remote_pwd_len = strlen(remote_pwd);
+    memcpy(rtc.ice.remote_pwd, remote_pwd, remote_pwd_len);
+    rtc.ice.remote_pwd_len = (uint16_t)remote_pwd_len;
+
+    char username[64];
+    int n = snprintf(username, sizeof(username), "%.*s:REMO", (int)rtc.ice.local_ufrag_len,
+                     rtc.ice.local_ufrag);
+    size_t ulen = (size_t)n;
+    uint8_t txid[STUN_TXID_SIZE] = {0xb1, 0xb2, 0xb3, 0xb4, 0xb5, 0xb6,
+                                    0xb7, 0xb8, 0xb9, 0xba, 0xbb, 0xbc};
+    uint8_t req[256];
+    size_t req_len = 0;
+    ASSERT_OK(stun_encode_binding_request(
+        username, ulen, ICE_HOST_PRIORITY(0), true, /* use_candidate */
+        true,                                       /* remote is controlling */
+        0xdeadbeefcafebabeull, txid, (const uint8_t *)rtc.ice.local_pwd, rtc.ice.local_pwd_len,
+        cfg.crypto->hmac_sha1, req, sizeof(req), &req_len));
+
+    nanortc_addr_t src = {.family = 4, .port = 9001};
+    src.addr[0] = 10;
+    src.addr[3] = 7;
+
+    /* dst=NULL: legacy fallback → selected_local_idx == 0. */
+    ASSERT_OK(nanortc_handle_input(
+        &rtc,
+        &(nanortc_input_t){.now_ms = 100, .data = req, .len = req_len, .src = src}));
+    ASSERT_EQ(rtc.ice.state, NANORTC_ICE_STATE_CONNECTED);
+    ASSERT_EQ(rtc.ice.selected_local_idx, 0);
 
     nanortc_destroy(&rtc);
 }
@@ -1921,7 +2186,7 @@ TEST(test_e2e_turn_allocation_lifecycle)
 
     /* Tick → should send Allocate Request */
     uint32_t now = 100;
-    ASSERT_OK(nanortc_handle_input(&rtc, now, NULL, 0, NULL));
+    ASSERT_OK(nanortc_handle_input(&rtc, &(nanortc_input_t){.now_ms = now}));
     ASSERT_EQ(rtc.turn.state, NANORTC_TURN_ALLOCATING);
 
     /* Drain the Allocate Request output */
@@ -1974,13 +2239,15 @@ TEST(test_e2e_turn_allocation_lifecycle)
     turn_src.port = 3478;
 
     now += 50;
-    ASSERT_OK(nanortc_handle_input(&rtc, now, resp401, pos, &turn_src));
+    ASSERT_OK(nanortc_handle_input(
+        &rtc,
+        &(nanortc_input_t){.now_ms = now, .data = resp401, .len = pos, .src = turn_src}));
     ASSERT_EQ(rtc.turn.state, NANORTC_TURN_CHALLENGED);
     ASSERT_TRUE(rtc.turn.hmac_key_valid);
 
     /* Tick → should retry with credentials */
     now += 10;
-    ASSERT_OK(nanortc_handle_input(&rtc, now, NULL, 0, NULL));
+    ASSERT_OK(nanortc_handle_input(&rtc, &(nanortc_input_t){.now_ms = now}));
 
     /* Drain authenticated Allocate */
     bool found_auth = false;
@@ -2024,7 +2291,9 @@ TEST(test_e2e_turn_allocation_lifecycle)
     nanortc_write_u16be(resp_ok + 2, (uint16_t)(pos - 20));
 
     /* Feed response at same time (don't advance — avoid re-triggering CHALLENGED retry) */
-    ASSERT_OK(nanortc_handle_input(&rtc, now, resp_ok, pos, &turn_src));
+    ASSERT_OK(nanortc_handle_input(
+        &rtc,
+        &(nanortc_input_t){.now_ms = now, .data = resp_ok, .len = pos, .src = turn_src}));
     ASSERT_EQ(rtc.turn.state, NANORTC_TURN_ALLOCATED);
     ASSERT_EQ(rtc.turn.relay_port, 49152);
 
@@ -2162,7 +2431,8 @@ TEST(test_e2e_channeldata_inbound)
     /* This should unwrap ChannelData and re-dispatch the inner packet.
      * The inner STUN Binding Request will be processed by ICE (and likely
      * fail credential check since ICE isn't set up, but the unwrapping works). */
-    int rc = nanortc_handle_input(&rtc, 100, cd_pkt, 24, &turn_src);
+    int rc = nanortc_handle_input(
+        &rtc, &(nanortc_input_t){.now_ms = 100, .data = cd_pkt, .len = 24, .src = turn_src});
     /* The inner packet processing may return OK or ERR depending on ICE state,
      * but the ChannelData demux itself should not crash */
     (void)rc;
@@ -2269,6 +2539,11 @@ RUN(test_e2e_simple_binding_request);
 RUN(test_e2e_stun_server_config);
 RUN(test_e2e_srflx_discovery);
 RUN(test_e2e_srflx_retry);
+RUN(test_e2e_srflx_joins_local_candidates);
+RUN(test_e2e_srflx_priority_macro);
+RUN(test_e2e_handle_input_dst_resolves_local_idx);
+RUN(test_e2e_handle_input_dst_exact_beats_wildcard);
+RUN(test_e2e_handle_input_dst_null_falls_back);
 #if NANORTC_FEATURE_TURN
 RUN(test_e2e_turn_allocation_lifecycle);
 RUN(test_e2e_turn_relay_wrapping);

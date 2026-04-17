@@ -398,6 +398,42 @@ typedef struct nanortc_output {
     };
 } nanortc_output_t;
 
+/* ----------------------------------------------------------------
+ * Input structure
+ * ---------------------------------------------------------------- */
+
+/**
+ * @brief Network input passed to nanortc_handle_input().
+ *
+ * Mirrors the shape of nanortc_output_t.transmit so callers can think of
+ * each side symmetrically: incoming carry @c (now_ms, src, dst, data, len);
+ * outgoing transmits carry @c (src, dest, data, len). The @c now_ms
+ * timestamp is part of the input the same way str0m's @c Input::Timeout
+ * and @c Input::Receive both carry an @c Instant.
+ *
+ * For a pure timer tick (no packet to deliver), set @c data=NULL,
+ * @c len=0, and @c src.family=0 — only @c now_ms is required:
+ *
+ *   nanortc_input_t tick = { .now_ms = now };
+ *   nanortc_handle_input(rtc, &tick);
+ *
+ * When a packet is delivered, @c family==0 on the address fields means
+ * unset:
+ *   - @c src.family==0 disables packet processing (treated as timer-only).
+ *   - @c dst.family==0 falls back to the legacy "selected_local_idx=0"
+ *     behaviour, correct on single-host-candidate setups. See
+ *     rtc_resolve_local_idx() in src/nano_rtc.c for the matching rules.
+ */
+typedef struct nanortc_input {
+    uint32_t now_ms;     /**< Current monotonic time in milliseconds. */
+    const uint8_t *data; /**< Packet payload. NULL when only ticking timers. */
+    size_t len;          /**< Packet length in bytes. 0 if no packet. */
+    nanortc_addr_t src;  /**< Remote source address. family==0 means unset. */
+    nanortc_addr_t dst;  /**< Local interface that received the packet.
+                          *   family==0 means unknown — ICE then falls back
+                          *   to selected_local_idx=0 (legacy behaviour). */
+} nanortc_input_t;
+
 /* Handle types are defined after nanortc_t (forward declaration needed) */
 
 /* nanortc_direction_t is defined in nanortc_config.h */
@@ -799,29 +835,28 @@ NANORTC_API int nanortc_poll_output(nanortc_t *rtc, nanortc_output_t *out);
  * @brief Feed input into the state machine (unified entry point).
  *
  * Handles both incoming UDP packets and timer advancement in a single call.
- * Always processes pending timers (ICE checks, SCTP retransmits). If @p data
- * is non-NULL, also demuxes and processes the incoming packet (RFC 7983).
+ * Always processes pending timers (ICE checks, SCTP retransmits) using
+ * @c in->now_ms. If @c in carries packet data, also demuxes and processes
+ * the incoming packet (RFC 7983).
  *
- * Call with data=NULL, len=0, src=NULL for a pure timeout (no packet).
+ * The struct shape mirrors @c nanortc_output_t.transmit (see
+ * #nanortc_input_t). For a pure timer tick set @c data=NULL — only
+ * @c now_ms is required.
  *
  * @note For correct timing-sensitive behaviour (DTLS handshake retransmit,
  *       ICE connectivity checks, SCTP retransmit, consent freshness), this
  *       function should be called at least every
  *       @c NANORTC_MIN_POLL_INTERVAL_MS (default 50 ms) even when no packet
- *       is pending — pass @c data=NULL and @c len=0 to tick timers only.
+ *       is pending — pass an input with @c data=NULL to tick timers only.
  *       Slower polling rates may miss DTLS retransmit deadlines and delay
  *       handshake completion. A future @c nanortc_next_timeout_ms() API
  *       will let callers use epoll_wait/select with an exact timeout.
  *
- * @param rtc     Initialized RTC state.
- * @param now_ms  Current monotonic time in milliseconds.
- * @param data    Packet payload, or NULL for timeout-only.
- * @param len     Payload length in bytes (0 if data is NULL).
- * @param src     Source address of the packet, or NULL for timeout-only.
+ * @param rtc Initialized RTC state.
+ * @param in  Input bundle (must not be NULL). See #nanortc_input_t.
  * @return NANORTC_OK on success.
  */
-NANORTC_API int nanortc_handle_input(nanortc_t *rtc, uint32_t now_ms, const uint8_t *data,
-                                     size_t len, const nanortc_addr_t *src);
+NANORTC_API int nanortc_handle_input(nanortc_t *rtc, const nanortc_input_t *in);
 
 /* ----------------------------------------------------------------
  * DataChannel types
