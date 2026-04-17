@@ -360,3 +360,23 @@ void capture_force_keyframe(void)
 {
     g_ff.force_idr = 1;
 }
+
+int capture_set_bitrate(int bps)
+{
+    if (!g_ff.enc_ctx || bps <= 0) {
+        return -1;
+    }
+    /* h264_rkmpp reads its rate from AVCodecContext->bit_rate each packet
+     * plus the private-data rc_max_rate option (ffmpeg/rockchip fork).
+     * Write both so CBR ceiling and average target stay consistent. */
+    g_ff.enc_ctx->bit_rate = bps;
+    g_ff.enc_ctx->rc_max_rate = (int64_t)bps * 3 / 2;
+    g_ff.enc_ctx->rc_buffer_size = bps;
+    if (av_opt_set_int(g_ff.enc_ctx->priv_data, "rc_max_rate",
+                       (int64_t)bps * 3 / 2, AV_OPT_SEARCH_CHILDREN) < 0) {
+        /* Not every fork exposes the option at runtime. The direct
+         * AVCodecContext writes above still take effect on the next
+         * avcodec_send_frame() call. */
+    }
+    return 0;
+}

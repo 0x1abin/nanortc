@@ -243,6 +243,21 @@ void capture_stop(void)
     g_state.userdata = NULL;
 }
 
+int capture_set_bitrate(int bps)
+{
+    if (!g_state.encoder || bps <= 0) {
+        return -1;
+    }
+    /* mpph264enc/mpph265enc accept runtime `bps` writes under rc-mode=cbr
+     * (confirmed against gstreamer1.0-rockchip1 on mainline Orange Pi 5
+     * Ubuntu images). We raise `bps-max` alongside so the CBR ceiling
+     * does not clamp the new target. openh264enc uses `bitrate` instead
+     * but we don't drive that path with BWE — leave it on the static
+     * launch-time value. */
+    g_object_set(g_state.encoder, "bps", bps, "bps-max", bps * 3 / 2, NULL);
+    return 0;
+}
+
 void capture_force_keyframe(void)
 {
     if (!g_state.encoder) {
