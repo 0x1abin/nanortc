@@ -1294,6 +1294,105 @@ TEST(test_sdp_parse_non_twcc_extmap_ignored)
     ASSERT_EQ(sdp.mlines[0].twcc_ext_id, 0);
 }
 
+TEST(test_sdp_parse_twcc_extmap_id_zero_rejected)
+{
+    /* ID=0 is not a valid one-byte extension ID (RFC 8285 §4.2).
+     * Parser must ignore the line and leave twcc_ext_id cleared. */
+    const char *offer = "v=0\r\n"
+                        "o=- 1 1 IN IP4 127.0.0.1\r\n"
+                        "s=-\r\n"
+                        "t=0 0\r\n"
+                        "a=ice-ufrag:zeroufrag\r\n"
+                        "a=ice-pwd:zeropassword1234567\r\n"
+                        "a=fingerprint:sha-256 AA\r\n"
+                        "a=setup:actpass\r\n"
+                        "m=video 9 UDP/TLS/RTP/SAVPF 96\r\n"
+                        "c=IN IP4 0.0.0.0\r\n"
+                        "a=rtpmap:96 H264/90000\r\n"
+                        "a=fmtp:96 packetization-mode=1\r\n"
+                        "a=extmap:0 " NANORTC_TWCC_EXT_URI "\r\n";
+
+    nano_sdp_t sdp;
+    sdp_init(&sdp);
+    ASSERT_OK(sdp_parse(&sdp, offer, strlen(offer)));
+    ASSERT_EQ(sdp.mlines[0].twcc_ext_id, 0);
+}
+
+TEST(test_sdp_parse_twcc_extmap_id_reserved_rejected)
+{
+    /* ID=15 is reserved by RFC 8285 §4.2 (signals the end of a
+     * one-byte header block). Parser must reject it. */
+    const char *offer = "v=0\r\n"
+                        "o=- 1 1 IN IP4 127.0.0.1\r\n"
+                        "s=-\r\n"
+                        "t=0 0\r\n"
+                        "a=ice-ufrag:rsvdufrag\r\n"
+                        "a=ice-pwd:rsvdpassword1234567\r\n"
+                        "a=fingerprint:sha-256 AA\r\n"
+                        "a=setup:actpass\r\n"
+                        "m=video 9 UDP/TLS/RTP/SAVPF 96\r\n"
+                        "c=IN IP4 0.0.0.0\r\n"
+                        "a=rtpmap:96 H264/90000\r\n"
+                        "a=fmtp:96 packetization-mode=1\r\n"
+                        "a=extmap:15 " NANORTC_TWCC_EXT_URI "\r\n";
+
+    nano_sdp_t sdp;
+    sdp_init(&sdp);
+    ASSERT_OK(sdp_parse(&sdp, offer, strlen(offer)));
+    ASSERT_EQ(sdp.mlines[0].twcc_ext_id, 0);
+}
+
+TEST(test_sdp_parse_twcc_extmap_id_out_of_range_rejected)
+{
+    /* IDs > 14 cannot be represented in the one-byte header form
+     * (RFC 8285 §4.2). Parser must reject so the answer does not
+     * promise an extension the peer can't encode. */
+    const char *offer = "v=0\r\n"
+                        "o=- 1 1 IN IP4 127.0.0.1\r\n"
+                        "s=-\r\n"
+                        "t=0 0\r\n"
+                        "a=ice-ufrag:bigufrag1\r\n"
+                        "a=ice-pwd:bigpassword12345678\r\n"
+                        "a=fingerprint:sha-256 AA\r\n"
+                        "a=setup:actpass\r\n"
+                        "m=video 9 UDP/TLS/RTP/SAVPF 96\r\n"
+                        "c=IN IP4 0.0.0.0\r\n"
+                        "a=rtpmap:96 H264/90000\r\n"
+                        "a=fmtp:96 packetization-mode=1\r\n"
+                        "a=extmap:42 " NANORTC_TWCC_EXT_URI "\r\n";
+
+    nano_sdp_t sdp;
+    sdp_init(&sdp);
+    ASSERT_OK(sdp_parse(&sdp, offer, strlen(offer)));
+    ASSERT_EQ(sdp.mlines[0].twcc_ext_id, 0);
+}
+
+TEST(test_sdp_parse_twcc_extmap_duplicate_last_wins)
+{
+    /* If the remote lists the TWCC URI twice (buggy stack), the parser
+     * observably keeps the last ID it saw. This test pins the current
+     * behaviour so any future change is explicit. */
+    const char *offer = "v=0\r\n"
+                        "o=- 1 1 IN IP4 127.0.0.1\r\n"
+                        "s=-\r\n"
+                        "t=0 0\r\n"
+                        "a=ice-ufrag:dupuf\r\n"
+                        "a=ice-pwd:duppassword123456789\r\n"
+                        "a=fingerprint:sha-256 AA\r\n"
+                        "a=setup:actpass\r\n"
+                        "m=video 9 UDP/TLS/RTP/SAVPF 96\r\n"
+                        "c=IN IP4 0.0.0.0\r\n"
+                        "a=rtpmap:96 H264/90000\r\n"
+                        "a=fmtp:96 packetization-mode=1\r\n"
+                        "a=extmap:3 " NANORTC_TWCC_EXT_URI "\r\n"
+                        "a=extmap:8 " NANORTC_TWCC_EXT_URI "\r\n";
+
+    nano_sdp_t sdp;
+    sdp_init(&sdp);
+    ASSERT_OK(sdp_parse(&sdp, offer, strlen(offer)));
+    ASSERT_EQ(sdp.mlines[0].twcc_ext_id, 8);
+}
+
 TEST(test_sdp_twcc_roundtrip)
 {
     /* Answerer receives offer with ID=9, echoes same ID in answer. */
@@ -1368,6 +1467,10 @@ RUN(test_sdp_generate_video_has_twcc_extmap);
 RUN(test_sdp_parse_twcc_extmap);
 RUN(test_sdp_parse_twcc_extmap_with_direction);
 RUN(test_sdp_parse_non_twcc_extmap_ignored);
+RUN(test_sdp_parse_twcc_extmap_id_zero_rejected);
+RUN(test_sdp_parse_twcc_extmap_id_reserved_rejected);
+RUN(test_sdp_parse_twcc_extmap_id_out_of_range_rejected);
+RUN(test_sdp_parse_twcc_extmap_duplicate_last_wins);
 RUN(test_sdp_twcc_roundtrip);
 #endif
 #if NANORTC_FEATURE_H265
