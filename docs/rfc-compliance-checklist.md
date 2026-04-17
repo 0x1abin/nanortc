@@ -64,7 +64,9 @@ Per-module audit of NanoRTC against authoritative RFC specifications.
 
 ## RFC 8445 — ICE (Interactive Connectivity Establishment)
 
-**File:** `src/nano_ice.c` | **Tests:** `tests/test_ice.c` (20 tests)
+**File:** `src/nano_ice.c` | **Tests:** `tests/test_ice.c` (24 tests) | **Full audit:** [engineering/ice-rfc-compliance.md](engineering/ice-rfc-compliance.md)
+
+**Design principle:** interop-first against Chrome / Firefox / libdatachannel under embedded memory ceilings. Features that no mainstream WebRTC peer exercises (prflx materialisation, 487 Role Conflict auto-swap, per-pair state machine, triggered-check queue) are deferred with rationale in the module-level audit; everything we do implement is on-spec and interop-verified.
 
 ### Candidate Types (RFC 8445 §5.1.1)
 
@@ -87,6 +89,8 @@ Per-module audit of NanoRTC against authoritative RFC specifications.
 | # | Requirement | RFC | Impl | Test | Gap |
 |---|-------------|-----|------|------|-----|
 | 5a | Same-address-family pairs only (MUST) | §6.1.2.2 | Y | Y | `test_ice_pair_family_filter_*` — cross-family pairs are skipped before a pending slot is consumed; v4+v6 dual-stack covered by `test_e2e_ipv6_loopback_connects` |
+| 5b | Tie-breaker is a random 64-bit value (§5.2)             | §5.2 | Y | Y | `test_e2e_tie_breaker_is_randomised` — filled via `cfg->crypto->random_bytes()` in `nanortc_init()` |
+| 5c | SDP `a=candidate` priority matches STUN PRIORITY attribute | §5.1.2.1 | Y | Y | SDP srflx/relay priorities now emitted via `ICE_SRFLX_PRIORITY` / `ICE_RELAY_PRIORITY` with the runtime-matching idx |
 
 ### Connectivity Checks (RFC 8445 §7)
 
@@ -101,7 +105,10 @@ Per-module audit of NanoRTC against authoritative RFC specifications.
 | 12 | No USE-CANDIDATE → no nomination | §7.2.1.4 | Y | Y | `test_ice_no_use_candidate_no_nomination` |
 | 13 | Process binding response | §7.3 | Y | Y | `test_ice_controlling_receives_response` |
 | 14 | Reject wrong transaction ID | §7.3 | Y | Y | `test_ice_controlling_rejects_wrong_txid` |
-| 15 | Role conflict resolution | §7.3.1.1 | N | N | Not implemented |
+| 14a | Incoming Binding Request MUST carry MESSAGE-INTEGRITY + FINGERPRINT | §7.1.2.1, §8.1 | Y | Y | `test_ice_request_without_fingerprint_rejected`; absent MI or FP on request/response is a protocol error |
+| 14b | Incoming Binding Response MUST carry MESSAGE-INTEGRITY + FINGERPRINT | §7.1.3 | Y | Y | `test_ice_response_without_integrity_rejected` |
+| 14c | Binding Error Response (0x0111) frees pending slot | §7.3.1.1 + RFC 8489 §6.3.4 | Y | Y | `test_ice_binding_error_frees_pending_slot`; full 487 auto-swap deferred (see ice-rfc-compliance.md) |
+| 15 | Role conflict resolution (auto swap) | §7.3.1.1 | N | N | Deferred — not observed in WebRTC peer behavior (browsers negotiate role at offer/answer) |
 | 16 | Multiple remote candidates cycling | — | Y | N | Not explicitly tested |
 
 ### State Machine (RFC 8445 §8)
@@ -112,6 +119,8 @@ Per-module audit of NanoRTC against authoritative RFC specifications.
 | 18 | CHECKING → CONNECTED | §8 | Y | Y | `test_ice_state_checking_to_connected` |
 | 19 | CHECKING → FAILED (max checks) | §8 | Y | Y | `test_ice_state_checking_to_failed` |
 | 20 | No checks after CONNECTED | §8 | Y | Y | `test_ice_no_checks_after_connected` |
+| 21 | No checks after DISCONNECTED (consent lost) | RFC 7675 §5.2 | Y | Y | `test_ice_generate_check_noop_in_disconnected` — DISCONNECTED requires `ice_restart`, not more checks |
+| 22 | Unarmed consent_expiry_ms in CONNECTED surfaces as expired | RFC 7675 §5.1 | Y | Y | `test_consent_expired_when_unarmed` — fails loud instead of silently disabling the timeout |
 
 ---
 

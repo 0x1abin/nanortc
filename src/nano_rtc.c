@@ -392,6 +392,15 @@ int nanortc_init(nanortc_t *rtc, const nanortc_config_t *cfg)
     NANORTC_LOGI("RTC", "nanortc_init");
 
     ice_init(&rtc->ice, cfg->role == NANORTC_ROLE_CONTROLLING);
+    /* RFC 8445 §5.2: tie-breaker MUST be a cryptographically random 64-bit
+     * value. It feeds ICE-CONTROLLING / ICE-CONTROLLED on every outgoing
+     * check and resolves 487 Role Conflict; a fixed zero is both non-RFC
+     * and predictable. Fill from the crypto provider now; ice_init() cannot
+     * do this itself because it has no access to cfg->crypto. */
+    if (cfg->crypto && cfg->crypto->random_bytes) {
+        (void)cfg->crypto->random_bytes((uint8_t *)&rtc->ice.tie_breaker,
+                                        sizeof(rtc->ice.tie_breaker));
+    }
     /* DTLS context is created early in accept_offer (for SDP fingerprint);
      * handshake starts when ICE connects. */
     sdp_init(&rtc->sdp);

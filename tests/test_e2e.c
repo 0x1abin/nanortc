@@ -1234,6 +1234,29 @@ TEST(test_e2e_ipv6_remote_candidate)
     nanortc_destroy(&rtc);
 }
 
+/*
+ * RFC 8445 §5.2: tie-breaker MUST be cryptographically random, not a fixed
+ * zero. nanortc_init() must fill ice.tie_breaker via the crypto provider so
+ * ICE-CONTROLLING / ICE-CONTROLLED attributes carry a value an attacker
+ * cannot predict and 487 Role Conflict resolution has something to compare.
+ */
+TEST(test_e2e_tie_breaker_is_randomised)
+{
+    nanortc_t a, b;
+    nanortc_config_t cfg = e2e_default_config();
+    cfg.role = NANORTC_ROLE_CONTROLLING;
+    ASSERT_OK(nanortc_init(&a, &cfg));
+    ASSERT_OK(nanortc_init(&b, &cfg));
+
+    ASSERT_NEQ(a.ice.tie_breaker, 0ull);
+    ASSERT_NEQ(b.ice.tie_breaker, 0ull);
+    /* Two fresh agents almost certainly get distinct 64-bit values. */
+    ASSERT_NEQ(a.ice.tie_breaker, b.ice.tie_breaker);
+
+    nanortc_destroy(&a);
+    nanortc_destroy(&b);
+}
+
 /* ----------------------------------------------------------------
  * IPv6 loopback E2E: two instances over [::1] complete ICE + DTLS.
  *
@@ -2605,6 +2628,7 @@ RUN(test_e2e_full_lifecycle);
 RUN(test_e2e_ice_connection_timeout);
 #if NANORTC_FEATURE_IPV6
 RUN(test_e2e_ipv6_remote_candidate);
+RUN(test_e2e_tie_breaker_is_randomised);
 RUN(test_e2e_ipv6_loopback_connects);
 #endif
 /* Convenience send API */

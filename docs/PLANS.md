@@ -32,7 +32,7 @@ NanoRTC is built by AI coding agents. Estimates use **agent sessions** (one focu
 
 Tracked in [tech-debt-tracker.md](exec-plans/tech-debt-tracker.md).
 
-**Current status: 0 active items.** 20 resolved (most recently `TD-020` — ICE same-family pair filter (RFC 8445 §6.1.2.2) and IPv6 host-candidate enumeration in Linux + `browser_interop` examples; resolved 2026-04-17).
+**Current status: 0 active items.** 21 resolved (most recently `TD-021` — ICE hardening pass: mandatory MI+FP on incoming STUN, random tie-breaker per RFC 8445 §5.2, SDP-vs-STUN priority alignment, Binding Error 0x0111 handler, DISCONNECTED early-return, unarmed-consent fail-loud; resolved 2026-04-17).
 
 ## Plan Lifecycle
 

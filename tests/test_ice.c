@@ -871,6 +871,209 @@ TEST(test_ice_multiple_candidates_cycling)
 }
 
 /* ================================================================
+ * RFC 8445 / 8489 — Mandatory MESSAGE-INTEGRITY + FINGERPRINT on ICE STUN
+ *
+ * WebRTC peers always attach both attributes; the prior implementation
+ * accepted messages missing either one, which opened an injection path
+ * (attacker-forged Binding Request with matching USERNAME but no MI
+ * would nominate a pair). `ice_handle_stun` now rejects any incoming
+ * request or response that omits either attribute.
+ * ================================================================ */
+
+/* Build a minimal Binding Request with no FINGERPRINT, no MESSAGE-INTEGRITY.
+ * Returns the encoded length. */
+static size_t build_bare_binding_request(uint8_t *buf, size_t buf_len, const uint8_t txid[12],
+                                         const char *username, size_t username_len)
+{
+    if (buf_len < 20 + 4 + username_len + 3) /* header + attr hdr + body padded */
+        return 0;
+    size_t padded_ulen = (username_len + 3) & ~3u;
+    /* STUN header */
+    buf[0] = 0x00;
+    buf[1] = 0x01; /* Binding Request */
+    size_t body_len = 4 + padded_ulen;
+    buf[2] = (uint8_t)(body_len >> 8);
+    buf[3] = (uint8_t)(body_len & 0xff);
+    buf[4] = 0x21;
+    buf[5] = 0x12;
+    buf[6] = 0xA4;
+    buf[7] = 0x42;
+    memcpy(&buf[8], txid, 12);
+    /* USERNAME attribute (type 0x0006) */
+    buf[20] = 0x00;
+    buf[21] = 0x06;
+    buf[22] = (uint8_t)(username_len >> 8);
+    buf[23] = (uint8_t)(username_len & 0xff);
+    memcpy(&buf[24], username, username_len);
+    memset(&buf[24 + username_len], 0, padded_ulen - username_len);
+    return 20 + body_len;
+}
+
+TEST(test_ice_request_without_fingerprint_rejected)
+{
+    nano_ice_t ctld;
+    ice_init(&ctld, 0);
+    memcpy(ctld.local_ufrag, "PEER", 5);
+    ctld.local_ufrag_len = 4;
+    memcpy(ctld.local_pwd, "peer-password-123456", 21);
+    ctld.local_pwd_len = 20;
+
+    uint8_t txid[12] = {0};
+    uint8_t buf[128];
+    size_t req_len = build_bare_binding_request(buf, sizeof(buf), txid, "PEER:CTRL", 9);
+    ASSERT_TRUE(req_len > 0);
+
+    nanortc_addr_t src;
+    memset(&src, 0, sizeof(src));
+    src.family = 4;
+    uint8_t resp[256];
+    size_t resp_len = 0;
+    /* No FINGERPRINT, no MESSAGE-INTEGRITY → protocol error. */
+    ASSERT_FAIL(ice_handle_stun(&ctld, buf, req_len, &src, NANORTC_ICE_LOCAL_IDX_UNKNOWN, false,
+                                crypto(), resp, sizeof(resp), &resp_len));
+    ASSERT_EQ(resp_len, 0u);
+}
+
+TEST(test_ice_response_without_integrity_rejected)
+{
+    /* Controlling side that has a pending check; feed it a bare Binding
+     * Response with a matching txid but no MI/FP. Must reject without
+     * marking the agent CONNECTED. */
+    nano_ice_t ctrl;
+    ice_init(&ctrl, 1);
+    memcpy(ctrl.local_ufrag, "CTRL", 5);
+    ctrl.local_ufrag_len = 4;
+    memcpy(ctrl.local_pwd, "ctrl-password-abcdef", 21);
+    ctrl.local_pwd_len = 20;
+    memcpy(ctrl.remote_ufrag, "PEER", 5);
+    ctrl.remote_ufrag_len = 4;
+    memcpy(ctrl.remote_pwd, "peer-password-123456", 21);
+    ctrl.remote_pwd_len = 20;
+    ctrl.tie_breaker = 0x1122334455667788ull;
+    ctrl.local_candidates[0].family = 4;
+    ctrl.local_candidates[0].port = 4000;
+    ctrl.local_candidates[0].type = NANORTC_ICE_CAND_HOST;
+    ctrl.local_candidate_count = 1;
+    ctrl.remote_candidates[0].family = 4;
+    ctrl.remote_candidates[0].port = 5000;
+    ctrl.remote_candidate_count = 1;
+
+    uint8_t req_buf[256];
+    size_t req_len = 0;
+    ASSERT_OK(ice_generate_check(&ctrl, 0, crypto(), req_buf, sizeof(req_buf), &req_len));
+    ASSERT_TRUE(req_len > 0);
+    /* Echo the txid back in a bare Binding Response (type 0x0101). */
+    uint8_t resp[20];
+    resp[0] = 0x01;
+    resp[1] = 0x01;
+    resp[2] = 0x00;
+    resp[3] = 0x00;
+    resp[4] = 0x21;
+    resp[5] = 0x12;
+    resp[6] = 0xA4;
+    resp[7] = 0x42;
+    memcpy(&resp[8], &req_buf[8], 12);
+    nanortc_addr_t src = {.family = 4, .port = 5000};
+    uint8_t out[256];
+    size_t out_len = 0;
+    ASSERT_FAIL(ice_handle_stun(&ctrl, resp, sizeof(resp), &src, NANORTC_ICE_LOCAL_IDX_UNKNOWN,
+                                false, crypto(), out, sizeof(out), &out_len));
+    ASSERT_EQ(ctrl.state, NANORTC_ICE_STATE_CHECKING); /* NOT connected */
+    ASSERT_FALSE(ctrl.nominated);
+}
+
+/* ================================================================
+ * RFC 8489 §6.3.4 — Binding Error Response (0x0111) frees pending slot
+ * ================================================================ */
+
+TEST(test_ice_binding_error_frees_pending_slot)
+{
+    nano_ice_t ctrl;
+    ice_init(&ctrl, 1);
+    memcpy(ctrl.local_ufrag, "CTRL", 5);
+    ctrl.local_ufrag_len = 4;
+    memcpy(ctrl.local_pwd, "ctrl-password-abcdef", 21);
+    ctrl.local_pwd_len = 20;
+    memcpy(ctrl.remote_ufrag, "PEER", 5);
+    ctrl.remote_ufrag_len = 4;
+    memcpy(ctrl.remote_pwd, "peer-password-123456", 21);
+    ctrl.remote_pwd_len = 20;
+    ctrl.local_candidates[0].family = 4;
+    ctrl.local_candidates[0].type = NANORTC_ICE_CAND_HOST;
+    ctrl.local_candidate_count = 1;
+    ctrl.remote_candidates[0].family = 4;
+    ctrl.remote_candidate_count = 1;
+
+    uint8_t req_buf[256];
+    size_t req_len = 0;
+    ASSERT_OK(ice_generate_check(&ctrl, 0, crypto(), req_buf, sizeof(req_buf), &req_len));
+    ASSERT_TRUE(req_len > 0);
+    /* At least one pending slot in flight. */
+    int in_flight_before = 0;
+    for (int i = 0; i < NANORTC_ICE_MAX_PENDING_CHECKS; i++)
+        if (ctrl.pending[i].in_flight)
+            in_flight_before++;
+    ASSERT_TRUE(in_flight_before >= 1);
+
+    /* Craft a Binding Error Response (0x0111) with matching txid. */
+    uint8_t err[20];
+    err[0] = 0x01;
+    err[1] = 0x11;
+    err[2] = 0x00;
+    err[3] = 0x00;
+    err[4] = 0x21;
+    err[5] = 0x12;
+    err[6] = 0xA4;
+    err[7] = 0x42;
+    memcpy(&err[8], &req_buf[8], 12);
+
+    nanortc_addr_t src = {.family = 4};
+    uint8_t out[256];
+    size_t out_len = 0;
+    /* Error response is surfaced as ERR_PROTOCOL so callers can log the 4xx
+     * code, but the pending slot must be freed to avoid blocking the table. */
+    int rc = ice_handle_stun(&ctrl, err, sizeof(err), &src, NANORTC_ICE_LOCAL_IDX_UNKNOWN, false,
+                             crypto(), out, sizeof(out), &out_len);
+    (void)rc;
+    int in_flight_after = 0;
+    for (int i = 0; i < NANORTC_ICE_MAX_PENDING_CHECKS; i++)
+        if (ctrl.pending[i].in_flight)
+            in_flight_after++;
+    ASSERT_EQ(in_flight_after, in_flight_before - 1);
+    ASSERT_EQ(ctrl.state, NANORTC_ICE_STATE_CHECKING); /* NOT connected */
+}
+
+/* ================================================================
+ * ice_generate_check must not run in DISCONNECTED (consent lost)
+ * ================================================================ */
+
+TEST(test_ice_generate_check_noop_in_disconnected)
+{
+    nano_ice_t ctrl;
+    ice_init(&ctrl, 1);
+    memcpy(ctrl.local_ufrag, "CTRL", 5);
+    ctrl.local_ufrag_len = 4;
+    memcpy(ctrl.local_pwd, "ctrl-password-abcdef", 21);
+    ctrl.local_pwd_len = 20;
+    memcpy(ctrl.remote_ufrag, "PEER", 5);
+    ctrl.remote_ufrag_len = 4;
+    memcpy(ctrl.remote_pwd, "peer-password-123456", 21);
+    ctrl.remote_pwd_len = 20;
+    ctrl.local_candidates[0].family = 4;
+    ctrl.local_candidates[0].type = NANORTC_ICE_CAND_HOST;
+    ctrl.local_candidate_count = 1;
+    ctrl.remote_candidates[0].family = 4;
+    ctrl.remote_candidate_count = 1;
+    ctrl.state = NANORTC_ICE_STATE_DISCONNECTED;
+
+    uint8_t buf[256];
+    size_t out_len = 42;
+    ASSERT_OK(ice_generate_check(&ctrl, 0, crypto(), buf, sizeof(buf), &out_len));
+    ASSERT_EQ(out_len, 0u);
+    ASSERT_EQ(ctrl.check_count, 0u);
+}
+
+/* ================================================================
  * RFC 8445 §6.1.2.2 — Pair formation: same-address-family only
  * ================================================================ */
 
@@ -1073,6 +1276,13 @@ RUN(test_ice_credential_usage);
 /* RFC 8445 MUST/SHOULD requirement tests */
 RUN(test_ice_priority_formula_rfc8445);
 RUN(test_ice_multiple_candidates_cycling);
+/* MI + FINGERPRINT mandatory on all incoming STUN */
+RUN(test_ice_request_without_fingerprint_rejected);
+RUN(test_ice_response_without_integrity_rejected);
+/* Binding Error Response frees pending slot */
+RUN(test_ice_binding_error_frees_pending_slot);
+/* DISCONNECTED (consent lost) halts check generation */
+RUN(test_ice_generate_check_noop_in_disconnected);
 /* §6.1.2.2: same-family pair formation */
 RUN(test_ice_pair_family_filter_skips_cross_family);
 RUN(test_ice_pair_family_filter_picks_both_families);
