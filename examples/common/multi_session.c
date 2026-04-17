@@ -314,11 +314,14 @@ void nano_session_pool_handle_udp(nano_session_pool_t *pool, int select_ret, con
             if (n > 0) {
                 nanortc_addr_t src = {.family = 4, .port = ntohs(from.sin_port)};
                 memcpy(src.addr, &from.sin_addr, 4);
-                nanortc_handle_input(&s->rtc, now_ms, buf, (size_t)n, &src);
+                nanortc_input_t in = {
+                    .now_ms = now_ms, .data = buf, .len = (size_t)n, .src = src};
+                nanortc_handle_input(&s->rtc, &in);
             }
         } else {
             /* Timer tick even without data. */
-            nanortc_handle_input(&s->rtc, now_ms, NULL, 0, NULL);
+            nanortc_input_t tick = {.now_ms = now_ms};
+            nanortc_handle_input(&s->rtc, &tick);
         }
     }
 }

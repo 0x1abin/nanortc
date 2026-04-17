@@ -32,6 +32,10 @@ typedef struct {
      * the TURN relay candidate produced during warmup. Forces every byte
      * nanortc sends to be wrapped through the TURN server. */
     int relay_only;
+    /* When non-zero, skip the host candidate and wait for the srflx
+     * candidate (from STUN BIND) to be discovered before signaling.
+     * Forces ICE pair selection through the srflx local candidate. */
+    int srflx_only;
 } interop_nanortc_ice_config_t;
 
 typedef struct {
@@ -61,6 +65,7 @@ typedef struct {
     uint16_t port;
     int has_ice;    /* True if ICE servers are configured (enables TURN warmup) */
     int relay_only; /* True if SDP must advertise only the TURN relay candidate */
+    int srflx_only; /* True if SDP must advertise only the srflx candidate */
 } interop_nanortc_peer_t;
 
 /*

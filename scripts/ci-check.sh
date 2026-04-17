@@ -154,12 +154,15 @@ if [ ${#CRYPTO_BACKENDS[@]} -eq 0 ]; then
 fi
 echo "  (crypto backends: ${CRYPTO_BACKENDS[*]})"
 
-# 6 feature combinations (indexed arrays for bash 3.2 compat)
-COMBO_NAMES=(  DATA AUDIO MEDIA AUDIO_ONLY MEDIA_ONLY CORE_ONLY )
+# 7 feature combinations (indexed arrays for bash 3.2 compat).
+# MEDIA_H265 covers the H.265 sub-feature explicitly since H.265 is opt-in
+# (NANORTC_FEATURE_H265 defaults to OFF, even when VIDEO=ON).
+COMBO_NAMES=(  DATA AUDIO MEDIA MEDIA_H265 AUDIO_ONLY MEDIA_ONLY CORE_ONLY )
 COMBO_FLAGS=(
     "-DNANORTC_FEATURE_DATACHANNEL=ON  -DNANORTC_FEATURE_AUDIO=OFF -DNANORTC_FEATURE_VIDEO=OFF"
     "-DNANORTC_FEATURE_DATACHANNEL=ON  -DNANORTC_FEATURE_AUDIO=ON  -DNANORTC_FEATURE_VIDEO=OFF"
     "-DNANORTC_FEATURE_DATACHANNEL=ON  -DNANORTC_FEATURE_AUDIO=ON  -DNANORTC_FEATURE_VIDEO=ON"
+    "-DNANORTC_FEATURE_DATACHANNEL=ON  -DNANORTC_FEATURE_AUDIO=ON  -DNANORTC_FEATURE_VIDEO=ON  -DNANORTC_FEATURE_H265=ON"
     "-DNANORTC_FEATURE_DATACHANNEL=OFF -DNANORTC_FEATURE_AUDIO=ON  -DNANORTC_FEATURE_VIDEO=OFF"
     "-DNANORTC_FEATURE_DATACHANNEL=OFF -DNANORTC_FEATURE_AUDIO=ON  -DNANORTC_FEATURE_VIDEO=ON"
     "-DNANORTC_FEATURE_DATACHANNEL=OFF -DNANORTC_FEATURE_AUDIO=OFF -DNANORTC_FEATURE_VIDEO=OFF"
@@ -245,10 +248,27 @@ asan_dir="$CI_DIR/build-ci-asan"
 prep_build_dir "$asan_dir"
 
 run_check "Build MEDIA + ASan" \
-    bash -c "cmake -B '$asan_dir' -DNANORTC_FEATURE_DATACHANNEL=ON -DNANORTC_FEATURE_AUDIO=ON -DNANORTC_FEATURE_VIDEO=ON $CRYPTO_FLAG $LAUNCHER_FLAGS -DCMAKE_BUILD_TYPE=Debug -DADDRESS_SANITIZER=ON > /dev/null 2>&1 && cmake --build '$asan_dir' -j${JOBS} > /dev/null 2>&1"
+    bash -c "cmake -B '$asan_dir' -DNANORTC_FEATURE_DATACHANNEL=ON -DNANORTC_FEATURE_AUDIO=ON -DNANORTC_FEATURE_VIDEO=ON -DNANORTC_FEATURE_H265=ON $CRYPTO_FLAG $LAUNCHER_FLAGS -DCMAKE_BUILD_TYPE=Debug -DADDRESS_SANITIZER=ON > /dev/null 2>&1 && cmake --build '$asan_dir' -j${JOBS} > /dev/null 2>&1"
 
 run_check "Test  MEDIA + ASan" \
     ctest --test-dir "$asan_dir" --output-on-failure
+
+# ============================================================
+# 5b. Feature-OFF builds (catch dead code / leaked refs)
+# ============================================================
+# ICE_SRFLX is the only feature flag added recently that gates code outside
+# its own module — verify the OFF path still compiles and tests pass.
+echo ""
+echo "=== Feature-OFF Builds ==="
+
+srflx_off_dir="$CI_DIR/build-ci-srflx-off"
+prep_build_dir "$srflx_off_dir"
+
+run_check "Build DATA + ICE_SRFLX=OFF" \
+    bash -c "cmake -B '$srflx_off_dir' -DNANORTC_FEATURE_DATACHANNEL=ON -DNANORTC_FEATURE_AUDIO=OFF -DNANORTC_FEATURE_VIDEO=OFF -DNANORTC_FEATURE_ICE_SRFLX=OFF $CRYPTO_FLAG $LAUNCHER_FLAGS -DCMAKE_BUILD_TYPE=Debug > /dev/null 2>&1 && cmake --build '$srflx_off_dir' -j${JOBS} > /dev/null 2>&1"
+
+run_check "Test  DATA + ICE_SRFLX=OFF" \
+    ctest --test-dir "$srflx_off_dir" --output-on-failure
 
 # ============================================================
 # 6. Interop tests (requires openssl + C++ compiler)

@@ -66,7 +66,7 @@ option(NANORTC_FEATURE_DC_RELIABLE "Enable reliable DataChannel delivery" ON)
 option(NANORTC_FEATURE_DC_ORDERED  "Enable ordered DataChannel delivery" ON)
 option(NANORTC_FEATURE_AUDIO "Enable audio (RTP/SRTP/Jitter)" OFF)
 option(NANORTC_FEATURE_VIDEO "Enable video (RTP/SRTP/BWE)" OFF)
-option(NANORTC_FEATURE_H265  "Enable H.265/HEVC video codec (RFC 7798)" ${NANORTC_FEATURE_VIDEO})
+option(NANORTC_FEATURE_H265  "Enable H.265/HEVC video codec (RFC 7798)" OFF)
 option(NANORTC_FEATURE_IPV6  "Enable IPv6 address support" ON)
 option(NANORTC_FEATURE_TURN "Enable TURN relay client (RFC 5766)" ON)
 

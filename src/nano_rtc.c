@@ -183,7 +183,7 @@ static int rtc_enqueue_transmit(nanortc_t *rtc, const uint8_t *data, size_t len,
     int rc = rtc_enqueue_output(rtc, &out);
     if (rc != NANORTC_OK) {
 #if NANORTC_FEATURE_TURN
-        rtc->stats_tx_queue_full++;
+        __atomic_fetch_add(&rtc->stats_tx_queue_full, 1, __ATOMIC_RELAXED);
 #endif
         NANORTC_LOGW("RTC", "tx queue full, dropping output");
         return rc;
@@ -205,12 +205,13 @@ static int rtc_enqueue_transmit(nanortc_t *rtc, const uint8_t *data, size_t len,
      * appear from the wrong source IP and the controlling browser drops
      * them as ICE pair mismatches. */
     if (rtc->turn.configured && rtc->turn.state == NANORTC_TURN_ALLOCATED &&
-        (rtc->ice.selected_type == NANORTC_ICE_CAND_RELAY || force_via_turn)) {
+        (__atomic_load_n(&rtc->ice.selected_type, __ATOMIC_RELAXED) == NANORTC_ICE_CAND_RELAY ||
+         force_via_turn)) {
         rtc->out_wrap_meta[slot].via_turn = true;
         rtc->out_wrap_meta[slot].peer_dest = *peer_dest;
-        rtc->stats_enqueue_via_turn++;
+        __atomic_fetch_add(&rtc->stats_enqueue_via_turn, 1, __ATOMIC_RELAXED);
     } else {
-        rtc->stats_enqueue_direct++;
+        __atomic_fetch_add(&rtc->stats_enqueue_direct, 1, __ATOMIC_RELAXED);
     }
 #else
     (void)force_via_turn;
@@ -392,6 +393,15 @@ int nanortc_init(nanortc_t *rtc, const nanortc_config_t *cfg)
     NANORTC_LOGI("RTC", "nanortc_init");
 
     ice_init(&rtc->ice, cfg->role == NANORTC_ROLE_CONTROLLING);
+    /* RFC 8445 §5.2: tie-breaker MUST be a cryptographically random 64-bit
+     * value. It feeds ICE-CONTROLLING / ICE-CONTROLLED on every outgoing
+     * check and resolves 487 Role Conflict; a fixed zero is both non-RFC
+     * and predictable. Fill from the crypto provider now; ice_init() cannot
+     * do this itself because it has no access to cfg->crypto. */
+    if (cfg->crypto && cfg->crypto->random_bytes) {
+        (void)cfg->crypto->random_bytes((uint8_t *)&rtc->ice.tie_breaker,
+                                        sizeof(rtc->ice.tie_breaker));
+    }
     /* DTLS context is created early in accept_offer (for SDP fingerprint);
      * handshake starts when ICE connects. */
     sdp_init(&rtc->sdp);
@@ -509,13 +519,12 @@ static void rtc_apply_negotiated_media(nanortc_t *rtc)
         ml->direction = m->direction;
 
         /* Apply negotiated PT.
-         * For video: fmtp parsing already selected the correct H264 PT from
-         * the offer's codec list (matching packetization-mode=1).  Don't
-         * overwrite it with remote_pt, which is just the *first* PT on the
-         * m= line (often VP8, not H264). */
+         * For video: parse_rtpmap / fmtp parsing already selected the codec
+         * PT from the offer. Don't overwrite with remote_pt (first PT on
+         * m= line, often VP8). */
         if (ml->kind == SDP_MLINE_VIDEO && ml->pt != 0) {
             m->rtp.payload_type = ml->pt;
-            NANORTC_LOGD("SDP", "video using negotiated H264 PT");
+            NANORTC_LOGD("SDP", "video using negotiated PT");
         } else if (ml->remote_pt != 0) {
             m->rtp.payload_type = ml->remote_pt;
             ml->pt = ml->remote_pt;
@@ -917,7 +926,7 @@ int nanortc_poll_output(nanortc_t *rtc, nanortc_output_t *out)
                 /* Wrap failed (e.g. payload bigger than turn_buf). Drop the
                  * output silently and try the next one — the caller never
                  * needs to know about TURN-internal errors. */
-                rtc->stats_wrap_dropped++;
+                __atomic_fetch_add(&rtc->stats_wrap_dropped, 1, __ATOMIC_RELAXED);
                 NANORTC_LOGW("TURN", "lazy wrap failed, dropping output");
                 rtc->out_head++;
                 continue;
@@ -1038,7 +1047,7 @@ static void rtc_pump_sctp_through_dtls(nanortc_t *rtc, const nanortc_addr_t *des
  * ---------------------------------------------------------------- */
 
 static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
-                               const nanortc_addr_t *src, bool via_turn)
+                               const nanortc_addr_t *src, uint8_t local_idx, bool via_turn)
 {
     uint8_t first = data[0];
 
@@ -1060,7 +1069,13 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
                 peer_src.family = (peer_family == STUN_FAMILY_IPV4) ? 4 : 6;
                 memcpy(peer_src.addr, peer_addr, NANORTC_ADDR_SIZE);
                 peer_src.port = peer_port;
-                return rtc_process_receive(rtc, cd_payload, cd_len, &peer_src, true);
+                /* Propagate the outer packet's local_idx so USE-CANDIDATE on
+                 * a relay-delivered Binding Request records the correct local
+                 * candidate (the socket that received the ChannelData from
+                 * the TURN server) instead of silently degrading to idx 0 on
+                 * multi-candidate setups. If the outer packet already had an
+                 * UNKNOWN idx, that propagates unchanged. */
+                return rtc_process_receive(rtc, cd_payload, cd_len, &peer_src, local_idx, true);
             }
         }
         return NANORTC_OK;
@@ -1090,7 +1105,8 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
                 peer_src.family = (peer_family == STUN_FAMILY_IPV4) ? 4 : 6;
                 memcpy(peer_src.addr, peer_addr, NANORTC_ADDR_SIZE);
                 peer_src.port = peer_port;
-                return rtc_process_receive(rtc, payload, payload_len, &peer_src, true);
+                /* See ChannelData branch above for local_idx rationale. */
+                return rtc_process_receive(rtc, payload, payload_len, &peer_src, local_idx, true);
             }
 
             /* Not a Data indication — try as TURN response */
@@ -1151,6 +1167,36 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
                     rtc_emit_ice_candidate(rtc, rtc->srflx_cand_str);
 
                     NANORTC_LOGI("RTC", "srflx candidate discovered");
+
+#if NANORTC_FEATURE_ICE_SRFLX
+                    /* RFC 8445 §5.1.1.2: pair srflx with all remote candidates
+                     * by adding it to the local candidate set. Without this,
+                     * connectivity checks never traverse srflx — they stay
+                     * pinned to the host candidate that was added at startup.
+                     * Dedup against existing entries so repeated Binding
+                     * Responses (multiple STUN servers, retries) don't
+                     * accumulate duplicate slots. */
+                    if (rtc->ice.local_candidate_count < NANORTC_MAX_LOCAL_CANDIDATES) {
+                        bool dup = false;
+                        for (uint8_t i = 0; i < rtc->ice.local_candidate_count; i++) {
+                            const nano_ice_candidate_t *c = &rtc->ice.local_candidates[i];
+                            if (c->family == mapped_fam && c->port == smsg.mapped_port &&
+                                memcmp(c->addr, smsg.mapped_addr, NANORTC_ADDR_SIZE) == 0) {
+                                dup = true;
+                                break;
+                            }
+                        }
+                        if (!dup) {
+                            uint8_t idx = rtc->ice.local_candidate_count;
+                            rtc->ice.local_candidates[idx].family = mapped_fam;
+                            memcpy(rtc->ice.local_candidates[idx].addr, smsg.mapped_addr,
+                                   NANORTC_ADDR_SIZE);
+                            rtc->ice.local_candidates[idx].port = smsg.mapped_port;
+                            rtc->ice.local_candidates[idx].type = NANORTC_ICE_CAND_SRFLX;
+                            rtc->ice.local_candidate_count = (uint8_t)(idx + 1);
+                        }
+                    }
+#endif /* NANORTC_FEATURE_ICE_SRFLX */
                 }
                 return NANORTC_OK;
             }
@@ -1158,7 +1204,7 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
 
         bool was_consent_pending = rtc->ice.consent_pending;
         size_t resp_len = 0;
-        int rc = ice_handle_stun(&rtc->ice, data, len, src, via_turn, rtc->config.crypto,
+        int rc = ice_handle_stun(&rtc->ice, data, len, src, local_idx, via_turn, rtc->config.crypto,
                                  rtc->stun_buf, sizeof(rtc->stun_buf), &resp_len);
         if (rc != NANORTC_OK) {
             return rc;
@@ -1985,24 +2031,80 @@ static int rtc_process_timers(nanortc_t *rtc, uint32_t now_ms)
  * nanortc_handle_input — unified input entry point
  * ---------------------------------------------------------------- */
 
-int nanortc_handle_input(nanortc_t *rtc, uint32_t now_ms, const uint8_t *data, size_t len,
-                         const nanortc_addr_t *src)
+/*
+ * Resolve a local destination address to a local_candidates[] index.
+ *
+ * Two-pass match so a specific-typed candidate (e.g. srflx on the same
+ * port as a wildcard host) wins over the wildcard:
+ *
+ *   1. Exact pass  — family + port + full addr match. This is the
+ *      deterministic case; if any candidate stores a concrete address
+ *      that equals dst, pick it first.
+ *   2. Wildcard pass — family + port, with the candidate's stored addr
+ *      being all-zeros (INADDR_ANY / IN6ADDR_ANY from a wildcard bind).
+ *      Used as a fallback on single-socket setups where the registered
+ *      host candidate has no specific IP.
+ *
+ * Returns NANORTC_ICE_LOCAL_IDX_UNKNOWN when no candidate matches;
+ * ice_handle_stun then falls back to idx 0 for legacy behaviour.
+ */
+static uint8_t rtc_resolve_local_idx(const nanortc_t *rtc, const nanortc_addr_t *dst)
 {
-    if (!rtc) {
+    if (!dst || dst->family == 0) {
+        return NANORTC_ICE_LOCAL_IDX_UNKNOWN;
+    }
+    /* Pass 1: exact family + port + addr match. */
+    for (uint8_t i = 0; i < rtc->ice.local_candidate_count; i++) {
+        const nano_ice_candidate_t *c = &rtc->ice.local_candidates[i];
+        if (c->family != dst->family || c->port != dst->port) {
+            continue;
+        }
+        if (memcmp(c->addr, dst->addr, NANORTC_ADDR_SIZE) == 0) {
+            return i;
+        }
+    }
+    /* Pass 2: wildcard (all-zero addr) fallback. */
+    for (uint8_t i = 0; i < rtc->ice.local_candidate_count; i++) {
+        const nano_ice_candidate_t *c = &rtc->ice.local_candidates[i];
+        if (c->family != dst->family || c->port != dst->port) {
+            continue;
+        }
+        bool addr_wild = true;
+        for (size_t k = 0; k < NANORTC_ADDR_SIZE; k++) {
+            if (c->addr[k] != 0) {
+                addr_wild = false;
+                break;
+            }
+        }
+        if (addr_wild) {
+            return i;
+        }
+    }
+    return NANORTC_ICE_LOCAL_IDX_UNKNOWN;
+}
+
+int nanortc_handle_input(nanortc_t *rtc, const nanortc_input_t *in)
+{
+    if (!rtc || !in) {
         return NANORTC_ERR_INVALID_PARAM;
     }
 
-    rtc->now_ms = now_ms;
+    rtc->now_ms = in->now_ms;
 
     /* Always process timers (ICE checks, SCTP retransmits) */
-    int trc = rtc_process_timers(rtc, now_ms);
+    int trc = rtc_process_timers(rtc, in->now_ms);
     if (trc != NANORTC_OK) {
         return trc;
     }
 
-    /* If packet data provided, process the incoming UDP packet */
-    if (data && len > 0 && src) {
-        return rtc_process_receive(rtc, data, len, src, false);
+    /* If packet data provided, process the incoming UDP packet. family==0
+     * on src is treated as "no packet" (timer-only tick). family==0 on dst
+     * means the caller can't identify the local socket — equivalent to
+     * passing dst=NULL in the previous API. */
+    if (in->data && in->len > 0 && in->src.family != 0) {
+        const nanortc_addr_t *dst_p = (in->dst.family != 0) ? &in->dst : NULL;
+        uint8_t local_idx = rtc_resolve_local_idx(rtc, dst_p);
+        return rtc_process_receive(rtc, in->data, in->len, &in->src, local_idx, false);
     }
 
     return NANORTC_OK;
@@ -2544,6 +2646,63 @@ int nanortc_video_set_h265_parameter_sets(nanortc_t *rtc, uint8_t mid, const uin
     }
 
     ml->h265_sprop_fmtp_len = (uint16_t)pos;
+
+    /* Extract profile_space / tier_flag / profile_idc / level_idc from the
+     * VPS profile_tier_level() so the SDP fmtp advertises the actual stream
+     * level. Safari's WebRTC decoder drops frames silently when SDP level-id
+     * understates the stream's general_level_idc.
+     *
+     * RBSP layout (H.265 §7.3.2.1 with max_sub_layers_minus1 = 0), logical
+     * byte offsets (i.e. after stripping emulation-prevention 0x03 bytes
+     * per §7.4.1.1):
+     *   [0..1] NAL header (2 bytes)
+     *   [2] vps_video_parameter_set_id(4) | base_layer_internal(1) |
+     *       base_layer_available(1) | max_layers_minus1[5:4](2 MSB)
+     *   [3] max_layers_minus1[3:0](4) | max_sub_layers_minus1(3) |
+     *       temporal_id_nesting(1)
+     *   [4..5] vps_reserved_0xffff_16bits
+     *   [6] general_profile_space(2) | general_tier_flag(1) |
+     *       general_profile_idc(5)
+     *   [7..10] general_profile_compatibility_flag[0..31]
+     *   [11..16] progressive/interlaced/non_packed/frame_only + 43 reserved
+     *            bits + inbld = 48 bits total
+     *   [17] general_level_idc
+     *
+     * The caller hands us the raw NAL (with EP bytes still in). Our range
+     * of interest (up to byte 17) can contain up to three 00 00 03 triples
+     * on real encoders, so we must scan logically rather than index. */
+    if (vps_len >= 18) {
+        uint8_t ptl0 = 0;
+        uint8_t level = 0;
+        size_t logical = 0;
+        bool got_ptl0 = false;
+        uint8_t prev2 = 0xFF, prev1 = 0xFF;
+        for (size_t i = 0; i < vps_len; i++) {
+            uint8_t b = vps[i];
+            if (i >= 2 && prev2 == 0x00 && prev1 == 0x00 && b == 0x03) {
+                /* Skip emulation-prevention byte; does not count toward
+                 * logical offset. */
+                prev2 = prev1;
+                prev1 = b;
+                continue;
+            }
+            if (logical == 6) {
+                ptl0 = b;
+                got_ptl0 = true;
+            } else if (logical == 17) {
+                level = b;
+                break;
+            }
+            logical++;
+            prev2 = prev1;
+            prev1 = b;
+        }
+        if (got_ptl0) {
+            ml->h265_profile_id = (uint8_t)(ptl0 & 0x1F);
+            ml->h265_tier_flag = (uint8_t)((ptl0 >> 5) & 0x01);
+            ml->h265_level_id = level;
+        }
+    }
     NANORTC_LOGI("SDP", "H265 sprop-vps/sps/pps stored");
     return NANORTC_OK;
 }

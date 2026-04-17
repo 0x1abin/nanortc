@@ -65,6 +65,26 @@ static void setup_ice_pair(nano_ice_t *controlling, nano_ice_t *controlled)
     controlled->remote_pwd_len = 20;
 }
 
+/* Build a single host candidate with the given address family and port.
+ * IPv4 addresses are 10.0.0.<port&0xff>; IPv6 are 2001:db8::<port&0xff>. */
+static void fill_candidate(nano_ice_candidate_t *c, uint8_t family, uint16_t port)
+{
+    memset(c, 0, sizeof(*c));
+    c->family = family;
+    c->port = port;
+    c->type = NANORTC_ICE_CAND_HOST;
+    if (family == 4) {
+        c->addr[0] = 10;
+        c->addr[3] = (uint8_t)(port & 0xff);
+    } else {
+        c->addr[0] = 0x20;
+        c->addr[1] = 0x01;
+        c->addr[2] = 0x0d;
+        c->addr[3] = 0xb8;
+        c->addr[15] = (uint8_t)(port & 0xff);
+    }
+}
+
 /* Helper: generate a check and feed to peer */
 static int do_ice_roundtrip(nano_ice_t *ctrl, nano_ice_t *ctld, uint32_t now_ms)
 {
@@ -82,8 +102,8 @@ static int do_ice_roundtrip(nano_ice_t *ctrl, nano_ice_t *ctld, uint32_t now_ms)
     src.addr[3] = 1;
     src.port = 4000;
 
-    rc = ice_handle_stun(ctld, req_buf, req_len, &src, false, crypto(), resp_buf, sizeof(resp_buf),
-                         &resp_len);
+    rc = ice_handle_stun(ctld, req_buf, req_len, &src, NANORTC_ICE_LOCAL_IDX_UNKNOWN, false,
+                         crypto(), resp_buf, sizeof(resp_buf), &resp_len);
     if (rc != NANORTC_OK)
         return rc;
 
@@ -94,8 +114,8 @@ static int do_ice_roundtrip(nano_ice_t *ctrl, nano_ice_t *ctld, uint32_t now_ms)
     resp_src.addr[3] = 2;
     resp_src.port = 5000;
 
-    return ice_handle_stun(ctrl, resp_buf, resp_len, &resp_src, false, crypto(), dummy, sizeof(dummy),
-                           &dummy_len);
+    return ice_handle_stun(ctrl, resp_buf, resp_len, &resp_src, NANORTC_ICE_LOCAL_IDX_UNKNOWN,
+                           false, crypto(), dummy, sizeof(dummy), &dummy_len);
 }
 
 /* ================================================================
@@ -241,8 +261,8 @@ TEST(test_ice_controlled_handle_request)
 
     uint8_t resp_buf[256];
     size_t resp_len = 0;
-    ASSERT_OK(ice_handle_stun(&ctld, req_buf, req_len, &src, false, crypto(), resp_buf, sizeof(resp_buf),
-                              &resp_len));
+    ASSERT_OK(ice_handle_stun(&ctld, req_buf, req_len, &src, NANORTC_ICE_LOCAL_IDX_UNKNOWN, false,
+                              crypto(), resp_buf, sizeof(resp_buf), &resp_len));
     ASSERT_TRUE(resp_len > 0);
 
     /* Verify response is valid Binding Response */
@@ -288,8 +308,8 @@ TEST(test_ice_reject_bad_username)
 
     uint8_t resp_buf[256];
     size_t resp_len = 0;
-    ASSERT_FAIL(ice_handle_stun(&ctld, req_buf, req_len, &src, false, crypto(), resp_buf, sizeof(resp_buf),
-                                &resp_len));
+    ASSERT_FAIL(ice_handle_stun(&ctld, req_buf, req_len, &src, NANORTC_ICE_LOCAL_IDX_UNKNOWN, false,
+                                crypto(), resp_buf, sizeof(resp_buf), &resp_len));
 }
 
 TEST(test_ice_reject_bad_password)
@@ -316,8 +336,8 @@ TEST(test_ice_reject_bad_password)
 
     uint8_t resp_buf[256];
     size_t resp_len = 0;
-    ASSERT_FAIL(ice_handle_stun(&ctld, req_buf, req_len, &src, false, crypto(), resp_buf, sizeof(resp_buf),
-                                &resp_len));
+    ASSERT_FAIL(ice_handle_stun(&ctld, req_buf, req_len, &src, NANORTC_ICE_LOCAL_IDX_UNKNOWN, false,
+                                crypto(), resp_buf, sizeof(resp_buf), &resp_len));
 }
 
 /* ================================================================
@@ -351,8 +371,8 @@ TEST(test_ice_use_candidate_nominates)
 
     uint8_t resp_buf[256];
     size_t resp_len = 0;
-    ASSERT_OK(ice_handle_stun(&ctld, req_buf, req_len, &src, false, crypto(), resp_buf, sizeof(resp_buf),
-                              &resp_len));
+    ASSERT_OK(ice_handle_stun(&ctld, req_buf, req_len, &src, NANORTC_ICE_LOCAL_IDX_UNKNOWN, false,
+                              crypto(), resp_buf, sizeof(resp_buf), &resp_len));
 
     /* Controlled should be CONNECTED with selected address */
     ASSERT_EQ(ctld.state, NANORTC_ICE_STATE_CONNECTED);
@@ -398,13 +418,132 @@ TEST(test_ice_no_use_candidate_no_nomination)
 
     uint8_t resp_buf[256];
     size_t resp_len = 0;
-    ASSERT_OK(ice_handle_stun(&ctld, req_buf, req_len, &src, false, crypto(), resp_buf, sizeof(resp_buf),
-                              &resp_len));
+    ASSERT_OK(ice_handle_stun(&ctld, req_buf, req_len, &src, NANORTC_ICE_LOCAL_IDX_UNKNOWN, false,
+                              crypto(), resp_buf, sizeof(resp_buf), &resp_len));
 
     /* Response generated but NOT nominated */
     ASSERT_TRUE(resp_len > 0);
     ASSERT_EQ(ctld.state, NANORTC_ICE_STATE_NEW); /* not CONNECTED */
     ASSERT_FALSE(ctld.nominated);
+}
+
+/*
+ * Same-family fallback when caller cannot identify the receiving interface.
+ *
+ * Regression for the dual-stack defect where the controlled-side
+ * USE-CANDIDATE handler would latch selected_local_idx = 0 whenever
+ * local_idx == NANORTC_ICE_LOCAL_IDX_UNKNOWN. On a host that registered
+ * IPv4 first and IPv6 second (the SDK's enumeration order on Linux), an
+ * IPv6 USE-CANDIDATE would nominate the v4 candidate, so every post-
+ * nomination outgoing packet left with src.family=4 to a dest.family=6
+ * peer — RFC 8445 §6.1.2.2 violation, and ICE silently fell back to TURN
+ * relay even on permissive networks.
+ *
+ * The fix in src/nano_ice.c:ice_find_local_idx_by_family() prefers a
+ * same-family candidate before defaulting to idx 0; this test pins it.
+ */
+TEST(test_ice_controlled_dual_stack_local_fallback)
+{
+    nano_ice_t ctld;
+    ice_init(&ctld, 0);
+    memcpy(ctld.local_ufrag, "PEER", 5);
+    ctld.local_ufrag_len = 4;
+    memcpy(ctld.local_pwd, "peer-password-123456", 21);
+    ctld.local_pwd_len = 20;
+    memcpy(ctld.remote_ufrag, "CTRL", 5);
+    ctld.remote_ufrag_len = 4;
+
+    /* IPv4 candidate first (idx 0), IPv6 second (idx 1) — same enumeration
+     * order the uipcat-sdk produces from getifaddrs() on a dual-stack box. */
+    fill_candidate(&ctld.local_candidates[0], 4, 50000);
+    fill_candidate(&ctld.local_candidates[1], 6, 50000);
+    ctld.local_candidate_count = 2;
+
+    uint8_t txid[12] = {0xa1, 0xb2, 0xc3, 0xd4, 0xe5, 0xf6, 0x07, 0x18,
+                       0x29, 0x3a, 0x4b, 0x5c};
+    uint8_t key[] = "peer-password-123456";
+    uint8_t req_buf[256];
+    size_t req_len = 0;
+
+    /* USE-CANDIDATE = true so the controlled side actually nominates. */
+    ASSERT_OK(stun_encode_binding_request("PEER:CTRL", 9, 0x6E001EFF, true, true, 0x9999ull, txid,
+                                          key, sizeof(key) - 1, crypto()->hmac_sha1, req_buf,
+                                          sizeof(req_buf), &req_len));
+
+    /* Source is the iOS-style global IPv6 (2001:db8::abcd), port 60000. */
+    nanortc_addr_t src;
+    memset(&src, 0, sizeof(src));
+    src.family = 6;
+    src.addr[0] = 0x20;
+    src.addr[1] = 0x01;
+    src.addr[2] = 0x0d;
+    src.addr[3] = 0xb8;
+    src.addr[14] = 0xab;
+    src.addr[15] = 0xcd;
+    src.port = 60000;
+
+    uint8_t resp_buf[256];
+    size_t resp_len = 0;
+    /* local_idx UNKNOWN forces the fallback path — exactly what the SDK
+     * triggers when it doesn't pass IP_PKTINFO/IPV6_RECVPKTINFO cmsg. */
+    ASSERT_OK(ice_handle_stun(&ctld, req_buf, req_len, &src, NANORTC_ICE_LOCAL_IDX_UNKNOWN, false,
+                              crypto(), resp_buf, sizeof(resp_buf), &resp_len));
+
+    ASSERT_EQ(ctld.state, NANORTC_ICE_STATE_CONNECTED);
+    ASSERT_TRUE(ctld.nominated);
+    /* The whole point: idx 1 (the v6 candidate), NOT the legacy idx 0. */
+    ASSERT_EQ(ctld.selected_local_idx, 1);
+    ASSERT_EQ(ctld.selected_local_family, 6);
+    ASSERT_EQ(ctld.selected_local_addr[0], 0x20);
+    ASSERT_EQ(ctld.selected_local_addr[1], 0x01);
+}
+
+/*
+ * Legacy single-candidate behaviour preserved.
+ *
+ * When the only registered local candidate is IPv4 and a v6 USE-CANDIDATE
+ * arrives, the family lookup returns NANORTC_ICE_LOCAL_IDX_UNKNOWN and the
+ * fallback chain ends at idx 0 — same as before the fix. This guards the
+ * embedded RTOS targets that nanortc was originally tuned for.
+ */
+TEST(test_ice_controlled_single_v4_local_fallback_keeps_idx_0)
+{
+    nano_ice_t ctld;
+    ice_init(&ctld, 0);
+    memcpy(ctld.local_ufrag, "PEER", 5);
+    ctld.local_ufrag_len = 4;
+    memcpy(ctld.local_pwd, "peer-password-123456", 21);
+    ctld.local_pwd_len = 20;
+    memcpy(ctld.remote_ufrag, "CTRL", 5);
+    ctld.remote_ufrag_len = 4;
+
+    fill_candidate(&ctld.local_candidates[0], 4, 50000);
+    ctld.local_candidate_count = 1;
+
+    uint8_t txid[12] = {0};
+    uint8_t key[] = "peer-password-123456";
+    uint8_t req_buf[256];
+    size_t req_len = 0;
+    ASSERT_OK(stun_encode_binding_request("PEER:CTRL", 9, 0x6E001EFF, true, true, 0x8888ull, txid,
+                                          key, sizeof(key) - 1, crypto()->hmac_sha1, req_buf,
+                                          sizeof(req_buf), &req_len));
+
+    nanortc_addr_t src;
+    memset(&src, 0, sizeof(src));
+    src.family = 6;
+    src.addr[0] = 0x20;
+    src.addr[1] = 0x01;
+    src.port = 60000;
+
+    uint8_t resp_buf[256];
+    size_t resp_len = 0;
+    ASSERT_OK(ice_handle_stun(&ctld, req_buf, req_len, &src, NANORTC_ICE_LOCAL_IDX_UNKNOWN, false,
+                              crypto(), resp_buf, sizeof(resp_buf), &resp_len));
+
+    ASSERT_EQ(ctld.state, NANORTC_ICE_STATE_CONNECTED);
+    ASSERT_TRUE(ctld.nominated);
+    ASSERT_EQ(ctld.selected_local_idx, 0);   /* legacy fallback */
+    ASSERT_EQ(ctld.selected_local_family, 4); /* the only candidate */
 }
 
 /* ================================================================
@@ -456,8 +595,8 @@ TEST(test_ice_controlling_rejects_wrong_txid)
 
     uint8_t resp_buf[256];
     size_t resp_len = 0;
-    ASSERT_OK(ice_handle_stun(&ctld, req_buf, req_len, &src, false, crypto(), resp_buf, sizeof(resp_buf),
-                              &resp_len));
+    ASSERT_OK(ice_handle_stun(&ctld, req_buf, req_len, &src, NANORTC_ICE_LOCAL_IDX_UNKNOWN, false,
+                              crypto(), resp_buf, sizeof(resp_buf), &resp_len));
 
     /* Feed response to controlling — should fail (txid mismatch) */
     uint8_t dummy[256];
@@ -465,8 +604,8 @@ TEST(test_ice_controlling_rejects_wrong_txid)
     nanortc_addr_t resp_src;
     memset(&resp_src, 0, sizeof(resp_src));
     resp_src.family = 4;
-    ASSERT_FAIL(ice_handle_stun(&ctrl, resp_buf, resp_len, &resp_src, false, crypto(), dummy,
-                                sizeof(dummy), &dummy_len));
+    ASSERT_FAIL(ice_handle_stun(&ctrl, resp_buf, resp_len, &resp_src, NANORTC_ICE_LOCAL_IDX_UNKNOWN,
+                                false, crypto(), dummy, sizeof(dummy), &dummy_len));
 
     /* Should NOT be connected */
     ASSERT_NEQ(ctrl.state, NANORTC_ICE_STATE_CONNECTED);
@@ -535,9 +674,8 @@ TEST(test_ice_controlling_multi_pair_response_out_of_order)
 
     uint8_t resp2[256];
     size_t resp2_len = 0;
-    ASSERT_OK(
-        ice_handle_stun(&ctld, req2, req2_len, &src, false, crypto(), resp2, sizeof(resp2),
-                        &resp2_len));
+    ASSERT_OK(ice_handle_stun(&ctld, req2, req2_len, &src, NANORTC_ICE_LOCAL_IDX_UNKNOWN, false,
+                              crypto(), resp2, sizeof(resp2), &resp2_len));
     ASSERT_TRUE(resp2_len > 0);
 
     /* Feed resp2 back to ctrl. Pre-fix this returned NANORTC_ERR_PROTOCOL
@@ -551,9 +689,8 @@ TEST(test_ice_controlling_multi_pair_response_out_of_order)
 
     uint8_t dummy[256];
     size_t dummy_len = 0;
-    ASSERT_OK(ice_handle_stun(&ctrl, resp2, resp2_len, &resp_src, false, crypto(), dummy,
-                              sizeof(dummy),
-                              &dummy_len));
+    ASSERT_OK(ice_handle_stun(&ctrl, resp2, resp2_len, &resp_src, NANORTC_ICE_LOCAL_IDX_UNKNOWN,
+                              false, crypto(), dummy, sizeof(dummy), &dummy_len));
 
     /* The 2nd pair (remote_idx=1, addr .20, port 5001) must be the one
      * selected — NOT whichever `last_remote_idx` happened to hold. */
@@ -739,8 +876,8 @@ TEST(test_ice_credential_usage)
 
     uint8_t resp_buf[256];
     size_t resp_len = 0;
-    ASSERT_OK(ice_handle_stun(&ctld, req_buf, req_len, &src, false, crypto(), resp_buf, sizeof(resp_buf),
-                              &resp_len));
+    ASSERT_OK(ice_handle_stun(&ctld, req_buf, req_len, &src, NANORTC_ICE_LOCAL_IDX_UNKNOWN, false,
+                              crypto(), resp_buf, sizeof(resp_buf), &resp_len));
 
     stun_msg_t resp;
     ASSERT_OK(stun_parse(resp_buf, resp_len, &resp));
@@ -872,6 +1009,323 @@ TEST(test_ice_multiple_candidates_cycling)
     ASSERT_EQ(ice.check_count, 2);
 }
 
+/* ================================================================
+ * RFC 8445 / 8489 — Mandatory MESSAGE-INTEGRITY + FINGERPRINT on ICE STUN
+ *
+ * WebRTC peers always attach both attributes; the prior implementation
+ * accepted messages missing either one, which opened an injection path
+ * (attacker-forged Binding Request with matching USERNAME but no MI
+ * would nominate a pair). `ice_handle_stun` now rejects any incoming
+ * request or response that omits either attribute.
+ * ================================================================ */
+
+/* Build a minimal Binding Request with no FINGERPRINT, no MESSAGE-INTEGRITY.
+ * Returns the encoded length. */
+static size_t build_bare_binding_request(uint8_t *buf, size_t buf_len, const uint8_t txid[12],
+                                         const char *username, size_t username_len)
+{
+    if (buf_len < 20 + 4 + username_len + 3) /* header + attr hdr + body padded */
+        return 0;
+    size_t padded_ulen = (username_len + 3) & ~3u;
+    /* STUN header */
+    buf[0] = 0x00;
+    buf[1] = 0x01; /* Binding Request */
+    size_t body_len = 4 + padded_ulen;
+    buf[2] = (uint8_t)(body_len >> 8);
+    buf[3] = (uint8_t)(body_len & 0xff);
+    buf[4] = 0x21;
+    buf[5] = 0x12;
+    buf[6] = 0xA4;
+    buf[7] = 0x42;
+    memcpy(&buf[8], txid, 12);
+    /* USERNAME attribute (type 0x0006) */
+    buf[20] = 0x00;
+    buf[21] = 0x06;
+    buf[22] = (uint8_t)(username_len >> 8);
+    buf[23] = (uint8_t)(username_len & 0xff);
+    memcpy(&buf[24], username, username_len);
+    memset(&buf[24 + username_len], 0, padded_ulen - username_len);
+    return 20 + body_len;
+}
+
+TEST(test_ice_request_without_fingerprint_rejected)
+{
+    nano_ice_t ctld;
+    ice_init(&ctld, 0);
+    memcpy(ctld.local_ufrag, "PEER", 5);
+    ctld.local_ufrag_len = 4;
+    memcpy(ctld.local_pwd, "peer-password-123456", 21);
+    ctld.local_pwd_len = 20;
+
+    uint8_t txid[12] = {0};
+    uint8_t buf[128];
+    size_t req_len = build_bare_binding_request(buf, sizeof(buf), txid, "PEER:CTRL", 9);
+    ASSERT_TRUE(req_len > 0);
+
+    nanortc_addr_t src;
+    memset(&src, 0, sizeof(src));
+    src.family = 4;
+    uint8_t resp[256];
+    size_t resp_len = 0;
+    /* No FINGERPRINT, no MESSAGE-INTEGRITY → protocol error. */
+    ASSERT_FAIL(ice_handle_stun(&ctld, buf, req_len, &src, NANORTC_ICE_LOCAL_IDX_UNKNOWN, false,
+                                crypto(), resp, sizeof(resp), &resp_len));
+    ASSERT_EQ(resp_len, 0u);
+}
+
+TEST(test_ice_response_without_integrity_rejected)
+{
+    /* Controlling side that has a pending check; feed it a bare Binding
+     * Response with a matching txid but no MI/FP. Must reject without
+     * marking the agent CONNECTED. */
+    nano_ice_t ctrl;
+    ice_init(&ctrl, 1);
+    memcpy(ctrl.local_ufrag, "CTRL", 5);
+    ctrl.local_ufrag_len = 4;
+    memcpy(ctrl.local_pwd, "ctrl-password-abcdef", 21);
+    ctrl.local_pwd_len = 20;
+    memcpy(ctrl.remote_ufrag, "PEER", 5);
+    ctrl.remote_ufrag_len = 4;
+    memcpy(ctrl.remote_pwd, "peer-password-123456", 21);
+    ctrl.remote_pwd_len = 20;
+    ctrl.tie_breaker = 0x1122334455667788ull;
+    ctrl.local_candidates[0].family = 4;
+    ctrl.local_candidates[0].port = 4000;
+    ctrl.local_candidates[0].type = NANORTC_ICE_CAND_HOST;
+    ctrl.local_candidate_count = 1;
+    ctrl.remote_candidates[0].family = 4;
+    ctrl.remote_candidates[0].port = 5000;
+    ctrl.remote_candidate_count = 1;
+
+    uint8_t req_buf[256];
+    size_t req_len = 0;
+    ASSERT_OK(ice_generate_check(&ctrl, 0, crypto(), req_buf, sizeof(req_buf), &req_len));
+    ASSERT_TRUE(req_len > 0);
+    /* Echo the txid back in a bare Binding Response (type 0x0101). */
+    uint8_t resp[20];
+    resp[0] = 0x01;
+    resp[1] = 0x01;
+    resp[2] = 0x00;
+    resp[3] = 0x00;
+    resp[4] = 0x21;
+    resp[5] = 0x12;
+    resp[6] = 0xA4;
+    resp[7] = 0x42;
+    memcpy(&resp[8], &req_buf[8], 12);
+    nanortc_addr_t src = {.family = 4, .port = 5000};
+    uint8_t out[256];
+    size_t out_len = 0;
+    ASSERT_FAIL(ice_handle_stun(&ctrl, resp, sizeof(resp), &src, NANORTC_ICE_LOCAL_IDX_UNKNOWN,
+                                false, crypto(), out, sizeof(out), &out_len));
+    ASSERT_EQ(ctrl.state, NANORTC_ICE_STATE_CHECKING); /* NOT connected */
+    ASSERT_FALSE(ctrl.nominated);
+}
+
+/* ================================================================
+ * RFC 8489 §6.3.4 — Binding Error Response (0x0111) frees pending slot
+ * ================================================================ */
+
+TEST(test_ice_binding_error_frees_pending_slot)
+{
+    nano_ice_t ctrl;
+    ice_init(&ctrl, 1);
+    memcpy(ctrl.local_ufrag, "CTRL", 5);
+    ctrl.local_ufrag_len = 4;
+    memcpy(ctrl.local_pwd, "ctrl-password-abcdef", 21);
+    ctrl.local_pwd_len = 20;
+    memcpy(ctrl.remote_ufrag, "PEER", 5);
+    ctrl.remote_ufrag_len = 4;
+    memcpy(ctrl.remote_pwd, "peer-password-123456", 21);
+    ctrl.remote_pwd_len = 20;
+    ctrl.local_candidates[0].family = 4;
+    ctrl.local_candidates[0].type = NANORTC_ICE_CAND_HOST;
+    ctrl.local_candidate_count = 1;
+    ctrl.remote_candidates[0].family = 4;
+    ctrl.remote_candidate_count = 1;
+
+    uint8_t req_buf[256];
+    size_t req_len = 0;
+    ASSERT_OK(ice_generate_check(&ctrl, 0, crypto(), req_buf, sizeof(req_buf), &req_len));
+    ASSERT_TRUE(req_len > 0);
+    /* At least one pending slot in flight. */
+    int in_flight_before = 0;
+    for (int i = 0; i < NANORTC_ICE_MAX_PENDING_CHECKS; i++)
+        if (ctrl.pending[i].in_flight)
+            in_flight_before++;
+    ASSERT_TRUE(in_flight_before >= 1);
+
+    /* Craft a Binding Error Response (0x0111) with matching txid. */
+    uint8_t err[20];
+    err[0] = 0x01;
+    err[1] = 0x11;
+    err[2] = 0x00;
+    err[3] = 0x00;
+    err[4] = 0x21;
+    err[5] = 0x12;
+    err[6] = 0xA4;
+    err[7] = 0x42;
+    memcpy(&err[8], &req_buf[8], 12);
+
+    nanortc_addr_t src = {.family = 4};
+    uint8_t out[256];
+    size_t out_len = 0;
+    /* Error response is surfaced as ERR_PROTOCOL so callers can log the 4xx
+     * code, but the pending slot must be freed to avoid blocking the table. */
+    int rc = ice_handle_stun(&ctrl, err, sizeof(err), &src, NANORTC_ICE_LOCAL_IDX_UNKNOWN, false,
+                             crypto(), out, sizeof(out), &out_len);
+    (void)rc;
+    int in_flight_after = 0;
+    for (int i = 0; i < NANORTC_ICE_MAX_PENDING_CHECKS; i++)
+        if (ctrl.pending[i].in_flight)
+            in_flight_after++;
+    ASSERT_EQ(in_flight_after, in_flight_before - 1);
+    ASSERT_EQ(ctrl.state, NANORTC_ICE_STATE_CHECKING); /* NOT connected */
+}
+
+/* ================================================================
+ * ice_generate_check must not run in DISCONNECTED (consent lost)
+ * ================================================================ */
+
+TEST(test_ice_generate_check_noop_in_disconnected)
+{
+    nano_ice_t ctrl;
+    ice_init(&ctrl, 1);
+    memcpy(ctrl.local_ufrag, "CTRL", 5);
+    ctrl.local_ufrag_len = 4;
+    memcpy(ctrl.local_pwd, "ctrl-password-abcdef", 21);
+    ctrl.local_pwd_len = 20;
+    memcpy(ctrl.remote_ufrag, "PEER", 5);
+    ctrl.remote_ufrag_len = 4;
+    memcpy(ctrl.remote_pwd, "peer-password-123456", 21);
+    ctrl.remote_pwd_len = 20;
+    ctrl.local_candidates[0].family = 4;
+    ctrl.local_candidates[0].type = NANORTC_ICE_CAND_HOST;
+    ctrl.local_candidate_count = 1;
+    ctrl.remote_candidates[0].family = 4;
+    ctrl.remote_candidate_count = 1;
+    ctrl.state = NANORTC_ICE_STATE_DISCONNECTED;
+
+    uint8_t buf[256];
+    size_t out_len = 42;
+    ASSERT_OK(ice_generate_check(&ctrl, 0, crypto(), buf, sizeof(buf), &out_len));
+    ASSERT_EQ(out_len, 0u);
+    ASSERT_EQ(ctrl.check_count, 0u);
+}
+
+/* ================================================================
+ * RFC 8445 §6.1.2.2 — Pair formation: same-address-family only
+ * ================================================================ */
+
+/* Minimal controlling-role agent with credentials; caller fills candidates. */
+static void setup_family_filter_agent(nano_ice_t *ice)
+{
+    ice_init(ice, 1);
+    memcpy(ice->local_ufrag, "CTRL", 4);
+    ice->local_ufrag_len = 4;
+    memcpy(ice->local_pwd, "ctrl-password-abcdef", 20);
+    ice->local_pwd_len = 20;
+    memcpy(ice->remote_ufrag, "PEER", 4);
+    ice->remote_ufrag_len = 4;
+    memcpy(ice->remote_pwd, "peer-password-123456", 20);
+    ice->remote_pwd_len = 20;
+    ice->tie_breaker = 0xA1B2C3D4E5F60718ull;
+}
+
+TEST(test_ice_pair_family_filter_skips_cross_family)
+{
+    /* 1 local v4, 2 remote (v4 + v6). Only the v4-v4 pair should ever be checked. */
+    nano_ice_t ice;
+    setup_family_filter_agent(&ice);
+
+    fill_candidate(&ice.local_candidates[0], 4, 4000);
+    ice.local_candidate_count = 1;
+
+    fill_candidate(&ice.remote_candidates[0], 4, 5000);
+    fill_candidate(&ice.remote_candidates[1], 6, 5001);
+    ice.remote_candidate_count = 2;
+
+    uint8_t buf[256];
+    /* Drive several rounds, advancing past pacing each time. */
+    for (uint32_t t = 0, rounds = 0; rounds < 5; t += 100, rounds++) {
+        size_t len = 0;
+        ASSERT_OK(ice_generate_check(&ice, t, crypto(), buf, sizeof(buf), &len));
+        if (len == 0)
+            continue;
+        /* The pending slot just committed must point to the v4 remote. */
+        bool found = false;
+        for (int i = 0; i < NANORTC_ICE_MAX_PENDING_CHECKS; i++) {
+            if (ice.pending[i].in_flight && ice.pending[i].sent_at_ms == t) {
+                ASSERT_EQ(ice.remote_candidates[ice.pending[i].remote_idx].family, 4);
+                found = true;
+            }
+        }
+        ASSERT_TRUE(found);
+    }
+    ASSERT_TRUE(ice.check_count > 0);
+}
+
+TEST(test_ice_pair_family_filter_picks_both_families)
+{
+    /* 2 local (v4 + v6), 2 remote (v4 + v6). Over enough rounds both same-family
+     * pairs are exercised and no cross-family pair is ever sent. */
+    nano_ice_t ice;
+    setup_family_filter_agent(&ice);
+
+    fill_candidate(&ice.local_candidates[0], 4, 4000);
+    fill_candidate(&ice.local_candidates[1], 6, 4001);
+    ice.local_candidate_count = 2;
+
+    fill_candidate(&ice.remote_candidates[0], 4, 5000);
+    fill_candidate(&ice.remote_candidates[1], 6, 5001);
+    ice.remote_candidate_count = 2;
+
+    bool saw_v4 = false, saw_v6 = false;
+    uint8_t buf[256];
+    for (uint32_t t = 0, rounds = 0; rounds < 10; t += 100, rounds++) {
+        size_t len = 0;
+        ASSERT_OK(ice_generate_check(&ice, t, crypto(), buf, sizeof(buf), &len));
+        if (len == 0)
+            continue;
+        for (int i = 0; i < NANORTC_ICE_MAX_PENDING_CHECKS; i++) {
+            if (!ice.pending[i].in_flight || ice.pending[i].sent_at_ms != t)
+                continue;
+            uint8_t lf = ice.local_candidates[ice.pending[i].local_idx].family;
+            uint8_t rf = ice.remote_candidates[ice.pending[i].remote_idx].family;
+            ASSERT_EQ(lf, rf); /* never cross-family */
+            if (lf == 4)
+                saw_v4 = true;
+            if (lf == 6)
+                saw_v6 = true;
+        }
+    }
+    ASSERT_TRUE(saw_v4);
+    ASSERT_TRUE(saw_v6);
+}
+
+TEST(test_ice_pair_family_filter_no_match_no_send)
+{
+    /* Local v4 only, remote v6 only — no same-family pair exists.
+     * ice_generate_check must return OK without emitting a packet or
+     * consuming a check slot. */
+    nano_ice_t ice;
+    setup_family_filter_agent(&ice);
+
+    fill_candidate(&ice.local_candidates[0], 4, 4000);
+    ice.local_candidate_count = 1;
+
+    fill_candidate(&ice.remote_candidates[0], 6, 5000);
+    ice.remote_candidate_count = 1;
+
+    uint8_t buf[256];
+    for (uint32_t t = 0; t < 500; t += 100) {
+        size_t len = 42;
+        ASSERT_OK(ice_generate_check(&ice, t, crypto(), buf, sizeof(buf), &len));
+        ASSERT_EQ(len, 0u);
+    }
+    ASSERT_EQ(ice.check_count, 0u);
+    ASSERT_EQ(ice.state, NANORTC_ICE_STATE_NEW); /* still waiting for a matching pair */
+}
+
 /*
  * RFC 8445: STUN Binding Indication (type 0x0011) should be handled gracefully.
  * ICE agents may receive indications — they should not cause errors.
@@ -903,8 +1357,9 @@ TEST(test_ice_stun_indication_handling)
     size_t resp_len = 0;
 
     /* Should either succeed (ignored) or fail gracefully — no crash */
-    int rc = ice_handle_stun(&ice, indication, sizeof(indication), &src, false, crypto(), resp_buf,
-                             sizeof(resp_buf), &resp_len);
+    int rc =
+        ice_handle_stun(&ice, indication, sizeof(indication), &src, NANORTC_ICE_LOCAL_IDX_UNKNOWN,
+                        false, crypto(), resp_buf, sizeof(resp_buf), &resp_len);
     /* Indications don't generate responses */
     (void)rc;
 }
@@ -926,6 +1381,8 @@ RUN(test_ice_reject_bad_password);
 /* §7.2.1.4: USE-CANDIDATE / nomination */
 RUN(test_ice_use_candidate_nominates);
 RUN(test_ice_no_use_candidate_no_nomination);
+RUN(test_ice_controlled_dual_stack_local_fallback);
+RUN(test_ice_controlled_single_v4_local_fallback_keeps_idx_0);
 /* §7.3: Processing responses */
 RUN(test_ice_controlling_receives_response);
 RUN(test_ice_controlling_rejects_wrong_txid);
@@ -942,5 +1399,16 @@ RUN(test_ice_credential_usage);
 /* RFC 8445 MUST/SHOULD requirement tests */
 RUN(test_ice_priority_formula_rfc8445);
 RUN(test_ice_multiple_candidates_cycling);
+/* MI + FINGERPRINT mandatory on all incoming STUN */
+RUN(test_ice_request_without_fingerprint_rejected);
+RUN(test_ice_response_without_integrity_rejected);
+/* Binding Error Response frees pending slot */
+RUN(test_ice_binding_error_frees_pending_slot);
+/* DISCONNECTED (consent lost) halts check generation */
+RUN(test_ice_generate_check_noop_in_disconnected);
+/* §6.1.2.2: same-family pair formation */
+RUN(test_ice_pair_family_filter_skips_cross_family);
+RUN(test_ice_pair_family_filter_picks_both_families);
+RUN(test_ice_pair_family_filter_no_match_no_send);
 RUN(test_ice_stun_indication_handling);
 TEST_MAIN_END

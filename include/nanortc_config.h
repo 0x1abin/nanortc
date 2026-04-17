@@ -207,6 +207,14 @@
 #endif
 #endif
 
+#if defined(IDF_VER) && !defined(NANORTC_FEATURE_H265)
+#ifdef CONFIG_NANORTC_FEATURE_H265
+#define NANORTC_FEATURE_H265 1
+#else
+#define NANORTC_FEATURE_H265 0
+#endif
+#endif
+
 /* ----------------------------------------------------------------
  * Feature flags (orthogonal, user-configurable)
  *
@@ -255,6 +263,17 @@
  *  When disabled, IPv6 candidates are silently rejected, saving ~300 bytes. */
 #ifndef NANORTC_FEATURE_IPV6
 #define NANORTC_FEATURE_IPV6 1
+#endif
+
+/** @brief Enable server-reflexive (srflx) candidate registration. Default: 1.
+ *  STUN Binding Request/Response and trickle emission of the discovered srflx
+ *  candidate happen unconditionally when a stun: server is configured. This
+ *  flag controls whether the srflx candidate is also added to the local
+ *  candidate set so the ICE agent can use it in connectivity checks (RFC 8445
+ *  §5.1.1.2). Disable for strict LAN-only deployments where srflx pairing
+ *  is never needed; the saving is small (a dedup loop + a few macros). */
+#ifndef NANORTC_FEATURE_ICE_SRFLX
+#define NANORTC_FEATURE_ICE_SRFLX 1
 #endif
 
 /* Derived (internal): true when any media transport is needed */
@@ -608,10 +627,11 @@
  * ---------------------------------------------------------------- */
 
 /** @brief Enable H.265/HEVC video codec (RFC 7798). Sub-feature of VIDEO.
- *  Disable to save ~11 KB of code on flash-constrained targets even when
- *  NANORTC_FEATURE_VIDEO is on. Defaults to the VIDEO master switch. */
+ *  Default: 0. Must be explicitly enabled even when NANORTC_FEATURE_VIDEO=1;
+ *  H.264 is the only video codec offered by default. Adds ~11 KB of code
+ *  when enabled. */
 #ifndef NANORTC_FEATURE_H265
-#define NANORTC_FEATURE_H265 NANORTC_FEATURE_VIDEO
+#define NANORTC_FEATURE_H265 0
 #endif
 
 #if NANORTC_FEATURE_H265 && !NANORTC_FEATURE_VIDEO

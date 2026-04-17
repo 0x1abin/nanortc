@@ -724,6 +724,140 @@ TEST(test_sdp_generate_video_h265_with_sprop)
         NULL);
 }
 
+/* Safari/WebKit advertises H.265 with an rtpmap but no matching fmtp. The
+ * legacy fmtp-driven PT selection in parse_rtpmap stayed at 0 in that case,
+ * leaving ml->pt at the nanortc default (98). Replaying that PT to Safari
+ * silently selected H.264 on its side (Safari's PT 98 is H.264), so the
+ * decoder dropped every frame. The rtpmap-driven PT adoption must let the
+ * answerer echo the offerer's PT even without a companion fmtp. */
+TEST(test_sdp_h265_rtpmap_without_fmtp_picks_remote_pt)
+{
+    nano_sdp_t sdp;
+    sdp_init(&sdp);
+    /* Local H.265 track registered before offer (answerer path). */
+    int vmid = sdp_add_mline(&sdp, SDP_MLINE_VIDEO, NANORTC_CODEC_H265,
+                             NANORTC_VIDEO_H265_DEFAULT_PT, 0, 0, NANORTC_DIR_SENDONLY);
+    ASSERT(vmid >= 0);
+
+    /* Safari-style offer: video m-line carries an H.265 rtpmap but no fmtp. */
+    static const char *offer = "v=0\r\n"
+                               "o=- 1 2 IN IP4 127.0.0.1\r\n"
+                               "s=-\r\n"
+                               "t=0 0\r\n"
+                               "m=video 9 UDP/TLS/RTP/SAVPF 35\r\n"
+                               "c=IN IP4 0.0.0.0\r\n"
+                               "a=mid:0\r\n"
+                               "a=ice-ufrag:safuf\r\n"
+                               "a=ice-pwd:safaripassword123456\r\n"
+                               "a=fingerprint:sha-256 AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:"
+                               "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99\r\n"
+                               "a=setup:actpass\r\n"
+                               "a=rtcp-mux\r\n"
+                               "a=recvonly\r\n"
+                               "a=rtpmap:35 H265/90000\r\n";
+    ASSERT_OK(sdp_parse(&sdp, offer, strlen(offer) /* NANORTC_SAFE: API boundary */));
+    /* Parser must have adopted the offer's PT (35) for our H.265 track. */
+    ASSERT_EQ(sdp.mlines[0].pt, 35);
+    ASSERT_EQ(sdp.mlines[0].codec, NANORTC_CODEC_H265);
+}
+
+/* Chrome's offer lists H.264 with the preferred profile AND H.265. The
+ * H.264 preferred-profile match used to hijack ml->pt for an H.265 local
+ * track, downgrading the advertised answer codec. Guard asserts the local
+ * H.265 codec wins regardless of H.264 fmtp placement in the offer. */
+TEST(test_sdp_h265_local_track_not_hijacked_by_h264_fmtp)
+{
+    nano_sdp_t sdp;
+    sdp_init(&sdp);
+    int vmid = sdp_add_mline(&sdp, SDP_MLINE_VIDEO, NANORTC_CODEC_H265,
+                             NANORTC_VIDEO_H265_DEFAULT_PT, 0, 0, NANORTC_DIR_SENDONLY);
+    ASSERT(vmid >= 0);
+
+    static const char *offer = "v=0\r\n"
+                               "o=- 1 2 IN IP4 127.0.0.1\r\n"
+                               "s=-\r\n"
+                               "t=0 0\r\n"
+                               "m=video 9 UDP/TLS/RTP/SAVPF 109 49\r\n"
+                               "c=IN IP4 0.0.0.0\r\n"
+                               "a=mid:0\r\n"
+                               "a=ice-ufrag:cruf\r\n"
+                               "a=ice-pwd:chromepassword1234567\r\n"
+                               "a=fingerprint:sha-256 AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:"
+                               "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99\r\n"
+                               "a=setup:actpass\r\n"
+                               "a=rtcp-mux\r\n"
+                               "a=recvonly\r\n"
+                               "a=rtpmap:109 H264/90000\r\n"
+                               "a=fmtp:109 level-asymmetry-allowed=1;packetization-mode=1;"
+                               "profile-level-id=42e01f\r\n"
+                               "a=rtpmap:49 H265/90000\r\n"
+                               "a=fmtp:49 profile-id=1;tier-flag=0;level-id=120;tx-mode=SRST\r\n";
+    ASSERT_OK(sdp_parse(&sdp, offer, strlen(offer) /* NANORTC_SAFE: API boundary */));
+    ASSERT_EQ(sdp.mlines[0].pt, 49);
+    ASSERT_EQ(sdp.mlines[0].codec, NANORTC_CODEC_H265);
+}
+
+/* Regression for the state-preservation bug: sdp_parse used to memset
+ * each m=line, wiping ml->codec, h265_sprop_fmtp, and h265 profile/tier/
+ * level that the caller had installed via nanortc_video_set_h265_
+ * parameter_sets(). The answer then fell back to H.264 or omitted sprop-*
+ * even when the caller had asked for H.265. The parser now snapshots and
+ * restores those fields by mline index. */
+TEST(test_sdp_parse_preserves_local_h265_state)
+{
+    nano_sdp_t sdp;
+    sdp_init(&sdp);
+    int vmid = sdp_add_mline(&sdp, SDP_MLINE_VIDEO, NANORTC_CODEC_H265,
+                             NANORTC_VIDEO_H265_DEFAULT_PT, 0, 0, NANORTC_DIR_SENDONLY);
+    ASSERT(vmid >= 0);
+
+    /* Populate local-side fields the way nanortc_video_set_h265_parameter_sets
+     * would. Exact byte contents don't matter — we only assert survival. */
+    const char *frag = "sprop-vps=AAABAA==;sprop-sps=AAACAA==;sprop-pps=AAADAA==";
+    size_t frag_len = strlen(frag);
+    memcpy(sdp.mlines[0].h265_sprop_fmtp, frag, frag_len);
+    sdp.mlines[0].h265_sprop_fmtp_len = (uint16_t)frag_len;
+    sdp.mlines[0].h265_profile_id = 1;
+    sdp.mlines[0].h265_tier_flag  = 0;
+    sdp.mlines[0].h265_level_id   = 120;
+
+    static const char *offer = "v=0\r\n"
+                               "o=- 1 2 IN IP4 127.0.0.1\r\n"
+                               "s=-\r\n"
+                               "t=0 0\r\n"
+                               "m=video 9 UDP/TLS/RTP/SAVPF 35\r\n"
+                               "c=IN IP4 0.0.0.0\r\n"
+                               "a=mid:0\r\n"
+                               "a=ice-ufrag:preuf\r\n"
+                               "a=ice-pwd:preservepassword1234\r\n"
+                               "a=fingerprint:sha-256 AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:"
+                               "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99\r\n"
+                               "a=setup:actpass\r\n"
+                               "a=rtcp-mux\r\n"
+                               "a=recvonly\r\n"
+                               "a=rtpmap:35 H265/90000\r\n";
+    ASSERT_OK(sdp_parse(&sdp, offer, strlen(offer) /* NANORTC_SAFE: API boundary */));
+
+    ASSERT_EQ(sdp.mlines[0].codec, NANORTC_CODEC_H265);
+    ASSERT_EQ(sdp.mlines[0].h265_sprop_fmtp_len, (uint16_t)frag_len);
+    ASSERT_TRUE(memcmp(sdp.mlines[0].h265_sprop_fmtp, frag, frag_len) == 0);
+    ASSERT_EQ(sdp.mlines[0].h265_profile_id, 1);
+    ASSERT_EQ(sdp.mlines[0].h265_tier_flag, 0);
+    ASSERT_EQ(sdp.mlines[0].h265_level_id, 120);
+
+    /* Regenerate the answer and confirm the preserved level-id wins over
+     * the hardcoded fallback (93). */
+    char buf[4096];
+    size_t out_len = 0;
+    memcpy(sdp.local_ufrag, "ansuf", 5);
+    memcpy(sdp.local_pwd, "answerpassword123456", 20);
+    sdp.local_setup = NANORTC_SDP_SETUP_PASSIVE;
+    ASSERT_OK(sdp_generate_answer(&sdp, buf, sizeof(buf), &out_len));
+    ASSERT_TRUE(strstr(buf, "a=rtpmap:35 H265/90000") != NULL);
+    ASSERT_TRUE(strstr(buf, "level-id=120") != NULL);
+    ASSERT_TRUE(strstr(buf, "sprop-vps=AAABAA==") != NULL);
+}
+
 /* RFC 7798 §4.1: MSST and MSMT tx-modes are unsupported — parser must
  * reject an SDP that declares them for our H.265 PT. */
 TEST(test_sdp_parse_reject_h265_msmt)
@@ -1239,6 +1373,9 @@ RUN(test_sdp_twcc_roundtrip);
 #if NANORTC_FEATURE_H265
 RUN(test_sdp_generate_video_h265);
 RUN(test_sdp_generate_video_h265_with_sprop);
+RUN(test_sdp_h265_rtpmap_without_fmtp_picks_remote_pt);
+RUN(test_sdp_h265_local_track_not_hijacked_by_h264_fmtp);
+RUN(test_sdp_parse_preserves_local_h265_state);
 RUN(test_sdp_parse_reject_h265_msmt);
 #endif
 #endif

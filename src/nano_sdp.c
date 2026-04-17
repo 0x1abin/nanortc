@@ -212,6 +212,15 @@ static void parse_rtpmap(nano_sdp_mline_t *ml, const char *line, size_t line_len
         /* Match H265 (4 chars) — must come before any broader match */
         else if (p + 4 <= end && memcmp(p, "H265", 4) == 0) {
             ml->video_h265_rtpmap_pt = (uint8_t)pt;
+            /* If the local track is H.265, adopt the offer's PT here. A
+             * later fmtp line for the same codec can still override, but
+             * offers that ship an H.265 rtpmap with no companion fmtp
+             * (Safari/WebKit) would otherwise leave ml->pt at the local
+             * default — and that PT often maps to a different codec on
+             * the offerer's side, silently breaking decode. */
+            if (ml->codec == NANORTC_CODEC_H265) {
+                ml->pt = (uint8_t)pt;
+            }
         }
 #endif
     }
@@ -236,10 +245,42 @@ int sdp_parse(nano_sdp_t *sdp, const char *sdp_str, size_t len)
         return NANORTC_ERR_INVALID_PARAM;
     }
 
-    /* Reset m-line tracking — parser assigns MIDs from position in SDP */
+    /* Reset m-line tracking — parser assigns MIDs from position in SDP.
+     * But first snapshot local state that the caller populated BEFORE the
+     * offer arrived: codec selection (add_video_track) and H.265 parameter
+     * sets + profile-tier-level (set_h265_parameter_sets). The memset on
+     * each m=line below would otherwise silently erase those, making the
+     * answer fall back to H.264 / omit sprop-* even when the caller asked
+     * for H.265. */
     sdp->mid_count = 0;
     sdp->has_datachannel = false;
 #if NANORTC_HAVE_MEDIA_TRANSPORT
+    struct sdp_mline_local_preserve {
+        uint8_t codec;
+#if NANORTC_FEATURE_H265
+        char h265_sprop_fmtp[NANORTC_H265_SPROP_FMTP_SIZE];
+        uint16_t h265_sprop_fmtp_len;
+        uint8_t h265_profile_id;
+        uint8_t h265_tier_flag;
+        uint8_t h265_level_id;
+#endif
+    };
+    const uint8_t saved_count = sdp->mline_count;
+    struct sdp_mline_local_preserve saved[NANORTC_MAX_MEDIA_TRACKS];
+    memset(saved, 0, sizeof(saved));
+    for (uint8_t si = 0; si < saved_count && si < NANORTC_MAX_MEDIA_TRACKS; si++) {
+        saved[si].codec = sdp->mlines[si].codec;
+#if NANORTC_FEATURE_H265
+        uint16_t flen = sdp->mlines[si].h265_sprop_fmtp_len;
+        saved[si].h265_sprop_fmtp_len = flen;
+        if (flen > 0 && flen <= NANORTC_H265_SPROP_FMTP_SIZE) {
+            memcpy(saved[si].h265_sprop_fmtp, sdp->mlines[si].h265_sprop_fmtp, flen);
+        }
+        saved[si].h265_profile_id = sdp->mlines[si].h265_profile_id;
+        saved[si].h265_tier_flag = sdp->mlines[si].h265_tier_flag;
+        saved[si].h265_level_id = sdp->mlines[si].h265_level_id;
+#endif
+    }
     sdp->mline_count = 0;
     /* Index into sdp->mlines[] for current m-line, -1 if not a media m-line */
     int current_mline_idx = -1;
@@ -263,28 +304,30 @@ int sdp_parse(nano_sdp_t *sdp, const char *sdp_str, size_t len)
             sdp->has_datachannel = true;
             sdp->dc_mid = sdp->mid_count;
             sdp->mid_count++;
-        } else if (line_starts_with(line, line_len, "m=audio ")) {
+        } else if (line_starts_with(line, line_len, "m=audio ") ||
+                   line_starts_with(line, line_len, "m=video ")) {
+            bool is_video = line_starts_with(line, line_len, "m=video ");
             if (sdp->mline_count < NANORTC_MAX_MEDIA_TRACKS) {
-                nano_sdp_mline_t *ml = &sdp->mlines[sdp->mline_count];
+                const uint8_t idx = sdp->mline_count;
+                const struct sdp_mline_local_preserve *p = (idx < saved_count) ? &saved[idx] : NULL;
+                nano_sdp_mline_t *ml = &sdp->mlines[idx];
                 memset(ml, 0, sizeof(*ml));
-                ml->kind = SDP_MLINE_AUDIO;
+                ml->kind = is_video ? SDP_MLINE_VIDEO : SDP_MLINE_AUDIO;
                 ml->mid = sdp->mid_count;
                 ml->active = true;
                 ml->remote_pt = parse_mline_first_pt(line, line_len, 8);
-                current_mline_idx = (int)sdp->mline_count;
-                sdp->mline_count++;
-            } else {
-                current_mline_idx = -1;
-            }
-            sdp->mid_count++;
-        } else if (line_starts_with(line, line_len, "m=video ")) {
-            if (sdp->mline_count < NANORTC_MAX_MEDIA_TRACKS) {
-                nano_sdp_mline_t *ml = &sdp->mlines[sdp->mline_count];
-                memset(ml, 0, sizeof(*ml));
-                ml->kind = SDP_MLINE_VIDEO;
-                ml->mid = sdp->mid_count;
-                ml->active = true;
-                ml->remote_pt = parse_mline_first_pt(line, line_len, 8);
+                if (p) {
+                    ml->codec = p->codec;
+#if NANORTC_FEATURE_H265
+                    if (is_video && p->h265_sprop_fmtp_len > 0) {
+                        memcpy(ml->h265_sprop_fmtp, p->h265_sprop_fmtp, p->h265_sprop_fmtp_len);
+                        ml->h265_sprop_fmtp_len = p->h265_sprop_fmtp_len;
+                    }
+                    ml->h265_profile_id = p->h265_profile_id;
+                    ml->h265_tier_flag = p->h265_tier_flag;
+                    ml->h265_level_id = p->h265_level_id;
+#endif
+                }
                 current_mline_idx = (int)sdp->mline_count;
                 sdp->mline_count++;
             } else {
@@ -349,10 +392,19 @@ int sdp_parse(nano_sdp_t *sdp, const char *sdp_str, size_t len)
                 remain--;
             }
             /* Select this PT if it's H264 with packetization-mode=1 and
-             * the rtpmap PT matches (or is the first H264 we've seen). */
+             * the rtpmap PT matches (or is the first H264 we've seen).
+             * Skip when the local track is explicitly H.265 — the H.265
+             * branch below owns PT selection for that codec, and letting
+             * the H.264 preferred-profile match win here would silently
+             * downgrade the advertised codec. */
             bool is_valid_h264 = has_mode1 && (ml->video_h264_rtpmap_pt == 0 ||
                                                ml->video_h264_rtpmap_pt == (uint8_t)fmtp_pt);
-            if (is_valid_h264 && (has_preferred_profile || ml->pt == 0)) {
+#if NANORTC_FEATURE_H265
+            bool local_is_h265 = (ml->codec == NANORTC_CODEC_H265);
+#else
+            bool local_is_h265 = false;
+#endif
+            if (is_valid_h264 && !local_is_h265 && (has_preferred_profile || ml->pt == 0)) {
                 ml->pt = (uint8_t)fmtp_pt;
                 NANORTC_LOGD("SDP", has_preferred_profile ? "video H264 PT selected (profile match)"
                                                           : "video H264 PT selected (fallback)");
@@ -578,12 +630,19 @@ static bool sdp_append_host_candidates(nano_sdp_t *sdp, char *buf, size_t buf_le
 }
 
 /** Append server-reflexive ICE candidate (RFC 8839 §5.1).
- *  Priority 1090519295 = type preference 64 for srflx (RFC 8445 §5.1.2.1). */
+ *  Priority matches what the ICE layer emits in the STUN PRIORITY attribute
+ *  via ICE_SRFLX_PRIORITY(idx) (RFC 8445 §5.1.2.1: type_pref=100). The srflx
+ *  candidate occupies the local_candidates[] slot right after all host
+ *  candidates, so its idx == local_candidate_count. */
 static bool sdp_append_srflx_candidate(nano_sdp_t *sdp, char *buf, size_t buf_len, size_t *pos)
 {
     if (!sdp->has_srflx_candidate || sdp->srflx_candidate_ip[0] == '\0')
         return true;
-    if (!sdp_append(buf, buf_len, pos, "a=candidate:3 1 UDP 1090519295 "))
+    if (!sdp_append(buf, buf_len, pos, "a=candidate:3 1 UDP "))
+        return false;
+    if (!sdp_append_u32(buf, buf_len, pos, ICE_SRFLX_PRIORITY(sdp->local_candidate_count)))
+        return false;
+    if (!sdp_append(buf, buf_len, pos, " "))
         return false;
     if (!sdp_append(buf, buf_len, pos, sdp->srflx_candidate_ip))
         return false;
@@ -610,12 +669,20 @@ static bool sdp_append_srflx_candidate(nano_sdp_t *sdp, char *buf, size_t buf_le
 }
 
 /** Append relay ICE candidate from TURN allocation (RFC 8839 §5.1).
- *  Priority 16777215 = type preference 0 for relay (RFC 8445 §5.1.2.1). */
+ *  Priority matches the ICE layer's STUN PRIORITY attribute via
+ *  ICE_RELAY_PRIORITY(idx) (RFC 8445 §5.1.2.1: type_pref=0). A relay
+ *  candidate is registered in local_candidates[] alongside the srflx, so
+ *  idx == local_candidate_count + (has_srflx ? 1 : 0). */
 static bool sdp_append_relay_candidate(nano_sdp_t *sdp, char *buf, size_t buf_len, size_t *pos)
 {
     if (!sdp->has_relay_candidate || sdp->relay_candidate_ip[0] == '\0')
         return true;
-    if (!sdp_append(buf, buf_len, pos, "a=candidate:2 1 UDP 16777215 "))
+    uint8_t relay_idx = (uint8_t)(sdp->local_candidate_count + (sdp->has_srflx_candidate ? 1 : 0));
+    if (!sdp_append(buf, buf_len, pos, "a=candidate:2 1 UDP "))
+        return false;
+    if (!sdp_append_u32(buf, buf_len, pos, ICE_RELAY_PRIORITY(relay_idx)))
+        return false;
+    if (!sdp_append(buf, buf_len, pos, " "))
         return false;
     if (!sdp_append(buf, buf_len, pos, sdp->relay_candidate_ip))
         return false;
@@ -832,7 +899,27 @@ static bool sdp_append_video_mline(nano_sdp_t *sdp, nano_sdp_mline_t *ml, char *
             return false;
         if (!sdp_append_u16(buf, buf_len, pos, (uint16_t)ml->pt))
             return false;
-        if (!sdp_append(buf, buf_len, pos, " profile-id=1;tier-flag=0;level-id=93;tx-mode=SRST"))
+        /* Profile-tier-level: prefer values extracted from the VPS so the
+         * SDP matches the actual stream. Safari's HEVC decoder drops frames
+         * silently when the SDP level-id understates the stream level. The
+         * defaults (Main profile / Main tier / Level 3.1) remain for callers
+         * who never invoke nanortc_video_set_h265_parameter_sets(). */
+        uint8_t pid = ml->h265_profile_id ? ml->h265_profile_id : 1;
+        uint8_t tier = ml->h265_tier_flag;
+        uint8_t level = ml->h265_level_id ? ml->h265_level_id : 93;
+        if (!sdp_append(buf, buf_len, pos, " profile-id="))
+            return false;
+        if (!sdp_append_u16(buf, buf_len, pos, pid))
+            return false;
+        if (!sdp_append(buf, buf_len, pos, ";tier-flag="))
+            return false;
+        if (!sdp_append_u16(buf, buf_len, pos, tier))
+            return false;
+        if (!sdp_append(buf, buf_len, pos, ";level-id="))
+            return false;
+        if (!sdp_append_u16(buf, buf_len, pos, level))
+            return false;
+        if (!sdp_append(buf, buf_len, pos, ";tx-mode=SRST"))
             return false;
         if (ml->h265_sprop_fmtp_len > 0) {
             size_t frag_len = (size_t)ml->h265_sprop_fmtp_len;
