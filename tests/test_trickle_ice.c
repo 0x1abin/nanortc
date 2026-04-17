@@ -290,14 +290,24 @@ static void test_consent_expiry(void)
     TEST_ASSERT_TRUE(ice_consent_expired(&ice, 31000));
 }
 
-/* T13: Consent not expired when expiry_ms is 0 (uninitialized) */
-static void test_consent_not_expired_when_uninitialized(void)
+/* T13: Unarmed consent expiry surfaces as "expired" once CONNECTED.
+ *
+ * Previously this returned false to treat zero as "not yet initialized", but
+ * that silently disabled the liveness timeout if a caller forgot to arm it.
+ * The contract is now: `consent_expiry_ms` MUST be set when state transitions
+ * to CONNECTED; a zero in CONNECTED is a programming error and the function
+ * reports it as expired so the dead-peer signal surfaces rather than hiding.
+ * Any non-CONNECTED state still short-circuits to false.
+ */
+static void test_consent_expired_when_unarmed(void)
 {
     nano_ice_t ice;
     memset(&ice, 0, sizeof(ice));
     ice.state = NANORTC_ICE_STATE_CONNECTED;
     ice.consent_expiry_ms = 0;
+    TEST_ASSERT_TRUE(ice_consent_expired(&ice, 50000));
 
+    ice.state = NANORTC_ICE_STATE_CHECKING;
     TEST_ASSERT_FALSE(ice_consent_expired(&ice, 50000));
 }
 
@@ -562,7 +572,7 @@ int main(void)
     RUN_TEST(test_consent_generated_when_due);
     RUN_TEST(test_consent_pacing);
     RUN_TEST(test_consent_expiry);
-    RUN_TEST(test_consent_not_expired_when_uninitialized);
+    RUN_TEST(test_consent_expired_when_unarmed);
     RUN_TEST(test_consent_response_clears_pending);
 
     /* DISCONNECTED state */

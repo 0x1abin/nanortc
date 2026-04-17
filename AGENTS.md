@@ -16,6 +16,8 @@ NanoRTC is a Sans I/O, pure C WebRTC implementation for RTOS/embedded systems.
 | Current execution plan | [docs/PLANS.md](docs/PLANS.md) |
 | Module quality grades | [docs/QUALITY_SCORE.md](docs/QUALITY_SCORE.md) |
 | RFC reference index | [docs/references/rfc-index.md](docs/references/rfc-index.md) |
+| ICE RFC compliance (§8445 / §7675 / §8838) | [docs/engineering/ice-rfc-compliance.md](docs/engineering/ice-rfc-compliance.md) |
+| TURN RFC compliance (§5766 / §8656) | [docs/engineering/turn-rfc-compliance.md](docs/engineering/turn-rfc-compliance.md) |
 | Coding standards | [docs/engineering/coding-standards.md](docs/engineering/coding-standards.md) |
 | Architecture constraints (CI checks) | [docs/engineering/architecture-constraints.md](docs/engineering/architecture-constraints.md) |
 | Development workflow | [docs/engineering/development-workflow.md](docs/engineering/development-workflow.md) |

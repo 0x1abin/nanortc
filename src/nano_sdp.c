@@ -599,12 +599,19 @@ static bool sdp_append_host_candidates(nano_sdp_t *sdp, char *buf, size_t buf_le
 }
 
 /** Append server-reflexive ICE candidate (RFC 8839 §5.1).
- *  Priority 1090519295 = type preference 64 for srflx (RFC 8445 §5.1.2.1). */
+ *  Priority matches what the ICE layer emits in the STUN PRIORITY attribute
+ *  via ICE_SRFLX_PRIORITY(idx) (RFC 8445 §5.1.2.1: type_pref=100). The srflx
+ *  candidate occupies the local_candidates[] slot right after all host
+ *  candidates, so its idx == local_candidate_count. */
 static bool sdp_append_srflx_candidate(nano_sdp_t *sdp, char *buf, size_t buf_len, size_t *pos)
 {
     if (!sdp->has_srflx_candidate || sdp->srflx_candidate_ip[0] == '\0')
         return true;
-    if (!sdp_append(buf, buf_len, pos, "a=candidate:3 1 UDP 1090519295 "))
+    if (!sdp_append(buf, buf_len, pos, "a=candidate:3 1 UDP "))
+        return false;
+    if (!sdp_append_u32(buf, buf_len, pos, ICE_SRFLX_PRIORITY(sdp->local_candidate_count)))
+        return false;
+    if (!sdp_append(buf, buf_len, pos, " "))
         return false;
     if (!sdp_append(buf, buf_len, pos, sdp->srflx_candidate_ip))
         return false;
@@ -631,12 +638,20 @@ static bool sdp_append_srflx_candidate(nano_sdp_t *sdp, char *buf, size_t buf_le
 }
 
 /** Append relay ICE candidate from TURN allocation (RFC 8839 §5.1).
- *  Priority 16777215 = type preference 0 for relay (RFC 8445 §5.1.2.1). */
+ *  Priority matches the ICE layer's STUN PRIORITY attribute via
+ *  ICE_RELAY_PRIORITY(idx) (RFC 8445 §5.1.2.1: type_pref=0). A relay
+ *  candidate is registered in local_candidates[] alongside the srflx, so
+ *  idx == local_candidate_count + (has_srflx ? 1 : 0). */
 static bool sdp_append_relay_candidate(nano_sdp_t *sdp, char *buf, size_t buf_len, size_t *pos)
 {
     if (!sdp->has_relay_candidate || sdp->relay_candidate_ip[0] == '\0')
         return true;
-    if (!sdp_append(buf, buf_len, pos, "a=candidate:2 1 UDP 16777215 "))
+    uint8_t relay_idx = (uint8_t)(sdp->local_candidate_count + (sdp->has_srflx_candidate ? 1 : 0));
+    if (!sdp_append(buf, buf_len, pos, "a=candidate:2 1 UDP "))
+        return false;
+    if (!sdp_append_u32(buf, buf_len, pos, ICE_RELAY_PRIORITY(relay_idx)))
+        return false;
+    if (!sdp_append(buf, buf_len, pos, " "))
         return false;
     if (!sdp_append(buf, buf_len, pos, sdp->relay_candidate_ip))
         return false;

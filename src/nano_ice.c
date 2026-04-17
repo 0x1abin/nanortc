@@ -122,6 +122,38 @@ static uint8_t addr_to_stun_family(uint8_t addr_family)
     return 0;
 }
 
+/*
+ * RFC 8445 §6.1.2.2: candidate pairs MUST only be formed between candidates of
+ * the same address family. Advance (current_local, current_remote) to the next
+ * same-family position, iterating at most N*M slots so it always terminates.
+ * Returns false when no same-family pair exists yet (e.g. local v4 only, remote
+ * v6 only — wait for trickle or fail via the existing MAX_CHECKS path).
+ */
+static bool ice_advance_to_same_family_pair(nano_ice_t *ice)
+{
+    if (ice->local_candidate_count == 0 || ice->remote_candidate_count == 0) {
+        return false;
+    }
+    uint32_t slots = (uint32_t)ice->local_candidate_count * ice->remote_candidate_count;
+    for (uint32_t i = 0; i < slots; i++) {
+        if (ice->current_local < ice->local_candidate_count &&
+            ice->current_remote < ice->remote_candidate_count &&
+            ice->local_candidates[ice->current_local].family ==
+                ice->remote_candidates[ice->current_remote].family) {
+            return true;
+        }
+        ice->current_remote++;
+        if (ice->current_remote >= ice->remote_candidate_count) {
+            ice->current_remote = 0;
+            ice->current_local++;
+            if (ice->current_local >= ice->local_candidate_count) {
+                ice->current_local = 0;
+            }
+        }
+    }
+    return false;
+}
+
 /* ----------------------------------------------------------------
  * ice_handle_stun — process incoming STUN message (both roles)
  * ---------------------------------------------------------------- */
@@ -146,26 +178,31 @@ int ice_handle_stun(nano_ice_t *ice, const uint8_t *data, size_t len, const nano
         /*
          * Incoming Binding Request — both roles respond.
          *
-         * RFC 8445 §7.2.1: Verify FINGERPRINT, USERNAME, MESSAGE-INTEGRITY.
-         * MI key = our local_pwd (remote signed with our password).
+         * RFC 8445 §7.2.1 + RFC 8489 §10: FINGERPRINT and MESSAGE-INTEGRITY
+         * are mandatory on ICE STUN. WebRTC peers always include both
+         * (Chrome, Firefox, Safari, libdatachannel verified); anything
+         * without them is either a protocol error or an injection attempt,
+         * so reject both cases up-front.
          */
-        if (msg.has_fingerprint) {
-            rc = stun_verify_fingerprint(data, len);
-            if (rc != NANORTC_OK) {
-                return rc;
-            }
+        if (!msg.has_fingerprint) {
+            return NANORTC_ERR_PROTOCOL;
+        }
+        rc = stun_verify_fingerprint(data, len);
+        if (rc != NANORTC_OK) {
+            return rc;
         }
 
         if (!ice_verify_username(ice, &msg)) {
             return NANORTC_ERR_PROTOCOL;
         }
 
-        if (msg.has_integrity) {
-            rc = stun_verify_integrity(data, len, &msg, (const uint8_t *)ice->local_pwd,
-                                       ice->local_pwd_len, crypto->hmac_sha1);
-            if (rc != NANORTC_OK) {
-                return rc;
-            }
+        if (!msg.has_integrity) {
+            return NANORTC_ERR_PROTOCOL;
+        }
+        rc = stun_verify_integrity(data, len, &msg, (const uint8_t *)ice->local_pwd,
+                                   ice->local_pwd_len, crypto->hmac_sha1);
+        if (rc != NANORTC_OK) {
+            return rc;
         }
 
         /* Encode Binding Response — sign with our local_pwd (RFC 8445 §7.2.2) */
@@ -276,19 +313,25 @@ int ice_handle_stun(nano_ice_t *ice, const uint8_t *data, size_t len, const nano
             return NANORTC_ERR_PROTOCOL;
         }
 
-        if (msg.has_fingerprint) {
-            rc = stun_verify_fingerprint(data, len);
-            if (rc != NANORTC_OK) {
-                return rc;
-            }
+        /* RFC 8445 §7.1.3: a valid Binding Response MUST carry FINGERPRINT
+         * and MESSAGE-INTEGRITY. Missing either → protocol error; the
+         * matched pending slot stays in_flight so a retransmitted valid
+         * response can still land it. */
+        if (!msg.has_fingerprint) {
+            return NANORTC_ERR_PROTOCOL;
+        }
+        rc = stun_verify_fingerprint(data, len);
+        if (rc != NANORTC_OK) {
+            return rc;
         }
 
-        if (msg.has_integrity) {
-            rc = stun_verify_integrity(data, len, &msg, (const uint8_t *)ice->remote_pwd,
-                                       ice->remote_pwd_len, crypto->hmac_sha1);
-            if (rc != NANORTC_OK) {
-                return rc;
-            }
+        if (!msg.has_integrity) {
+            return NANORTC_ERR_PROTOCOL;
+        }
+        rc = stun_verify_integrity(data, len, &msg, (const uint8_t *)ice->remote_pwd,
+                                   ice->remote_pwd_len, crypto->hmac_sha1);
+        if (rc != NANORTC_OK) {
+            return rc;
         }
 
         /*
@@ -327,6 +370,31 @@ int ice_handle_stun(nano_ice_t *ice, const uint8_t *data, size_t len, const nano
         /* No response needed for a Binding Response */
         *resp_len = 0;
         return NANORTC_OK;
+
+    } else if (msg.type == STUN_BINDING_ERROR) {
+        /*
+         * Binding Error Response (RFC 8489 §6.3.4 / RFC 8445 §7.3.1.1).
+         *
+         * We match it to a pending slot and free it so the transaction does
+         * not block the table; the error itself is surfaced as a protocol
+         * error so the caller can log it (TURN error codes 401/438 are
+         * handled separately in nano_turn.c; plain Binding Errors on an ICE
+         * pair usually mean 400 Bad Request from a malformed check or 487
+         * Role Conflict — the latter would need tie-breaker comparison and
+         * role swap per §7.3.1.1, deferred).
+         */
+        if (!ice->is_controlling) {
+            return NANORTC_ERR_PROTOCOL;
+        }
+        for (int i = 0; i < NANORTC_ICE_MAX_PENDING_CHECKS; i++) {
+            if (ice->pending[i].in_flight &&
+                memcmp(msg.transaction_id, ice->pending[i].txid, STUN_TXID_SIZE) == 0) {
+                ice->pending[i].in_flight = false;
+                break;
+            }
+        }
+        *resp_len = 0;
+        return NANORTC_ERR_PROTOCOL;
     }
 
     /* Unknown message type */
@@ -351,8 +419,11 @@ int ice_generate_check(nano_ice_t *ice, uint32_t now_ms, const nanortc_crypto_pr
         return NANORTC_OK;
     }
 
-    /* Don't generate checks once connected or failed */
-    if (ice->state == NANORTC_ICE_STATE_CONNECTED || ice->state == NANORTC_ICE_STATE_FAILED) {
+    /* Don't generate checks once connected, failed, or disconnected.
+     * DISCONNECTED is reached when consent freshness expires (RFC 7675);
+     * recovery requires ice_restart(), not more checks on dead credentials. */
+    if (ice->state == NANORTC_ICE_STATE_CONNECTED || ice->state == NANORTC_ICE_STATE_FAILED ||
+        ice->state == NANORTC_ICE_STATE_DISCONNECTED) {
         return NANORTC_OK;
     }
 
@@ -372,6 +443,11 @@ int ice_generate_check(nano_ice_t *ice, uint32_t now_ms, const nanortc_crypto_pr
     /* Check count limit */
     if (ice->check_count >= NANORTC_ICE_MAX_CHECKS) {
         ice->state = NANORTC_ICE_STATE_FAILED;
+        return NANORTC_OK;
+    }
+
+    /* RFC 8445 §6.1.2.2: skip cross-family pairs before burning a check slot. */
+    if (!ice_advance_to_same_family_pair(ice)) {
         return NANORTC_OK;
     }
 
@@ -558,8 +634,13 @@ bool ice_consent_expired(const nano_ice_t *ice, uint32_t now_ms)
     if (!ice || ice->state != NANORTC_ICE_STATE_CONNECTED) {
         return false;
     }
+    /* consent_expiry_ms must be armed when the caller transitions to
+     * CONNECTED (see rtc_process_receive). If it is still 0 here, that is a
+     * programming error — rather than silently disabling the timeout (which
+     * would mask a dead peer indefinitely), treat an unarmed state as
+     * expired so the DISCONNECTED signal reaches the caller. */
     if (ice->consent_expiry_ms == 0) {
-        return false; /* not yet initialized */
+        return true;
     }
     return now_ms >= ice->consent_expiry_ms;
 }
