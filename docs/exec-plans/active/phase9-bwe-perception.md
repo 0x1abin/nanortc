@@ -92,11 +92,35 @@ RTCP parser now extracts the first report block from RR (offset 8) and SR (offse
 - Audio TWCC. Wiring is video-only for now; adding audio would need the BWE consumer to multiplex two streams.
 - TMMBR / TMMBN (RFC 5104) — browsers don't use them.
 
+## Post-review hardening (added after initial landing)
+
+Three defensive tweaks to `src/nano_twcc.c` after external review flagged corners that the first parser let through:
+
+- **Explicit two's-complement** for the 16-bit LARGE_DELTA read, replacing the implicit `(int16_t)` cast so the code no longer relies on C99 §6.3.1.3p3 implementation-defined behaviour.
+- **Reject RESERVED symbol** (status value 3) in both the run-length chunk and the 2-bit status vector — the draft marks it "reserved for future use" and accepting it would silently mis-align the delta stream.
+- **Trailing-byte check** at end of parse: fail if more than 3 bytes remain unread (RTCP packets are 32-bit-word-aligned, so 0–3 bytes of padding are legitimate; anything beyond that signals a mis-decoded chunk that earlier guards let through).
+
+All three are additive checks with matching hardcoded byte-vector test cases in `tests/test_twcc.c` (4 new cases). Four additional SDP extmap rejection tests in `tests/test_sdp.c` cover ID=0, ID=15 (reserved by RFC 8285), ID>14, and duplicate-URI last-wins behaviour.
+
+## BWE consumer glue (example layer)
+
+Phase 9 delivers the **perception** side only — the library emits events, the application decides. To avoid every example reinventing the same decision loop, the shared pieces live in `examples/common/bwe_coordinator.{h,c}`:
+
+- `bwe_coordinator_try_apply(c, candidate_bps, contributors, now_ms)` — takes the min-across-viewers that the app has already computed, applies the 1 Hz throttle + 5 % dead-band, and invokes the app's encoder hook.
+- `bwe_dir_str()` / `bwe_src_str()` — `NANORTC_BWE_DIR_*` / `NANORTC_BWE_SRC_*` enum → short string for log lines.
+
+The app owns the session/viewer storage (flat `nano_session_t[]` in `examples/macos_camera/`, viewer-id keyed slot table in `sdks/uipcat-sdk/examples/camera-rk3588/`) because the shape differs per example. Both examples seed BWE bounds via `nanortc_set_bitrate_bounds()` / `nanortc_set_initial_bitrate()` before the first RTCP feedback arrives so the initial estimate matches the encoder's static target rather than the compile-time default.
+
+The rk3588 capture layer (`examples/rk3588_uvc_camera/capture_{gstreamer,ffmpeg}.c`) gains `capture_set_bitrate(int bps)` that the coordinator calls:
+- GStreamer: `g_object_set(mpph264enc, "bps", ..., "bps-max", ..., NULL)` — CBR hot-update, confirmed writable on `gstreamer1.0-rockchip1`.
+- FFmpeg (`h264_rkmpp`): writes both `AVCodecContext->bit_rate/rc_max_rate/rc_buffer_size` and the private-data `rc_max_rate` option; the latter only takes effect on forks that expose it, the former is the canonical path.
+
 ## Verification
 
-- `ctest --test-dir build` — 22/22 targets, 100 % pass. Includes the new `test_twcc` suite (22 cases), 5 extra `test_rtp` cases for the TWCC extension layout, 5 extra `test_sdp` cases for extmap parsing/generation/roundtrip, 10 extra `test_bwe` cases for TWCC loss + runtime setters, 5 extra `test_media` cases for the rate window, 2 extra `test_rtcp` cases for report-block extraction.
+- `ctest --test-dir build` — 26/26 targets, 100 % pass. Includes the new `test_twcc` suite (26 cases after hardening tests; was 22 at initial landing), 5 extra `test_rtp` cases for the TWCC extension layout, 9 extra `test_sdp` cases for extmap parsing/generation/roundtrip and rejection paths (was 5 at initial landing), 10 extra `test_bwe` cases for TWCC loss + runtime setters, 5 extra `test_media` cases for the rate window, 2 extra `test_rtcp` cases for report-block extraction.
 - `./scripts/ci-check.sh` — feature matrix across all six profiles. `NANORTC_FEATURE_VIDEO=OFF` build confirms `nano_twcc.c` is not compiled and `test_twcc` is not built.
-- Follow-up — **pending before merge**: browser interop snapshot against Chrome 146 (one `examples/browser_interop` run showing TWCC feedback arriving and the event's `source` field being `NANORTC_BWE_SRC_TWCC_LOSS`).
+- **Device end-to-end on Orange Pi 5** (RK3588 with UGREEN 4K camera, Chrome viewer over direct IPv6 host pair): publisher started at 4K@30 / 20 Mbps; `gdb -batch -p <pid> -ex 'call (int)capture_set_bitrate(3000000)'` drove wire rate to 3039 kbps (−0.5 % of target) within two 10 s stats windows; second gdb call back to 20 Mbps settled at 19908 kbps (−0.5 %). Viewer never dropped, `drop=pli=0` throughout. This validated `on_bitrate_estimate` → `apply_aggregate_bwe` → `capture_set_bitrate` → `mpph264enc` end-to-end, independent of whether Chrome actually reports TWCC on a clean network.
+- Follow-up — still pending before final merge: browser interop snapshot showing `NANORTC_EV_BITRATE_ESTIMATE.source == NANORTC_BWE_SRC_TWCC_LOSS` under induced loss (Chrome DevTools `Slow 3G` does not throttle WebRTC UDP, so this needs an on-device `tc netem` or iptables-based injection).
 
 ## Memory impact (ARM32, per track)
 
