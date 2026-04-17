@@ -477,18 +477,40 @@ int main(int argc, char *argv[])
     }
 #endif
 
-    /* 3. Auto-detect IP if not specified */
+    /* 3. Auto-detect IP if not specified. Pick an IPv4 global address as the
+     *    primary bind_ip, and collect any IPv6 global addresses so they can be
+     *    added as extra candidates below (dual-stack). */
+#if NANORTC_FEATURE_IPV6
+    char v6_addrs[NANORTC_MAX_LOCAL_CANDIDATES][INET6_ADDRSTRLEN];
+    int v6_count = 0;
+#endif
     if (bind_ip[0] == '\0') {
         struct ifaddrs *ifas, *ifa;
         if (getifaddrs(&ifas) == 0) {
             for (ifa = ifas; ifa; ifa = ifa->ifa_next) {
-                if (!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_INET)
+                if (!ifa->ifa_addr)
                     continue;
                 if (ifa->ifa_flags & IFF_LOOPBACK)
                     continue;
-                struct sockaddr_in *sa = (struct sockaddr_in *)ifa->ifa_addr;
-                inet_ntop(AF_INET, &sa->sin_addr, bind_ip, sizeof(bind_ip));
-                break;
+                if (ifa->ifa_addr->sa_family == AF_INET && bind_ip[0] == '\0') {
+                    struct sockaddr_in *sa = (struct sockaddr_in *)ifa->ifa_addr;
+                    inet_ntop(AF_INET, &sa->sin_addr, bind_ip, sizeof(bind_ip));
+                }
+#if NANORTC_FEATURE_IPV6
+                else if (ifa->ifa_addr->sa_family == AF_INET6 &&
+                         v6_count < NANORTC_MAX_LOCAL_CANDIDATES) {
+                    struct sockaddr_in6 *sa6 = (struct sockaddr_in6 *)ifa->ifa_addr;
+                    if (IN6_IS_ADDR_LINKLOCAL(&sa6->sin6_addr))
+                        continue;
+                    if (IN6_IS_ADDR_MULTICAST(&sa6->sin6_addr))
+                        continue;
+                    if (IN6_IS_ADDR_UNSPECIFIED(&sa6->sin6_addr))
+                        continue;
+                    inet_ntop(AF_INET6, &sa6->sin6_addr, v6_addrs[v6_count],
+                              sizeof(v6_addrs[v6_count]));
+                    v6_count++;
+                }
+#endif
             }
             freeifaddrs(ifas);
         }
@@ -507,6 +529,13 @@ int main(int argc, char *argv[])
     }
     /* Override 0.0.0.0 candidate with actual IP for SDP */
     nanortc_add_local_candidate(&rtc, bind_ip, port);
+#if NANORTC_FEATURE_IPV6
+    /* Register additional IPv6 global addresses so peers can reach us dual-stack.
+     * The underlying socket is AF_INET6 + IPV6_V6ONLY=0, so no extra bind needed. */
+    for (int i = 0; i < v6_count; i++) {
+        nanortc_add_local_candidate(&rtc, v6_addrs[i], port);
+    }
+#endif
     nano_run_loop_set_event_cb(&loop, on_event, &app_ctx);
 
     /* Audio media source */

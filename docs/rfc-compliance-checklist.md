@@ -64,7 +64,7 @@ Per-module audit of NanoRTC against authoritative RFC specifications.
 
 ## RFC 8445 — ICE (Interactive Connectivity Establishment)
 
-**File:** `src/nano_ice.c` | **Tests:** `tests/test_ice.c` (17 tests)
+**File:** `src/nano_ice.c` | **Tests:** `tests/test_ice.c` (20 tests)
 
 ### Candidate Types (RFC 8445 §5.1.1)
 
@@ -81,6 +81,12 @@ Per-module audit of NanoRTC against authoritative RFC specifications.
 | # | Requirement | RFC | Impl | Test | Gap |
 |---|-------------|-----|------|------|-----|
 | 5 | priority = (2^24)*type + (2^8)*local + (256-comp) | §5.1.2.1 | Y | N | Formula implemented but no value verification test |
+
+### Pair Formation (RFC 8445 §6.1.2.2)
+
+| # | Requirement | RFC | Impl | Test | Gap |
+|---|-------------|-----|------|------|-----|
+| 5a | Same-address-family pairs only (MUST) | §6.1.2.2 | Y | Y | `test_ice_pair_family_filter_*` — cross-family pairs are skipped before a pending slot is consumed; v4+v6 dual-stack covered by `test_e2e_ipv6_loopback_connects` |
 
 ### Connectivity Checks (RFC 8445 §7)
 

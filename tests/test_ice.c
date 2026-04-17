@@ -870,6 +870,138 @@ TEST(test_ice_multiple_candidates_cycling)
     ASSERT_EQ(ice.check_count, 2);
 }
 
+/* ================================================================
+ * RFC 8445 §6.1.2.2 — Pair formation: same-address-family only
+ * ================================================================ */
+
+/* Minimal controlling-role agent with credentials; caller fills candidates. */
+static void setup_family_filter_agent(nano_ice_t *ice)
+{
+    ice_init(ice, 1);
+    memcpy(ice->local_ufrag, "CTRL", 4);
+    ice->local_ufrag_len = 4;
+    memcpy(ice->local_pwd, "ctrl-password-abcdef", 20);
+    ice->local_pwd_len = 20;
+    memcpy(ice->remote_ufrag, "PEER", 4);
+    ice->remote_ufrag_len = 4;
+    memcpy(ice->remote_pwd, "peer-password-123456", 20);
+    ice->remote_pwd_len = 20;
+    ice->tie_breaker = 0xA1B2C3D4E5F60718ull;
+}
+
+static void fill_candidate(nano_ice_candidate_t *c, uint8_t family, uint16_t port)
+{
+    memset(c, 0, sizeof(*c));
+    c->family = family;
+    c->port = port;
+    c->type = NANORTC_ICE_CAND_HOST;
+    if (family == 4) {
+        c->addr[0] = 10;
+        c->addr[3] = (uint8_t)(port & 0xff);
+    } else {
+        c->addr[0] = 0x20;
+        c->addr[1] = 0x01;
+        c->addr[2] = 0x0d;
+        c->addr[3] = 0xb8;
+        c->addr[15] = (uint8_t)(port & 0xff);
+    }
+}
+
+TEST(test_ice_pair_family_filter_skips_cross_family)
+{
+    /* 1 local v4, 2 remote (v4 + v6). Only the v4-v4 pair should ever be checked. */
+    nano_ice_t ice;
+    setup_family_filter_agent(&ice);
+
+    fill_candidate(&ice.local_candidates[0], 4, 4000);
+    ice.local_candidate_count = 1;
+
+    fill_candidate(&ice.remote_candidates[0], 4, 5000);
+    fill_candidate(&ice.remote_candidates[1], 6, 5001);
+    ice.remote_candidate_count = 2;
+
+    uint8_t buf[256];
+    /* Drive several rounds, advancing past pacing each time. */
+    for (uint32_t t = 0, rounds = 0; rounds < 5; t += 100, rounds++) {
+        size_t len = 0;
+        ASSERT_OK(ice_generate_check(&ice, t, crypto(), buf, sizeof(buf), &len));
+        if (len == 0)
+            continue;
+        /* The pending slot just committed must point to the v4 remote. */
+        bool found = false;
+        for (int i = 0; i < NANORTC_ICE_MAX_PENDING_CHECKS; i++) {
+            if (ice.pending[i].in_flight && ice.pending[i].sent_at_ms == t) {
+                ASSERT_EQ(ice.remote_candidates[ice.pending[i].remote_idx].family, 4);
+                found = true;
+            }
+        }
+        ASSERT_TRUE(found);
+    }
+    ASSERT_TRUE(ice.check_count > 0);
+}
+
+TEST(test_ice_pair_family_filter_picks_both_families)
+{
+    /* 2 local (v4 + v6), 2 remote (v4 + v6). Over enough rounds both same-family
+     * pairs are exercised and no cross-family pair is ever sent. */
+    nano_ice_t ice;
+    setup_family_filter_agent(&ice);
+
+    fill_candidate(&ice.local_candidates[0], 4, 4000);
+    fill_candidate(&ice.local_candidates[1], 6, 4001);
+    ice.local_candidate_count = 2;
+
+    fill_candidate(&ice.remote_candidates[0], 4, 5000);
+    fill_candidate(&ice.remote_candidates[1], 6, 5001);
+    ice.remote_candidate_count = 2;
+
+    bool saw_v4 = false, saw_v6 = false;
+    uint8_t buf[256];
+    for (uint32_t t = 0, rounds = 0; rounds < 10; t += 100, rounds++) {
+        size_t len = 0;
+        ASSERT_OK(ice_generate_check(&ice, t, crypto(), buf, sizeof(buf), &len));
+        if (len == 0)
+            continue;
+        for (int i = 0; i < NANORTC_ICE_MAX_PENDING_CHECKS; i++) {
+            if (!ice.pending[i].in_flight || ice.pending[i].sent_at_ms != t)
+                continue;
+            uint8_t lf = ice.local_candidates[ice.pending[i].local_idx].family;
+            uint8_t rf = ice.remote_candidates[ice.pending[i].remote_idx].family;
+            ASSERT_EQ(lf, rf); /* never cross-family */
+            if (lf == 4)
+                saw_v4 = true;
+            if (lf == 6)
+                saw_v6 = true;
+        }
+    }
+    ASSERT_TRUE(saw_v4);
+    ASSERT_TRUE(saw_v6);
+}
+
+TEST(test_ice_pair_family_filter_no_match_no_send)
+{
+    /* Local v4 only, remote v6 only — no same-family pair exists.
+     * ice_generate_check must return OK without emitting a packet or
+     * consuming a check slot. */
+    nano_ice_t ice;
+    setup_family_filter_agent(&ice);
+
+    fill_candidate(&ice.local_candidates[0], 4, 4000);
+    ice.local_candidate_count = 1;
+
+    fill_candidate(&ice.remote_candidates[0], 6, 5000);
+    ice.remote_candidate_count = 1;
+
+    uint8_t buf[256];
+    for (uint32_t t = 0; t < 500; t += 100) {
+        size_t len = 42;
+        ASSERT_OK(ice_generate_check(&ice, t, crypto(), buf, sizeof(buf), &len));
+        ASSERT_EQ(len, 0u);
+    }
+    ASSERT_EQ(ice.check_count, 0u);
+    ASSERT_EQ(ice.state, NANORTC_ICE_STATE_NEW); /* still waiting for a matching pair */
+}
+
 /*
  * RFC 8445: STUN Binding Indication (type 0x0011) should be handled gracefully.
  * ICE agents may receive indications — they should not cause errors.
@@ -941,5 +1073,9 @@ RUN(test_ice_credential_usage);
 /* RFC 8445 MUST/SHOULD requirement tests */
 RUN(test_ice_priority_formula_rfc8445);
 RUN(test_ice_multiple_candidates_cycling);
+/* §6.1.2.2: same-family pair formation */
+RUN(test_ice_pair_family_filter_skips_cross_family);
+RUN(test_ice_pair_family_filter_picks_both_families);
+RUN(test_ice_pair_family_filter_no_match_no_send);
 RUN(test_ice_stun_indication_handling);
 TEST_MAIN_END

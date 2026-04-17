@@ -1233,6 +1233,111 @@ TEST(test_e2e_ipv6_remote_candidate)
 
     nanortc_destroy(&rtc);
 }
+
+/* ----------------------------------------------------------------
+ * IPv6 loopback E2E: two instances over [::1] complete ICE + DTLS.
+ *
+ * Exercises the full dual-stack integration: same-family pair filter,
+ * STUN XOR-MAPPED-ADDRESS with family 0x02, DTLS carriage over an
+ * IPv6-sourced relay. Degraded stand-in for libdatachannel-IPv6
+ * interop, which needs cooperating C++ peer changes (follow-up).
+ * ---------------------------------------------------------------- */
+
+static int e2e_relay_ipv6(nanortc_t *from, nanortc_t *to, uint32_t now_ms,
+                          const uint8_t src_addr[16], uint16_t src_port)
+{
+    int relayed = 0;
+    nanortc_output_t out;
+    while (nanortc_poll_output(from, &out) == NANORTC_OK) {
+        if (out.type != NANORTC_OUTPUT_TRANSMIT)
+            continue;
+        nanortc_addr_t src;
+        memset(&src, 0, sizeof(src));
+        src.family = 6;
+        memcpy(src.addr, src_addr, 16);
+        src.port = src_port;
+        (void)nanortc_handle_input(to, &(nanortc_input_t){.now_ms = now_ms,
+                                                          .data = out.transmit.data,
+                                                          .len = out.transmit.len,
+                                                          .src = src});
+        relayed++;
+    }
+    return relayed;
+}
+
+TEST(test_e2e_ipv6_loopback_connects)
+{
+    nanortc_t offerer, answerer;
+
+    nanortc_config_t off_cfg = e2e_default_config();
+    off_cfg.role = NANORTC_ROLE_CONTROLLING;
+    ASSERT_OK(nanortc_init(&offerer, &off_cfg));
+
+    nanortc_config_t ans_cfg = e2e_default_config();
+    ans_cfg.role = NANORTC_ROLE_CONTROLLED;
+    ASSERT_OK(nanortc_init(&answerer, &ans_cfg));
+
+    memcpy(offerer.ice.local_ufrag, "OFF", 4);
+    offerer.ice.local_ufrag_len = 3;
+    memcpy(offerer.ice.local_pwd, "offerer-password-1234", 22);
+    offerer.ice.local_pwd_len = 21;
+    memcpy(offerer.ice.remote_ufrag, "ANS", 4);
+    offerer.ice.remote_ufrag_len = 3;
+    memcpy(offerer.ice.remote_pwd, "answerer-password-5678", 23);
+    offerer.ice.remote_pwd_len = 22;
+    offerer.ice.tie_breaker = 0xDEADBEEFCAFEBABEull;
+
+    memcpy(answerer.ice.local_ufrag, "ANS", 4);
+    answerer.ice.local_ufrag_len = 3;
+    memcpy(answerer.ice.local_pwd, "answerer-password-5678", 23);
+    answerer.ice.local_pwd_len = 22;
+    memcpy(answerer.ice.remote_ufrag, "OFF", 4);
+    answerer.ice.remote_ufrag_len = 3;
+    memcpy(answerer.ice.remote_pwd, "offerer-password-1234", 22);
+    answerer.ice.remote_pwd_len = 21;
+
+    uint8_t v6_loopback[16] = {0};
+    v6_loopback[15] = 0x01;
+
+    offerer.ice.local_candidates[0].family = 6;
+    memcpy(offerer.ice.local_candidates[0].addr, v6_loopback, 16);
+    offerer.ice.local_candidates[0].port = 4000;
+    offerer.ice.local_candidates[0].type = NANORTC_ICE_CAND_HOST;
+    offerer.ice.local_candidate_count = 1;
+
+    offerer.ice.remote_candidates[0].family = 6;
+    memcpy(offerer.ice.remote_candidates[0].addr, v6_loopback, 16);
+    offerer.ice.remote_candidates[0].port = 5000;
+    offerer.ice.remote_candidate_count = 1;
+
+    uint32_t now_ms = 100;
+    ASSERT_OK(nanortc_handle_input(&offerer, &(nanortc_input_t){.now_ms = now_ms}));
+
+    int connected = 0;
+    for (int round = 0; round < 40; round++) {
+        for (int i = 0; i < 5; i++) {
+            int ra = e2e_relay_ipv6(&offerer, &answerer, now_ms, v6_loopback, 4000);
+            int rb = e2e_relay_ipv6(&answerer, &offerer, now_ms, v6_loopback, 5000);
+            if (ra == 0 && rb == 0)
+                break;
+        }
+        if (offerer.state >= NANORTC_STATE_DTLS_CONNECTED &&
+            answerer.state >= NANORTC_STATE_DTLS_CONNECTED) {
+            connected = 1;
+            break;
+        }
+        now_ms += 10;
+        nanortc_handle_input(&offerer, &(nanortc_input_t){.now_ms = now_ms});
+        nanortc_handle_input(&answerer, &(nanortc_input_t){.now_ms = now_ms});
+    }
+
+    ASSERT_TRUE(connected);
+    ASSERT_EQ(offerer.ice.selected_family, 6);
+    ASSERT_EQ(answerer.ice.selected_family, 6);
+
+    nanortc_destroy(&offerer);
+    nanortc_destroy(&answerer);
+}
 #endif
 
 /* ================================================================
@@ -2500,6 +2605,7 @@ RUN(test_e2e_full_lifecycle);
 RUN(test_e2e_ice_connection_timeout);
 #if NANORTC_FEATURE_IPV6
 RUN(test_e2e_ipv6_remote_candidate);
+RUN(test_e2e_ipv6_loopback_connects);
 #endif
 /* Convenience send API */
 #if NANORTC_HAVE_MEDIA_TRANSPORT

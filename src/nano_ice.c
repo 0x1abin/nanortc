@@ -122,6 +122,38 @@ static uint8_t addr_to_stun_family(uint8_t addr_family)
     return 0;
 }
 
+/*
+ * RFC 8445 §6.1.2.2: candidate pairs MUST only be formed between candidates of
+ * the same address family. Advance (current_local, current_remote) to the next
+ * same-family position, iterating at most N*M slots so it always terminates.
+ * Returns false when no same-family pair exists yet (e.g. local v4 only, remote
+ * v6 only — wait for trickle or fail via the existing MAX_CHECKS path).
+ */
+static bool ice_advance_to_same_family_pair(nano_ice_t *ice)
+{
+    if (ice->local_candidate_count == 0 || ice->remote_candidate_count == 0) {
+        return false;
+    }
+    uint32_t slots = (uint32_t)ice->local_candidate_count * ice->remote_candidate_count;
+    for (uint32_t i = 0; i < slots; i++) {
+        if (ice->current_local < ice->local_candidate_count &&
+            ice->current_remote < ice->remote_candidate_count &&
+            ice->local_candidates[ice->current_local].family ==
+                ice->remote_candidates[ice->current_remote].family) {
+            return true;
+        }
+        ice->current_remote++;
+        if (ice->current_remote >= ice->remote_candidate_count) {
+            ice->current_remote = 0;
+            ice->current_local++;
+            if (ice->current_local >= ice->local_candidate_count) {
+                ice->current_local = 0;
+            }
+        }
+    }
+    return false;
+}
+
 /* ----------------------------------------------------------------
  * ice_handle_stun — process incoming STUN message (both roles)
  * ---------------------------------------------------------------- */
@@ -372,6 +404,11 @@ int ice_generate_check(nano_ice_t *ice, uint32_t now_ms, const nanortc_crypto_pr
     /* Check count limit */
     if (ice->check_count >= NANORTC_ICE_MAX_CHECKS) {
         ice->state = NANORTC_ICE_STATE_FAILED;
+        return NANORTC_OK;
+    }
+
+    /* RFC 8445 §6.1.2.2: skip cross-family pairs before burning a check slot. */
+    if (!ice_advance_to_same_family_pair(ice)) {
         return NANORTC_OK;
     }
 
