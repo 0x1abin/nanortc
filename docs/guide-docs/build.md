@@ -4,7 +4,7 @@ Full reference for building, testing, and verifying NanoRTC locally. For the min
 
 ## Prerequisites
 
-- CMake ≥ 3.13, a C99 compiler (GCC, Clang, or AppleClang)
+- CMake ≥ 3.16, a C99 compiler (GCC, Clang, or AppleClang)
 - `clang-format` — required for source formatting checks
 - `ccache` (optional but recommended) — `brew install ccache`; auto-detected by `scripts/ci-check.sh`
 - OpenSSL — required for `NANORTC_CRYPTO=openssl` and interop tests
