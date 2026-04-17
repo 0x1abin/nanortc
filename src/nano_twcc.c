@@ -74,6 +74,13 @@ static int parse_chunks(const uint8_t *data, size_t pkt_size, size_t *offset, ui
             if (run == 0) {
                 return NANORTC_ERR_PARSE;
             }
+            /* Reserved symbol (3) has undefined wire semantics in the draft;
+             * accepting it would silently misalign the delta stream because
+             * the parser cannot know whether the sender intended to attach
+             * a delta or not. Reject loudly. */
+            if (symbol == NANO_TWCC_STATUS_RESERVED) {
+                return NANORTC_ERR_PARSE;
+            }
             uint16_t n = (run > remaining) ? remaining : run;
             for (uint16_t i = 0; i < n; i++) {
                 statuses[emitted++] = (uint8_t)symbol;
@@ -101,6 +108,11 @@ static int parse_chunks(const uint8_t *data, size_t pkt_size, size_t *offset, ui
             for (int i = 0; i < 7 && remaining > 0; i++) {
                 int shift = (6 - i) * 2;
                 nano_twcc_status_t symbol = (nano_twcc_status_t)((chunk >> shift) & 0x3);
+                /* Reject Reserved (3): same rationale as the run-length
+                 * branch — undefined wire semantics, would misalign deltas. */
+                if (symbol == NANO_TWCC_STATUS_RESERVED) {
+                    return NANORTC_ERR_PARSE;
+                }
                 statuses[emitted++] = (uint8_t)symbol;
                 if (symbol != NANO_TWCC_STATUS_NOT_RECEIVED) {
                     (*received_count)++;
@@ -193,8 +205,13 @@ int twcc_parse_feedback(const uint8_t *data, size_t len, nano_twcc_summary_t *ou
             if (off + 2 > pkt_size) {
                 return NANORTC_ERR_PARSE;
             }
-            int16_t raw = (int16_t)nanortc_read_u16be(data + off);
-            delta_us = (int32_t)raw * TWCC_DELTA_UNIT_US;
+            /* Manual two's-complement conversion: avoids relying on the
+             * implementation-defined behavior of casting a uint16_t > 0x7FFF
+             * to int16_t (C99 §6.3.1.3p3). Universal in practice but we
+             * make the math explicit. */
+            uint16_t raw_u = nanortc_read_u16be(data + off);
+            int32_t signed_units = (raw_u & 0x8000) ? ((int32_t)raw_u - 0x10000) : (int32_t)raw_u;
+            delta_us = signed_units * TWCC_DELTA_UNIT_US;
             off += 2;
         }
 
@@ -202,6 +219,16 @@ int twcc_parse_feedback(const uint8_t *data, size_t len, nano_twcc_summary_t *ou
             uint16_t seq = (uint16_t)(out->base_seq + i);
             cb(seq, status, delta_us, user);
         }
+    }
+
+    /* RTCP packets are 32-bit-word-aligned (length field is in words),
+     * so a fully-parsed feedback may have 0–3 trailing pad bytes to
+     * round the deltas section up to a word boundary. Anything beyond
+     * that means the parser drained fewer bytes than the sender wrote
+     * — almost always a chunk/delta mis-decode that earlier checks let
+     * through. Reject loudly. */
+    if (pkt_size - off > 3) {
+        return NANORTC_ERR_PARSE;
     }
 
     return NANORTC_OK;

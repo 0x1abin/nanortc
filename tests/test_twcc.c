@@ -476,6 +476,100 @@ TEST(test_twcc_count_exceeds_cap)
 }
 
 /* ================================================================
+ * Reserved status (3) rejection
+ *
+ * The draft marks status symbol 3 as "reserved for future use"; the
+ * parser rejects it loudly because accepting it would silently mis-
+ * align the delta stream (the parser cannot know whether the sender
+ * intends to attach a delta or not).
+ * ================================================================ */
+
+TEST(test_twcc_run_length_reserved_rejected)
+{
+    /* Run-length chunk with symbol=RESERVED (3). Must not parse. */
+    uint8_t buf[32] = {0};
+    struct twcc_builder b = {buf, sizeof(buf), 0};
+    twcc_build_header(&b, 1, 2, 0, 4, 0, 0);
+    twcc_append_u16(&b, twcc_chunk_run(NANO_TWCC_STATUS_RESERVED, 4));
+    twcc_finalize(&b);
+
+    nano_twcc_summary_t sum;
+    ASSERT_FAIL(twcc_parse_feedback(buf, b.len, &sum, NULL, NULL));
+}
+
+TEST(test_twcc_vec2_reserved_rejected)
+{
+    /* 2-bit status-vector chunk containing one RESERVED symbol. */
+    uint8_t syms[7] = {NANO_TWCC_STATUS_SMALL_DELTA,  NANO_TWCC_STATUS_NOT_RECEIVED,
+                       NANO_TWCC_STATUS_RESERVED,     NANO_TWCC_STATUS_SMALL_DELTA,
+                       NANO_TWCC_STATUS_NOT_RECEIVED, NANO_TWCC_STATUS_NOT_RECEIVED,
+                       NANO_TWCC_STATUS_NOT_RECEIVED};
+    uint8_t buf[32] = {0};
+    struct twcc_builder b = {buf, sizeof(buf), 0};
+    twcc_build_header(&b, 1, 2, 0, 7, 0, 0);
+    twcc_append_u16(&b, twcc_chunk_vec2(syms, 7));
+    /* Don't bother appending deltas — parse should fail before the delta pass. */
+    twcc_finalize(&b);
+
+    nano_twcc_summary_t sum;
+    ASSERT_FAIL(twcc_parse_feedback(buf, b.len, &sum, NULL, NULL));
+}
+
+/* ================================================================
+ * Trailing-padding tolerance and limit
+ *
+ * RTCP packets are 32-bit-word aligned, so 0–3 trailing bytes after
+ * the delta region are accepted (alignment padding). More than 3
+ * unread bytes indicate a chunk/delta mis-decode that earlier checks
+ * let through, and must be rejected.
+ * ================================================================ */
+
+TEST(test_twcc_excess_trailing_bytes_rejected)
+{
+    /* Build a valid 4-byte-aligned feedback, then bump RTCP length to
+     * claim one extra word (4 bytes) of payload that is not actually
+     * accounted for by chunks/deltas. The parser must reject. */
+    uint8_t buf[48] = {0};
+    struct twcc_builder b = {buf, sizeof(buf), 0};
+    twcc_build_header(&b, 1, 2, 0, 4, 0, 0);
+    twcc_append_u16(&b, twcc_chunk_run(NANO_TWCC_STATUS_SMALL_DELTA, 4));
+    twcc_append_u8(&b, 1);
+    twcc_append_u8(&b, 2);
+    twcc_append_u8(&b, 3);
+    twcc_append_u8(&b, 4);
+    twcc_finalize(&b);
+    /* Currently b.len == 28 (already aligned). Tack on 4 extra bytes
+     * and lie in the length field about it. */
+    b.buf[b.len++] = 0xAA;
+    b.buf[b.len++] = 0xAA;
+    b.buf[b.len++] = 0xAA;
+    b.buf[b.len++] = 0xAA;
+    nanortc_write_u16be(b.buf + 2, (uint16_t)((b.len / 4) - 1));
+
+    nano_twcc_summary_t sum;
+    ASSERT_FAIL(twcc_parse_feedback(buf, b.len, &sum, NULL, NULL));
+}
+
+TEST(test_twcc_word_alignment_padding_accepted)
+{
+    /* 3 small-delta packets => 3 delta bytes => 1 byte of word-align
+     * padding. This is the well-known alignment case the parser must
+     * accept (the existing twcc_finalize() helper produces it). */
+    uint8_t buf[32] = {0};
+    struct twcc_builder b = {buf, sizeof(buf), 0};
+    twcc_build_header(&b, 1, 2, 0, 3, 0, 0);
+    twcc_append_u16(&b, twcc_chunk_run(NANO_TWCC_STATUS_SMALL_DELTA, 3));
+    twcc_append_u8(&b, 1);
+    twcc_append_u8(&b, 2);
+    twcc_append_u8(&b, 3);
+    twcc_finalize(&b); /* appends 1 zero byte, length covers it */
+
+    nano_twcc_summary_t sum;
+    ASSERT_OK(twcc_parse_feedback(buf, b.len, &sum, NULL, NULL));
+    ASSERT_EQ(sum.received_count, 3);
+}
+
+/* ================================================================
  * Hard-coded RFC-style byte vector
  *
  * Hand-computed: 5 packets starting at seq 0x0064 (100),
@@ -566,6 +660,10 @@ RUN(test_twcc_run_truncates_at_count);
 RUN(test_twcc_truncated_small_delta);
 RUN(test_twcc_truncated_chunks);
 RUN(test_twcc_count_exceeds_cap);
+RUN(test_twcc_run_length_reserved_rejected);
+RUN(test_twcc_vec2_reserved_rejected);
+RUN(test_twcc_excess_trailing_bytes_rejected);
+RUN(test_twcc_word_alignment_padding_accepted);
 RUN(test_twcc_hand_crafted_vector);
 RUN(test_twcc_no_callback_still_validates);
 TEST_MAIN_END
