@@ -13,6 +13,7 @@ NanoRTC is a Sans I/O, pure C WebRTC implementation for RTOS/embedded systems.
 | Architecture overview + module dependency graph | [ARCHITECTURE.md](ARCHITECTURE.md) |
 | Full design specification (authoritative) | [docs/design-docs/nanortc-design-draft.md](docs/design-docs/nanortc-design-draft.md) |
 | Design principles and core beliefs | [docs/design-docs/core-beliefs.md](docs/design-docs/core-beliefs.md) |
+| Build guide (flags, crypto, fuzz, coverage, ESP-IDF) | [docs/guide-docs/build.md](docs/guide-docs/build.md) |
 | Current execution plan | [docs/PLANS.md](docs/PLANS.md) |
 | Module quality grades | [docs/QUALITY_SCORE.md](docs/QUALITY_SCORE.md) |
 | RFC reference index | [docs/references/rfc-index.md](docs/references/rfc-index.md) |
@@ -27,70 +28,16 @@ NanoRTC is a Sans I/O, pure C WebRTC implementation for RTOS/embedded systems.
 
 ## Build
 
+Cold start — debug build, run tests, run CI check:
+
 ```bash
-# Host build (default: DataChannel only)
 cmake -B build -DCMAKE_BUILD_TYPE=Debug
 cmake --build build -j$(nproc)
 ctest --test-dir build --output-on-failure
-
-# Feature flags (orthogonal, any combination)
-cmake -B build -DNANORTC_FEATURE_DATACHANNEL=ON   # SCTP + DCEP (default ON)
-cmake -B build -DNANORTC_FEATURE_AUDIO=ON          # RTP/SRTP + jitter buffer
-cmake -B build -DNANORTC_FEATURE_VIDEO=ON           # RTP/SRTP + BWE (H.264 only by default)
-cmake -B build -DNANORTC_FEATURE_H265=ON            # H.265/HEVC codec (opt-in; requires VIDEO=ON)
-cmake -B build -DNANORTC_FEATURE_DC_RELIABLE=OFF    # Disable retransmit (sub-feature of DC)
-cmake -B build -DNANORTC_FEATURE_DC_ORDERED=OFF     # Disable ordered delivery (sub-feature of DC)
-cmake -B build -DNANORTC_FEATURE_IPV6=OFF           # Disable IPv6 address support (saves ~300 bytes)
-cmake -B build -DNANORTC_FEATURE_TURN=OFF           # Disable TURN relay (saves ~700B RAM + ~13KB code)
-cmake -B build -DNANORTC_FEATURE_ICE_SRFLX=OFF      # Skip srflx local-candidate registration (LAN-only)
-
-# Common combinations
-cmake -B build -DNANORTC_FEATURE_DATACHANNEL=ON -DNANORTC_FEATURE_AUDIO=ON -DNANORTC_FEATURE_VIDEO=ON  # Full media (H.264 only)
-cmake -B build -DNANORTC_FEATURE_DATACHANNEL=ON -DNANORTC_FEATURE_AUDIO=ON -DNANORTC_FEATURE_VIDEO=ON -DNANORTC_FEATURE_H265=ON  # Full media + H.265
-cmake -B build -DNANORTC_FEATURE_DATACHANNEL=OFF -DNANORTC_FEATURE_AUDIO=ON                          # Audio only (no SCTP)
-
-# Crypto backend: mbedtls (default, for embedded) or openssl (for Linux host)
-cmake -B build -DNANORTC_CRYPTO=openssl
-cmake -B build -DNANORTC_CRYPTO=mbedtls
-
-# Build examples (Linux host, not default)
-cmake -B build -DNANORTC_FEATURE_DATACHANNEL=ON -DNANORTC_FEATURE_AUDIO=ON -DNANORTC_FEATURE_VIDEO=ON \
-      -DNANORTC_CRYPTO=openssl -DNANORTC_BUILD_EXAMPLES=ON
-
-# Custom configuration (override defaults without modifying repo)
-cmake -B build -DNANORTC_CONFIG_FILE=\"my_nanortc_config.h\"
-
-# Interop tests against libdatachannel (requires OpenSSL + C++ compiler)
-cmake -B build -DNANORTC_CRYPTO=openssl -DNANORTC_BUILD_INTEROP_TESTS=ON
-cmake --build build -j$(nproc)
-ctest --test-dir build -R interop --output-on-failure
-
-# With AddressSanitizer
-cmake -B build -DADDRESS_SANITIZER=ON
-
-# Fuzz testing (requires LLVM clang with libFuzzer, not AppleClang)
-./scripts/run-fuzz.sh            # 30s per harness (default)
-./scripts/run-fuzz.sh 300        # 5min per harness
-./scripts/run-fuzz.sh 30 fuzz_stun  # Single harness
-
-# Code coverage (requires gcov + lcov)
-./scripts/coverage.sh              # Generate HTML report
-./scripts/coverage.sh --threshold 80  # Fail if < 80%
-./scripts/coverage.sh --open       # Open report in browser
-
-# ESP-IDF (auto-detected via IDF_PATH; use `idf.py menuconfig` for Kconfig)
-idf.py build
-
-# Format
-clang-format -i src/*.c src/*.h include/*.h crypto/*.h crypto/*.c
-
-# Run full CI locally (same checks as GitHub Actions)
-./scripts/ci-check.sh             # full matrix; mirrors GitHub Actions
-./scripts/ci-check.sh --fast      # tier-1 subset for tight pre-push loops (DATA + MEDIA + ASan, ~5s with ccache hit)
-./scripts/ci-check.sh --clean     # wipe build dirs first
-# The script auto-detects ccache and keeps build dirs across runs for
-# incremental compilation. Install via: brew install ccache
+./scripts/ci-check.sh --fast   # tier-1 pre-push (~5s with ccache)
 ```
+
+Feature flags, crypto backends, examples, interop, ASan, fuzz, coverage, ESP-IDF, formatting: see [docs/guide-docs/build.md](docs/guide-docs/build.md).
 
 ## Mandatory Rules
 

@@ -193,6 +193,7 @@ The repository structure itself is designed for agent legibility: [AGENTS.md](AG
 | Document | Description |
 |----------|------------|
 | [AGENTS.md](AGENTS.md) | Agent entry point — build commands, mandatory rules |
+| [Build Guide](docs/guide-docs/build.md) | Build commands, feature flags, fuzz, coverage, ESP-IDF |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Module dependency graph, layer model, data flow |
 | [Design Specification](docs/design-docs/nanortc-design-draft.md) | Full authoritative design reference |
 | [Core Beliefs](docs/design-docs/core-beliefs.md) | Non-negotiable design principles |
