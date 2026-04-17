@@ -65,6 +65,26 @@ static void setup_ice_pair(nano_ice_t *controlling, nano_ice_t *controlled)
     controlled->remote_pwd_len = 20;
 }
 
+/* Build a single host candidate with the given address family and port.
+ * IPv4 addresses are 10.0.0.<port&0xff>; IPv6 are 2001:db8::<port&0xff>. */
+static void fill_candidate(nano_ice_candidate_t *c, uint8_t family, uint16_t port)
+{
+    memset(c, 0, sizeof(*c));
+    c->family = family;
+    c->port = port;
+    c->type = NANORTC_ICE_CAND_HOST;
+    if (family == 4) {
+        c->addr[0] = 10;
+        c->addr[3] = (uint8_t)(port & 0xff);
+    } else {
+        c->addr[0] = 0x20;
+        c->addr[1] = 0x01;
+        c->addr[2] = 0x0d;
+        c->addr[3] = 0xb8;
+        c->addr[15] = (uint8_t)(port & 0xff);
+    }
+}
+
 /* Helper: generate a check and feed to peer */
 static int do_ice_roundtrip(nano_ice_t *ctrl, nano_ice_t *ctld, uint32_t now_ms)
 {
@@ -405,6 +425,125 @@ TEST(test_ice_no_use_candidate_no_nomination)
     ASSERT_TRUE(resp_len > 0);
     ASSERT_EQ(ctld.state, NANORTC_ICE_STATE_NEW); /* not CONNECTED */
     ASSERT_FALSE(ctld.nominated);
+}
+
+/*
+ * Same-family fallback when caller cannot identify the receiving interface.
+ *
+ * Regression for the dual-stack defect where the controlled-side
+ * USE-CANDIDATE handler would latch selected_local_idx = 0 whenever
+ * local_idx == NANORTC_ICE_LOCAL_IDX_UNKNOWN. On a host that registered
+ * IPv4 first and IPv6 second (the SDK's enumeration order on Linux), an
+ * IPv6 USE-CANDIDATE would nominate the v4 candidate, so every post-
+ * nomination outgoing packet left with src.family=4 to a dest.family=6
+ * peer — RFC 8445 §6.1.2.2 violation, and ICE silently fell back to TURN
+ * relay even on permissive networks.
+ *
+ * The fix in src/nano_ice.c:ice_find_local_idx_by_family() prefers a
+ * same-family candidate before defaulting to idx 0; this test pins it.
+ */
+TEST(test_ice_controlled_dual_stack_local_fallback)
+{
+    nano_ice_t ctld;
+    ice_init(&ctld, 0);
+    memcpy(ctld.local_ufrag, "PEER", 5);
+    ctld.local_ufrag_len = 4;
+    memcpy(ctld.local_pwd, "peer-password-123456", 21);
+    ctld.local_pwd_len = 20;
+    memcpy(ctld.remote_ufrag, "CTRL", 5);
+    ctld.remote_ufrag_len = 4;
+
+    /* IPv4 candidate first (idx 0), IPv6 second (idx 1) — same enumeration
+     * order the uipcat-sdk produces from getifaddrs() on a dual-stack box. */
+    fill_candidate(&ctld.local_candidates[0], 4, 50000);
+    fill_candidate(&ctld.local_candidates[1], 6, 50000);
+    ctld.local_candidate_count = 2;
+
+    uint8_t txid[12] = {0xa1, 0xb2, 0xc3, 0xd4, 0xe5, 0xf6, 0x07, 0x18,
+                       0x29, 0x3a, 0x4b, 0x5c};
+    uint8_t key[] = "peer-password-123456";
+    uint8_t req_buf[256];
+    size_t req_len = 0;
+
+    /* USE-CANDIDATE = true so the controlled side actually nominates. */
+    ASSERT_OK(stun_encode_binding_request("PEER:CTRL", 9, 0x6E001EFF, true, true, 0x9999ull, txid,
+                                          key, sizeof(key) - 1, crypto()->hmac_sha1, req_buf,
+                                          sizeof(req_buf), &req_len));
+
+    /* Source is the iOS-style global IPv6 (2001:db8::abcd), port 60000. */
+    nanortc_addr_t src;
+    memset(&src, 0, sizeof(src));
+    src.family = 6;
+    src.addr[0] = 0x20;
+    src.addr[1] = 0x01;
+    src.addr[2] = 0x0d;
+    src.addr[3] = 0xb8;
+    src.addr[14] = 0xab;
+    src.addr[15] = 0xcd;
+    src.port = 60000;
+
+    uint8_t resp_buf[256];
+    size_t resp_len = 0;
+    /* local_idx UNKNOWN forces the fallback path — exactly what the SDK
+     * triggers when it doesn't pass IP_PKTINFO/IPV6_RECVPKTINFO cmsg. */
+    ASSERT_OK(ice_handle_stun(&ctld, req_buf, req_len, &src, NANORTC_ICE_LOCAL_IDX_UNKNOWN, false,
+                              crypto(), resp_buf, sizeof(resp_buf), &resp_len));
+
+    ASSERT_EQ(ctld.state, NANORTC_ICE_STATE_CONNECTED);
+    ASSERT_TRUE(ctld.nominated);
+    /* The whole point: idx 1 (the v6 candidate), NOT the legacy idx 0. */
+    ASSERT_EQ(ctld.selected_local_idx, 1);
+    ASSERT_EQ(ctld.selected_local_family, 6);
+    ASSERT_EQ(ctld.selected_local_addr[0], 0x20);
+    ASSERT_EQ(ctld.selected_local_addr[1], 0x01);
+}
+
+/*
+ * Legacy single-candidate behaviour preserved.
+ *
+ * When the only registered local candidate is IPv4 and a v6 USE-CANDIDATE
+ * arrives, the family lookup returns NANORTC_ICE_LOCAL_IDX_UNKNOWN and the
+ * fallback chain ends at idx 0 — same as before the fix. This guards the
+ * embedded RTOS targets that nanortc was originally tuned for.
+ */
+TEST(test_ice_controlled_single_v4_local_fallback_keeps_idx_0)
+{
+    nano_ice_t ctld;
+    ice_init(&ctld, 0);
+    memcpy(ctld.local_ufrag, "PEER", 5);
+    ctld.local_ufrag_len = 4;
+    memcpy(ctld.local_pwd, "peer-password-123456", 21);
+    ctld.local_pwd_len = 20;
+    memcpy(ctld.remote_ufrag, "CTRL", 5);
+    ctld.remote_ufrag_len = 4;
+
+    fill_candidate(&ctld.local_candidates[0], 4, 50000);
+    ctld.local_candidate_count = 1;
+
+    uint8_t txid[12] = {0};
+    uint8_t key[] = "peer-password-123456";
+    uint8_t req_buf[256];
+    size_t req_len = 0;
+    ASSERT_OK(stun_encode_binding_request("PEER:CTRL", 9, 0x6E001EFF, true, true, 0x8888ull, txid,
+                                          key, sizeof(key) - 1, crypto()->hmac_sha1, req_buf,
+                                          sizeof(req_buf), &req_len));
+
+    nanortc_addr_t src;
+    memset(&src, 0, sizeof(src));
+    src.family = 6;
+    src.addr[0] = 0x20;
+    src.addr[1] = 0x01;
+    src.port = 60000;
+
+    uint8_t resp_buf[256];
+    size_t resp_len = 0;
+    ASSERT_OK(ice_handle_stun(&ctld, req_buf, req_len, &src, NANORTC_ICE_LOCAL_IDX_UNKNOWN, false,
+                              crypto(), resp_buf, sizeof(resp_buf), &resp_len));
+
+    ASSERT_EQ(ctld.state, NANORTC_ICE_STATE_CONNECTED);
+    ASSERT_TRUE(ctld.nominated);
+    ASSERT_EQ(ctld.selected_local_idx, 0);   /* legacy fallback */
+    ASSERT_EQ(ctld.selected_local_family, 4); /* the only candidate */
 }
 
 /* ================================================================
@@ -1092,24 +1231,6 @@ static void setup_family_filter_agent(nano_ice_t *ice)
     ice->tie_breaker = 0xA1B2C3D4E5F60718ull;
 }
 
-static void fill_candidate(nano_ice_candidate_t *c, uint8_t family, uint16_t port)
-{
-    memset(c, 0, sizeof(*c));
-    c->family = family;
-    c->port = port;
-    c->type = NANORTC_ICE_CAND_HOST;
-    if (family == 4) {
-        c->addr[0] = 10;
-        c->addr[3] = (uint8_t)(port & 0xff);
-    } else {
-        c->addr[0] = 0x20;
-        c->addr[1] = 0x01;
-        c->addr[2] = 0x0d;
-        c->addr[3] = 0xb8;
-        c->addr[15] = (uint8_t)(port & 0xff);
-    }
-}
-
 TEST(test_ice_pair_family_filter_skips_cross_family)
 {
     /* 1 local v4, 2 remote (v4 + v6). Only the v4-v4 pair should ever be checked. */
@@ -1260,6 +1381,8 @@ RUN(test_ice_reject_bad_password);
 /* §7.2.1.4: USE-CANDIDATE / nomination */
 RUN(test_ice_use_candidate_nominates);
 RUN(test_ice_no_use_candidate_no_nomination);
+RUN(test_ice_controlled_dual_stack_local_fallback);
+RUN(test_ice_controlled_single_v4_local_fallback_keeps_idx_0);
 /* §7.3: Processing responses */
 RUN(test_ice_controlling_receives_response);
 RUN(test_ice_controlling_rejects_wrong_txid);
