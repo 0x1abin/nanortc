@@ -142,7 +142,7 @@ int dtls_start(nano_dtls_t *dtls)
  *        pass-through buffering
  *  <0  = sanity-check failure; drop the packet
  */
-static int dtls_try_reassemble_chlo(nano_dtls_t *dtls, const uint8_t *data, size_t len)
+int dtls_try_reassemble_chlo(nano_dtls_t *dtls, const uint8_t *data, size_t len)
 {
     /* Only act on server side and only during INIT/HANDSHAKING. */
     if (!dtls->is_server)

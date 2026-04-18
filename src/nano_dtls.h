@@ -104,6 +104,19 @@ int dtls_start(nano_dtls_t *dtls);
 int dtls_handle_data(nano_dtls_t *dtls, const uint8_t *data, size_t len);
 
 /*
+ * Server-side ClientHello fragment reassembly (workaround for mbedtls 3.6
+ * refusing fragmented ClientHello at ssl_tls12_server.c:1099). Called from
+ * dtls_handle_data(); exposed here only so unit tests can exercise it
+ * directly. Not intended for external callers.
+ *
+ * Returns:
+ *   1  — fragment buffered, or full ClientHello synthesized into dtls->in_buf
+ *   0  — not a fragmented ClientHello, caller should pass through normally
+ *  <0  — malformed input, drop
+ */
+int dtls_try_reassemble_chlo(nano_dtls_t *dtls, const uint8_t *data, size_t len);
+
+/*
  * Poll for outbound DTLS records.
  * Returns NANORTC_OK and sets *out_len if data available, NANORTC_ERR_NO_DATA if empty.
  */
