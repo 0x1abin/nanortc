@@ -15,6 +15,7 @@
  */
 
 #include "nano_dtls.h"
+#include "nano_log.h"
 #include "nanortc_crypto.h"
 #include "nanortc.h"
 #include <string.h>
@@ -125,6 +126,110 @@ int dtls_start(nano_dtls_t *dtls)
     return NANORTC_OK;
 }
 
+/*
+ * Server-side workaround for mbedtls 3.6's refusal of fragmented ClientHello
+ * (ssl_tls12_server.c:1099). Chrome's DTLS ClientHello with post-quantum
+ * key_share exceeds MTU and arrives as two DTLS handshake-layer fragments.
+ *
+ * Buffers fragments, then when the ClientHello body is complete, writes a
+ * single synthesized DTLS record (fragment_offset=0, fragment_length=total)
+ * into dtls->in_buf for mbedtls to consume.
+ *
+ * Returns:
+ *   1  = buffered a fragment / emitted synth record into in_buf (caller must
+ *        still drive the handshake forward)
+ *   0  = not a ClientHello fragment; caller should fall through to normal
+ *        pass-through buffering
+ *  <0  = sanity-check failure; drop the packet
+ */
+static int dtls_try_reassemble_chlo(nano_dtls_t *dtls, const uint8_t *data, size_t len)
+{
+    /* Only act on server side and only during INIT/HANDSHAKING. */
+    if (!dtls->is_server)
+        return 0;
+    if (dtls->state != NANORTC_DTLS_STATE_INIT && dtls->state != NANORTC_DTLS_STATE_HANDSHAKING)
+        return 0;
+    /* DTLS record hdr (13) + handshake hdr (12) = 25 minimum. */
+    if (len < 25)
+        return 0;
+    if (data[0] != 0x16) /* ContentType: handshake */
+        return 0;
+    uint16_t rec_len = ((uint16_t)data[11] << 8) | data[12];
+    if ((size_t)rec_len + 13 > len || rec_len < 12)
+        return 0;
+    if (data[13] != 0x01) /* HandshakeType: ClientHello */
+        return 0;
+
+    uint32_t total = ((uint32_t)data[14] << 16) | ((uint32_t)data[15] << 8) | (uint32_t)data[16];
+    uint16_t msg_seq = ((uint16_t)data[17] << 8) | data[18];
+    uint32_t frag_off = ((uint32_t)data[19] << 16) | ((uint32_t)data[20] << 8) | (uint32_t)data[21];
+    uint32_t frag_len = ((uint32_t)data[22] << 16) | ((uint32_t)data[23] << 8) | (uint32_t)data[24];
+
+    if (frag_off == 0 && frag_len == total) {
+        /* Single-record ClientHello, no reassembly needed. */
+        return 0;
+    }
+
+    /* Fragment detected. Sanity-bound total length and offsets. CHLO body is
+     * parked in app_buf, which is unused until DTLS state reaches ESTABLISHED
+     * (see `dtls_decrypt` path); this function only runs in INIT/HANDSHAKING
+     * so the two uses never overlap. */
+    if (total > sizeof(dtls->app_buf))
+        return -1;
+    if ((uint32_t)frag_off + frag_len > total)
+        return -1;
+    if ((size_t)25 + frag_len > len)
+        return -1;
+
+    /* Start a fresh assembly if first fragment or retransmission of a
+     * different ClientHello. */
+    if (dtls->chlo_total == 0 || dtls->chlo_total != total || dtls->chlo_msg_seq != msg_seq) {
+        dtls->chlo_total = total;
+        dtls->chlo_have = 0;
+        dtls->chlo_msg_seq = msg_seq;
+        memcpy(dtls->chlo_rec_hdr, data, NANORTC_DTLS_RECORD_HDR_PREFIX_SIZE);
+    }
+
+    /* Copy fragment body at its declared offset. Chrome sends in order but
+     * tolerate out-of-order: we track contiguous coverage from 0. */
+    memcpy(dtls->app_buf + frag_off, &data[25], frag_len);
+    if (frag_off + frag_len > dtls->chlo_have)
+        dtls->chlo_have = frag_off + frag_len;
+
+    if (dtls->chlo_have < dtls->chlo_total)
+        return 1; /* wait for more fragments */
+
+    /* Fully assembled — emit single synthesized DTLS record into in_buf. */
+    size_t rec_body_len = (size_t)12 + dtls->chlo_total;
+    size_t new_rec_len = 13 + rec_body_len;
+    if (dtls->in_len + new_rec_len > NANORTC_DTLS_BUF_SIZE) {
+        dtls->chlo_total = 0;
+        dtls->chlo_have = 0;
+        return -1;
+    }
+
+    uint8_t *p = dtls->in_buf + dtls->in_len;
+    memcpy(p, dtls->chlo_rec_hdr, NANORTC_DTLS_RECORD_HDR_PREFIX_SIZE);
+    p[11] = (uint8_t)(rec_body_len >> 8);
+    p[12] = (uint8_t)(rec_body_len & 0xFF);
+    p[13] = 0x01; /* ClientHello */
+    p[14] = (uint8_t)(dtls->chlo_total >> 16);
+    p[15] = (uint8_t)(dtls->chlo_total >> 8);
+    p[16] = (uint8_t)(dtls->chlo_total & 0xFF);
+    p[17] = (uint8_t)(dtls->chlo_msg_seq >> 8);
+    p[18] = (uint8_t)(dtls->chlo_msg_seq & 0xFF);
+    p[19] = p[20] = p[21] = 0;                 /* fragment_offset = 0 */
+    p[22] = (uint8_t)(dtls->chlo_total >> 16); /* fragment_length = total */
+    p[23] = (uint8_t)(dtls->chlo_total >> 8);
+    p[24] = (uint8_t)(dtls->chlo_total & 0xFF);
+    memcpy(&p[25], dtls->app_buf, dtls->chlo_total);
+    dtls->in_len += new_rec_len;
+
+    dtls->chlo_total = 0;
+    dtls->chlo_have = 0;
+    return 1;
+}
+
 int dtls_handle_data(nano_dtls_t *dtls, const uint8_t *data, size_t len)
 {
     if (!dtls || !data || len == 0) {
@@ -134,12 +239,22 @@ int dtls_handle_data(nano_dtls_t *dtls, const uint8_t *data, size_t len)
         return NANORTC_ERR_STATE;
     }
 
-    /* Buffer incoming data */
-    if (dtls->in_len + len > NANORTC_DTLS_BUF_SIZE) {
-        return NANORTC_ERR_BUFFER_TOO_SMALL;
+    /* ClientHello fragment reassembly (server-side only). */
+    int rasm = dtls_try_reassemble_chlo(dtls, data, len);
+    if (rasm < 0) {
+        return NANORTC_ERR_PROTOCOL;
     }
-    memcpy(dtls->in_buf + dtls->in_len, data, len);
-    dtls->in_len += len;
+    if (rasm == 0) {
+        /* Not a ClientHello fragment — normal pass-through buffering. */
+        if (dtls->in_len + len > NANORTC_DTLS_BUF_SIZE) {
+            return NANORTC_ERR_BUFFER_TOO_SMALL;
+        }
+        memcpy(dtls->in_buf + dtls->in_len, data, len);
+        dtls->in_len += len;
+    }
+    /* rasm == 1: fragment buffered or full ClientHello emitted into in_buf.
+     * If only partial data is in_buf, the handshake call below returns
+     * WANT_READ and we wait for the next fragment. */
 
     nanortc_crypto_dtls_ctx_t *ctx = (nanortc_crypto_dtls_ctx_t *)dtls->crypto_ctx;
 
@@ -151,6 +266,7 @@ int dtls_handle_data(nano_dtls_t *dtls, const uint8_t *data, size_t len)
 
         int rc = dtls->crypto->dtls_handshake(ctx);
         if (rc < 0) {
+            NANORTC_LOGW("DTLS", "handshake rejected by crypto backend");
             dtls->state = NANORTC_DTLS_STATE_ERROR;
             return NANORTC_ERR_CRYPTO;
         }
