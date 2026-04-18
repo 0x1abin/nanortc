@@ -405,6 +405,160 @@ TEST(test_dtls_close_notify)
 }
 
 /* ----------------------------------------------------------------
+ * ClientHello fragment reassembly (mbedtls 3.6 workaround)
+ * ----------------------------------------------------------------
+ *
+ * Chrome 124+ with post-quantum key_share sends DTLS ClientHellos that
+ * exceed the MTU and get split across multiple DTLS records at the
+ * handshake layer. mbedtls server-side refuses fragmented ClientHellos
+ * (library/ssl_tls12_server.c:1099), so src/nano_dtls.c performs BIO-layer
+ * reassembly before the record reaches the crypto provider. These tests
+ * exercise that function directly via the unit-test-visible hook.
+ */
+
+/* Helpers: build a single DTLS handshake-layer fragment of a ClientHello.
+ * record_seq increments per record; msg_seq is the handshake-level seq and
+ * stays constant across fragments of the same CHLO. */
+static size_t chlo_build_fragment(uint8_t *out, size_t out_cap, uint16_t msg_seq,
+                                  uint8_t record_seq, uint32_t total, uint32_t frag_off,
+                                  uint32_t frag_len, uint8_t body_fill)
+{
+    size_t rec_body = 12u + frag_len;
+    size_t rec_total = 13u + rec_body;
+    TEST_ASSERT_TRUE(rec_total <= out_cap);
+    /* DTLS record header (13 bytes): handshake | DTLSv1.2 | epoch 0 | seq */
+    out[0] = 0x16;
+    out[1] = 0xfe;
+    out[2] = 0xff;
+    out[3] = 0;
+    out[4] = 0;
+    out[5] = 0;
+    out[6] = 0;
+    out[7] = 0;
+    out[8] = 0;
+    out[9] = 0;
+    out[10] = record_seq;
+    out[11] = (uint8_t)(rec_body >> 8);
+    out[12] = (uint8_t)(rec_body & 0xFF);
+    /* Handshake header (12 bytes): ClientHello | total | msg_seq | frag_off | frag_len */
+    out[13] = 0x01;
+    out[14] = (uint8_t)(total >> 16);
+    out[15] = (uint8_t)(total >> 8);
+    out[16] = (uint8_t)(total & 0xFF);
+    out[17] = (uint8_t)(msg_seq >> 8);
+    out[18] = (uint8_t)(msg_seq & 0xFF);
+    out[19] = (uint8_t)(frag_off >> 16);
+    out[20] = (uint8_t)(frag_off >> 8);
+    out[21] = (uint8_t)(frag_off & 0xFF);
+    out[22] = (uint8_t)(frag_len >> 16);
+    out[23] = (uint8_t)(frag_len >> 8);
+    out[24] = (uint8_t)(frag_len & 0xFF);
+    /* Body filler keyed on the *global* handshake position (frag_off + i), not
+     * the local offset — so the reassembled buffer has a contiguous pattern
+     * the verifier can check with a single loop regardless of fragment count. */
+    for (uint32_t i = 0; i < frag_len; i++) {
+        out[25 + i] = (uint8_t)(body_fill + ((frag_off + i) & 0x7f));
+    }
+    return rec_total;
+}
+
+TEST(test_dtls_chlo_reassemble_two_fragments)
+{
+    nano_dtls_t dtls;
+    ASSERT_OK(dtls_init(&dtls, nano_test_crypto(), 1));
+
+    /* 1300-byte handshake body split 1100 + 200 across two DTLS records. */
+    const uint32_t total = 1300;
+    const uint32_t len1 = 1100;
+    const uint32_t len2 = total - len1;
+
+    uint8_t frag1[1500];
+    uint8_t frag2[512];
+    size_t n1 = chlo_build_fragment(frag1, sizeof(frag1), 0, 0, total, 0, len1, 0xA0);
+    size_t n2 = chlo_build_fragment(frag2, sizeof(frag2), 0, 1, total, len1, len2, 0xA0);
+
+    /* First fragment: buffered, in_buf untouched. */
+    ASSERT_EQ(dtls_try_reassemble_chlo(&dtls, frag1, n1), 1);
+    ASSERT_EQ(dtls.chlo_total, total);
+    ASSERT_EQ(dtls.chlo_have, len1);
+    ASSERT_EQ(dtls.in_len, 0u);
+
+    /* Second fragment: completes → in_buf gets a single synthesized record. */
+    ASSERT_EQ(dtls_try_reassemble_chlo(&dtls, frag2, n2), 1);
+    ASSERT_EQ(dtls.chlo_total, 0u); /* reset */
+    ASSERT_EQ(dtls.chlo_have, 0u);
+
+    /* Synthesized record: 13B record hdr + 12B handshake hdr + 1300B body. */
+    const size_t expect_rec_body = 12u + total;
+    const size_t expect_rec_total = 13u + expect_rec_body;
+    ASSERT_EQ(dtls.in_len, expect_rec_total);
+
+    const uint8_t *p = dtls.in_buf;
+    ASSERT_EQ(p[0], 0x16); /* handshake */
+    /* Preserved record header prefix from first fragment (bytes 0..10). */
+    ASSERT_MEM_EQ(p, frag1, NANORTC_DTLS_RECORD_HDR_PREFIX_SIZE);
+    /* Record length rewritten to cover the whole reassembled body. */
+    ASSERT_EQ(((uint16_t)p[11] << 8) | p[12], expect_rec_body);
+    /* Handshake header: ClientHello, total length, msg_seq=0, frag_off=0, frag_len=total. */
+    ASSERT_EQ(p[13], 0x01);
+    ASSERT_EQ(((uint32_t)p[14] << 16) | ((uint32_t)p[15] << 8) | p[16], total);
+    ASSERT_EQ(((uint16_t)p[17] << 8) | p[18], 0);
+    ASSERT_EQ(((uint32_t)p[19] << 16) | ((uint32_t)p[20] << 8) | p[21], 0u);
+    ASSERT_EQ(((uint32_t)p[22] << 16) | ((uint32_t)p[23] << 8) | p[24], total);
+    /* Body: the fragments' filler bytes, glued contiguously. */
+    for (uint32_t i = 0; i < total; i++) {
+        TEST_ASSERT_EQUAL_UINT8((uint8_t)(0xA0 + (i & 0x7f)), p[25 + i]);
+    }
+
+    dtls_destroy(&dtls);
+}
+
+TEST(test_dtls_chlo_reassemble_skips_non_applicable)
+{
+    nano_dtls_t dtls;
+    uint8_t buf[256];
+    size_t n;
+
+    /* Client-side init — reassembly must no-op regardless of content. */
+    ASSERT_OK(dtls_init(&dtls, nano_test_crypto(), 0));
+    n = chlo_build_fragment(buf, sizeof(buf), 0, 0, 64, 0, 32, 0xC0);
+    ASSERT_EQ(dtls_try_reassemble_chlo(&dtls, buf, n), 0);
+    dtls_destroy(&dtls);
+
+    /* Server side, but the incoming record is a single unfragmented CHLO
+     * (frag_off=0 && frag_len==total). Must pass through untouched. */
+    ASSERT_OK(dtls_init(&dtls, nano_test_crypto(), 1));
+    n = chlo_build_fragment(buf, sizeof(buf), 0, 0, 64, 0, 64, 0xC0);
+    ASSERT_EQ(dtls_try_reassemble_chlo(&dtls, buf, n), 0);
+    ASSERT_EQ(dtls.chlo_total, 0u);
+    ASSERT_EQ(dtls.in_len, 0u);
+
+    /* Server side, but a non-handshake record (e.g. ChangeCipherSpec, 0x14). */
+    buf[0] = 0x14;
+    ASSERT_EQ(dtls_try_reassemble_chlo(&dtls, buf, n), 0);
+
+    dtls_destroy(&dtls);
+}
+
+TEST(test_dtls_chlo_reassemble_rejects_malformed)
+{
+    nano_dtls_t dtls;
+    ASSERT_OK(dtls_init(&dtls, nano_test_crypto(), 1));
+
+    /* total larger than app_buf capacity → drop. */
+    uint8_t buf[4096];
+    size_t n = chlo_build_fragment(buf, sizeof(buf), 0, 0, NANORTC_DTLS_BUF_SIZE + 16,
+                                   0, 512, 0xD0);
+    ASSERT_TRUE(dtls_try_reassemble_chlo(&dtls, buf, n) < 0);
+
+    /* frag_off + frag_len > total → drop. */
+    n = chlo_build_fragment(buf, sizeof(buf), 0, 0, 100, 80, 40, 0xD0);
+    ASSERT_TRUE(dtls_try_reassemble_chlo(&dtls, buf, n) < 0);
+
+    dtls_destroy(&dtls);
+}
+
+/* ----------------------------------------------------------------
  * Test main
  * ---------------------------------------------------------------- */
 
@@ -424,4 +578,8 @@ RUN(test_dtls_record_content_type);
 RUN(test_dtls_fingerprint_sha256_format);
 /* close_notify (RFC 6347) */
 RUN(test_dtls_close_notify);
+/* ClientHello fragment reassembly (mbedtls 3.6 server workaround) */
+RUN(test_dtls_chlo_reassemble_two_fragments);
+RUN(test_dtls_chlo_reassemble_skips_non_applicable);
+RUN(test_dtls_chlo_reassemble_rejects_malformed);
 TEST_MAIN_END

@@ -140,6 +140,13 @@ Per-module audit of NanoRTC against authoritative RFC specifications.
 | 8 | Encrypt/decrypt after handshake | RFC 6347 §4.1 | Y | Y | `test_dtls_encrypt_decrypt` |
 | 9 | State machine (INIT→HANDSHAKING→ESTABLISHED→CLOSED) | — | Y | Y | `test_dtls_wrong_state` |
 | 10 | close_notify on shutdown | RFC 6347 §4.1.2.1 | Y | Y | `test_dtls_close_notify` — both OpenSSL and mbedTLS backends |
+| 11 | Server-side ClientHello fragment reassembly | RFC 6347 §4.2.3 | Y | N | BIO-adapter workaround in `nano_dtls.c:dtls_try_reassemble_chlo` — see note below |
+
+### Note — ClientHello fragment reassembly workaround
+
+mbedtls 3.6.5 server (`library/ssl_tls12_server.c:1099`, present since 2.x) rejects any DTLS ClientHello whose handshake-layer `fragment_offset != 0 || fragment_length != total_length` with `MBEDTLS_ERR_SSL_FEATURE_UNAVAILABLE`. Chrome 124+ ships X25519MLKEM768 post-quantum key_share by default, which pushes the ClientHello past a typical DTLS MTU (~1200 B) and causes Chrome to fragment it. Left alone, this breaks the handshake before mbedtls gets to parse cipher suites or extensions.
+
+The workaround lives in [`src/nano_dtls.c`](../src/nano_dtls.c) (`dtls_try_reassemble_chlo`): server-side only, active only in INIT/HANDSHAKING, it buffers the handshake-layer fragments into the otherwise-unused `app_buf` and emits a single synthesized unfragmented DTLS record to the crypto provider. Non-fragmented ClientHellos take the early-return path with zero additional cost. OpenSSL builds see the same synthesized form, which is RFC 6347 §4.2.3-compliant. No client-side or post-handshake code path is affected.
 
 ---
 

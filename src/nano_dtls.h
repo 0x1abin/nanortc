@@ -21,6 +21,11 @@
  * client_key(16) + server_key(16) + client_salt(14) + server_salt(14) */
 #define NANORTC_DTLS_KEYING_SIZE 60
 
+/* DTLS record header (RFC 6347 §4.1): type(1) + version(2) + epoch(2) + seq(6) + length(2) = 13.
+ * PREFIX_SIZE = first 11 bytes, everything before the length field —
+ * preserved verbatim when synthesizing a reassembled ClientHello record. */
+#define NANORTC_DTLS_RECORD_HDR_PREFIX_SIZE 11
+
 typedef enum {
     NANORTC_DTLS_STATE_INIT,
     NANORTC_DTLS_STATE_HANDSHAKING,
@@ -61,6 +66,22 @@ typedef struct nano_dtls {
 
     /* Local certificate fingerprint (SHA-256, "XX:XX:..." format, 95 chars + NUL) */
     char local_fingerprint[NANORTC_DTLS_FINGERPRINT_STR_SIZE];
+
+    /* ClientHello fragment reassembly (server-side only, workaround for
+     * mbedtls 3.6 rejecting fragmented ClientHello at ssl_tls12_server.c:1099).
+     * Chrome's DTLS ClientHello with X25519MLKEM768 post-quantum key_share
+     * runs ~1.4 KB and fragments into 2 DTLS records over the 1200 B MTU.
+     * We buffer fragments (body bytes written into app_buf — harmless because
+     * app_buf is only used once DTLS reaches ESTABLISHED, which comes after
+     * the whole CHLO has been consumed) then hand mbedtls a synthesized
+     * single-record unfragmented ClientHello built into in_buf.
+     *
+     * chlo_total == 0 means idle. */
+    uint32_t chlo_total;   /* expected ClientHello body length; 0 = idle */
+    uint32_t chlo_have;    /* bytes of body assembled so far */
+    uint16_t chlo_msg_seq; /* handshake msg_seq (must match across fragments) */
+    uint8_t chlo_rec_hdr[NANORTC_DTLS_RECORD_HDR_PREFIX_SIZE]; /* saved bytes 0..10 of record
+                                                                  (type/ver/epoch/seq) */
 } nano_dtls_t;
 
 /*
@@ -81,6 +102,19 @@ int dtls_start(nano_dtls_t *dtls);
  * Check dtls->state for transitions; poll dtls_poll_output() for responses.
  */
 int dtls_handle_data(nano_dtls_t *dtls, const uint8_t *data, size_t len);
+
+/*
+ * Server-side ClientHello fragment reassembly (workaround for mbedtls 3.6
+ * refusing fragmented ClientHello at ssl_tls12_server.c:1099). Called from
+ * dtls_handle_data(); exposed here only so unit tests can exercise it
+ * directly. Not intended for external callers.
+ *
+ * Returns:
+ *   1  — fragment buffered, or full ClientHello synthesized into dtls->in_buf
+ *   0  — not a fragmented ClientHello, caller should pass through normally
+ *  <0  — malformed input, drop
+ */
+int dtls_try_reassemble_chlo(nano_dtls_t *dtls, const uint8_t *data, size_t len);
 
 /*
  * Poll for outbound DTLS records.
