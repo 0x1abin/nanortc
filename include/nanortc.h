@@ -662,8 +662,8 @@ struct nanortc {
     } out_wrap_meta[NANORTC_OUT_QUEUE_SIZE];
 
     /* Diagnostic counters for the TX dispatch path — readable directly by
-     * application glue (example: uipcat_client_broadcast_video) to figure
-     * out why media packets are or aren't flowing over the relay. */
+     * application glue (e.g., an application-layer broadcast helper) to
+     * figure out why media packets are or aren't flowing over the relay. */
     uint32_t stats_enqueue_direct;   /**< Enqueues that bypass TURN wrap. */
     uint32_t stats_enqueue_via_turn; /**< Enqueues flagged for TURN wrap. */
     uint32_t stats_wrap_dropped;     /**< Lazy wrap failures in poll_output. */

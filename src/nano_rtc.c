@@ -1810,7 +1810,7 @@ static int rtc_process_timers(nanortc_t *rtc, uint32_t now_ms)
          * packet between enqueue and dispatch (both share only a pointer
          * in nanortc_output_t, so whoever writes last wins). Fixed as part
          * of investigating a "TURN Allocate corrupted into STUN Binding
-         * Request" packet-level bug on uipcat-camera. */
+         * Request" packet-level bug on a downstream camera SDK. */
         if (rtc->turn.state == NANORTC_TURN_IDLE) {
             /* Start Allocate when we begin ICE checking */
             size_t alloc_len = 0;
