@@ -23,6 +23,21 @@ endif()
 set(_bmgr_defaults "${CMAKE_CURRENT_SOURCE_DIR}/components/gen_bmgr_codes/board_manager.defaults")
 if(EXISTS "${_bmgr_defaults}")
     list(APPEND SDKCONFIG_DEFAULTS "${_bmgr_defaults}")
+else()
+    # The board_manager.defaults file is per-board (not in git) and supplies
+    # CONFIG_ESP_BOARD_DEV_{AUDIO_CODEC,CAMERA,…}_SUPPORT=y — without it the
+    # build fails later on `#include "dev_audio_codec.h"` with a far less
+    # helpful "No such file or directory" at compile time. Fail loud here.
+    message(FATAL_ERROR
+        "\n"
+        "  components/gen_bmgr_codes/board_manager.defaults is missing.\n"
+        "  Run the board-manager prebuild step before idf.py build:\n"
+        "\n"
+        "    python managed_components/espressif__esp_board_manager/\\\n"
+        "        gen_bmgr_config_codes.py -b esp32_p4_nano -c boards\n"
+        "\n"
+        "  (Replace esp32_p4_nano with your board name under boards/.)\n"
+        "  See examples/esp32_camera/README.md for the full setup sequence.")
 endif()
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)

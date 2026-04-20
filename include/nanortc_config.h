@@ -82,6 +82,27 @@
 #define NANORTC_SCTP_RECV_BUF_SIZE CONFIG_NANORTC_SCTP_RECV_BUF_SIZE
 #endif
 
+#if defined(CONFIG_NANORTC_SCTP_RECV_GAP_BUF_SIZE) && !defined(NANORTC_SCTP_RECV_GAP_BUF_SIZE)
+#define NANORTC_SCTP_RECV_GAP_BUF_SIZE CONFIG_NANORTC_SCTP_RECV_GAP_BUF_SIZE
+#endif
+
+#if defined(CONFIG_NANORTC_SCTP_MAX_SEND_QUEUE) && !defined(NANORTC_SCTP_MAX_SEND_QUEUE)
+#define NANORTC_SCTP_MAX_SEND_QUEUE CONFIG_NANORTC_SCTP_MAX_SEND_QUEUE
+#endif
+
+#if defined(CONFIG_NANORTC_SCTP_MAX_RECV_GAP) && !defined(NANORTC_SCTP_MAX_RECV_GAP)
+#define NANORTC_SCTP_MAX_RECV_GAP CONFIG_NANORTC_SCTP_MAX_RECV_GAP
+#endif
+
+#if defined(CONFIG_NANORTC_LOG_LEVEL) && !defined(NANORTC_LOG_LEVEL)
+#define NANORTC_LOG_LEVEL CONFIG_NANORTC_LOG_LEVEL
+#endif
+
+/* Kconfig bool → presence macro (matches src/nano_log.h `#ifdef` test). */
+#if defined(CONFIG_NANORTC_LOG_NO_LOC) && !defined(NANORTC_LOG_NO_LOC)
+#define NANORTC_LOG_NO_LOC
+#endif
+
 #if defined(CONFIG_NANORTC_OUT_QUEUE_SIZE) && !defined(NANORTC_OUT_QUEUE_SIZE)
 #define NANORTC_OUT_QUEUE_SIZE CONFIG_NANORTC_OUT_QUEUE_SIZE
 #endif
@@ -803,6 +824,17 @@ typedef enum {
 #if NANORTC_HAVE_MEDIA_TRANSPORT && (NANORTC_STUN_BUF_SIZE < NANORTC_MEDIA_BUF_SIZE)
 #error \
     "NANORTC_STUN_BUF_SIZE must be >= NANORTC_MEDIA_BUF_SIZE when audio or video transport is enabled"
+#endif
+
+/* MEDIA_BUF_SIZE must fit a full outbound RTP packet:
+ *   RTP header (12) + TWCC one-byte extension (8) +
+ *   payload up to NANORTC_VIDEO_MTU + SRTP auth tag (10) = MTU + 30.
+ * Sizes below this silently truncate outbound RTP — catch at build time.
+ * TWCC overhead applies only when NANORTC_TWCC_EXT_ID is non-zero (the
+ * default), but hard-coding 30 keeps the rule readable and costs only
+ * 8 bytes of headroom when TWCC is compiled out. */
+#if NANORTC_HAVE_MEDIA_TRANSPORT && (NANORTC_MEDIA_BUF_SIZE < NANORTC_VIDEO_MTU + 30)
+#error "NANORTC_MEDIA_BUF_SIZE must be >= NANORTC_VIDEO_MTU + 30 (RTP hdr + TWCC ext + SRTP tag)"
 #endif
 
 #if NANORTC_SDP_MIN_BUF_SIZE < 128

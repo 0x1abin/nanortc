@@ -64,12 +64,13 @@ menu "NanoRTC Configuration"
 
     config NANORTC_MAX_DATACHANNELS
         int "Maximum number of DataChannels"
-        default 8
+        default 2
         range 1 64
         depends on NANORTC_FEATURE_DATACHANNEL
         help
             Maximum number of DataChannels that can be open simultaneously.
-            Each channel uses approximately 40 bytes of RAM.
+            Each channel uses approximately 40 bytes of RAM. IoT-grade
+            default 2 covers one signaling + one media channel.
 
     config NANORTC_MAX_ICE_CANDIDATES
         int "Maximum ICE candidates"
@@ -96,82 +97,142 @@ menu "NanoRTC Configuration"
 
     config NANORTC_DTLS_BUF_SIZE
         int "DTLS I/O buffer size (bytes)"
-        default 2048
+        default 1536
         range 256 16384
         help
             Size of the DTLS read/write scratch buffer. Must accommodate
-            the largest DTLS record expected.
+            the largest DTLS record expected. 1536 covers a 1500-byte
+            Ethernet MTU with TLS record overhead; raise to 2048 if your
+            peer fragments ClientHello across larger records.
 
     config NANORTC_SDP_BUF_SIZE
         int "SDP parsing buffer size (bytes)"
-        default 2048
+        default 1024
         range 512 16384
         help
-            Size of the buffer used for SDP offer/answer parsing.
+            Size of the buffer used for SDP offer/answer parsing. 1024 fits
+            single-track / small-offer IoT SDPs; raise to 2048 for multi-
+            track offers or when exchanging with browsers that emit many
+            codecs and extmap lines.
 
     config NANORTC_SCTP_SEND_BUF_SIZE
         int "SCTP send buffer size (bytes)"
-        default 4096
-        range 4096 262144
+        default 2048
+        range 1024 262144
         depends on NANORTC_FEATURE_DATACHANNEL
         help
             Size of the SCTP send buffer for outgoing DataChannel messages.
-            Aligned with nanortc_config.h default. Increase for high-throughput
-            DataChannel use cases.
+            2048 fits IoT-style signaling / small control frames; raise
+            to 4096 or higher for high-throughput DataChannel use cases.
 
     config NANORTC_SCTP_RECV_BUF_SIZE
         int "SCTP receive buffer size (bytes)"
-        default 4096
-        range 4096 262144
+        default 2048
+        range 1024 262144
         depends on NANORTC_FEATURE_DATACHANNEL
         help
             Size of the SCTP receive buffer for incoming DataChannel messages.
-            Aligned with nanortc_config.h default.
+            2048 fits IoT signaling loads; raise for high-throughput peers.
 
     config NANORTC_OUT_QUEUE_SIZE
         int "Output event queue depth"
+        default 16 if NANORTC_FEATURE_VIDEO
         default 8
         range 4 256
         help
             Depth of the output event ring buffer. Must be a power of 2.
+            8 suffices for DataChannel-only or audio-only builds. 16 covers
+            ≤480p H.264 FU-A bursts; override to 32 for 720p/1080p cameras.
 
     config NANORTC_MEDIA_BUF_SIZE
         int "Media scratch buffer size (bytes)"
-        default 1200
-        range 256 4096
+        default 1232
+        range 1230 4096
         depends on NANORTC_FEATURE_AUDIO || NANORTC_FEATURE_VIDEO
         help
             Scratch buffer for RTP/SRTP pack/unpack. Also sets the per-slot
-            size of the packet ring buffer. 1200 matches the default RTP MTU.
-            Increase to 1500 if jumbo payloads are expected.
+            size of the packet ring buffer. Must hold:
+              RTP header (12) + TWCC extension (8) +
+              payload up to NANORTC_VIDEO_MTU (1200) +
+              SRTP auth tag (10) = 1230 bytes minimum.
+            Default 1232 leaves 2 bytes headroom; raise to 1280 to reserve
+            room for additional RTP header extensions, 1500 for jumbo MTU.
 
     config NANORTC_VIDEO_NAL_BUF_SIZE
         int "H.264 NAL reassembly buffer size (bytes)"
-        default 16384
+        default 8192
         range 4096 131072
         depends on NANORTC_FEATURE_VIDEO
         help
             Maximum reassembled NAL unit size for the FU-A depacketizer.
-            16384 covers 480p IDR NALs. Override to 32768 or 65536
-            for 720p/1080p streams with large keyframes.
+            8192 covers typical 480p H.264 IDR NALs (4-8 KB). Raise to
+            16384 for larger 480p streams, 32768/65536 for 720p/1080p
+            with bigger keyframes.
 
     config NANORTC_JITTER_SLOTS
         int "Jitter buffer slots"
-        default 32
+        default 16
         range 8 256
         depends on NANORTC_FEATURE_AUDIO
         help
             Number of slots in the jitter buffer. Each slot holds one
-            RTP packet. 32 slots at 20ms pacing = 640ms reorder window.
+            RTP packet. 16 slots at 20ms pacing = 320ms reorder window,
+            enough for typical Wi-Fi / cellular paths. Raise to 32 for
+            high-jitter satellite or long-haul links.
 
     config NANORTC_JITTER_SLOT_DATA_SIZE
         int "Jitter buffer slot data size (bytes)"
-        default 320
+        default 160
         range 160 1500
         depends on NANORTC_FEATURE_AUDIO
         help
-            Maximum RTP payload per jitter slot. Opus 20ms@128kbps needs
-            ~320 bytes, 640 covers Opus@510kbps. Host builds default to
-            640 (nanortc_config.h). ESP-IDF defaults to 320 for minimal RAM.
+            Maximum RTP payload per jitter slot. 160 covers Opus 20ms
+            @64kbps and G.711. Raise to 320 for Opus @128kbps, 640 for
+            Opus @510kbps (very uncommon on IoT targets).
+
+    config NANORTC_SCTP_RECV_GAP_BUF_SIZE
+        int "SCTP out-of-order gap buffer size (bytes)"
+        default 2048
+        range 1024 65536
+        depends on NANORTC_FEATURE_DATACHANNEL
+        help
+            Scratch holding payloads of out-of-order DATA chunks awaiting
+            gap fill. 2048 covers LAN / Wi-Fi reorder depth; raise for
+            high-loss paths.
+
+    config NANORTC_SCTP_MAX_SEND_QUEUE
+        int "SCTP pending DATA chunk queue depth"
+        default 4
+        range 2 64
+        depends on NANORTC_FEATURE_DATACHANNEL
+        help
+            Depth of the outbound DATA chunk queue awaiting SACK.
+            4 fits IoT signaling bursts; raise for bulk transfer.
+
+    config NANORTC_SCTP_MAX_RECV_GAP
+        int "SCTP maximum out-of-order gap blocks"
+        default 4
+        range 2 32
+        depends on NANORTC_FEATURE_DATACHANNEL
+        help
+            Maximum gap-ack blocks tracked in a SACK. 4 covers typical
+            LAN reorder; raise for high-loss paths.
+
+    config NANORTC_LOG_LEVEL
+        int "Maximum compile-time log level"
+        default 1
+        range 0 4
+        help
+            0=ERROR 1=WARN 2=INFO 3=DEBUG 4=TRACE. Messages above this
+            level are removed at compile time. Production firmware
+            typically uses 0 or 1; raise to 3 or 4 for field debugging.
+
+    config NANORTC_LOG_NO_LOC
+        bool "Strip __FILE__/__LINE__/__func__ from log callsites"
+        default y
+        help
+            When enabled, each LOG callsite stops embedding source-location
+            pointers, saving 1-2 KB of .rodata on ESP32. Disable if your
+            log sink needs file/line/function metadata.
 
 endmenu

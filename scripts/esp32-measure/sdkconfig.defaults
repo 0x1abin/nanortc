@@ -12,3 +12,9 @@ CONFIG_MBEDTLS_PEM_WRITE_C=y
 
 # Reduce stack (we don't actually run)
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=4096
+
+# Build at -Os so reported flash figures match what a production IoT
+# firmware would actually ship. ESP-IDF's Kconfig default is
+# COMPILER_OPTIMIZATION_DEBUG (-Og), which inflates .text by 15-25%
+# and is not what any real target uses.
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y

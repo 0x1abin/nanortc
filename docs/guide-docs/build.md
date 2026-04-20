@@ -137,6 +137,20 @@ idf.py -p /dev/tty.usbmodem* flash monitor   # flash then immediately open monit
 
 Omit `-p` to let `idf.py` auto-detect the USB serial port. On Linux the device usually appears as `/dev/ttyUSB0` or `/dev/ttyACM0`.
 
+### Board-manager prebuild (esp32_camera only)
+
+The `esp32_camera` example uses [`esp_board_manager`](https://components.espressif.com/components/espressif/esp_board_manager) for sensor / codec / LDO wiring. Before the first `idf.py build` (and after `idf.py fullclean` or a board switch), generate `components/gen_bmgr_codes/board_manager.defaults` from the YAML under `boards/`:
+
+```bash
+cd examples/esp32_camera
+idf.py set-target esp32p4
+python managed_components/espressif__esp_board_manager/gen_bmgr_config_codes.py \
+       -b esp32_p4_nano -c boards
+idf.py build
+```
+
+The generated file is board-specific and intentionally not tracked in git. `CMakeLists.txt` now fails loud at configure time if it's missing rather than tripping on a far less helpful `dev_audio_codec.h: No such file or directory` during compile. Other `examples/esp32_*` targets don't need this step.
+
 ## Formatting
 
 ```bash

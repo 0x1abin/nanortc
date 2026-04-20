@@ -52,6 +52,16 @@ if(DEFINED ENV{IDF_PATH})
         INCLUDE_DIRS include src crypto
         REQUIRES mbedtls
     )
+
+    # Optional profile header override (measurement / tuning hook).
+    # When NANORTC_PROFILE_HDR is set in the environment, prepend its
+    # contents to every nanortc translation unit so that the #ifndef
+    # guards in nanortc_config.h honour the profile's overrides.
+    if(DEFINED ENV{NANORTC_PROFILE_HDR})
+        target_compile_options(${COMPONENT_LIB} PRIVATE
+            "SHELL:-include $ENV{NANORTC_PROFILE_HDR}")
+    endif()
+
     return()
 endif()
 
