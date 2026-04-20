@@ -25,20 +25,19 @@ to your own hardware.
 
 ```bash
 cd examples/esp32_camera
-
-# 1. Set target (downloads managed components)
-idf.py set-target esp32p4
-
-# 2. Generate board config (first time or when switching boards)
-python managed_components/espressif__esp_board_manager/gen_bmgr_config_codes.py \
-  -b esp32_p4_nano -c boards
-
-# 3. Build and flash
+idf.py set-target esp32p4          # downloads managed components,
+                                    # auto-generates board config for
+                                    # the single board under boards/
 idf.py build
 idf.py flash monitor
 ```
 
-After step 2, subsequent builds only need `idf.py build`.
+With a single board directory under `boards/` (the default — `esp32_p4_nano`), `CMakeLists.txt` runs the generator at configure time so `components/gen_bmgr_codes/board_manager.defaults` appears automatically. When you add a second board (see [Custom Board](#custom-board)) the auto-pick becomes ambiguous and configure will ask you to run the generator explicitly:
+
+```bash
+python managed_components/espressif__esp_board_manager/gen_bmgr_config_codes.py \
+  -b <board-name> -c boards
+```
 
 ## Usage
 

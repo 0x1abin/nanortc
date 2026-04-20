@@ -139,17 +139,18 @@ Omit `-p` to let `idf.py` auto-detect the USB serial port. On Linux the device u
 
 ### Board-manager prebuild (esp32_camera only)
 
-The `esp32_camera` example uses [`esp_board_manager`](https://components.espressif.com/components/espressif/esp_board_manager) for sensor / codec / LDO wiring. Before the first `idf.py build` (and after `idf.py fullclean` or a board switch), generate `components/gen_bmgr_codes/board_manager.defaults` from the YAML under `boards/`:
+The `esp32_camera` example uses [`esp_board_manager`](https://components.espressif.com/components/espressif/esp_board_manager) for sensor / codec / LDO wiring. The per-board `components/gen_bmgr_codes/board_manager.defaults` file is generated from the YAML under `boards/` and intentionally not tracked in git.
+
+When `boards/` contains exactly one board directory (the default — `esp32_p4_nano`), `CMakeLists.txt` auto-runs the generator at configure time, so `idf.py set-target esp32p4 && idf.py build` just works.
+
+Run the generator manually only when you have multiple boards under `boards/` (e.g. during custom-board bring-up) and need to pick:
 
 ```bash
-cd examples/esp32_camera
-idf.py set-target esp32p4
 python managed_components/espressif__esp_board_manager/gen_bmgr_config_codes.py \
-       -b esp32_p4_nano -c boards
-idf.py build
+       -b <board-name> -c boards
 ```
 
-The generated file is board-specific and intentionally not tracked in git. `CMakeLists.txt` now fails loud at configure time if it's missing rather than tripping on a far less helpful `dev_audio_codec.h: No such file or directory` during compile. Other `examples/esp32_*` targets don't need this step.
+If the auto-generator ever fails, configure aborts with the generator's stderr; inspect `components/gen_bmgr_codes/` for partial output. Other `examples/esp32_*` targets don't use `esp_board_manager` and don't need this step.
 
 ## Formatting
 
