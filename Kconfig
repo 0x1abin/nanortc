@@ -118,12 +118,15 @@ menu "NanoRTC Configuration"
     config NANORTC_SCTP_SEND_BUF_SIZE
         int "SCTP send buffer size (bytes)"
         default 2048
-        range 1024 262144
+        range 1024 65535
         depends on NANORTC_FEATURE_DATACHANNEL
         help
             Size of the SCTP send buffer for outgoing DataChannel messages.
             2048 fits IoT-style signaling / small control frames; raise
             to 4096 or higher for high-throughput DataChannel use cases.
+            Upper bound is 65535 because offsets/lengths into send_buf are
+            stored as uint16_t (nsctp_send_entry_t and send_buf_used in
+            src/nano_sctp.h).
 
     config NANORTC_SCTP_RECV_BUF_SIZE
         int "SCTP receive buffer size (bytes)"
@@ -193,30 +196,39 @@ menu "NanoRTC Configuration"
     config NANORTC_SCTP_RECV_GAP_BUF_SIZE
         int "SCTP out-of-order gap buffer size (bytes)"
         default 2048
-        range 1024 65536
+        range 1024 65535
         depends on NANORTC_FEATURE_DATACHANNEL
         help
             Scratch holding payloads of out-of-order DATA chunks awaiting
             gap fill. 2048 covers LAN / Wi-Fi reorder depth; raise for
-            high-loss paths.
+            high-loss paths. Upper bound is 65535 because offsets/lengths
+            into recv_gap_buf are stored as uint16_t (see src/nano_sctp.h).
 
     config NANORTC_SCTP_MAX_SEND_QUEUE
-        int "SCTP pending DATA chunk queue depth"
+        int "SCTP pending DATA chunk queue depth (power of 2)"
         default 4
         range 2 64
         depends on NANORTC_FEATURE_DATACHANNEL
         help
-            Depth of the outbound DATA chunk queue awaiting SACK.
+            Depth of the outbound DATA chunk ring queue awaiting SACK.
             4 fits IoT signaling bursts; raise for bulk transfer.
+            MUST be a power of two (2, 4, 8, 16, 32, 64) — src/nano_sctp.c
+            indexes the ring with `idx & (N - 1)`. Non-power-of-two values
+            are rejected at compile time via nanortc_config.h.
 
     config NANORTC_SCTP_MAX_RECV_GAP
-        int "SCTP maximum out-of-order gap blocks"
+        int "SCTP out-of-order DATA ring depth (power of 2)"
         default 4
         range 2 32
         depends on NANORTC_FEATURE_DATACHANNEL
         help
-            Maximum gap-ack blocks tracked in a SACK. 4 covers typical
-            LAN reorder; raise for high-loss paths.
+            Depth of the ring tracking out-of-order DATA chunks awaiting
+            gap fill. 4 covers typical LAN reorder; raise for high-loss
+            paths. MUST be a power of two (2, 4, 8, 16, 32) — src/nano_sctp.c
+            indexes the ring with `idx & (N - 1)`. Non-power-of-two values
+            are rejected at compile time via nanortc_config.h.
+            (Distinct from NANORTC_SCTP_MAX_GAP_BLOCKS, which caps the
+            gap-ack block count reported in outbound SACK chunks.)
 
     config NANORTC_LOG_LEVEL
         int "Maximum compile-time log level"

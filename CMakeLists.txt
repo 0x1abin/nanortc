@@ -57,9 +57,12 @@ if(DEFINED ENV{IDF_PATH})
     # When NANORTC_PROFILE_HDR is set in the environment, prepend its
     # contents to every nanortc translation unit so that the #ifndef
     # guards in nanortc_config.h honour the profile's overrides.
+    # Passing `-include` and the path as separate arguments lets CMake
+    # quote the path — safe against spaces / shell metacharacters.
     if(DEFINED ENV{NANORTC_PROFILE_HDR})
+        set(_nanortc_profile_hdr "$ENV{NANORTC_PROFILE_HDR}")
         target_compile_options(${COMPONENT_LIB} PRIVATE
-            "SHELL:-include $ENV{NANORTC_PROFILE_HDR}")
+            -include "${_nanortc_profile_hdr}")
     endif()
 
     return()
