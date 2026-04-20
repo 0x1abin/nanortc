@@ -116,11 +116,26 @@ Requires `gcov` and `lcov`.
 
 ## ESP-IDF
 
-Auto-detected via `IDF_PATH`. Use `idf.py menuconfig` to adjust Kconfig knobs (feature flags, buffer sizes).
+Auto-detected via `IDF_PATH`. The standard way to load the ESP-IDF environment once per shell session (exports `IDF_PATH`, `idf.py`, and the cross-toolchain) is the `get_idf` alias from the ESP-IDF install script:
 
 ```bash
-idf.py build
+get_idf
 ```
+
+`get_idf` is defined by ESP-IDF's `install.sh` / `install.fish` and typically resolves to something like `alias get_idf='. $HOME/esp/esp-idf/export.sh'`. If it's not defined in your shell, source `export.sh` directly from wherever your IDF checkout lives.
+
+Configure, build, flash, and view logs from the project directory (for example `examples/esp32_datachannel/`):
+
+```bash
+idf.py set-target esp32p4      # one-time per project; esp32s3 / esp32c6 also supported
+idf.py menuconfig               # optional — adjust Kconfig knobs (feature flags, buffer sizes)
+idf.py build                    # compile firmware
+idf.py -p /dev/tty.usbmodem* flash   # write firmware to the attached board
+idf.py -p /dev/tty.usbmodem* monitor # serial log viewer (Ctrl-] to quit)
+idf.py -p /dev/tty.usbmodem* flash monitor   # flash then immediately open monitor
+```
+
+Omit `-p` to let `idf.py` auto-detect the USB serial port. On Linux the device usually appears as `/dev/ttyUSB0` or `/dev/ttyACM0`.
 
 ## Formatting
 
