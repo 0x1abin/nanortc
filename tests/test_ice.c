@@ -454,7 +454,7 @@ TEST(test_ice_controlled_dual_stack_local_fallback)
     ctld.remote_ufrag_len = 4;
 
     /* IPv4 candidate first (idx 0), IPv6 second (idx 1) — same enumeration
-     * order the uipcat-sdk produces from getifaddrs() on a dual-stack box. */
+     * order a typical SDK produces from getifaddrs() on a dual-stack box. */
     fill_candidate(&ctld.local_candidates[0], 4, 50000);
     fill_candidate(&ctld.local_candidates[1], 6, 50000);
     ctld.local_candidate_count = 2;

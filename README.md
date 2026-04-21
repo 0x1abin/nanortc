@@ -27,16 +27,15 @@ NanoRTC is a WebRTC protocol stack designed from the ground up for resource-cons
 
 | Configuration | Flash (.text) | RAM (sizeof) | Flags |
 |--------------|---------------|-------------|-------|
-| Core only | 16.5 KB | 10.0 KB | DC=OFF AUDIO=OFF VIDEO=OFF |
-| DataChannel | 27.9 KB | 19.7 KB | DC=ON |
-| Audio only | 25.1 KB | 21.5 KB | DC=OFF AUDIO=ON |
-| DataChannel + Audio | 36.4 KB | 31.2 KB | DC=ON AUDIO=ON |
-| Media only (no DC) | 27.4 KB | 42.7 KB | DC=OFF AUDIO=ON VIDEO=ON |
-| Full media | 38.7 KB | 52.4 KB | DC=ON AUDIO=ON VIDEO=ON |
+| Core only | 29.0 KB | 10.2 KB | DC=OFF AUDIO=OFF VIDEO=OFF |
+| DataChannel | 38.8 KB | 19.4 KB | DC=ON |
+| Audio only | 40.8 KB | 20.6 KB | DC=OFF AUDIO=ON |
+| DataChannel + Audio | 50.6 KB | 29.9 KB | DC=ON AUDIO=ON |
+| Media only (no DC) | 45.3 KB | 51.0 KB | DC=OFF AUDIO=ON VIDEO=ON |
+| Full media | 55.0 KB | 60.3 KB | DC=ON AUDIO=ON VIDEO=ON |
 
-> Measured on ESP32-P4 (RISC-V HP), mbedTLS, -O2.
-> `sizeof(nanortc_t)` is the full per-connection RAM — no heap allocation.
-> Sizes reflect optimized defaults (v0.1). Tune further via [`NANORTC_CONFIG_FILE`](docs/engineering/memory-profiles.md).
+> Measured on ESP32-P4 (RISC-V HP), ESP-IDF 5.5 mbedTLS, `-Os` (`CONFIG_COMPILER_OPTIMIZATION_SIZE=y`). `sizeof(nanortc_t)` is the full per-connection RAM — no heap allocation. Flash figures count only nanortc library code (`libnanortc.a` .text); mbedTLS and lwIP are separate and typically shared with the rest of the firmware.
+> Sizes reflect the ESP-IDF Kconfig defaults — IoT-grade buffer/queue sizing baked in, full ICE stack intact (TURN relay, srflx discovery, IPv6 host candidates, TWCC/BWE perception, RFC 8445 hardening). Reproduce with `./scripts/measure-sizes.sh --esp32 esp32p4`; tune further via `idf.py menuconfig` or [`NANORTC_CONFIG_FILE`](docs/engineering/memory-profiles.md).
 
 Any combination works — audio without DataChannel, video without audio, etc.
 
@@ -177,7 +176,7 @@ The repository structure itself is designed for agent legibility: [AGENTS.md](AG
 
 ## Contributing
 
-NanoRTC is in active development. Phases 1-7 complete (DataChannel, Audio, Video, Quality, Network Traversal, resource optimization). All 18 library modules at A grade — fuzz-tested, browser-verified, interop-verified, 80%+ coverage. Full-media `sizeof(nanortc_t)` reduced by 34% (157 KB → 103 KB).
+NanoRTC is in active development. The core protocol stack — DataChannel, Audio, Video/H.264, ICE+STUN+TURN with RFC 8445 compliance, SRTP, and TWCC/BWE perception — is code-complete and interop-verified against libdatachannel and Chromium. Phase 8 continued-optimization and Phase 3.5 H.265 are in flight; see [docs/PLANS.md](docs/PLANS.md) for current phase status. All 18 library modules at A grade — fuzz-tested, browser-verified, libdatachannel-interop-verified, 80%+ coverage.
 
 Contributions welcome. Please read [AGENTS.md](AGENTS.md) for build instructions and mandatory rules before submitting changes.
 

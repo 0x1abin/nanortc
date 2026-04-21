@@ -110,7 +110,7 @@ These RFC features are not relevant to the WebRTC TURN profile NanoRTC targets. 
 
 ## Phase 5.2 — Client-side relay data path (Apr 2026)
 
-After the F1–F5 hardening landed, [tests/interop/test_interop_turn_relay.c](../../tests/interop/test_interop_turn_relay.c) covered libdatachannel running relay-only against a host-only nanortc — exercising the *server* side of nanortc's TURN code (Data Indication unwrap + ChannelData receive demux) but **not** the client side: nanortc's own outbound media wrap had never been driven over a real cellular path. Discovered while bringing up the macOS uipcat-camera SDK example: `viewer connected` fired but no media flowed across cellular networks.
+After the F1–F5 hardening landed, [tests/interop/test_interop_turn_relay.c](../../tests/interop/test_interop_turn_relay.c) covered libdatachannel running relay-only against a host-only nanortc — exercising the *server* side of nanortc's TURN code (Data Indication unwrap + ChannelData receive demux) but **not** the client side: nanortc's own outbound media wrap had never been driven over a real cellular path. Discovered while bringing up a downstream macOS camera SDK example: `viewer connected` fired but no media flowed across cellular networks.
 
 | ID  | Risk     | Issue                                                                                                                                                                                                                              | Fix |
 |-----|----------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-----|
@@ -122,7 +122,7 @@ After the F1–F5 hardening landed, [tests/interop/test_interop_turn_relay.c](..
 
 ### F6/F7 verification — what cellular vs LAN buys
 
-The cellular-phone path is the only one that exercises this end-to-end: same-LAN viewers establish via direct host candidates and never need the relay. The fix was hand-verified by capturing the per-session ICE state at `EV_CONNECTED` from a real cellular phone connecting to the macOS uipcat-camera SDK example:
+The cellular-phone path is the only one that exercises this end-to-end: same-LAN viewers establish via direct host candidates and never need the relay. The fix was hand-verified by capturing the per-session ICE state at `EV_CONNECTED` from a real cellular phone connecting to a downstream macOS camera SDK example:
 
 ```
 ICE selected pair type=relay  remote=211.90.236.246:60395

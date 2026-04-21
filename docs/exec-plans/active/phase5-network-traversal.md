@@ -90,7 +90,7 @@ The relay-only e2e tests force `libdatachannel` into `RTC_TRANSPORT_POLICY_RELAY
 
 ## Phase 5.2: Client-side relay data path (nanortc-as-TURN-client) — Apr 2026
 
-Phase 5.1 covered nanortc's *server-side* TURN code (libdc relays, nanortc receives via Data Indication / ChannelData) but never drove nanortc's own outbound media wrap over a real cellular path. Discovered while bringing up the macOS uipcat-camera SDK example: `viewer connected` fired on cellular, but no media flowed. F6 was the hidden showstopper — `selected_type` never became `RELAY` because the controlled side could not tell a TURN-tunneled USE-CANDIDATE check from a direct one. F7/F8/F9 piled up as soon as F6 was unblocked. See [docs/engineering/turn-rfc-compliance.md](../../engineering/turn-rfc-compliance.md) Phase 5.2 section for the full finding table.
+Phase 5.1 covered nanortc's *server-side* TURN code (libdc relays, nanortc receives via Data Indication / ChannelData) but never drove nanortc's own outbound media wrap over a real cellular path. Discovered while bringing up a downstream macOS camera SDK example: `viewer connected` fired on cellular, but no media flowed. F6 was the hidden showstopper — `selected_type` never became `RELAY` because the controlled side could not tell a TURN-tunneled USE-CANDIDATE check from a direct one. F7/F8/F9 piled up as soon as F6 was unblocked. See [docs/engineering/turn-rfc-compliance.md](../../engineering/turn-rfc-compliance.md) Phase 5.2 section for the full finding table.
 
 | Task | File |
 |------|------|
@@ -103,7 +103,7 @@ Phase 5.1 covered nanortc's *server-side* TURN code (libdc relays, nanortc recei
 | `test_sizeof.c` bound relaxed for non-default `NANORTC_MAX_ICE_CANDIDATES` overrides | `tests/test_sizeof.c` |
 | New `T19a` test: `nanortc_add_remote_candidate()` parses `typ` host/srflx/relay (regression for F5) | `tests/test_trickle_ice.c` |
 
-Manual verification path (no automated test exists yet — see Coverage gap below): macOS uipcat-camera SDK example, cellular viewer, observed at `EV_CONNECTED`:
+Manual verification path (no automated test exists yet — see Coverage gap below): downstream macOS camera SDK example, cellular viewer, observed at `EV_CONNECTED`:
 
 ```
 ICE selected pair type=relay  remote=211.90.236.246:60395

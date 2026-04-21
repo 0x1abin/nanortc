@@ -109,7 +109,7 @@ Phase 9 delivers the **perception** side only — the library emits events, the 
 - `bwe_coordinator_try_apply(c, candidate_bps, contributors, now_ms)` — takes the min-across-viewers that the app has already computed, applies the 1 Hz throttle + 5 % dead-band, and invokes the app's encoder hook.
 - `bwe_dir_str()` / `bwe_src_str()` — `NANORTC_BWE_DIR_*` / `NANORTC_BWE_SRC_*` enum → short string for log lines.
 
-The app owns the session/viewer storage (flat `nano_session_t[]` in `examples/macos_camera/`, viewer-id keyed slot table in `sdks/uipcat-sdk/examples/camera-rk3588/`) because the shape differs per example. Both examples seed BWE bounds via `nanortc_set_bitrate_bounds()` / `nanortc_set_initial_bitrate()` before the first RTCP feedback arrives so the initial estimate matches the encoder's static target rather than the compile-time default.
+The app owns the session/viewer storage (flat `nano_session_t[]` in `examples/macos_camera/`, viewer-id keyed slot table in a separate downstream SDK's `examples/camera-rk3588/`) because the shape differs per example. Both examples seed BWE bounds via `nanortc_set_bitrate_bounds()` / `nanortc_set_initial_bitrate()` before the first RTCP feedback arrives so the initial estimate matches the encoder's static target rather than the compile-time default.
 
 The rk3588 capture layer (`examples/rk3588_uvc_camera/capture_{gstreamer,ffmpeg}.c`) gains `capture_set_bitrate(int bps)` that the coordinator calls:
 - GStreamer: `g_object_set(mpph264enc, "bps", ..., "bps-max", ..., NULL)` — CBR hot-update, confirmed writable on `gstreamer1.0-rockchip1`.

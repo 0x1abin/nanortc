@@ -116,11 +116,41 @@ Requires `gcov` and `lcov`.
 
 ## ESP-IDF
 
-Auto-detected via `IDF_PATH`. Use `idf.py menuconfig` to adjust Kconfig knobs (feature flags, buffer sizes).
+Auto-detected via `IDF_PATH`. The standard way to load the ESP-IDF environment once per shell session (exports `IDF_PATH`, `idf.py`, and the cross-toolchain) is the `get_idf` alias from the ESP-IDF install script:
 
 ```bash
-idf.py build
+get_idf
 ```
+
+`get_idf` is defined by ESP-IDF's `install.sh` / `install.fish` and typically resolves to something like `alias get_idf='. $HOME/esp/esp-idf/export.sh'`. If it's not defined in your shell, source `export.sh` directly from wherever your IDF checkout lives.
+
+Configure, build, flash, and view logs from the project directory (for example `examples/esp32_datachannel/`):
+
+```bash
+idf.py set-target esp32p4      # one-time per project; esp32s3 / esp32c6 also supported
+idf.py menuconfig               # optional — adjust Kconfig knobs (feature flags, buffer sizes)
+idf.py build                    # compile firmware
+idf.py -p /dev/tty.usbmodem* flash   # write firmware to the attached board
+idf.py -p /dev/tty.usbmodem* monitor # serial log viewer (Ctrl-] to quit)
+idf.py -p /dev/tty.usbmodem* flash monitor   # flash then immediately open monitor
+```
+
+Omit `-p` to let `idf.py` auto-detect the USB serial port. On Linux the device usually appears as `/dev/ttyUSB0` or `/dev/ttyACM0`.
+
+### Board-manager prebuild (esp32_camera only)
+
+The `esp32_camera` example uses [`esp_board_manager`](https://components.espressif.com/components/espressif/esp_board_manager) for sensor / codec / LDO wiring. The per-board `components/gen_bmgr_codes/board_manager.defaults` file is generated from the YAML under `boards/` and intentionally not tracked in git.
+
+When `boards/` contains exactly one board directory (the default — `esp32_p4_nano`), `CMakeLists.txt` auto-runs the generator at configure time, so `idf.py set-target esp32p4 && idf.py build` just works.
+
+Run the generator manually only when you have multiple boards under `boards/` (e.g. during custom-board bring-up) and need to pick:
+
+```bash
+python managed_components/espressif__esp_board_manager/gen_bmgr_config_codes.py \
+       -b <board-name> -c boards
+```
+
+If the auto-generator ever fails, configure aborts with the generator's stderr; inspect `components/gen_bmgr_codes/` for partial output. Other `examples/esp32_*` targets don't use `esp_board_manager` and don't need this step.
 
 ## Formatting
 

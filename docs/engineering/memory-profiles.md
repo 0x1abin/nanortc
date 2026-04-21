@@ -1,30 +1,79 @@
 # Memory Profiles
 
-Approximate `sizeof(nanortc_t)` for various feature configurations on a 32-bit ARM target.
-Host (64-bit) sizes are slightly larger due to pointer/size_t widths.
+Current `sizeof(nanortc_t)` and `libnanortc.a` `.text` for each canonical
+feature combination on ESP32-P4 (RISC-V HP, ESP-IDF 5.5 mbedTLS, `-Os` via
+`CONFIG_COMPILER_OPTIMIZATION_SIZE=y`). Host (64-bit) sizes are slightly
+larger due to pointer/size_t widths; 32-bit ARM targets land within ~5 % of
+the ESP32-P4 numbers.
+
+All numbers below come from `./scripts/measure-sizes.sh --esp32 esp32p4`
+against the ESP-IDF Kconfig defaults in `Kconfig`. Full ICE stack is
+preserved (TURN relay, srflx discovery, IPv6 host candidates, RFC 8445
+hardening); only buffer/queue sizing and logging are trimmed for IoT
+targets. Host Linux/macOS builds use `nanortc_config.h`'s generous
+defaults so interop/fuzz tests keep their timing headroom.
 
 ## Configuration Matrix
 
-| Configuration | nanortc_t (approx) | Notes |
+| Configuration | Flash (.text) | `sizeof(nanortc_t)` | Notes |
+|---|---|---|---|
+| `CORE_ONLY` (no DC, no media) | 29.0 KB | 10.2 KB | ICE + DTLS + SDP + STUN + TURN |
+| `DC-only` | 38.8 KB | 19.4 KB | Adds SCTP + DCEP |
+| `Audio only` | 40.8 KB | 20.6 KB | Adds 1 audio track (jitter buffer) |
+| `DC + Audio` | 50.6 KB | 29.9 KB | Typical duplex voice IoT config |
+| `Media only` (no DC) | 45.3 KB | 51.0 KB | Audio + 1 video track + `pkt_ring` + BWE |
+| `DC + Audio + Video` | 55.0 KB | 60.3 KB | Full media stack |
+
+`NANORTC_FEATURE_TURN=0` claws back ~11 KB of flash and ~668 B of RAM from
+every row — only valid for deployments that can always reach peers via
+host / srflx candidates. Building at `-Og` (ESP-IDF's Kconfig default for
+the rest of the firmware) inflates every flash figure by roughly 15 %;
+the measurement pins `-Os` via `scripts/esp32-measure/sdkconfig.defaults`.
+
+## ESP-IDF vs host defaults
+
+The Kconfig bakes in the following trims on top of `nanortc_config.h`'s
+generous host defaults:
+
+| Knob | Host default | ESP-IDF Kconfig default |
 |---|---|---|
-| `CORE_ONLY` (no DC, no media, TURN=ON) | ~14 KB | ICE + DTLS + SDP + TURN |
-| `CORE_ONLY` (no DC, no media, TURN=OFF) | ~13 KB | Minimal WebRTC core |
-| `DC-only` (TURN=ON) | ~28 KB | DataChannel: adds SCTP + DCEP |
-| `DC-only` (TURN=OFF) | ~27 KB | Typical LAN-only IoT config |
-| `DC + Audio` | ~39 KB | Adds 1 audio track (~11 KB jitter buffer) |
-| `DC + Audio + Video` | ~103 KB | Adds 1 video track + pkt_ring + BWE |
+| `NANORTC_MAX_DATACHANNELS` | 8 | 2 |
+| `NANORTC_MAX_ICE_CANDIDATES` | 8 | 4 |
+| `NANORTC_DTLS_BUF_SIZE` | 2048 | 1536 |
+| `NANORTC_SDP_BUF_SIZE` | 2048 | 1024 |
+| `NANORTC_SCTP_{SEND,RECV,RECV_GAP}_BUF_SIZE` | 4096 each | 2048 each |
+| `NANORTC_SCTP_MAX_SEND_QUEUE` | 16 | 4 |
+| `NANORTC_SCTP_MAX_RECV_GAP` | 8 | 4 |
+| `NANORTC_OUT_QUEUE_SIZE` | 32 | 8 (audio/DC), 16 (video) |
+| `NANORTC_MEDIA_BUF_SIZE` | 1232 (formula) | 1232 (fixed; `#error` guards `< MTU + 30`) |
+| `NANORTC_VIDEO_NAL_BUF_SIZE` | 16384 | 8192 |
+| `NANORTC_JITTER_SLOTS` | 32 | 16 |
+| `NANORTC_JITTER_SLOT_DATA_SIZE` | 320 | 160 |
+| `NANORTC_LOG_LEVEL` | 4 (TRACE) | 1 (WARN) |
+| `NANORTC_LOG_NO_LOC` | undefined | defined |
+
+Override any of these via `idf.py menuconfig` or `CONFIG_NANORTC_*` lines
+in `sdkconfig.defaults`. If your target has looser constraints (HD video,
+high-jitter cellular, large SDPs), raise the knob you care about.
 
 ## Biggest Contributors
 
 | Component | Default Size | Tuning Knob |
 |---|---|---|
-| Jitter buffer (per audio track) | ~11 KB | `NANORTC_JITTER_SLOTS` (32), `NANORTC_JITTER_SLOT_DATA_SIZE` (320) |
-| H.264 NAL reassembly (per video track) | ~16 KB | `NANORTC_VIDEO_NAL_BUF_SIZE` (16384) |
-| Video packet ring (32 slots) | ~39 KB | `NANORTC_OUT_QUEUE_SIZE` (32), `NANORTC_MEDIA_BUF_SIZE` |
-| SCTP send + recv + gap buffers | ~13 KB | `NANORTC_SCTP_SEND_BUF_SIZE`, `NANORTC_SCTP_RECV_BUF_SIZE`, `NANORTC_SCTP_RECV_GAP_BUF_SIZE` |
-| DTLS buffers (3 x 2048) | ~6 KB | `NANORTC_DTLS_BUF_SIZE` (2048) |
-| Shared STUN/RTCP/RTP scratch | 256 B (DC-only) / ~1232 B (media) | `NANORTC_STUN_BUF_SIZE` (feature-gated — see below) |
-| TURN client | ~668 B | `NANORTC_FEATURE_TURN` (disable to save) |
+| Jitter buffer (per audio track) | ~11 KB host / ~2.8 KB Kconfig | `NANORTC_JITTER_SLOTS`, `NANORTC_JITTER_SLOT_DATA_SIZE` |
+| H.264 NAL reassembly (per video track) | 16 KB host / 8 KB Kconfig | `NANORTC_VIDEO_NAL_BUF_SIZE` |
+| Video packet ring | 39 KB host / ~20 KB Kconfig | `NANORTC_OUT_QUEUE_SIZE` × `NANORTC_MEDIA_BUF_SIZE` |
+| SCTP send + recv + gap buffers | ~12 KB host / ~6 KB Kconfig | `NANORTC_SCTP_SEND_BUF_SIZE`, `NANORTC_SCTP_RECV_BUF_SIZE`, `NANORTC_SCTP_RECV_GAP_BUF_SIZE` |
+| DTLS buffers (3 × `NANORTC_DTLS_BUF_SIZE`) | 6 KB host / 4.5 KB Kconfig | `NANORTC_DTLS_BUF_SIZE` |
+| Shared STUN/RTCP/RTP scratch | 256 B (DC-only) / 1232 B (media) | `NANORTC_STUN_BUF_SIZE` (feature-gated — see below) |
+| TURN client | ~668 B | `NANORTC_FEATURE_TURN` (disable only if deployment can always reach peers via host / srflx) |
+
+`NANORTC_MEDIA_BUF_SIZE` has a hard minimum of `NANORTC_VIDEO_MTU + 30 =
+1230 B` (RTP header 12 + TWCC extension 8 + MTU payload + SRTP auth tag
+10). Dropping below that in a media build is caught at compile time by a
+`#error` in `nanortc_config.h`. Default 1232 leaves 2 B headroom;
+`examples/esp32_{video,camera}/sdkconfig.defaults` raise it to 1280 to
+reserve room for additional RTP header extensions.
 
 ### Shared scratch buffer — feature-gated default
 
@@ -78,8 +127,9 @@ overrides in your `NANORTC_CONFIG_FILE` header:
 
 ## Phase 9 additions (BWE perception)
 
-Shipping TWCC parsing, loss-based controller, runtime tunables, and the
-extended stats fields costs roughly:
+Already folded into the Configuration Matrix above. Shipping TWCC parsing,
+loss-based controller, runtime tunables, and the extended stats fields
+costs roughly:
 
 | Addition | Per-instance | Per-video-track | Stack only |
 |---|---|---|---|
@@ -101,7 +151,12 @@ line and `rtp_pack()` will not emit the extension.
 
 ## Optimization Techniques Applied
 
-The following techniques were used to reduce RAM by 34% (full-media: 157→103 KB):
+Historical: Phase 6 (2026-04-11) cut full-media RAM by ~34 % (157→103 KB on
+the 32-bit ARM reference baseline used at the time). The current defaults
+in `nanortc_config.h` reflect that tuning; the matrix above measures
+ESP32-P4 after Phase 7 stability hardening and Phase 9 TWCC/BWE additions
+folded in on top of the Phase 6 baseline. The six techniques below are
+kept for reference:
 
 1. **Config default tuning** (~49 KB saved) — Jitter buffer slots 64→32, slot data 640→320B, H.264 NAL buffer 32→16 KB. All `#ifndef` guarded; override via `NANORTC_CONFIG_FILE`.
 
@@ -118,14 +173,18 @@ The following techniques were used to reduce RAM by 34% (full-media: 157→103 K
 ## Measuring Sizes
 
 ```bash
-# Run sizeof regression tests (CI-integrated):
+# Regenerate the Configuration Matrix above (ESP32-P4, all six combos).
+# Requires a sourced ESP-IDF 5.x environment (IDF_PATH set, riscv32-esp-elf
+# toolchain in PATH). Building from a git worktree whose directory is not
+# named "nanortc" additionally requires NANORTC_COMPONENT_DIR to point at a
+# directory containing a `nanortc` symlink to the worktree root.
+./scripts/measure-sizes.sh --esp32 esp32p4
+
+# Host build (macOS/Linux; OpenSSL or mbedtls auto-detected). Numbers are
+# slightly larger than ESP32-P4 due to 64-bit pointers.
+./scripts/measure-sizes.sh
+
+# sizeof regression tests (CI-integrated, enforces per-struct upper bounds):
 cmake -B build -DNANORTC_CRYPTO=openssl
 cmake --build build && ctest --test-dir build -R sizeof
-
-# Print sizeof(nanortc_t) and sub-structs for a specific config:
-gcc -I include -I src -I crypto \
-    -DNANORTC_FEATURE_DATACHANNEL=1 \
-    -DNANORTC_FEATURE_AUDIO=0 \
-    -DNANORTC_FEATURE_VIDEO=0 \
-    tests/test_sizeof.c -o sizeof_test && ./sizeof_test
 ```

@@ -21,9 +21,108 @@ if(EXISTS "${_target_defaults}")
     list(APPEND SDKCONFIG_DEFAULTS "${_target_defaults}")
 endif()
 set(_bmgr_defaults "${CMAKE_CURRENT_SOURCE_DIR}/components/gen_bmgr_codes/board_manager.defaults")
-if(EXISTS "${_bmgr_defaults}")
-    list(APPEND SDKCONFIG_DEFAULTS "${_bmgr_defaults}")
+if(NOT EXISTS "${_bmgr_defaults}")
+    # The board_manager.defaults file is per-board (not in git) and supplies
+    # CONFIG_ESP_BOARD_DEV_{AUDIO_CODEC,CAMERA,…}_SUPPORT=y. Without it the
+    # build later fails deep in compile on `#include "dev_audio_codec.h"`.
+    # Auto-generate for the common case (exactly one board under boards/);
+    # otherwise error with the list of available choices so the user picks.
+    set(_boards_dir "${CMAKE_CURRENT_SOURCE_DIR}/boards")
+    set(_boards "")
+    file(GLOB _board_children RELATIVE "${_boards_dir}" "${_boards_dir}/*")
+    foreach(_child IN LISTS _board_children)
+        if(IS_DIRECTORY "${_boards_dir}/${_child}")
+            list(APPEND _boards "${_child}")
+        endif()
+    endforeach()
+    list(LENGTH _boards _n_boards)
+
+    if(_n_boards EQUAL 1)
+        list(GET _boards 0 _board)
+        message(STATUS "esp32_camera: board_manager.defaults missing — "
+                       "auto-generating for board '${_board}'")
+
+        # idf.py passes -DPYTHON=<python_env> on the cmake command line; fall
+        # back to find_program for raw cmake invocations.
+        if(NOT DEFINED PYTHON)
+            find_program(PYTHON NAMES python3 python REQUIRED)
+        endif()
+
+        set(_gen_script
+            "${CMAKE_CURRENT_SOURCE_DIR}/managed_components/espressif__esp_board_manager/gen_bmgr_config_codes.py")
+
+        # On a cold set-target (no managed_components/ yet) the generator
+        # script hasn't been downloaded — the component manager runs later,
+        # inside project(). Pre-populate managed_components ourselves by
+        # driving ComponentManager.prepare_dep_dirs() directly. Idempotent:
+        # skipped entirely once the generator is in place.
+        if(NOT EXISTS "${_gen_script}")
+            message(STATUS "esp32_camera: managed_components/ empty — "
+                           "running component-manager prepare_dep_dirs")
+            execute_process(
+                COMMAND "${PYTHON}" -c "
+import os, sys, tempfile
+os.environ['IDF_TARGET'] = '${IDF_TARGET}'
+from idf_component_manager.core import ComponentManager
+cm = ComponentManager(path=r'${CMAKE_CURRENT_SOURCE_DIR}')
+f1 = tempfile.NamedTemporaryFile(delete=False); f1.close()
+f2 = tempfile.NamedTemporaryFile(delete=False); f2.close()
+cm.prepare_dep_dirs(managed_components_list_file=f1.name,
+                    component_list_file=f2.name)
+"
+                WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+                RESULT_VARIABLE _prep_result
+                OUTPUT_VARIABLE _prep_output
+                ERROR_VARIABLE _prep_error)
+            if(NOT _prep_result EQUAL 0)
+                message(FATAL_ERROR
+                    "component-manager prepare_dep_dirs failed "
+                    "(exit ${_prep_result}):\n${_prep_output}\n${_prep_error}")
+            endif()
+            if(NOT EXISTS "${_gen_script}")
+                message(FATAL_ERROR
+                    "prepare_dep_dirs ran but gen_bmgr_config_codes.py still "
+                    "missing — inspect managed_components/espressif__esp_board_manager/")
+            endif()
+        endif()
+
+        execute_process(
+            COMMAND "${PYTHON}" "${_gen_script}" -b "${_board}" -c boards
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+            RESULT_VARIABLE _gen_result
+            OUTPUT_VARIABLE _gen_output
+            ERROR_VARIABLE _gen_error)
+
+        if(NOT _gen_result EQUAL 0)
+            message(FATAL_ERROR
+                "gen_bmgr_config_codes.py failed (exit ${_gen_result}):\n"
+                "${_gen_output}\n${_gen_error}")
+        endif()
+        if(NOT EXISTS "${_bmgr_defaults}")
+            message(FATAL_ERROR
+                "gen_bmgr_config_codes.py ran but produced no "
+                "board_manager.defaults — inspect "
+                "${CMAKE_CURRENT_SOURCE_DIR}/components/gen_bmgr_codes/")
+        endif()
+    elseif(_n_boards EQUAL 0)
+        message(FATAL_ERROR
+            "\n"
+            "  No board directories found under ${_boards_dir}.\n"
+            "  Create a board subdirectory (copy from boards/esp32_p4_nano/)\n"
+            "  and retry.")
+    else()
+        string(REPLACE ";" ", " _board_list "${_boards}")
+        message(FATAL_ERROR
+            "\n"
+            "  components/gen_bmgr_codes/board_manager.defaults is missing and\n"
+            "  ${_n_boards} board directories were found: ${_board_list}\n"
+            "  Pick one explicitly and re-run:\n"
+            "\n"
+            "    python managed_components/espressif__esp_board_manager/\\\n"
+            "        gen_bmgr_config_codes.py -b <board-name> -c boards\n")
+    endif()
 endif()
+list(APPEND SDKCONFIG_DEFAULTS "${_bmgr_defaults}")
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(esp32_camera)

@@ -221,8 +221,8 @@ H.265 defaults to **PT = 98**, disjoint from H.264's PT = 96, so a future same-m
 - **2026-04-13** — Planning. User selected: bidirectional H.265 (not recvonly-first), full AP send+receive (not receive-only), `NANORTC_FEATURE_H265` sub-flag default ON. PT = 98 (disjoint from H.264 = 96). DON handling: reject non-zero `sprop-max-don-diff` rather than silently skip bytes. Annex-B scanner shared via alias, not duplicated.
 - **2026-04-13** — PR-1 complete: module + tests + fuzz harness + CI check pass. PR-2 and PR-3 pending.
 - **2026-04-16** — Browser interop hardening (post-PR-2). Four bugs surfaced once
-  `uipcat-camera-rk3588` started driving real Chrome / Safari viewers at
-  1920×1080 H.265:
+  a downstream rk3588 camera consumer started driving real Chrome / Safari
+  viewers at 1920×1080 H.265:
 
   1. **`sdp_parse()` wiped local m-line state.** The `memset(ml, 0, sizeof(*ml))`
      on each `m=audio` / `m=video` line cleared `ml->codec` and
