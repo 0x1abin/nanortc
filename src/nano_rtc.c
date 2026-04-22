@@ -1510,8 +1510,8 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
                         int retx = 0;
                         for (int i = 0; i < lost_count; i++) {
                             /* Linear scan over pkt_ring_meta for a matching seq.
-                             * OUT_QUEUE_SIZE is small (32-256) so this is fast. */
-                            for (uint16_t s = 0; s < NANORTC_OUT_QUEUE_SIZE; s++) {
+                             * PKT_RING_SIZE is small (4-256) so this is fast. */
+                            for (uint16_t s = 0; s < NANORTC_VIDEO_PKT_RING_SIZE; s++) {
                                 if (rtc->pkt_ring_meta[s].len > 0 &&
                                     rtc->pkt_ring_meta[s].seq == lost[i]) {
                                     rtc_enqueue_transmit(rtc, rtc->pkt_ring[s],
@@ -2747,10 +2747,13 @@ static int video_send_fragment_cb(const uint8_t *payload, size_t len, int marker
     /* RFC 6184 §5.1: marker bit on last packet of access unit */
     m->rtp.marker = (uint8_t)((marker && ctx->is_last_nal) ? 1 : 0);
 
-    /* Select a packet buffer from the ring so multiple fragments don't clobber
-     * each other before dispatch (Sans I/O). */
-    uint16_t slot = rtc->out_tail & (NANORTC_OUT_QUEUE_SIZE - 1);
-    uint8_t *pkt_buf = rtc->pkt_ring[slot];
+    /* Select a packet buffer from pkt_ring via its own cursor — decoupled
+     * from out_tail so NANORTC_VIDEO_PKT_RING_SIZE can be tuned independently
+     * of NANORTC_OUT_QUEUE_SIZE (Sans I/O). Caller must drain
+     * nanortc_poll_output() each tick; see nanortc_config.h for the
+     * slot-reuse invariant when PKT_RING_SIZE < OUT_QUEUE_SIZE. */
+    uint16_t pslot = rtc->pkt_ring_tail & (NANORTC_VIDEO_PKT_RING_SIZE - 1);
+    uint8_t *pkt_buf = rtc->pkt_ring[pslot];
 
     size_t rtp_len = 0;
     int rc =
@@ -2780,8 +2783,9 @@ static int video_send_fragment_cb(const uint8_t *payload, size_t len, int marker
     /* Record NACK retransmission metadata for this slot.
      * rtp_pack() increments seq after writing, so the seq in the packet
      * is (m->rtp.seq - 1). */
-    rtc->pkt_ring_meta[slot].seq = (uint16_t)(m->rtp.seq - 1);
-    rtc->pkt_ring_meta[slot].len = (uint16_t)srtp_len;
+    rtc->pkt_ring_meta[pslot].seq = (uint16_t)(m->rtp.seq - 1);
+    rtc->pkt_ring_meta[pslot].len = (uint16_t)srtp_len;
+    rtc->pkt_ring_tail++;
 
     ctx->last_rc = rtc_enqueue_transmit(rtc, pkt_buf, srtp_len, &rtc->remote_addr, false);
     return ctx->last_rc;

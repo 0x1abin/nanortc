@@ -147,6 +147,21 @@ menu "NanoRTC Configuration"
             8 suffices for DataChannel-only or audio-only builds. 16 covers
             ≤480p H.264 FU-A bursts; override to 32 for 720p/1080p cameras.
 
+    config NANORTC_VIDEO_PKT_RING_SIZE
+        int "Video NACK retransmit ring depth"
+        default NANORTC_OUT_QUEUE_SIZE
+        range 4 256
+        depends on NANORTC_FEATURE_VIDEO
+        help
+            Depth of the video NACK retransmit ring. Must be a power of 2
+            and >= 4. Each slot holds one NANORTC_MEDIA_BUF_SIZE buffer
+            (~1.2 KB). Default matches NANORTC_OUT_QUEUE_SIZE (keeps today's
+            behavior); override to a smaller value (e.g. 8) on IoT / LAN
+            deployments to save ~19 KB per instance. Caller must drain
+            nanortc_poll_output() each tick (Sans-I/O contract) — otherwise
+            producing more than PKT_RING_SIZE video fragments in one tick
+            will overwrite slots still referenced by out_queue entries.
+
     config NANORTC_MEDIA_BUF_SIZE
         int "Media scratch buffer size (bytes)"
         default 1232
