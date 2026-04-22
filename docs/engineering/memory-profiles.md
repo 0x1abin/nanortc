@@ -45,6 +45,7 @@ generous host defaults:
 | `NANORTC_SCTP_MAX_SEND_QUEUE` | 16 | 4 |
 | `NANORTC_SCTP_MAX_RECV_GAP` | 8 | 4 |
 | `NANORTC_OUT_QUEUE_SIZE` | 32 | 8 (audio/DC), 16 (video) |
+| `NANORTC_VIDEO_PKT_RING_SIZE` | inherits `NANORTC_OUT_QUEUE_SIZE` | inherits `NANORTC_OUT_QUEUE_SIZE` |
 | `NANORTC_MEDIA_BUF_SIZE` | 1232 (formula) | 1232 (fixed; `#error` guards `< MTU + 30`) |
 | `NANORTC_VIDEO_NAL_BUF_SIZE` | 16384 | 8192 |
 | `NANORTC_JITTER_SLOTS` | 32 | 16 |
@@ -62,7 +63,7 @@ high-jitter cellular, large SDPs), raise the knob you care about.
 |---|---|---|
 | Jitter buffer (per audio track) | ~11 KB host / ~2.8 KB Kconfig | `NANORTC_JITTER_SLOTS`, `NANORTC_JITTER_SLOT_DATA_SIZE` |
 | H.264 NAL reassembly (per video track) | 16 KB host / 8 KB Kconfig | `NANORTC_VIDEO_NAL_BUF_SIZE` |
-| Video packet ring | 39 KB host / ~20 KB Kconfig | `NANORTC_OUT_QUEUE_SIZE` × `NANORTC_MEDIA_BUF_SIZE` |
+| Video packet ring (NACK retransmit window) | 39 KB host / ~20 KB Kconfig | `NANORTC_VIDEO_PKT_RING_SIZE` × `NANORTC_MEDIA_BUF_SIZE` |
 | SCTP send + recv + gap buffers | ~12 KB host / ~6 KB Kconfig | `NANORTC_SCTP_SEND_BUF_SIZE`, `NANORTC_SCTP_RECV_BUF_SIZE`, `NANORTC_SCTP_RECV_GAP_BUF_SIZE` |
 | DTLS buffers (3 × `NANORTC_DTLS_BUF_SIZE`) | 6 KB host / 4.5 KB Kconfig | `NANORTC_DTLS_BUF_SIZE` |
 | Shared STUN/RTCP/RTP scratch | 256 B (DC-only) / 1232 B (media) | `NANORTC_STUN_BUF_SIZE` (feature-gated — see below) |
@@ -74,6 +75,29 @@ high-jitter cellular, large SDPs), raise the knob you care about.
 `#error` in `nanortc_config.h`. Default 1232 leaves 2 B headroom;
 `examples/esp32_{video,camera}/sdkconfig.defaults` raise it to 1280 to
 reserve room for additional RTP header extensions.
+
+### Video NACK ring — tunable independently of the output queue
+
+Since Phase 8 PR-3, `NANORTC_VIDEO_PKT_RING_SIZE` sizes the NACK retransmit
+ring independently from `NANORTC_OUT_QUEUE_SIZE`. Default inherits
+`NANORTC_OUT_QUEUE_SIZE` to keep existing builds byte-identical. On IoT /
+LAN deployments where packet loss is rare and a shorter retransmit window
+is tolerable, override to a smaller power of two:
+
+```c
+#define NANORTC_VIDEO_PKT_RING_SIZE 16   /* ~19 KB saving at MEDIA_BUF_SIZE=1232 */
+```
+
+At 30 fps this gives roughly 500 ms of NACK history — enough for a
+same-room LAN. Must be a power of two and `>= 4` (one IDR burst spans
+multiple FU-A fragments); both are enforced by `#error` guards.
+
+Safety invariant: `nanortc_poll_output()` references pkt_ring slots via
+the output queue until the caller drains it. If the caller produces more
+than `PKT_RING_SIZE` video fragments in a single tick without calling
+`nanortc_poll_output()` in between, older slots will be overwritten while
+still referenced. The Sans-I/O contract already requires a drain each
+tick, so this only matters when overriding below `OUT_QUEUE_SIZE`.
 
 ### Shared scratch buffer — feature-gated default
 

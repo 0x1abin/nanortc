@@ -222,6 +222,118 @@ TEST(test_rate_window_fps_saturates)
 }
 
 /* ================================================================
+ * Video NACK pkt_ring decoupling (Phase 8 PR-3).
+ *
+ * Exercises the ring semantics that back rtc_process_receive's NACK
+ * retransmit scan in src/nano_rtc.c:
+ *   - pkt_ring_tail advances independently from out_tail,
+ *   - writes mask against NANORTC_VIDEO_PKT_RING_SIZE,
+ *   - the scan's loop bound equals NANORTC_VIDEO_PKT_RING_SIZE.
+ *
+ * The scan loop itself is inline in rtc_process_receive; we replicate
+ * its two-line body here so the test can stay below the full SRTP/
+ * ICE connection setup required to drive real NACK feedback.
+ * ================================================================ */
+
+#if NANORTC_FEATURE_VIDEO
+
+/* nanortc_t is ~100 KB with video enabled — keep it off the stack. */
+static nanortc_t g_pkt_ring_rtc;
+
+/* Mirror the write-path idiom from video_send_fragment_cb: pick a slot
+ * from pkt_ring_tail, stamp meta with the RTP seq, advance the cursor. */
+static void pkt_ring_simulate_send(nanortc_t *rtc, uint16_t seq, uint8_t marker)
+{
+    uint16_t pslot = rtc->pkt_ring_tail & (NANORTC_VIDEO_PKT_RING_SIZE - 1);
+    rtc->pkt_ring[pslot][0] = marker; /* marker byte so we can tell slots apart */
+    rtc->pkt_ring_meta[pslot].seq = seq;
+    rtc->pkt_ring_meta[pslot].len = 42; /* non-zero => valid slot */
+    rtc->pkt_ring_tail++;
+}
+
+/* Mirror rtc_process_receive's NACK scan body: linear search over the
+ * ring for a matching seq. Returns the slot index, or -1 if missing. */
+static int pkt_ring_lookup(const nanortc_t *rtc, uint16_t seq)
+{
+    for (uint16_t s = 0; s < NANORTC_VIDEO_PKT_RING_SIZE; s++) {
+        if (rtc->pkt_ring_meta[s].len > 0 && rtc->pkt_ring_meta[s].seq == seq) {
+            return (int)s;
+        }
+    }
+    return -1;
+}
+
+TEST(test_pkt_ring_in_window_lookup_succeeds)
+{
+    nanortc_t *rtc = &g_pkt_ring_rtc;
+    memset(rtc, 0, sizeof(*rtc));
+
+    /* Fill a few slots (fewer than the ring depth). */
+    for (uint16_t i = 0; i < 4; i++) {
+        pkt_ring_simulate_send(rtc, (uint16_t)(1000 + i), (uint8_t)i);
+    }
+
+    /* All recently sent seqs must be findable. */
+    for (uint16_t i = 0; i < 4; i++) {
+        int slot = pkt_ring_lookup(rtc, (uint16_t)(1000 + i));
+        ASSERT_TRUE(slot >= 0);
+        ASSERT_EQ(rtc->pkt_ring[slot][0], (uint8_t)i);
+    }
+
+    /* out_tail is untouched by the video send path. */
+    ASSERT_EQ(rtc->out_tail, 0);
+    ASSERT_EQ(rtc->pkt_ring_tail, 4u);
+}
+
+TEST(test_pkt_ring_out_of_window_lookup_misses)
+{
+    nanortc_t *rtc = &g_pkt_ring_rtc;
+    memset(rtc, 0, sizeof(*rtc));
+
+    /* Overfill so the ring wraps: send 2 * PKT_RING_SIZE fragments
+     * with sequential seqs. The oldest PKT_RING_SIZE slots must have
+     * been overwritten by the newer ones. */
+    const uint16_t N = NANORTC_VIDEO_PKT_RING_SIZE;
+    for (uint16_t i = 0; i < 2u * N; i++) {
+        pkt_ring_simulate_send(rtc, (uint16_t)(500 + i), (uint8_t)(i & 0xFF));
+    }
+
+    /* Newer half is findable. */
+    for (uint16_t i = N; i < 2u * N; i++) {
+        ASSERT_TRUE(pkt_ring_lookup(rtc, (uint16_t)(500 + i)) >= 0);
+    }
+    /* Older half is gone — scan does not find them. No crash. */
+    for (uint16_t i = 0; i < N; i++) {
+        ASSERT_EQ(pkt_ring_lookup(rtc, (uint16_t)(500 + i)), -1);
+    }
+
+    ASSERT_EQ(rtc->pkt_ring_tail, (uint16_t)(2u * N));
+}
+
+TEST(test_pkt_ring_wraparound_independent_of_out_tail)
+{
+    nanortc_t *rtc = &g_pkt_ring_rtc;
+    memset(rtc, 0, sizeof(*rtc));
+
+    /* Stamp out_tail to something non-zero; the ring must not follow it. */
+    rtc->out_tail = 7;
+
+    for (uint16_t i = 0; i < NANORTC_VIDEO_PKT_RING_SIZE + 3u; i++) {
+        pkt_ring_simulate_send(rtc, (uint16_t)(2000 + i), (uint8_t)i);
+    }
+
+    /* pkt_ring_tail advanced by exactly the send count. */
+    ASSERT_EQ(rtc->pkt_ring_tail, (uint16_t)(NANORTC_VIDEO_PKT_RING_SIZE + 3u));
+    /* out_tail is still whatever the caller set. */
+    ASSERT_EQ(rtc->out_tail, 7);
+
+    /* Slot 0 was written twice (wrap) — should hold the newest seq. */
+    ASSERT_EQ(rtc->pkt_ring_meta[0].seq, (uint16_t)(2000u + NANORTC_VIDEO_PKT_RING_SIZE));
+}
+
+#endif /* NANORTC_FEATURE_VIDEO */
+
+/* ================================================================
  * Test runner
  * ================================================================ */
 
@@ -246,4 +358,10 @@ RUN(test_rate_window_holds_within_second);
 RUN(test_rate_window_rolls_at_second);
 RUN(test_rate_window_roll_noop_without_frames_or_bytes);
 RUN(test_rate_window_fps_saturates);
+#if NANORTC_FEATURE_VIDEO
+/* pkt_ring decoupling (Phase 8 PR-3) */
+RUN(test_pkt_ring_in_window_lookup_succeeds);
+RUN(test_pkt_ring_out_of_window_lookup_misses);
+RUN(test_pkt_ring_wraparound_independent_of_out_tail);
+#endif
 TEST_MAIN_END
