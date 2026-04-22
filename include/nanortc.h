@@ -626,9 +626,11 @@ struct nanortc {
 #endif
 
 #if NANORTC_FEATURE_VIDEO
-    /** Packet ring: each output queue slot gets its own buffer so video FU-A
-     *  fragments don't clobber each other before dispatch_outputs sends them. */
-    uint8_t pkt_ring[NANORTC_OUT_QUEUE_SIZE][NANORTC_MEDIA_BUF_SIZE];
+    /** NACK retransmit ring: each slot holds one SRTP-protected video packet.
+     *  Sized by NANORTC_VIDEO_PKT_RING_SIZE (independent of OUT_QUEUE_SIZE)
+     *  so IoT targets can shrink the NACK window without starving the output
+     *  dispatch queue. See nanortc_config.h for the slot-reuse invariant. */
+    uint8_t pkt_ring[NANORTC_VIDEO_PKT_RING_SIZE][NANORTC_MEDIA_BUF_SIZE];
 
     /** NACK retransmission metadata — tracks which RTP seq lives in each
      *  pkt_ring slot so we can retransmit on RTCP NACK (RFC 4585 §6.2.1).
@@ -636,7 +638,10 @@ struct nanortc {
     struct {
         uint16_t seq; /**< RTP sequence number stored in this slot. */
         uint16_t len; /**< SRTP-protected packet length (0 = invalid). */
-    } pkt_ring_meta[NANORTC_OUT_QUEUE_SIZE];
+    } pkt_ring_meta[NANORTC_VIDEO_PKT_RING_SIZE];
+
+    /** Independent write cursor for pkt_ring (decoupled from out_tail). */
+    uint16_t pkt_ring_tail;
 
     /** Shared bandwidth estimator (session-wide, not per-track). */
     nano_bwe_t bwe;

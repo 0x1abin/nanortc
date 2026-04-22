@@ -107,6 +107,10 @@
 #define NANORTC_OUT_QUEUE_SIZE CONFIG_NANORTC_OUT_QUEUE_SIZE
 #endif
 
+#if defined(CONFIG_NANORTC_VIDEO_PKT_RING_SIZE) && !defined(NANORTC_VIDEO_PKT_RING_SIZE)
+#define NANORTC_VIDEO_PKT_RING_SIZE CONFIG_NANORTC_VIDEO_PKT_RING_SIZE
+#endif
+
 #if defined(CONFIG_NANORTC_JITTER_SLOTS) && !defined(NANORTC_JITTER_SLOTS)
 #define NANORTC_JITTER_SLOTS CONFIG_NANORTC_JITTER_SLOTS
 #endif
@@ -576,6 +580,18 @@
 #define NANORTC_OUT_QUEUE_SIZE 32
 #endif
 
+/* NACK retransmit ring: one SRTP-protected packet buffer per slot. Sized
+ * independently from OUT_QUEUE_SIZE so IoT targets can shrink the NACK
+ * window without starving the output dispatch queue. Must be a power of 2
+ * and >= 4. Caller must drain nanortc_poll_output() each tick — if more
+ * than PKT_RING_SIZE video fragments are produced in one tick without a
+ * drain, older slots will be overwritten while still referenced by
+ * out_queue entries. Default matches OUT_QUEUE_SIZE for backward compat;
+ * override to 16 on IoT / LAN deployments to save ~19 KB per instance. */
+#ifndef NANORTC_VIDEO_PKT_RING_SIZE
+#define NANORTC_VIDEO_PKT_RING_SIZE NANORTC_OUT_QUEUE_SIZE
+#endif
+
 /* ----------------------------------------------------------------
  * Media transport configuration
  * ---------------------------------------------------------------- */
@@ -794,6 +810,13 @@ typedef enum {
 
 #if (NANORTC_OUT_QUEUE_SIZE & (NANORTC_OUT_QUEUE_SIZE - 1)) != 0
 #error "NANORTC_OUT_QUEUE_SIZE must be a power of 2"
+#endif
+
+#if (NANORTC_VIDEO_PKT_RING_SIZE & (NANORTC_VIDEO_PKT_RING_SIZE - 1)) != 0
+#error "NANORTC_VIDEO_PKT_RING_SIZE must be a power of 2"
+#endif
+#if NANORTC_VIDEO_PKT_RING_SIZE < 4
+#error "NANORTC_VIDEO_PKT_RING_SIZE must be >= 4"
 #endif
 
 #if NANORTC_FEATURE_DATACHANNEL && NANORTC_MAX_DATACHANNELS < 1
