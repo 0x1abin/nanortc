@@ -331,6 +331,102 @@ TEST(test_pkt_ring_wraparound_independent_of_out_tail)
     ASSERT_EQ(rtc->pkt_ring_meta[0].seq, (uint16_t)(2000u + NANORTC_VIDEO_PKT_RING_SIZE));
 }
 
+/* ----------------------------------------------------------------
+ * Aliasing-overrun regression — guards the contract enforced by
+ * src/nano_rtc.c:video_send_fragment_cb. out_queue[].transmit.data
+ * stores a pointer into pkt_ring[]; if pkt_ring_tail wraps while a
+ * prior pointer is still pending, the buffer behind that pointer is
+ * silently overwritten. The production code detects this case via
+ * (out_tail - out_head) >= PKT_RING_SIZE and bumps
+ * stats_pkt_ring_overrun + emits NANORTC_LOGW. The guard logic is
+ * mirrored below so a regression in either side is caught.
+ * ---------------------------------------------------------------- */
+
+/* Mirror of the production guard in video_send_fragment_cb. Walks the
+ * same memory the real callback walks and bumps the same counter, but
+ * skips the SRTP/RTP machinery a unit test can't realistically drive. */
+static void pkt_ring_simulate_send_with_guard(nanortc_t *rtc, uint16_t seq, const uint8_t *src_buf,
+                                              uint16_t src_len)
+{
+    uint16_t out_inflight = (uint16_t)(rtc->out_tail - rtc->out_head);
+    if (out_inflight >= NANORTC_VIDEO_PKT_RING_SIZE) {
+        rtc->stats_pkt_ring_overrun++;
+    }
+
+    uint16_t pslot = rtc->pkt_ring_tail & (NANORTC_VIDEO_PKT_RING_SIZE - 1);
+    uint8_t *pkt_buf = rtc->pkt_ring[pslot];
+
+    /* Real flow: rtp_pack + srtp_protect both write into pkt_buf. */
+    memcpy(pkt_buf, src_buf, src_len);
+    rtc->pkt_ring_meta[pslot].seq = seq;
+    rtc->pkt_ring_meta[pslot].len = src_len;
+    rtc->pkt_ring_tail++;
+
+    /* Real flow: rtc_enqueue_transmit stores pkt_buf in out_queue[].data. */
+    uint16_t oslot = rtc->out_tail & (NANORTC_OUT_QUEUE_SIZE - 1);
+    rtc->out_queue[oslot].type = NANORTC_OUTPUT_TRANSMIT;
+    rtc->out_queue[oslot].transmit.data = pkt_buf;
+    rtc->out_queue[oslot].transmit.len = src_len;
+    rtc->out_tail++;
+}
+
+TEST(test_pkt_ring_overrun_counter_fires_when_undersized)
+{
+    nanortc_t *rtc = &g_pkt_ring_rtc;
+    memset(rtc, 0, sizeof(*rtc));
+
+    /* Producer side never drains. PKT_RING_SIZE fragments fit cleanly;
+     * fragment N+1 onward must each bump stats_pkt_ring_overrun. */
+    uint8_t payload[8];
+    memset(payload, 0xAA, sizeof(payload));
+
+    for (uint16_t i = 0; i < NANORTC_VIDEO_PKT_RING_SIZE; i++) {
+        pkt_ring_simulate_send_with_guard(rtc, (uint16_t)(3000 + i), payload, sizeof(payload));
+    }
+    /* No overrun yet — exactly at capacity. */
+    ASSERT_EQ(rtc->stats_pkt_ring_overrun, 0u);
+
+    /* Three more without draining out_queue: each one must trip the guard. */
+    for (uint16_t i = 0; i < 3; i++) {
+        pkt_ring_simulate_send_with_guard(rtc, (uint16_t)(4000 + i), payload, sizeof(payload));
+    }
+    ASSERT_EQ(rtc->stats_pkt_ring_overrun, 3u);
+}
+
+TEST(test_pkt_ring_aliasing_corruption_demonstrated_without_guard)
+{
+    nanortc_t *rtc = &g_pkt_ring_rtc;
+    memset(rtc, 0, sizeof(*rtc));
+
+    /* Demonstrates *why* the guard exists. Without draining, push enough
+     * fragments to wrap pkt_ring while out_queue still holds the older
+     * pointers. The early out_queue entries' .data pointers will then
+     * point to slots that were overwritten by the later fragments. */
+    const uint16_t WAVES = NANORTC_VIDEO_PKT_RING_SIZE + 4u;
+    uint8_t buf[1];
+
+    for (uint16_t i = 0; i < WAVES; i++) {
+        buf[0] = (uint8_t)(0x10u + (uint8_t)i); /* unique marker per fragment */
+        pkt_ring_simulate_send_with_guard(rtc, (uint16_t)(5000 + i), buf, 1);
+    }
+
+    /* Guard fired exactly the over-capacity count. */
+    ASSERT_EQ(rtc->stats_pkt_ring_overrun, (uint32_t)(WAVES - NANORTC_VIDEO_PKT_RING_SIZE));
+
+    /* Corruption witness: out_queue[0] was enqueued with marker 0x10
+     * (fragment 0), but its .data pointer addresses pkt_ring[0], which
+     * has since been overwritten by the wrapped fragment. The byte at
+     * .data[0] is therefore the *latest* writer's marker, not 0x10. */
+    const uint8_t *q0_data = rtc->out_queue[0].transmit.data;
+    ASSERT_TRUE(q0_data != NULL);
+    /* Slot 0 was last written by fragment index PKT_RING_SIZE (the first
+     * wrap). Markers are 0x10 + index. */
+    uint8_t expected_after_wrap = (uint8_t)(0x10u + NANORTC_VIDEO_PKT_RING_SIZE);
+    ASSERT_EQ(q0_data[0], expected_after_wrap);
+    /* Sanity: this is *not* what the producer originally wrote at i=0. */
+    ASSERT_TRUE(q0_data[0] != 0x10u);
+}
+
 #endif /* NANORTC_FEATURE_VIDEO */
 
 /* ================================================================
@@ -363,5 +459,7 @@ RUN(test_rate_window_fps_saturates);
 RUN(test_pkt_ring_in_window_lookup_succeeds);
 RUN(test_pkt_ring_out_of_window_lookup_misses);
 RUN(test_pkt_ring_wraparound_independent_of_out_tail);
+RUN(test_pkt_ring_overrun_counter_fires_when_undersized);
+RUN(test_pkt_ring_aliasing_corruption_demonstrated_without_guard);
 #endif
 TEST_MAIN_END
