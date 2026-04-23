@@ -81,28 +81,55 @@ reserve room for additional RTP header extensions.
 Since Phase 8 PR-3, `NANORTC_VIDEO_PKT_RING_SIZE` sizes the NACK retransmit
 ring independently from `NANORTC_OUT_QUEUE_SIZE`. Default inherits
 `NANORTC_OUT_QUEUE_SIZE` to keep existing builds byte-identical. On IoT /
-LAN deployments where packet loss is rare and a shorter retransmit window
-is tolerable, override to a smaller power of two:
+LAN deployments with low packet loss and short retransmit windows,
+override to a smaller power of two:
 
 ```c
 /* Saving is (OUT_QUEUE_SIZE - PKT_RING_SIZE) × MEDIA_BUF_SIZE.
  * Against the host default OUT_QUEUE_SIZE=32 at MEDIA_BUF_SIZE=1232,
- * PKT_RING_SIZE=16 saves ~19 KB; 8 saves ~28 KB. Against the ESP-IDF
- * Kconfig default OUT_QUEUE_SIZE=16 (video), PKT_RING_SIZE=8 saves
- * ~9.6 KB. */
+ * PKT_RING_SIZE=16 saves ~19 KB. Against the ESP-IDF Kconfig default
+ * OUT_QUEUE_SIZE=16 (video), PKT_RING_SIZE=8 saves ~9.6 KB. */
 #define NANORTC_VIDEO_PKT_RING_SIZE 16
 ```
 
-At 30 fps this gives roughly 500 ms of NACK history — enough for a
-same-room LAN. Must be a power of two and `>= 4` (one IDR burst spans
-multiple FU-A fragments); both are enforced by `#error` guards.
+#### Hard sizing rule — not just a drain hint
 
-Safety invariant: `nanortc_poll_output()` references pkt_ring slots via
-the output queue until the caller drains it. If the caller produces more
-than `PKT_RING_SIZE` video fragments in a single tick without calling
-`nanortc_poll_output()` in between, older slots will be overwritten while
-still referenced. The Sans-I/O contract already requires a drain each
-tick, so this only matters when overriding below `OUT_QUEUE_SIZE`.
+`out_queue[].transmit.data` stores a *pointer* into `pkt_ring[]`, and
+`nanortc_send_video()` invokes the SRTP/RTP packetizer callback for every
+FU-A fragment of a single access unit before returning to the caller —
+the application has no opportunity to drain in between. Wrapping
+`pkt_ring_tail` while earlier-fragment pointers are still pending in
+`out_queue` silently overwrites their backing buffers; the receiver sees
+the newer fragment's bytes carrying the older fragment's RTP sequence
+number, and decoders typically present this as glitched IDRs.
+
+Therefore:
+
+```
+NANORTC_VIDEO_PKT_RING_SIZE >= ceil(max_frame_bytes / NANORTC_VIDEO_MTU) + 1
+```
+
+Worked numbers at the default `NANORTC_VIDEO_MTU = 1200`:
+
+| Video profile (H.264) | Worst-case IDR | Min `PKT_RING_SIZE` | Round to |
+|---|---|---|---|
+| 480p, target ≤ 1 Mbps   | ~10 KB | 9  | 16 |
+| 720p, target ≤ 4 Mbps   | ~30 KB | 26 | 32 |
+| 1080p, target ≤ 8 Mbps  | ~60 KB | 51 | 64 |
+
+Compile-time guards (`#error`) only enforce `power-of-two && >= 4`; the
+per-frame bound depends on the encoder's IDR rate-control target and so
+must be sized by the integrator. The runtime emits
+`NANORTC_LOGW("RTC", "pkt_ring overrun ...")` and bumps
+`nanortc_t.stats_pkt_ring_overrun` whenever the ring would wrap before
+the caller has drained the prior wave — wire that counter into your
+integration smoke tests to catch under-sizing before it reaches the wire.
+
+NACK history depth, in packets, is `PKT_RING_SIZE`. The wall-clock
+window depends on stream bitrate and packets-per-frame: at 30 fps a
+single-NAL 480p stream gives roughly 500 ms with `PKT_RING_SIZE=16`,
+but the same setting on a 720p stream that emits ~26 packets per IDR
+covers under 100 ms across IDR boundaries.
 
 ### Shared scratch buffer — feature-gated default
 
