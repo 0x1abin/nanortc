@@ -28,7 +28,7 @@ Each row is a self-contained PR. `PR-1…PR-5` are the recommended landing order
 |---|---|---|---|---|
 | **PR-1** | IoT memory profile: SCTP + DTLS buffer shrink | `include/nanortc_config.h`, `src/nano_dtls.h`, `src/nano_sctp.h`, `tests/test_sizeof.c`, `docs/engineering/memory-profiles.md` | Low–medium | ~9 KB per DC instance |
 | **PR-2** | SCTP connection-failure event propagation | `src/nano_sctp.c`, `src/nano_rtc.c`, `include/nanortc.h` | Low | New `NANORTC_EV_DISCONNECTED` path |
-| **PR-3** | Video `pkt_ring` decoupled from `OUT_QUEUE_SIZE` | `include/nanortc.h`, `include/nanortc_config.h` | Low | −19 KB at `PKT_RING=16` (VIDEO profile) |
+| **PR-3** | Video `pkt_ring` decoupled from `OUT_QUEUE_SIZE` **[COMPLETED 2026-04-23]** | `include/nanortc.h`, `include/nanortc_config.h`, `Kconfig`, `src/nano_rtc.c`, `tests/test_media.c`, `docs/engineering/memory-profiles.md` | Low | −19 KB at `PKT_RING=16` (host VIDEO profile); −9.6 KB at `PKT_RING=8` (ESP-IDF Kconfig defaults) |
 | **PR-4** | H.264 FU-A caller-provided scratch (zero-copy) | `src/nano_h264.h`, `src/nano_h264.c`, `src/nano_rtc.c`, `tests/test_h264.c` | Medium (internal API change) | −1200 B stack + 1 memcpy/fragment |
 | **PR-5** | ICE CONTROLLING: per-pair pending transaction table | `src/nano_ice.h`, `src/nano_ice.c`, `tests/test_ice.c`, `examples/browser_interop` | Medium (state machine edit) | Unblocks nanortc-as-offerer against real browsers |
 | **P2-A** | Remove SCTP `out_bufs[]` double-buffer | `src/nano_sctp.{h,c}` | **High** (touches every state transition) | −2.4…4.8 KB + 1 memcpy/pkt |
@@ -83,22 +83,33 @@ Each row is a self-contained PR. `PR-1…PR-5` are the recommended landing order
 
 ---
 
-## PR-3 — Video `pkt_ring` decoupled from `OUT_QUEUE_SIZE`
+## PR-3 — Video `pkt_ring` decoupled from `OUT_QUEUE_SIZE` **[COMPLETED 2026-04-23]**
 
 **Problem.** `nanortc_t.pkt_ring[NANORTC_OUT_QUEUE_SIZE][NANORTC_MEDIA_BUF_SIZE]` is 32 × 1232 = 38.5 KB and drives the vast majority of the full-media memory footprint. The ring serves two unrelated roles — generic output queueing and NACK retransmit window — and both are currently sized by the same macro, so tuning either direction is coarse.
 
-**Approach.**
-1. Introduce `NANORTC_VIDEO_PKT_RING_SIZE` (default = `NANORTC_OUT_QUEUE_SIZE` for backward compat; must be a power of two).
-2. Retarget `pkt_ring[]` and `pkt_ring_meta[]` to the new macro under `#if NANORTC_FEATURE_VIDEO`.
-3. Document IoT recommendation: `PKT_RING=16` at 30 fps = ~500 ms NACK window — enough for LAN conditions, saving 19 KB.
-4. Update the NACK retransmit linear scan to use the new constant.
-5. Add a `test_nack_ring` test that sends NACK requests for a mix of in-window and out-of-window SEQs and asserts no crash.
+**Shipped (PR #54, commits `2c76486` … `b08b9cf`).**
 
-**Verification.** `test_h264`, `test_media`, interop video stream with occasional NACK injection.
+1. Introduced `NANORTC_VIDEO_PKT_RING_SIZE` in `include/nanortc_config.h` with `#ifndef` guard, Kconfig hook, and compile-time `#error` checks for power-of-2 and `>= 4`. Default = `NANORTC_OUT_QUEUE_SIZE` (byte-identical to pre-PR behavior).
+2. Retargeted `pkt_ring[]` and `pkt_ring_meta[]` to the new macro under `#if NANORTC_FEATURE_VIDEO` and added an independent `pkt_ring_tail` cursor (decoupled from `out_tail`).
+3. Updated `video_send_fragment_cb` (`src/nano_rtc.c`) to derive its slot from `pkt_ring_tail`, and the NACK retransmit scan in `rtc_process_receive` to iterate `NANORTC_VIDEO_PKT_RING_SIZE` instead of `NANORTC_OUT_QUEUE_SIZE`.
+4. **Sizing rule documented as a hard constraint, not a drain hint** (review feedback, commit `b08b9cf`):
 
-**Risk.** Low — purely a size change. Existing NACK lookup code already iterates with `NANORTC_OUT_QUEUE_SIZE` and behaves the same at smaller sizes.
+   ```
+   NANORTC_VIDEO_PKT_RING_SIZE >= ceil(max_frame_bytes / NANORTC_VIDEO_MTU) + 1
+   ```
 
-**Rollback.** Revert or user overrides.
+   `out_queue[].transmit.data` stores a *pointer* into `pkt_ring[]`, and `nanortc_send_video()` emits every FU-A fragment of one access unit before returning to the caller — there is no opportunity to drain mid-frame. Wrapping `pkt_ring_tail` while earlier-fragment pointers are still pending in `out_queue` silently corrupts those buffers (receiver sees newer fragment bytes carrying older RTP seq). The earlier draft text recommending "`PKT_RING=16` ≈ 500 ms NACK window at 30 fps" was wrong for multi-NAL frames at 720p+ and was removed; `docs/engineering/memory-profiles.md` now carries the worked-numbers table (480p ≈ 16, 720p ≈ 32, 1080p ≈ 64).
+5. **Runtime overrun guard + observability counter** (review feedback, commit `c1cb699`). `video_send_fragment_cb` checks `(out_tail - out_head) >= PKT_RING_SIZE` before writing the slot, atomically bumps `nanortc_t.stats_pkt_ring_overrun`, and emits a single `NANORTC_LOGW` so under-sizing surfaces in integration smoke tests rather than as glitched IDRs on the wire. Counter is exposed on the struct for app glue to read.
+6. **Tests** (`tests/test_media.c`): five new tests under `#if NANORTC_FEATURE_VIDEO` — `in_window_lookup`, `out_of_window_miss`, `wraparound_independent_of_out_tail` (PR baseline), plus `overrun_counter_fires_when_undersized` and `aliasing_corruption_demonstrated_without_guard` (review). Verified under default build (`PKT_RING=OUT_QUEUE=32`) and IoT override (`-DNANORTC_VIDEO_PKT_RING_SIZE=8 -DNANORTC_OUT_QUEUE_SIZE=32`).
+
+**Verification.** All 7 canonical feature combos × {mbedtls, openssl} green, including ASan and libdatachannel interop. `scripts/ci-check.sh --fast` 15/15 passes.
+
+**Review feedback closed.**
+
+- Copilot (`#discussion_r3128279481`): "≈19 KB" claim was wrong for ESP-IDF Kconfig defaults. Fixed in `91d175b` by rewriting the help text around the formula `(OUT_QUEUE_SIZE − PKT_RING_SIZE) × MEDIA_BUF_SIZE` with worked examples for both host and Kconfig.
+- Internal review (this branch): docs framed the safety property as "drain each tick" but `nanortc_send_video()` emits every fragment before returning, so the real invariant is the per-frame fragment bound. Addressed by `c1cb699` (runtime guard) + `984e46e` (regression test) + `b08b9cf` (docs rewrite + worked-numbers table).
+
+**Rollback.** Revert PR #54 commits or set `NANORTC_VIDEO_PKT_RING_SIZE` to `NANORTC_OUT_QUEUE_SIZE` (the default) for byte-identical behavior.
 
 ---
 
