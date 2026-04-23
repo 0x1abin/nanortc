@@ -85,7 +85,12 @@ LAN deployments where packet loss is rare and a shorter retransmit window
 is tolerable, override to a smaller power of two:
 
 ```c
-#define NANORTC_VIDEO_PKT_RING_SIZE 16   /* ~19 KB saving at MEDIA_BUF_SIZE=1232 */
+/* Saving is (OUT_QUEUE_SIZE - PKT_RING_SIZE) × MEDIA_BUF_SIZE.
+ * Against the host default OUT_QUEUE_SIZE=32 at MEDIA_BUF_SIZE=1232,
+ * PKT_RING_SIZE=16 saves ~19 KB; 8 saves ~28 KB. Against the ESP-IDF
+ * Kconfig default OUT_QUEUE_SIZE=16 (video), PKT_RING_SIZE=8 saves
+ * ~9.6 KB. */
+#define NANORTC_VIDEO_PKT_RING_SIZE 16
 ```
 
 At 30 fps this gives roughly 500 ms of NACK history — enough for a
