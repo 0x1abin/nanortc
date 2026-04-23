@@ -2749,9 +2749,26 @@ static int video_send_fragment_cb(const uint8_t *payload, size_t len, int marker
 
     /* Select a packet buffer from pkt_ring via its own cursor — decoupled
      * from out_tail so NANORTC_VIDEO_PKT_RING_SIZE can be tuned independently
-     * of NANORTC_OUT_QUEUE_SIZE (Sans I/O). Caller must drain
-     * nanortc_poll_output() each tick; see nanortc_config.h for the
-     * slot-reuse invariant when PKT_RING_SIZE < OUT_QUEUE_SIZE. */
+     * of NANORTC_OUT_QUEUE_SIZE (Sans I/O). See nanortc_config.h for the
+     * slot-reuse invariant when PKT_RING_SIZE < OUT_QUEUE_SIZE.
+     *
+     * Aliasing guard. out_queue[].transmit.data stores a pointer into
+     * pkt_ring[]. nanortc_send_video() fires one callback per FU-A
+     * fragment of an access unit before returning, so the application
+     * has no chance to drain mid-frame. If the in-flight depth (entries
+     * still queued in out_queue) has already reached PKT_RING_SIZE,
+     * advancing pkt_ring_tail now would wrap into a slot whose pointer
+     * is still pending — silent corruption. (out_tail - out_head) is a
+     * conservative upper bound on that in-flight depth; bump a counter
+     * and emit a warning so the under-sizing surfaces in integration
+     * smoke tests rather than as glitched IDRs on the wire. */
+    uint16_t out_inflight = (uint16_t)(rtc->out_tail - rtc->out_head);
+    if (out_inflight >= NANORTC_VIDEO_PKT_RING_SIZE) {
+        __atomic_fetch_add(&rtc->stats_pkt_ring_overrun, 1, __ATOMIC_RELAXED);
+        /* Static-string log macro; the live counters are in
+         * stats_pkt_ring_overrun + out_tail/out_head for inspection. */
+        NANORTC_LOGW("RTC", "pkt_ring overrun — raise NANORTC_VIDEO_PKT_RING_SIZE");
+    }
     uint16_t pslot = rtc->pkt_ring_tail & (NANORTC_VIDEO_PKT_RING_SIZE - 1);
     uint8_t *pkt_buf = rtc->pkt_ring[pslot];
 

@@ -643,6 +643,14 @@ struct nanortc {
     /** Independent write cursor for pkt_ring (decoupled from out_tail). */
     uint16_t pkt_ring_tail;
 
+    /** Count of times video_send_fragment_cb wrapped pkt_ring while a
+     *  prior slot was still referenced by an outstanding out_queue entry
+     *  (NANORTC_VIDEO_PKT_RING_SIZE under-sized vs the per-frame fragment
+     *  count). Each increment also emits NANORTC_LOGW. Read this from
+     *  integration smoke tests to catch under-sizing before it reaches
+     *  the wire — see docs/engineering/memory-profiles.md. */
+    uint32_t stats_pkt_ring_overrun;
+
     /** Shared bandwidth estimator (session-wide, not per-track). */
     nano_bwe_t bwe;
 #endif
