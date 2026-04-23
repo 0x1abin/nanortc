@@ -12,6 +12,7 @@
 #include <stdlib.h>
 
 #include "esp_log.h"
+#include "sdkconfig.h"
 #include <lwip/sockets.h>
 
 /*
@@ -20,6 +21,15 @@
  */
 #define MAX_OFFER_SIZE 10240
 #define MAX_ANSWER_SIZE 2048
+
+/* HTTP server task stack. Default 4096 fits POST /offer (static scratch +
+ * nanortc_init on handler path); raise via Kconfig if a custom offer_handler
+ * recurses into deeper libraries. */
+#ifdef CONFIG_EXAMPLE_WEBSERVER_STACK_SIZE
+#define EXAMPLE_WEBSERVER_STACK_SIZE CONFIG_EXAMPLE_WEBSERVER_STACK_SIZE
+#else
+#define EXAMPLE_WEBSERVER_STACK_SIZE 4096
+#endif
 
 /* Internal copy of config (only one HTTP server per ESP32) */
 static nano_webserver_config_t s_cfg;
@@ -131,7 +141,7 @@ httpd_handle_t nano_webserver_start(const nano_webserver_config_t *cfg)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.max_uri_handlers = 6;
     config.max_open_sockets = 1;
-    config.stack_size = 6144;
+    config.stack_size = EXAMPLE_WEBSERVER_STACK_SIZE;
 
     httpd_handle_t server = NULL;
     if (httpd_start(&server, &config) != ESP_OK) {

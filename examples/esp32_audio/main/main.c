@@ -76,6 +76,7 @@ static nano_run_loop_t s_loop;
 static char s_local_ip[16];
 static int s_connected;
 static int s_audio_mid;
+static TaskHandle_t s_webrtc_handle;
 
 /* Audio state */
 static nano_media_pacer_t s_audio_pacer = {.interval_ms = 20}; /* 20ms frames */
@@ -275,6 +276,7 @@ static void webrtc_task(void *arg)
     (void)arg;
     ESP_LOGI(TAG, "WebRTC task started");
 
+    uint32_t last_hwm_log_ms = 0;
     for (;;) {
         if (s_loop.running) {
             nano_run_loop_step(&s_loop);
@@ -284,6 +286,13 @@ static void webrtc_task(void *arg)
             }
         } else {
             vTaskDelay(pdMS_TO_TICKS(50));
+        }
+
+        uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+        if (now_ms - last_hwm_log_ms >= 5000) {
+            last_hwm_log_ms = now_ms;
+            ESP_LOGI(TAG, "[stack HWM] webrtc=%lu words free",
+                     (unsigned long)uxTaskGetStackHighWaterMark(s_webrtc_handle));
         }
     }
 }
@@ -334,8 +343,10 @@ void app_main(void)
     if (!nano_webserver_start(&wscfg))
         return;
 
-    /* 6. Start WebRTC event loop task */
-    xTaskCreate(webrtc_task, "webrtc", 32768, NULL, 5, NULL);
+    /* 6. Start WebRTC event loop task. Stack sized for run_loop_step's 1500 B
+     * network scratch plus mbedTLS DTLS handshake peak (~3-4 KB); all large
+     * per-frame encode buffers are static. HWM log above verifies headroom. */
+    xTaskCreate(webrtc_task, "webrtc", 10240, NULL, 5, &s_webrtc_handle);
 
     ESP_LOGI(TAG, "Open http://%s/ in your browser", s_local_ip);
 }

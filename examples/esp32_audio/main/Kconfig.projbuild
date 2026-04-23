@@ -25,4 +25,14 @@ menu "ESP32 Audio Example"
         help
             Tempo of the generated melody in beats per minute.
 
+    config EXAMPLE_WEBSERVER_STACK_SIZE
+        int "HTTP server task stack (bytes)"
+        default 4096
+        range 2048 16384
+        help
+            Stack size of the esp_http_server task that runs the signaling
+            POST /offer handler. 4096 fits the default offer_handler plus
+            nanortc_init on the handler path; raise if you add heavy work
+            in your offer_handler (deep TLS libraries, extra malloc, etc.).
+
 endmenu

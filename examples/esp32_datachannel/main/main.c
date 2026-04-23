@@ -20,6 +20,7 @@
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_timer.h"
 #include "nvs_flash.h"
 #include "protocol_examples_common.h"
 
@@ -34,6 +35,7 @@ static const char *TAG = "nanortc_dc";
 static nanortc_t s_rtc;
 static nano_run_loop_t s_loop;
 static char s_local_ip[16];
+static TaskHandle_t s_webrtc_handle;
 
 /* Embedded HTML file (linked by EMBED_TXTFILES in CMakeLists.txt) */
 extern const uint8_t index_html_start[] asm("_binary_index_html_start");
@@ -126,11 +128,19 @@ static void webrtc_task(void *arg)
     (void)arg;
     ESP_LOGI(TAG, "WebRTC task started");
 
+    uint32_t last_hwm_log_ms = 0;
     for (;;) {
         if (s_loop.running) {
             nano_run_loop_step(&s_loop);
         } else {
             vTaskDelay(pdMS_TO_TICKS(50));
+        }
+
+        uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+        if (now_ms - last_hwm_log_ms >= 5000) {
+            last_hwm_log_ms = now_ms;
+            ESP_LOGI(TAG, "[stack HWM] webrtc=%lu words free",
+                     (unsigned long)uxTaskGetStackHighWaterMark(s_webrtc_handle));
         }
     }
 }
@@ -179,8 +189,10 @@ void app_main(void)
     if (!nano_webserver_start(&wscfg))
         return;
 
-    /* 6. Start WebRTC event loop task */
-    xTaskCreate(webrtc_task, "webrtc", 8192, NULL, 5, NULL);
+    /* 6. Start WebRTC event loop task. DC-only path has no SRTP/RTP/jitter; the
+     * main stack consumer is mbedTLS DTLS handshake (~3-4 KB peak). 4 KB gives
+     * ~1 KB headroom; the HWM log above verifies this on first handshake. */
+    xTaskCreate(webrtc_task, "webrtc", 4096, NULL, 5, &s_webrtc_handle);
 
     ESP_LOGI(TAG, "Open http://%s/ in your browser", s_local_ip);
 }

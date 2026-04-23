@@ -20,9 +20,6 @@ CONFIG_LWIP_MAX_SOCKETS=8
 CONFIG_LWIP_SO_RCVTIMEO=y
 CONFIG_LWIP_SO_REUSE=y
 
-# Task stack (nanortc_t is large, needs generous stack)
-CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
-
 # nanortc features: Audio only (no DataChannel)
 CONFIG_NANORTC_FEATURE_AUDIO=y
 # DataChannel off by default (audio-only device)

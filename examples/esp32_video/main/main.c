@@ -52,6 +52,7 @@ static char s_local_ip[16];
 static int s_connected;
 static int s_video_mid;
 static int s_audio_mid;
+static TaskHandle_t s_webrtc_handle;
 
 /* Video state */
 static nano_media_source_t s_video_src;
@@ -238,6 +239,7 @@ static void webrtc_task(void *arg)
     (void)arg;
     ESP_LOGI(TAG, "WebRTC task started on core %d", xPortGetCoreID());
 
+    uint32_t last_hwm_log_ms = 0;
     for (;;) {
         s_task_alive++;
         if (s_loop.running) {
@@ -254,6 +256,13 @@ static void webrtc_task(void *arg)
             }
         } else {
             vTaskDelay(pdMS_TO_TICKS(100));
+        }
+
+        uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+        if (now_ms - last_hwm_log_ms >= 5000) {
+            last_hwm_log_ms = now_ms;
+            ESP_LOGI(TAG, "[stack HWM] webrtc=%lu words free",
+                     (unsigned long)uxTaskGetStackHighWaterMark(s_webrtc_handle));
         }
     }
 }
@@ -311,8 +320,12 @@ void app_main(void)
     };
     httpd_register_uri_handler(server, &uri_debug);
 
-    /* 5. Start WebRTC task */
-    xTaskCreate(webrtc_task, "webrtc", 8 * 1024, NULL, 5, NULL);
+    /* 5. Start WebRTC task. Video path packs H.264 FU-A fragments in
+     * video_send_tick; sd_buf and other frame-scale buffers are static so the
+     * stack carries only run_loop_step's 1500 B scratch plus mbedTLS DTLS
+     * handshake peak. HWM log above verifies headroom; do not shrink below 8 KB
+     * without reading HWM against an HD stream. */
+    xTaskCreate(webrtc_task, "webrtc", 8 * 1024, NULL, 5, &s_webrtc_handle);
 
     /* 6. Init media sources from embedded flash blobs */
     memset(&s_video_src, 0, sizeof(s_video_src));

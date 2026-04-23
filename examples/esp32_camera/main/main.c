@@ -498,7 +498,7 @@ void app_main(void)
 
     /* 10. Start tasks */
     xTaskCreatePinnedToCore(webrtc_task, "webrtc", 6 * 1024, NULL, 5, &s_webrtc_handle, 0);
-    xTaskCreatePinnedToCore(microphone_task, "mic", 3 * 1024, NULL, 7, &s_mic_handle, 0);
+    xTaskCreatePinnedToCore(microphone_task, "mic", 2 * 1024, NULL, 7, &s_mic_handle, 0);
     xTaskCreatePinnedToCore(camera_task, "camera", 4 * 1024, NULL, 6, &s_camera_handle, 1);
 
     ESP_LOGI(TAG, "Open http://%s/ in your browser", s_local_ip);
