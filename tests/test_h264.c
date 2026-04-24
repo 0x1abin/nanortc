@@ -20,6 +20,10 @@
 #define MAX_FRAG_SIZE 1500
 
 typedef struct {
+    /* Scratch fed to h264_packetize() for FU-A payload assembly. Tests have
+     * plenty of stack, so bundling scratch into the collector keeps each
+     * call site a single line. */
+    uint8_t scratch[MAX_FRAG_SIZE];
     uint8_t frags[MAX_FRAGMENTS][MAX_FRAG_SIZE];
     size_t frag_lens[MAX_FRAGMENTS];
     int markers[MAX_FRAGMENTS];
@@ -50,7 +54,7 @@ TEST(test_h264_pack_single_nal)
     pkt_collector_t c;
     memset(&c, 0, sizeof(c));
 
-    ASSERT_OK(h264_packetize(nalu, sizeof(nalu), 1200, collect_cb, &c));
+    ASSERT_OK(h264_packetize(nalu, sizeof(nalu), 1200, c.scratch, sizeof(c.scratch), collect_cb, &c));
     ASSERT_EQ(c.count, 1);
     ASSERT_EQ(c.frag_lens[0], sizeof(nalu));
     ASSERT_MEM_EQ(c.frags[0], nalu, sizeof(nalu));
@@ -67,7 +71,7 @@ TEST(test_h264_pack_exact_mtu)
     pkt_collector_t c;
     memset(&c, 0, sizeof(c));
 
-    ASSERT_OK(h264_packetize(nalu, sizeof(nalu), 10, collect_cb, &c));
+    ASSERT_OK(h264_packetize(nalu, sizeof(nalu), 10, c.scratch, sizeof(c.scratch), collect_cb, &c));
     ASSERT_EQ(c.count, 1);
     ASSERT_EQ(c.frag_lens[0], 10);
     ASSERT_EQ(c.markers[0], 1);
@@ -89,7 +93,7 @@ TEST(test_h264_pack_fua_basic)
     pkt_collector_t c;
     memset(&c, 0, sizeof(c));
 
-    ASSERT_OK(h264_packetize(nalu, sizeof(nalu), 5, collect_cb, &c));
+    ASSERT_OK(h264_packetize(nalu, sizeof(nalu), 5, c.scratch, sizeof(c.scratch), collect_cb, &c));
     ASSERT_EQ(c.count, 5);
 
     /* First fragment: S bit set */
@@ -123,7 +127,7 @@ TEST(test_h264_pack_fua_nri_preserved)
     pkt_collector_t c;
     memset(&c, 0, sizeof(c));
 
-    ASSERT_OK(h264_packetize(nalu, sizeof(nalu), 5, collect_cb, &c));
+    ASSERT_OK(h264_packetize(nalu, sizeof(nalu), 5, c.scratch, sizeof(c.scratch), collect_cb, &c));
     ASSERT_TRUE(c.count > 1);
 
     /* FU indicator NRI should match original (0x60) */
@@ -143,7 +147,7 @@ TEST(test_h264_pack_fua_str0m_vector)
     pkt_collector_t c;
     memset(&c, 0, sizeof(c));
 
-    ASSERT_OK(h264_packetize(nalu, sizeof(nalu), 5, collect_cb, &c));
+    ASSERT_OK(h264_packetize(nalu, sizeof(nalu), 5, c.scratch, sizeof(c.scratch), collect_cb, &c));
     ASSERT_EQ(c.count, 5);
 
     /* Verify fragment contents match str0m expected output:
@@ -169,10 +173,10 @@ TEST(test_h264_pack_null_params)
     pkt_collector_t c;
     memset(&c, 0, sizeof(c));
 
-    ASSERT_FAIL(h264_packetize(NULL, 2, 1200, collect_cb, &c));
-    ASSERT_FAIL(h264_packetize(nalu, 0, 1200, collect_cb, &c));
-    ASSERT_FAIL(h264_packetize(nalu, 2, 2, collect_cb, &c)); /* mtu too small */
-    ASSERT_FAIL(h264_packetize(nalu, 2, 1200, NULL, &c));
+    ASSERT_FAIL(h264_packetize(NULL, 2, 1200, c.scratch, sizeof(c.scratch), collect_cb, &c));
+    ASSERT_FAIL(h264_packetize(nalu, 0, 1200, c.scratch, sizeof(c.scratch), collect_cb, &c));
+    ASSERT_FAIL(h264_packetize(nalu, 2, 2, c.scratch, sizeof(c.scratch), collect_cb, &c)); /* mtu too small */
+    ASSERT_FAIL(h264_packetize(nalu, 2, 1200, c.scratch, sizeof(c.scratch), NULL, &c));
 }
 
 /* ================================================================
@@ -205,7 +209,7 @@ TEST(test_h264_depkt_fua_roundtrip)
 
     pkt_collector_t c;
     memset(&c, 0, sizeof(c));
-    ASSERT_OK(h264_packetize(nalu, sizeof(nalu), 5, collect_cb, &c));
+    ASSERT_OK(h264_packetize(nalu, sizeof(nalu), 5, c.scratch, sizeof(c.scratch), collect_cb, &c));
     ASSERT_TRUE(c.count > 1);
 
     /* Now depacketize all fragments */
@@ -400,7 +404,7 @@ TEST(test_h264_pack_two_byte_nal)
     pkt_collector_t c;
     memset(&c, 0, sizeof(c));
 
-    ASSERT_OK(h264_packetize(nalu, sizeof(nalu), 1200, collect_cb, &c));
+    ASSERT_OK(h264_packetize(nalu, sizeof(nalu), 1200, c.scratch, sizeof(c.scratch), collect_cb, &c));
     ASSERT_EQ(c.count, 1);
     ASSERT_EQ(c.frag_lens[0], 2);
 }
@@ -437,7 +441,7 @@ TEST(test_h264_pack_fua_exact_mtu_plus_one)
     pkt_collector_t c;
     memset(&c, 0, sizeof(c));
 
-    ASSERT_OK(h264_packetize(nalu, sizeof(nalu), 10, collect_cb, &c));
+    ASSERT_OK(h264_packetize(nalu, sizeof(nalu), 10, c.scratch, sizeof(c.scratch), collect_cb, &c));
     ASSERT_EQ(c.count, 2);
 
     /* First fragment: S=1, E=0 */
@@ -465,7 +469,7 @@ TEST(test_h264_forbidden_bit_passthrough)
     memset(&c, 0, sizeof(c));
 
     /* Packetizer should not reject NALs with forbidden bit — it's informational */
-    ASSERT_OK(h264_packetize(nalu, sizeof(nalu), 1200, collect_cb, &c));
+    ASSERT_OK(h264_packetize(nalu, sizeof(nalu), 1200, c.scratch, sizeof(c.scratch), collect_cb, &c));
     ASSERT_EQ(c.count, 1);
     /* Forbidden bit should be preserved */
     ASSERT_TRUE(c.frags[0][0] & 0x80);
@@ -619,6 +623,100 @@ TEST(test_h264_depkt_single_nal_exceeds_buffer)
 }
 
 /* ================================================================
+ * Fragment iterator zero-copy regression
+ * ================================================================ */
+
+/* The Option C design for PR-4 stakes its memcpy-elimination win on the
+ * fragment iterator writing FU-A bytes *in place* at the caller's scratch
+ * pointer. If a future refactor regresses by copying through an internal
+ * buffer, this test catches it by detecting that the caller's scratch
+ * remains unchanged while the iterator claims it wrote there. */
+TEST(test_h264_iterator_zero_copy_writes_in_place)
+{
+    uint8_t nalu[16];
+    nalu[0] = 0x65; /* IDR, NRI=3 */
+    for (int i = 1; i < 16; i++) {
+        nalu[i] = (uint8_t)(0x30 + i);
+    }
+
+    h264_fragment_iter_t it;
+    ASSERT_OK(h264_fragment_iter_init(&it, nalu, sizeof(nalu), 5));
+
+    /* Pre-fill scratch with a sentinel so we can detect whether the
+     * iterator wrote here or somewhere else. */
+    uint8_t scratch[32];
+    memset(scratch, 0xEE, sizeof(scratch));
+
+    const uint8_t *payload = NULL;
+    size_t payload_len = 0;
+    int is_last = 0;
+    ASSERT_OK(h264_fragment_iter_next(&it, scratch, sizeof(scratch), &payload, &payload_len,
+                                      &is_last));
+
+    /* Payload pointer must be the caller's scratch base — this is the whole
+     * point of the iterator API. Equal pointers let rtp_pack skip its
+     * payload memcpy; diverging pointers mean the optimization never fires. */
+    ASSERT_TRUE(payload == scratch);
+    /* 5-byte MTU − 2-byte FU-A header = 3 bytes payload; + 2 header = 5 total. */
+    ASSERT_EQ(payload_len, 5);
+    /* FU indicator NRI preserved, type=FU-A, S=1 on first fragment. */
+    ASSERT_EQ(scratch[0] & H264_NAL_REF_IDC_MASK, 0x60);
+    ASSERT_EQ(scratch[0] & H264_NAL_TYPE_MASK, H264_NAL_FUA);
+    ASSERT_TRUE(scratch[1] & H264_FUA_S_BIT);
+    ASSERT_EQ(scratch[2], nalu[1]);
+    ASSERT_EQ(scratch[3], nalu[2]);
+    ASSERT_EQ(scratch[4], nalu[3]);
+    /* Sentinel bytes past payload_len must be untouched. */
+    for (size_t i = payload_len; i < sizeof(scratch); i++) {
+        ASSERT_EQ(scratch[i], 0xEE);
+    }
+    ASSERT_FALSE(is_last);
+}
+
+TEST(test_h264_iterator_scratch_too_small)
+{
+    uint8_t nalu[16];
+    memset(nalu, 0xAA, sizeof(nalu));
+    nalu[0] = 0x00;
+
+    /* MTU=10 forces FU-A (NAL is 16 bytes). A 2-byte scratch cannot fit the
+     * FU-A header plus a payload byte, so iter_next must reject it. */
+    h264_fragment_iter_t it;
+    ASSERT_OK(h264_fragment_iter_init(&it, nalu, sizeof(nalu), 10));
+
+    uint8_t tiny[2];
+    const uint8_t *payload = NULL;
+    size_t payload_len = 0;
+    int is_last = 0;
+    int rc = h264_fragment_iter_next(&it, tiny, sizeof(tiny), &payload, &payload_len, &is_last);
+    ASSERT_EQ(rc, NANORTC_ERR_BUFFER_TOO_SMALL);
+}
+
+TEST(test_h264_iterator_single_nal_ignores_scratch)
+{
+    uint8_t nalu[] = {0x65, 0x01, 0x02, 0x03};
+    h264_fragment_iter_t it;
+    ASSERT_OK(h264_fragment_iter_init(&it, nalu, sizeof(nalu), 1200));
+
+    /* Poison scratch. Single-NAL fast path must not touch it. */
+    uint8_t scratch[64];
+    memset(scratch, 0x77, sizeof(scratch));
+
+    const uint8_t *payload = NULL;
+    size_t payload_len = 0;
+    int is_last = 0;
+    ASSERT_OK(h264_fragment_iter_next(&it, scratch, sizeof(scratch), &payload, &payload_len,
+                                      &is_last));
+    ASSERT_TRUE(payload == nalu); /* pass-through, not the scratch */
+    ASSERT_EQ(payload_len, sizeof(nalu));
+    ASSERT_TRUE(is_last);
+    for (size_t i = 0; i < sizeof(scratch); i++) {
+        ASSERT_EQ(scratch[i], 0x77); /* scratch untouched */
+    }
+    ASSERT_FALSE(h264_fragment_iter_has_next(&it));
+}
+
+/* ================================================================
  * Test runner
  * ================================================================ */
 
@@ -630,6 +728,10 @@ RUN(test_h264_pack_fua_basic);
 RUN(test_h264_pack_fua_nri_preserved);
 RUN(test_h264_pack_fua_str0m_vector);
 RUN(test_h264_pack_null_params);
+/* Fragment iterator (zero-copy regression) */
+RUN(test_h264_iterator_zero_copy_writes_in_place);
+RUN(test_h264_iterator_scratch_too_small);
+RUN(test_h264_iterator_single_nal_ignores_scratch);
 /* Depacketizer */
 RUN(test_h264_depkt_single_nal);
 RUN(test_h264_depkt_fua_roundtrip);

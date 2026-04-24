@@ -2729,7 +2729,12 @@ static int rtc_send_audio(nanortc_t *rtc, nanortc_track_t *m, uint32_t timestamp
 }
 
 #if NANORTC_FEATURE_VIDEO
-/* Context for h264_packetize callback → RTP pack + SRTP protect + enqueue */
+#if NANORTC_FEATURE_H265
+/* Context + callback used by the H.265 send path. H.264 no longer uses this
+ * (see rtc_send_video below — it drives h264_fragment_iter_* directly for
+ * zero-copy packetization), but h265_packetize_au() is still callback-based,
+ * so these helpers stay alive under the H265 feature flag until a parallel
+ * zero-copy refactor lands for H.265. */
 typedef struct {
     nanortc_t *rtc;
     nanortc_track_t *media;
@@ -2744,29 +2749,11 @@ static int video_send_fragment_cb(const uint8_t *payload, size_t len, int marker
     nanortc_t *rtc = ctx->rtc;
     nanortc_track_t *m = ctx->media;
 
-    /* RFC 6184 §5.1: marker bit on last packet of access unit */
     m->rtp.marker = (uint8_t)((marker && ctx->is_last_nal) ? 1 : 0);
 
-    /* Select a packet buffer from pkt_ring via its own cursor — decoupled
-     * from out_tail so NANORTC_VIDEO_PKT_RING_SIZE can be tuned independently
-     * of NANORTC_OUT_QUEUE_SIZE (Sans I/O). See nanortc_config.h for the
-     * slot-reuse invariant when PKT_RING_SIZE < OUT_QUEUE_SIZE.
-     *
-     * Aliasing guard. out_queue[].transmit.data stores a pointer into
-     * pkt_ring[]. nanortc_send_video() fires one callback per FU-A
-     * fragment of an access unit before returning, so the application
-     * has no chance to drain mid-frame. If the in-flight depth (entries
-     * still queued in out_queue) has already reached PKT_RING_SIZE,
-     * advancing pkt_ring_tail now would wrap into a slot whose pointer
-     * is still pending — silent corruption. (out_tail - out_head) is a
-     * conservative upper bound on that in-flight depth; bump a counter
-     * and emit a warning so the under-sizing surfaces in integration
-     * smoke tests rather than as glitched IDRs on the wire. */
     uint16_t out_inflight = (uint16_t)(rtc->out_tail - rtc->out_head);
     if (out_inflight >= NANORTC_VIDEO_PKT_RING_SIZE) {
         __atomic_fetch_add(&rtc->stats_pkt_ring_overrun, 1, __ATOMIC_RELAXED);
-        /* Static-string log macro; the live counters are in
-         * stats_pkt_ring_overrun + out_tail/out_head for inspection. */
         NANORTC_LOGW("RTC", "pkt_ring overrun — raise NANORTC_VIDEO_PKT_RING_SIZE");
     }
     uint16_t pslot = rtc->pkt_ring_tail & (NANORTC_VIDEO_PKT_RING_SIZE - 1);
@@ -2791,15 +2778,8 @@ static int video_send_fragment_cb(const uint8_t *payload, size_t len, int marker
 
     m->rtcp.packets_sent++;
     m->rtcp.octets_sent += (uint32_t)len;
-
-    /* Feed the per-track rate window. We count post-SRTP wire bytes to
-     * include RTP header + extension + auth tag — that's what the network
-     * actually sees and what the app should compare against the BWE estimate. */
     rate_window_on_bytes(&m->rate_window, rtc->now_ms, (uint32_t)srtp_len);
 
-    /* Record NACK retransmission metadata for this slot.
-     * rtp_pack() increments seq after writing, so the seq in the packet
-     * is (m->rtp.seq - 1). */
     rtc->pkt_ring_meta[pslot].seq = (uint16_t)(m->rtp.seq - 1);
     rtc->pkt_ring_meta[pslot].len = (uint16_t)srtp_len;
     rtc->pkt_ring_tail++;
@@ -2807,21 +2787,95 @@ static int video_send_fragment_cb(const uint8_t *payload, size_t len, int marker
     ctx->last_rc = rtc_enqueue_transmit(rtc, pkt_buf, srtp_len, &rtc->remote_addr, false);
     return ctx->last_rc;
 }
+#endif /* NANORTC_FEATURE_H265 */
 
+/* Drive h264_fragment_iter_* directly so each FU-A payload is written into the
+ * final pkt_ring[] slot once. The iterator writes at pkt_buf + rtp_hdr_len,
+ * then rtp_pack() with payload == that same pointer hits the no-op guard and
+ * skips its payload memcpy. End-to-end this saves the 1200-byte stack frame
+ * that the old callback-based h264_packetize() reserved per fragment, and
+ * removes one memcpy per FU-A fragment. */
 static int rtc_send_video(nanortc_t *rtc, nanortc_track_t *m, uint32_t timestamp,
                           const uint8_t *data, size_t len, int flags)
 {
-    video_send_ctx_t ctx;
-    ctx.rtc = rtc;
-    ctx.media = m;
-    ctx.timestamp = timestamp;
-    ctx.last_rc = NANORTC_OK;
-    ctx.is_last_nal = (flags & NANORTC_VIDEO_FLAG_MARKER) ? 1 : 0;
+    int is_last_nal = (flags & NANORTC_VIDEO_FLAG_MARKER) ? 1 : 0;
 
-    int rc = h264_packetize(data, len, NANORTC_VIDEO_MTU, video_send_fragment_cb, &ctx);
-    if (rc != NANORTC_OK)
+    h264_fragment_iter_t it;
+    int rc = h264_fragment_iter_init(&it, data, len, NANORTC_VIDEO_MTU);
+    if (rc != NANORTC_OK) {
         return rc;
-    return ctx.last_rc;
+    }
+
+    while (h264_fragment_iter_has_next(&it)) {
+        /* pkt_ring slot selection (see the comment block in PR-3 for the
+         * aliasing invariant). One slot is consumed per fragment emitted,
+         * and (out_tail - out_head) is a conservative upper bound on the
+         * number of slots still pointed at by in-flight out_queue entries. */
+        uint16_t out_inflight = (uint16_t)(rtc->out_tail - rtc->out_head);
+        if (out_inflight >= NANORTC_VIDEO_PKT_RING_SIZE) {
+            __atomic_fetch_add(&rtc->stats_pkt_ring_overrun, 1, __ATOMIC_RELAXED);
+            NANORTC_LOGW("RTC", "pkt_ring overrun — raise NANORTC_VIDEO_PKT_RING_SIZE");
+        }
+        uint16_t pslot = rtc->pkt_ring_tail & (NANORTC_VIDEO_PKT_RING_SIZE - 1);
+        uint8_t *pkt_buf = rtc->pkt_ring[pslot];
+
+        /* Zero-copy scratch: the RTP header is 12 bytes without TWCC, 20 with.
+         * The iterator writes the FU-A payload directly at pkt_buf + off;
+         * rtp_pack() then writes the RTP header (plus optional TWCC) in the
+         * leading bytes and detects payload == pkt_buf + off as a no-op. */
+        bool has_twcc = (m->rtp.twcc_ext_id != 0 && m->rtp.twcc_ext_id <= 14);
+        size_t off = (size_t)RTP_HEADER_SIZE + (has_twcc ? (size_t)RTP_TWCC_EXT_OVERHEAD : 0);
+        if (off >= NANORTC_MEDIA_BUF_SIZE) {
+            return NANORTC_ERR_BUFFER_TOO_SMALL;
+        }
+
+        const uint8_t *payload = NULL;
+        size_t payload_len = 0;
+        int is_last_frag = 0;
+        rc = h264_fragment_iter_next(&it, pkt_buf + off, NANORTC_MEDIA_BUF_SIZE - off, &payload,
+                                     &payload_len, &is_last_frag);
+        if (rc != NANORTC_OK) {
+            NANORTC_LOGW("H264", "fragment_iter_next failed");
+            return rc;
+        }
+
+        /* RFC 6184 §5.1: marker bit on last packet of access unit. */
+        m->rtp.marker = (uint8_t)((is_last_frag && is_last_nal) ? 1 : 0);
+
+        size_t rtp_len = 0;
+        rc = rtp_pack(&m->rtp, timestamp, payload, payload_len, pkt_buf, NANORTC_MEDIA_BUF_SIZE,
+                      &rtp_len);
+        if (rc != NANORTC_OK) {
+            NANORTC_LOGW("RTP", "video rtp_pack failed");
+            return rc;
+        }
+
+        size_t srtp_len = 0;
+        rc = nano_srtp_protect(&rtc->srtp, pkt_buf, rtp_len, &srtp_len);
+        if (rc != NANORTC_OK) {
+            NANORTC_LOGW("SRTP", "video srtp_protect failed");
+            return rc;
+        }
+
+        m->rtcp.packets_sent++;
+        m->rtcp.octets_sent += (uint32_t)payload_len;
+
+        /* Post-SRTP wire bytes for the per-track rate window — matches the
+         * byte count the network sees and the BWE estimate compares against. */
+        rate_window_on_bytes(&m->rate_window, rtc->now_ms, (uint32_t)srtp_len);
+
+        /* NACK retransmit metadata. rtp_pack() has already incremented seq. */
+        rtc->pkt_ring_meta[pslot].seq = (uint16_t)(m->rtp.seq - 1);
+        rtc->pkt_ring_meta[pslot].len = (uint16_t)srtp_len;
+        rtc->pkt_ring_tail++;
+
+        rc = rtc_enqueue_transmit(rtc, pkt_buf, srtp_len, &rtc->remote_addr, false);
+        if (rc != NANORTC_OK) {
+            return rc;
+        }
+    }
+
+    return NANORTC_OK;
 }
 #endif /* NANORTC_FEATURE_VIDEO */
 
@@ -2947,7 +3001,8 @@ int nanortc_send_video(nanortc_t *rtc, uint8_t mid, uint32_t pts_ms, const void 
     }
 #endif
 
-    /* H.264: scan per NAL, dispatch to h264_packetize. */
+    /* H.264: scan per NAL, dispatch to rtc_send_video (drives the
+     * h264_fragment_iter_* zero-copy packetizer). */
     size_t offset = 0;
     size_t nal_len = 0;
     int last_rc = NANORTC_OK;
