@@ -72,8 +72,11 @@ int h264_fragment_iter_next(h264_fragment_iter_t *it, uint8_t *scratch, size_t s
         return NANORTC_ERR_INVALID_PARAM; /* exhausted */
     }
 
+    if (!scratch) {
+        return NANORTC_ERR_INVALID_PARAM;
+    }
     size_t frag_len = it->remaining < it->max_frag ? it->remaining : it->max_frag;
-    if (!scratch || scratch_len < H264_FUA_HEADER_SIZE + frag_len) {
+    if (scratch_len < H264_FUA_HEADER_SIZE + frag_len) {
         return NANORTC_ERR_BUFFER_TOO_SMALL;
     }
 

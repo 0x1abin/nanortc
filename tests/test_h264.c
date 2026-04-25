@@ -692,6 +692,25 @@ TEST(test_h264_iterator_scratch_too_small)
     ASSERT_EQ(rc, NANORTC_ERR_BUFFER_TOO_SMALL);
 }
 
+/* NULL scratch is a programmer error, not a sizing issue — iter_next must
+ * report it as INVALID_PARAM so callers can distinguish it from a buffer
+ * that is merely too small for the current fragment. */
+TEST(test_h264_iterator_null_scratch_returns_invalid_param)
+{
+    uint8_t nalu[16];
+    memset(nalu, 0xBB, sizeof(nalu));
+    nalu[0] = 0x00;
+
+    h264_fragment_iter_t it;
+    ASSERT_OK(h264_fragment_iter_init(&it, nalu, sizeof(nalu), 10));
+
+    const uint8_t *payload = NULL;
+    size_t payload_len = 0;
+    int is_last = 0;
+    int rc = h264_fragment_iter_next(&it, NULL, 1024, &payload, &payload_len, &is_last);
+    ASSERT_EQ(rc, NANORTC_ERR_INVALID_PARAM);
+}
+
 TEST(test_h264_iterator_single_nal_ignores_scratch)
 {
     uint8_t nalu[] = {0x65, 0x01, 0x02, 0x03};
@@ -731,6 +750,7 @@ RUN(test_h264_pack_null_params);
 /* Fragment iterator (zero-copy regression) */
 RUN(test_h264_iterator_zero_copy_writes_in_place);
 RUN(test_h264_iterator_scratch_too_small);
+RUN(test_h264_iterator_null_scratch_returns_invalid_param);
 RUN(test_h264_iterator_single_nal_ignores_scratch);
 /* Depacketizer */
 RUN(test_h264_depkt_single_nal);
