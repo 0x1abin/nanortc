@@ -183,6 +183,16 @@ target_compile_definitions(nanortc PUBLIC
 )
 
 if(NANORTC_CONFIG_FILE)
+    # Resolve relative paths against nanortc's own source tree (the
+    # directory containing this CMakeLists.txt, not the top-level
+    # superproject) so consumers can pass e.g. "tests/iot_profile.h"
+    # without needing the file on the default include search path —
+    # and so the resolution still works when nanortc is pulled in via
+    # add_subdirectory() from a larger project.
+    if(NOT IS_ABSOLUTE "${NANORTC_CONFIG_FILE}"
+       AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${NANORTC_CONFIG_FILE}")
+        set(NANORTC_CONFIG_FILE "${CMAKE_CURRENT_SOURCE_DIR}/${NANORTC_CONFIG_FILE}")
+    endif()
     target_compile_definitions(nanortc PUBLIC NANORTC_CONFIG_FILE="${NANORTC_CONFIG_FILE}")
     message(STATUS "nanortc config file: ${NANORTC_CONFIG_FILE}")
 endif()

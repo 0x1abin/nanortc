@@ -37,7 +37,11 @@ static void test_sizeof_ice(void)
 
 static void test_sizeof_dtls(void)
 {
+#if defined(NANORTC_IOT_PROFILE) && NANORTC_IOT_PROFILE
+    TEST_ASSERT_LESS_OR_EQUAL_size_t(5500, sizeof(nano_dtls_t));
+#else
     TEST_ASSERT_LESS_OR_EQUAL_size_t(7000, sizeof(nano_dtls_t));
+#endif
 }
 
 static void test_sizeof_sdp(void)
@@ -64,7 +68,11 @@ static void test_sizeof_turn(void)
 #if NANORTC_FEATURE_DATACHANNEL
 static void test_sizeof_sctp(void)
 {
+#if defined(NANORTC_IOT_PROFILE) && NANORTC_IOT_PROFILE
+    TEST_ASSERT_LESS_OR_EQUAL_size_t(7500, sizeof(nano_sctp_t));
+#else
     TEST_ASSERT_LESS_OR_EQUAL_size_t(15000, sizeof(nano_sctp_t));
+#endif
 }
 
 static void test_sizeof_dc(void)

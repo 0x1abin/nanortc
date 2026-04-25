@@ -154,10 +154,12 @@ if [ ${#CRYPTO_BACKENDS[@]} -eq 0 ]; then
 fi
 echo "  (crypto backends: ${CRYPTO_BACKENDS[*]})"
 
-# 7 feature combinations (indexed arrays for bash 3.2 compat).
+# 8 feature combinations (indexed arrays for bash 3.2 compat).
 # MEDIA_H265 covers the H.265 sub-feature explicitly since H.265 is opt-in
 # (NANORTC_FEATURE_H265 defaults to OFF, even when VIDEO=ON).
-COMBO_NAMES=(  DATA AUDIO MEDIA MEDIA_H265 AUDIO_ONLY MEDIA_ONLY CORE_ONLY )
+# IOT_DC compiles the DC-only combo with tests/iot_profile.h to lock in the
+# ~8 KB per-instance SCTP+DTLS shrink documented in memory-profiles.md.
+COMBO_NAMES=(  DATA AUDIO MEDIA MEDIA_H265 AUDIO_ONLY MEDIA_ONLY CORE_ONLY IOT_DC )
 COMBO_FLAGS=(
     "-DNANORTC_FEATURE_DATACHANNEL=ON  -DNANORTC_FEATURE_AUDIO=OFF -DNANORTC_FEATURE_VIDEO=OFF"
     "-DNANORTC_FEATURE_DATACHANNEL=ON  -DNANORTC_FEATURE_AUDIO=ON  -DNANORTC_FEATURE_VIDEO=OFF"
@@ -166,6 +168,7 @@ COMBO_FLAGS=(
     "-DNANORTC_FEATURE_DATACHANNEL=OFF -DNANORTC_FEATURE_AUDIO=ON  -DNANORTC_FEATURE_VIDEO=OFF"
     "-DNANORTC_FEATURE_DATACHANNEL=OFF -DNANORTC_FEATURE_AUDIO=ON  -DNANORTC_FEATURE_VIDEO=ON"
     "-DNANORTC_FEATURE_DATACHANNEL=OFF -DNANORTC_FEATURE_AUDIO=OFF -DNANORTC_FEATURE_VIDEO=OFF"
+    "-DNANORTC_FEATURE_DATACHANNEL=ON  -DNANORTC_FEATURE_AUDIO=OFF -DNANORTC_FEATURE_VIDEO=OFF -DNANORTC_CONFIG_FILE=tests/iot_profile.h"
 )
 
 # In --fast mode, only the most representative combos are built. The skipped

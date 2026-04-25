@@ -26,7 +26,7 @@ Each row is a self-contained PR. `PR-1…PR-5` are the recommended landing order
 
 | PR | Topic | Primary files | Risk | Expected win |
 |---|---|---|---|---|
-| **PR-1** | IoT memory profile: SCTP + DTLS buffer shrink | `include/nanortc_config.h`, `src/nano_dtls.h`, `src/nano_sctp.h`, `tests/test_sizeof.c`, `docs/engineering/memory-profiles.md` | Low–medium | ~9 KB per DC instance |
+| **PR-1** | IoT memory profile: SCTP + DTLS buffer shrink **[COMPLETED 2026-04-26]** | `tests/iot_profile.h` (new), `tests/test_sizeof.c`, `scripts/ci-check.sh`, `CMakeLists.txt`, `docs/engineering/memory-profiles.md` | Low–medium | ~8 KB per DC instance (dtls 6400→4864, sctp 13784→7288 on x86_64) |
 | **PR-2** | SCTP connection-failure event propagation | `src/nano_sctp.c`, `src/nano_rtc.c`, `include/nanortc.h` | Low | New `NANORTC_EV_DISCONNECTED` path |
 | **PR-3** | Video `pkt_ring` decoupled from `OUT_QUEUE_SIZE` **[COMPLETED 2026-04-23]** | `include/nanortc.h`, `include/nanortc_config.h`, `Kconfig`, `src/nano_rtc.c`, `tests/test_media.c`, `docs/engineering/memory-profiles.md` | Low | −19 KB at `PKT_RING=16` (host VIDEO profile); −9.6 KB at `PKT_RING=8` (ESP-IDF Kconfig defaults) |
 | **PR-4** | H.264 FU-A zero-copy via fragment iterator **[COMPLETED 2026-04-25]** | `src/nano_h264.h`, `src/nano_h264.c`, `src/nano_rtp.c`, `src/nano_rtc.c`, `tests/test_h264.c`, `tests/test_rtp.c` | Medium (internal API change) | −1200 B stack + 1 memcpy/fragment (~50–100 KB/720p IDR) |
@@ -38,28 +38,23 @@ Each row is a self-contained PR. `PR-1…PR-5` are the recommended landing order
 
 ---
 
-## PR-1 — IoT memory profile (SCTP + DTLS buffer shrink)
+## PR-1 — IoT memory profile (SCTP + DTLS buffer shrink) **[COMPLETED 2026-04-26]**
 
 **Problem.** `NANORTC_SCTP_{SEND,RECV,RECV_GAP}_BUF_SIZE` default to 4096 and `NANORTC_DTLS_BUF_SIZE` to 2048 (× three `nano_dtls_t` buffers = 6 KB). On IoT targets with low-jitter LANs these are oversized.
 
-**Approach.**
-1. Keep default values unchanged (backward compatible).
-2. Document an "IoT profile" override block in `docs/engineering/memory-profiles.md`:
-    ```c
-    #define NANORTC_SCTP_SEND_BUF_SIZE     2048
-    #define NANORTC_SCTP_RECV_BUF_SIZE     2048
-    #define NANORTC_SCTP_RECV_GAP_BUF_SIZE 2048
-    #define NANORTC_SCTP_OUT_QUEUE_SIZE    2
-    #define NANORTC_DTLS_BUF_SIZE          1536
-    ```
-3. Add a new CMake test target `tests/test_iot_profile` that compiles with the IoT overrides and runs the full DC test + interop set — locks in the smaller buffers against regressions.
-4. Tighten `test_sizeof.c` upper bounds only under the IoT profile (not the default).
+**Shipped.**
 
-**Verification.** Full `ci-check.sh` (6 combo × 2 crypto) + `tests/test_iot_profile` + interop under IoT profile.
+1. New `tests/iot_profile.h` defines the override block + identity macro `NANORTC_IOT_PROFILE`. Activated via `-DNANORTC_CONFIG_FILE=tests/iot_profile.h`. Defaults are untouched — zero impact on non-IoT consumers.
+2. `CMakeLists.txt` resolves a relative `NANORTC_CONFIG_FILE` against `CMAKE_CURRENT_SOURCE_DIR` (nanortc's own root) so the lookup still works under `add_subdirectory()`.
+3. `scripts/ci-check.sh` adds an `IOT_DC` combo to the feature matrix that builds + runs the full DC test suite — including the 5 `test_sctp_gap_*` out-of-order reassembly cases — against the halved `recv_gap_buf`.
+4. `tests/test_sizeof.c` gains profile-gated tighter upper bounds (`nano_dtls_t ≤ 5500`, `nano_sctp_t ≤ 7500`) under `NANORTC_IOT_PROFILE`. Loose default bounds unchanged.
+5. `docs/engineering/memory-profiles.md` documents the IoT DC Profile section with activation recipe, measured savings, risk note, and the power-of-two caveat on `NANORTC_SCTP_OUT_QUEUE_SIZE`.
 
-**Risk.** Reducing `recv_gap_buf` below 4 KB impacts scenarios with lots of out-of-order fragments. Must be tested against real jitter (interop test with artificial reorder).
+**Measured saving.** ~8 KB per DC instance on x86_64:
+- `nano_dtls_t` 6400→4864 = −1.5 KB (three buffers each 2048→1536; the original "3 KB DTLS" figure in earlier drafts double-counted the shrink).
+- `nano_sctp_t` 13784→7288 = −6.3 KB (`send_buf` and `recv_gap_buf` each 4096→2048, plus two fewer `out_bufs[NANORTC_SCTP_MTU]` ring slots).
 
-**Expected saving.** ~9 KB per DC instance (6 KB SCTP + 3 KB DTLS).
+**Verification.** Full `./scripts/ci-check.sh`: 8 combos × 2 crypto + ASan + libdatachannel interop all green. The IOT_DC combo specifically exercises the SCTP out-of-order tests against the halved buffers.
 
 **Rollback.** Configuration override only — revert the profile header.
 

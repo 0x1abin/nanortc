@@ -181,6 +181,58 @@ overrides in your `NANORTC_CONFIG_FILE` header:
 #define NANORTC_SDP_BUF_SIZE        1024
 ```
 
+## IoT DC Profile
+
+For IoT DataChannel deployments on low-jitter LANs where smaller SCTP and
+DTLS buffers are acceptable, point `NANORTC_CONFIG_FILE` at
+`tests/iot_profile.h` or copy its overrides into your own config header:
+
+```c
+#define NANORTC_SCTP_SEND_BUF_SIZE     2048
+#define NANORTC_SCTP_RECV_BUF_SIZE     2048
+#define NANORTC_SCTP_RECV_GAP_BUF_SIZE 2048
+#define NANORTC_SCTP_OUT_QUEUE_SIZE    2
+#define NANORTC_DTLS_BUF_SIZE          1536
+```
+
+Activate via CMake:
+
+```sh
+cmake -B build-iot \
+    -DNANORTC_FEATURE_DATACHANNEL=ON \
+    -DNANORTC_FEATURE_AUDIO=OFF \
+    -DNANORTC_FEATURE_VIDEO=OFF \
+    -DNANORTC_CONFIG_FILE=tests/iot_profile.h
+```
+
+Relative paths are resolved against `CMAKE_CURRENT_SOURCE_DIR` of
+nanortc's own top-level `CMakeLists.txt` (i.e. the directory of the
+nanortc repo itself, even when pulled in via `add_subdirectory()` from
+a larger project), so the header need not sit on the default include
+search path.
+
+Measured savings per DC instance on x86_64 (structurally identical on
+ARM32 modulo alignment): `sizeof(nano_dtls_t)` 6400→4864 (−1536 B,
+three buffers 2048→1536 each) and `sizeof(nano_sctp_t)` 13784→7288
+(−6496 B, `send_buf` and `recv_gap_buf` each 4096→2048, plus two
+fewer `out_bufs[NANORTC_SCTP_MTU]` ring slots) — **~8 KB total**.
+
+`NANORTC_SCTP_OUT_QUEUE_SIZE` must remain a power of two — the ring uses a
+bitmask index. `2` is the smallest safe value.
+
+**Risk.** `RECV_GAP_BUF_SIZE=2048` halves the out-of-order reassembly
+payload budget. The 8-slot gap table (`NANORTC_SCTP_MAX_RECV_GAP`) is
+unchanged, so reorder tolerance in slot count is identical — only the
+cumulative bytes buffered while a gap remains unfilled is halved. Adequate
+for typical DC payloads (<512 B each) on LANs with <50 ms reorder windows;
+not recommended on lossy cellular links.
+
+**Locking it in.** `scripts/ci-check.sh` builds and tests an `IOT_DC`
+combo against this profile, and `tests/test_sizeof.c` tightens
+`nano_dtls_t` (≤5500 B) and `nano_sctp_t` (≤7500 B) upper bounds when
+`NANORTC_IOT_PROFILE` is defined. Defaults are unchanged — non-IoT builds
+see no regression.
+
 ## Phase 9 additions (BWE perception)
 
 Already folded into the Configuration Matrix above. Shipping TWCC parsing,
