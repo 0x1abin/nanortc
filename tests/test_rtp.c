@@ -457,6 +457,77 @@ TEST(test_rtp_unpack_skips_twcc_extension)
     ASSERT_MEM_EQ(pl, original, sizeof(original));
 }
 
+/* Zero-copy fast path: when the caller has already staged the payload at
+ * `buf + rtp_header_len`, rtp_pack() must skip its internal payload memcpy
+ * (pointer-identity guard) and still produce a byte-identical packet. This
+ * is the optimization that makes the H.264 FU-A zero-copy path save a
+ * memcpy per fragment — without this guard, passing `buf + 12` as payload
+ * would memcpy into itself with overlapping memcpy (UB). */
+TEST(test_rtp_pack_inplace_payload_equals_copy_payload)
+{
+    const uint8_t payload[] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88};
+    uint8_t buf_copy[64];
+    uint8_t buf_inplace[64];
+    memset(buf_copy, 0, sizeof(buf_copy));
+    memset(buf_inplace, 0, sizeof(buf_inplace));
+
+    /* Reference path: payload in a separate buffer, rtp_pack memcpys. */
+    nano_rtp_t rtp_a;
+    rtp_init(&rtp_a, 0xDEADBEEF, 96);
+    rtp_a.seq = 42;
+    size_t out_a = 0;
+    ASSERT_OK(rtp_pack(&rtp_a, 0xCAFEBABE, payload, sizeof(payload), buf_copy, sizeof(buf_copy),
+                       &out_a));
+
+    /* In-place path: pre-stage payload at buf + 12 (the RTP body offset
+     * without TWCC) and pass that same pointer to rtp_pack. */
+    nano_rtp_t rtp_b;
+    rtp_init(&rtp_b, 0xDEADBEEF, 96);
+    rtp_b.seq = 42;
+    memcpy(buf_inplace + RTP_HEADER_SIZE, payload, sizeof(payload));
+    size_t out_b = 0;
+    ASSERT_OK(rtp_pack(&rtp_b, 0xCAFEBABE, buf_inplace + RTP_HEADER_SIZE, sizeof(payload),
+                       buf_inplace, sizeof(buf_inplace), &out_b));
+
+    ASSERT_EQ(out_a, out_b);
+    ASSERT_MEM_EQ(buf_copy, buf_inplace, out_a);
+}
+
+TEST(test_rtp_pack_inplace_with_twcc_extension)
+{
+    /* TWCC shifts the payload offset from 12 to 20 (RTP_TWCC_EXT_OVERHEAD).
+     * The in-place pointer must match that new offset for the guard to
+     * fire; otherwise we'd silently fall back to a memcpy (still correct,
+     * but the performance claim of the PR would regress). */
+    const uint8_t payload[] = {0xAA, 0xBB, 0xCC, 0xDD};
+    uint8_t buf_copy[64];
+    uint8_t buf_inplace[64];
+    memset(buf_copy, 0, sizeof(buf_copy));
+    memset(buf_inplace, 0, sizeof(buf_inplace));
+
+    nano_rtp_t rtp_a;
+    rtp_init(&rtp_a, 0x1234, 111);
+    rtp_a.seq = 7;
+    rtp_a.twcc_ext_id = 3;
+    rtp_a.twcc_seq = 500;
+    size_t out_a = 0;
+    ASSERT_OK(rtp_pack(&rtp_a, 0x99, payload, sizeof(payload), buf_copy, sizeof(buf_copy), &out_a));
+
+    nano_rtp_t rtp_b;
+    rtp_init(&rtp_b, 0x1234, 111);
+    rtp_b.seq = 7;
+    rtp_b.twcc_ext_id = 3;
+    rtp_b.twcc_seq = 500;
+    size_t off = RTP_HEADER_SIZE + RTP_TWCC_EXT_OVERHEAD;
+    memcpy(buf_inplace + off, payload, sizeof(payload));
+    size_t out_b = 0;
+    ASSERT_OK(rtp_pack(&rtp_b, 0x99, buf_inplace + off, sizeof(payload), buf_inplace,
+                       sizeof(buf_inplace), &out_b));
+
+    ASSERT_EQ(out_a, out_b);
+    ASSERT_MEM_EQ(buf_copy, buf_inplace, out_a);
+}
+
 /* ---- Runner ---- */
 
 TEST_MAIN_BEGIN("RTP tests")
@@ -479,4 +550,7 @@ RUN(test_rtp_pack_no_twcc_when_id_zero);
 RUN(test_rtp_pack_twcc_rejects_invalid_id);
 RUN(test_rtp_pack_twcc_seq_increments_per_packet);
 RUN(test_rtp_unpack_skips_twcc_extension);
+/* Zero-copy payload fast path (PR-4) */
+RUN(test_rtp_pack_inplace_payload_equals_copy_payload);
+RUN(test_rtp_pack_inplace_with_twcc_extension);
 TEST_MAIN_END

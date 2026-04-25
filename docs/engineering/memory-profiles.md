@@ -45,6 +45,7 @@ generous host defaults:
 | `NANORTC_SCTP_MAX_SEND_QUEUE` | 16 | 4 |
 | `NANORTC_SCTP_MAX_RECV_GAP` | 8 | 4 |
 | `NANORTC_OUT_QUEUE_SIZE` | 32 | 8 (audio/DC), 16 (video) |
+| `NANORTC_VIDEO_PKT_RING_SIZE` | inherits `NANORTC_OUT_QUEUE_SIZE` | inherits `NANORTC_OUT_QUEUE_SIZE` |
 | `NANORTC_MEDIA_BUF_SIZE` | 1232 (formula) | 1232 (fixed; `#error` guards `< MTU + 30`) |
 | `NANORTC_VIDEO_NAL_BUF_SIZE` | 16384 | 8192 |
 | `NANORTC_JITTER_SLOTS` | 32 | 16 |
@@ -62,7 +63,7 @@ high-jitter cellular, large SDPs), raise the knob you care about.
 |---|---|---|
 | Jitter buffer (per audio track) | ~11 KB host / ~2.8 KB Kconfig | `NANORTC_JITTER_SLOTS`, `NANORTC_JITTER_SLOT_DATA_SIZE` |
 | H.264 NAL reassembly (per video track) | 16 KB host / 8 KB Kconfig | `NANORTC_VIDEO_NAL_BUF_SIZE` |
-| Video packet ring | 39 KB host / ~20 KB Kconfig | `NANORTC_OUT_QUEUE_SIZE` × `NANORTC_MEDIA_BUF_SIZE` |
+| Video packet ring (NACK retransmit window) | 39 KB host / ~20 KB Kconfig | `NANORTC_VIDEO_PKT_RING_SIZE` × `NANORTC_MEDIA_BUF_SIZE` |
 | SCTP send + recv + gap buffers | ~12 KB host / ~6 KB Kconfig | `NANORTC_SCTP_SEND_BUF_SIZE`, `NANORTC_SCTP_RECV_BUF_SIZE`, `NANORTC_SCTP_RECV_GAP_BUF_SIZE` |
 | DTLS buffers (3 × `NANORTC_DTLS_BUF_SIZE`) | 6 KB host / 4.5 KB Kconfig | `NANORTC_DTLS_BUF_SIZE` |
 | Shared STUN/RTCP/RTP scratch | 256 B (DC-only) / 1232 B (media) | `NANORTC_STUN_BUF_SIZE` (feature-gated — see below) |
@@ -74,6 +75,61 @@ high-jitter cellular, large SDPs), raise the knob you care about.
 `#error` in `nanortc_config.h`. Default 1232 leaves 2 B headroom;
 `examples/esp32_{video,camera}/sdkconfig.defaults` raise it to 1280 to
 reserve room for additional RTP header extensions.
+
+### Video NACK ring — tunable independently of the output queue
+
+Since Phase 8 PR-3, `NANORTC_VIDEO_PKT_RING_SIZE` sizes the NACK retransmit
+ring independently from `NANORTC_OUT_QUEUE_SIZE`. Default inherits
+`NANORTC_OUT_QUEUE_SIZE` to keep existing builds byte-identical. On IoT /
+LAN deployments with low packet loss and short retransmit windows,
+override to a smaller power of two:
+
+```c
+/* Saving is (OUT_QUEUE_SIZE - PKT_RING_SIZE) × MEDIA_BUF_SIZE.
+ * Against the host default OUT_QUEUE_SIZE=32 at MEDIA_BUF_SIZE=1232,
+ * PKT_RING_SIZE=16 saves ~19 KB. Against the ESP-IDF Kconfig default
+ * OUT_QUEUE_SIZE=16 (video), PKT_RING_SIZE=8 saves ~9.6 KB. */
+#define NANORTC_VIDEO_PKT_RING_SIZE 16
+```
+
+#### Hard sizing rule — not just a drain hint
+
+`out_queue[].transmit.data` stores a *pointer* into `pkt_ring[]`, and
+`nanortc_send_video()` invokes the SRTP/RTP packetizer callback for every
+FU-A fragment of a single access unit before returning to the caller —
+the application has no opportunity to drain in between. Wrapping
+`pkt_ring_tail` while earlier-fragment pointers are still pending in
+`out_queue` silently overwrites their backing buffers; the receiver sees
+the newer fragment's bytes carrying the older fragment's RTP sequence
+number, and decoders typically present this as glitched IDRs.
+
+Therefore:
+
+```
+NANORTC_VIDEO_PKT_RING_SIZE >= ceil(max_frame_bytes / NANORTC_VIDEO_MTU) + 1
+```
+
+Worked numbers at the default `NANORTC_VIDEO_MTU = 1200`:
+
+| Video profile (H.264) | Worst-case IDR | Min `PKT_RING_SIZE` | Round to |
+|---|---|---|---|
+| 480p, target ≤ 1 Mbps   | ~10 KB | 9  | 16 |
+| 720p, target ≤ 4 Mbps   | ~30 KB | 26 | 32 |
+| 1080p, target ≤ 8 Mbps  | ~60 KB | 51 | 64 |
+
+Compile-time guards (`#error`) only enforce `power-of-two && >= 4`; the
+per-frame bound depends on the encoder's IDR rate-control target and so
+must be sized by the integrator. The runtime emits
+`NANORTC_LOGW("RTC", "pkt_ring overrun ...")` and bumps
+`nanortc_t.stats_pkt_ring_overrun` whenever the ring would wrap before
+the caller has drained the prior wave — wire that counter into your
+integration smoke tests to catch under-sizing before it reaches the wire.
+
+NACK history depth, in packets, is `PKT_RING_SIZE`. The wall-clock
+window depends on stream bitrate and packets-per-frame: at 30 fps a
+single-NAL 480p stream gives roughly 500 ms with `PKT_RING_SIZE=16`,
+but the same setting on a 720p stream that emits ~26 packets per IDR
+covers under 100 ms across IDR boundaries.
 
 ### Shared scratch buffer — feature-gated default
 

@@ -16,77 +16,121 @@
  * Packetizer — Single NAL / FU-A (RFC 6184 §5.6, §5.8)
  * ================================================================ */
 
-int h264_packetize(const uint8_t *nalu, size_t nalu_len, size_t mtu, h264_packet_cb cb,
-                   void *userdata)
+int h264_fragment_iter_init(h264_fragment_iter_t *it, const uint8_t *nalu, size_t nalu_len,
+                            size_t mtu)
 {
-    if (!nalu || nalu_len == 0 || mtu < H264_FUA_HEADER_SIZE + 1 || !cb) {
+    if (!it || !nalu || nalu_len == 0 || mtu < H264_FUA_HEADER_SIZE + 1) {
+        return NANORTC_ERR_INVALID_PARAM;
+    }
+    memset(it, 0, sizeof(*it));
+    it->nalu = nalu;
+    it->nalu_len = nalu_len;
+    it->mtu = mtu;
+
+    if (nalu_len <= mtu) {
+        /* Single NAL Unit mode (RFC 6184 §5.6). */
+        it->single_nal = 1;
+        return NANORTC_OK;
+    }
+
+    /* FU-A fragmentation (RFC 6184 §5.8) — precompute the parts that stay
+     * constant across every fragment. */
+    uint8_t nal_header = nalu[0];
+    uint8_t nri = nal_header & H264_NAL_REF_IDC_MASK;
+    it->nal_type = nal_header & H264_NAL_TYPE_MASK;
+    it->fu_indicator = nri | H264_NAL_FUA; /* F=0, NRI from original, Type=28 */
+    it->data = nalu + 1;                   /* skip original NAL header byte */
+    it->remaining = nalu_len - 1;
+    it->max_frag = mtu - H264_FUA_HEADER_SIZE;
+    return NANORTC_OK;
+}
+
+int h264_fragment_iter_has_next(const h264_fragment_iter_t *it)
+{
+    if (!it || it->done) {
+        return 0;
+    }
+    return it->single_nal || it->remaining > 0;
+}
+
+int h264_fragment_iter_next(h264_fragment_iter_t *it, uint8_t *scratch, size_t scratch_len,
+                            const uint8_t **payload_out, size_t *payload_len_out, int *is_last_out)
+{
+    if (!it || !payload_out || !payload_len_out || !is_last_out || it->done) {
         return NANORTC_ERR_INVALID_PARAM;
     }
 
-    /* Single NAL Unit mode (RFC 6184 §5.6): NAL fits in one RTP packet */
-    if (nalu_len <= mtu) {
-        return cb(nalu, nalu_len, 1 /* marker: last packet */, userdata);
+    if (it->single_nal) {
+        *payload_out = it->nalu;
+        *payload_len_out = it->nalu_len;
+        *is_last_out = 1;
+        it->done = 1;
+        return NANORTC_OK;
     }
 
-    /* FU-A fragmentation (RFC 6184 §5.8) */
-    uint8_t nal_header = nalu[0];
-    uint8_t nri = nal_header & H264_NAL_REF_IDC_MASK;   /* NRI bits */
-    uint8_t nal_type = nal_header & H264_NAL_TYPE_MASK; /* NAL unit type */
+    if (it->remaining == 0) {
+        return NANORTC_ERR_INVALID_PARAM; /* exhausted */
+    }
 
-    /* FU indicator: F=0, NRI from original, Type=28 (FU-A) */
-    uint8_t fu_indicator = nri | H264_NAL_FUA;
+    if (!scratch) {
+        return NANORTC_ERR_INVALID_PARAM;
+    }
+    size_t frag_len = it->remaining < it->max_frag ? it->remaining : it->max_frag;
+    if (scratch_len < H264_FUA_HEADER_SIZE + frag_len) {
+        return NANORTC_ERR_BUFFER_TOO_SMALL;
+    }
 
-    /* Skip the first NAL header byte — it's reconstructed from FU indicator + FU header */
-    const uint8_t *data = nalu + 1;
-    size_t remaining = nalu_len - 1;
-    size_t max_frag = mtu - H264_FUA_HEADER_SIZE;
+    uint8_t fu_header = it->nal_type;
+    if (it->data == it->nalu + 1) {
+        fu_header |= H264_FUA_S_BIT; /* first fragment */
+    }
+    int is_last = (it->remaining == frag_len);
+    if (is_last) {
+        fu_header |= H264_FUA_E_BIT;
+    }
 
-    while (remaining > 0) {
-        size_t frag_len = remaining < max_frag ? remaining : max_frag;
-        uint8_t fu_header = nal_type;
+    scratch[0] = it->fu_indicator;
+    scratch[1] = fu_header;
+    memcpy(scratch + H264_FUA_HEADER_SIZE, it->data, frag_len);
 
-        if (data == nalu + 1) {
-            /* First fragment: set Start bit (RFC 6184 §5.8) */
-            fu_header |= H264_FUA_S_BIT;
+    *payload_out = scratch;
+    *payload_len_out = H264_FUA_HEADER_SIZE + frag_len;
+    *is_last_out = is_last;
+
+    it->data += frag_len;
+    it->remaining -= frag_len;
+    if (is_last) {
+        it->done = 1;
+    }
+    return NANORTC_OK;
+}
+
+int h264_packetize(const uint8_t *nalu, size_t nalu_len, size_t mtu, uint8_t *scratch,
+                   size_t scratch_len, h264_packet_cb cb, void *userdata)
+{
+    if (!cb) {
+        return NANORTC_ERR_INVALID_PARAM;
+    }
+
+    h264_fragment_iter_t it;
+    int rc = h264_fragment_iter_init(&it, nalu, nalu_len, mtu);
+    if (rc != NANORTC_OK) {
+        return rc;
+    }
+
+    while (h264_fragment_iter_has_next(&it)) {
+        const uint8_t *payload = NULL;
+        size_t payload_len = 0;
+        int is_last = 0;
+        rc = h264_fragment_iter_next(&it, scratch, scratch_len, &payload, &payload_len, &is_last);
+        if (rc != NANORTC_OK) {
+            return rc;
         }
-        if (remaining == frag_len) {
-            /* Last fragment: set End bit */
-            fu_header |= H264_FUA_E_BIT;
-        }
-
-        /* Build FU-A payload: [FU indicator][FU header][fragment data]
-         * We need a contiguous buffer. Use a stack-local header + callback
-         * with the fragment data. To avoid requiring a scratch buffer for
-         * the full payload, we build a small header and rely on the callback
-         * being able to handle a 2-part payload. However, our API specifies
-         * a single contiguous payload, so we must provide one.
-         *
-         * Since the caller's media_buf is large enough (NANORTC_MEDIA_BUF_SIZE),
-         * and the callback will copy into an RTP packet, we can use a small
-         * stack buffer for the FU-A header and pass the original data pointer.
-         *
-         * Alternative: build the payload in a stack buffer up to MTU size.
-         * MTU is typically 1200, which is safe for stack. */
-        uint8_t pkt[NANORTC_VIDEO_MTU];
-        if (H264_FUA_HEADER_SIZE + frag_len > sizeof(pkt)) {
-            /* Safety: should not happen if mtu <= NANORTC_VIDEO_MTU */
-            return NANORTC_ERR_BUFFER_TOO_SMALL;
-        }
-
-        pkt[0] = fu_indicator;
-        pkt[1] = fu_header;
-        memcpy(pkt + H264_FUA_HEADER_SIZE, data, frag_len);
-
-        int marker = (remaining == frag_len) ? 1 : 0;
-        int rc = cb(pkt, H264_FUA_HEADER_SIZE + frag_len, marker, userdata);
+        rc = cb(payload, payload_len, is_last, userdata);
         if (rc != 0) {
             return rc;
         }
-
-        data += frag_len;
-        remaining -= frag_len;
     }
-
     return NANORTC_OK;
 }
 
