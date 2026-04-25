@@ -2806,6 +2806,18 @@ static int rtc_send_video(nanortc_t *rtc, nanortc_track_t *m, uint32_t timestamp
         return rc;
     }
 
+    /* Zero-copy scratch offset: RTP header (12 B) + optional TWCC ext (8 B).
+     * Constant for the whole call — m->rtp.twcc_ext_id is fixed for this
+     * track, so hoist out of the per-fragment loop. The iterator writes
+     * the FU-A payload directly at pkt_buf + off; rtp_pack() then writes
+     * the RTP header in the leading bytes and detects payload == pkt_buf
+     * + off as a no-op. */
+    bool has_twcc = (m->rtp.twcc_ext_id != 0 && m->rtp.twcc_ext_id <= 14);
+    size_t off = (size_t)RTP_HEADER_SIZE + (has_twcc ? (size_t)RTP_TWCC_EXT_OVERHEAD : 0);
+    if (off >= NANORTC_MEDIA_BUF_SIZE) {
+        return NANORTC_ERR_BUFFER_TOO_SMALL;
+    }
+
     while (h264_fragment_iter_has_next(&it)) {
         /* pkt_ring slot selection (see the comment block in PR-3 for the
          * aliasing invariant). One slot is consumed per fragment emitted,
@@ -2818,16 +2830,6 @@ static int rtc_send_video(nanortc_t *rtc, nanortc_track_t *m, uint32_t timestamp
         }
         uint16_t pslot = rtc->pkt_ring_tail & (NANORTC_VIDEO_PKT_RING_SIZE - 1);
         uint8_t *pkt_buf = rtc->pkt_ring[pslot];
-
-        /* Zero-copy scratch: the RTP header is 12 bytes without TWCC, 20 with.
-         * The iterator writes the FU-A payload directly at pkt_buf + off;
-         * rtp_pack() then writes the RTP header (plus optional TWCC) in the
-         * leading bytes and detects payload == pkt_buf + off as a no-op. */
-        bool has_twcc = (m->rtp.twcc_ext_id != 0 && m->rtp.twcc_ext_id <= 14);
-        size_t off = (size_t)RTP_HEADER_SIZE + (has_twcc ? (size_t)RTP_TWCC_EXT_OVERHEAD : 0);
-        if (off >= NANORTC_MEDIA_BUF_SIZE) {
-            return NANORTC_ERR_BUFFER_TOO_SMALL;
-        }
 
         const uint8_t *payload = NULL;
         size_t payload_len = 0;
