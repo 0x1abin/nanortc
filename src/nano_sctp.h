@@ -140,6 +140,14 @@ typedef enum {
 typedef struct nano_sctp {
     nano_sctp_state_t state;
 
+    /* Set true exactly once when nsctp_handle_timeout() transitions state
+     * to CLOSED due to retransmit exhaustion (RFC 4960 §6.3.3 Path.Max.Retrans).
+     * The RTC poll layer reads and clears this flag to emit
+     * NANORTC_EV_DISCONNECTED, mirroring the ICE failure path. Peer-ABORT
+     * and init-time CLOSED paths do NOT set this — they have separate
+     * upper-layer signaling channels. */
+    bool closed_due_to_failure;
+
     /* Association identifiers */
     uint32_t local_vtag;
     uint32_t remote_vtag;

@@ -1979,6 +1979,24 @@ static int rtc_process_timers(nanortc_t *rtc, uint32_t now_ms)
         /* Pump any SCTP output (retransmits, heartbeats, pending DATA) through DTLS */
         rtc_pump_sctp_through_dtls(rtc, &rtc->remote_addr);
     }
+
+    /* SCTP retransmit exhaustion → emit DISCONNECTED. Mirrors the ICE
+     * failure path (lines 1744-1758): nsctp_handle_timeout() flips state
+     * to CLOSED but cannot reach the event queue. Check the flag outside
+     * the ESTABLISHED guard above — once the timeout fires, that guard
+     * becomes false on the next tick and we'd otherwise lose the signal.
+     * Clear on read so the event fires exactly once. */
+    if (rtc->sctp.closed_due_to_failure) {
+        rtc->sctp.closed_due_to_failure = false;
+        if (rtc->state == NANORTC_STATE_CONNECTED) {
+            nanortc_event_t fdev;
+            memset(&fdev, 0, sizeof(fdev));
+            fdev.type = NANORTC_EV_DISCONNECTED;
+            rtc_emit_event_full(rtc, &fdev);
+            rtc->state = NANORTC_STATE_CLOSED;
+            NANORTC_LOGW("RTC", "SCTP retransmit exhaustion → DISCONNECTED");
+        }
+    }
 #endif
 
 #if NANORTC_HAVE_MEDIA_TRANSPORT
