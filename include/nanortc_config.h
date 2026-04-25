@@ -583,11 +583,18 @@
 /* NACK retransmit ring: one SRTP-protected packet buffer per slot. Sized
  * independently from OUT_QUEUE_SIZE so IoT targets can shrink the NACK
  * window without starving the output dispatch queue. Must be a power of 2
- * and >= 4. Caller must drain nanortc_poll_output() each tick — if more
- * than PKT_RING_SIZE video fragments are produced in one tick without a
- * drain, older slots will be overwritten while still referenced by
- * out_queue entries. Default matches OUT_QUEUE_SIZE for backward compat;
- * override to 16 on IoT / LAN deployments to save ~19 KB per instance. */
+ * and >= 4. Hard sizing rule: nanortc_send_video() emits every FU-A
+ * fragment of one access unit before returning, so the caller cannot
+ * drain mid-frame. PKT_RING_SIZE must be >=
+ *   ceil(max_frame_bytes / NANORTC_VIDEO_MTU) + 1
+ * for the worst expected access unit (typ. IDR). Wrapping the ring while
+ * out_queue[].transmit.data still references older slots silently
+ * corrupts the outbound bytes (stats_pkt_ring_overrun + a NANORTC_LOGW
+ * fire when this happens — surfaces in integration tests rather than as
+ * glitched IDRs). Default matches OUT_QUEUE_SIZE for backward compat;
+ * shrinking saves
+ *   (NANORTC_OUT_QUEUE_SIZE - NANORTC_VIDEO_PKT_RING_SIZE) *
+ *   NANORTC_MEDIA_BUF_SIZE bytes per instance. */
 #ifndef NANORTC_VIDEO_PKT_RING_SIZE
 #define NANORTC_VIDEO_PKT_RING_SIZE NANORTC_OUT_QUEUE_SIZE
 #endif

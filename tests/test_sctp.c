@@ -1325,6 +1325,95 @@ TEST(test_sctp_gap_fill_chain)
 }
 
 /* ================================================================
+ * Connection-failure event propagation (Phase 8 PR-2)
+ * ================================================================ */
+
+#if NANORTC_FEATURE_DC_RELIABLE
+TEST(test_sctp_timeout_sets_closed_flag)
+{
+    /* Drive nsctp_handle_timeout through the full RTO ramp until
+     * retransmit_count hits NANORTC_SCTP_MAX_RETRANSMITS, which transitions
+     * SCTP to CLOSED and sets closed_due_to_failure for the RTC layer to
+     * pick up. */
+    nano_sctp_t sctp;
+    setup_established_sctp(&sctp);
+    sctp.next_tsn = 1;
+    ASSERT_FALSE(sctp.closed_due_to_failure);
+
+    /* Enqueue and drain one DATA — drains nsctp_poll_output once which sets
+     * the entry's in_flight=true. We deliberately never deliver the packet
+     * to a peer, so SACK never arrives and retransmit timer keeps firing. */
+    const uint8_t payload[] = "ping";
+    ASSERT_OK(nsctp_send(&sctp, 0, 53, payload, sizeof(payload) - 1));
+
+    uint8_t buf[NANORTC_SCTP_MTU];
+    size_t out_len = 0;
+    ASSERT_OK(nsctp_poll_output(&sctp, buf, sizeof(buf), &out_len));
+    ASSERT_TRUE(out_len > 0);
+
+    /* RTO ramp: starts at RTO_INITIAL, doubles per retx, caps at RTO_MAX.
+     * Each iteration: timeout marks entry stale (in_flight=false, count++,
+     * rto*=2), then poll_output drains any queued packets including the
+     * re-armed DATA (in_flight=true again). After MAX_RETRANSMITS loops
+     * the next timeout trips the threshold check. */
+    uint32_t now = 0;
+    uint32_t rto = NANORTC_SCTP_RTO_INITIAL_MS;
+    for (int i = 0; i < NANORTC_SCTP_MAX_RETRANSMITS; i++) {
+        now += rto;
+        int rc = nsctp_handle_timeout(&sctp, now);
+        ASSERT_EQ(rc, NANORTC_OK);
+        ASSERT_EQ(sctp.state, NANORTC_SCTP_STATE_ESTABLISHED);
+        ASSERT_FALSE(sctp.closed_due_to_failure);
+
+        /* Drain any queued packets — HEARTBEAT once t>=30s, plus the
+         * re-armed DATA. Loop until empty so the entry is in_flight=true
+         * before the next timeout. */
+        do {
+            out_len = 0;
+            (void)nsctp_poll_output(&sctp, buf, sizeof(buf), &out_len);
+        } while (out_len > 0);
+
+        rto *= 2;
+        if (rto > NANORTC_SCTP_RTO_MAX_MS) {
+            rto = NANORTC_SCTP_RTO_MAX_MS;
+        }
+    }
+
+    /* (MAX_RETRANSMITS+1)-th timeout call — retransmit_count is at MAX,
+     * threshold check trips: state=CLOSED, flag=true, returns ERR_PROTOCOL. */
+    now += rto;
+    int rc = nsctp_handle_timeout(&sctp, now);
+    ASSERT_EQ(rc, NANORTC_ERR_PROTOCOL);
+    ASSERT_EQ(sctp.state, NANORTC_SCTP_STATE_CLOSED);
+    ASSERT_TRUE(sctp.closed_due_to_failure);
+}
+#endif /* NANORTC_FEATURE_DC_RELIABLE */
+
+TEST(test_sctp_abort_does_not_set_failure_flag)
+{
+    /* Regression guard: peer-ABORT-induced CLOSED must NOT set the flag.
+     * The flag is reserved for local retransmit exhaustion only — ABORT
+     * has separate upper-layer signaling channels. */
+    nano_sctp_t sctp;
+    setup_established_sctp(&sctp);
+    ASSERT_FALSE(sctp.closed_due_to_failure);
+
+    /* Build ABORT chunk and feed via handle_data (mirrors test_handle_data_abort) */
+    uint8_t pkt[32];
+    memset(pkt, 0, sizeof(pkt));
+    size_t pos = nsctp_encode_header(pkt, 5000, 5000, sctp.local_vtag);
+    pkt[pos] = SCTP_CHUNK_ABORT;
+    pkt[pos + 1] = 0;
+    *(uint16_t *)(pkt + pos + 2) = nanortc_htons(4);
+    pos += 4;
+    nsctp_finalize_checksum(pkt, pos);
+
+    ASSERT_OK(nsctp_handle_data(&sctp, pkt, pos));
+    ASSERT_EQ(sctp.state, NANORTC_SCTP_STATE_CLOSED);
+    ASSERT_FALSE(sctp.closed_due_to_failure);
+}
+
+/* ================================================================
  * Test runner
  * ================================================================ */
 
@@ -1392,5 +1481,10 @@ RUN(test_sctp_gap_duplicate);
 RUN(test_sctp_gap_overflow);
 RUN(test_sctp_sack_with_gaps);
 RUN(test_sctp_gap_fill_chain);
+/* Connection-failure event propagation (Phase 8 PR-2) */
+#if NANORTC_FEATURE_DC_RELIABLE
+RUN(test_sctp_timeout_sets_closed_flag);
+#endif
+RUN(test_sctp_abort_does_not_set_failure_flag);
 TEST_MAIN_END
 #endif /* NANORTC_FEATURE_DATACHANNEL */

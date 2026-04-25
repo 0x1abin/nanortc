@@ -173,9 +173,9 @@ menu "NanoRTC Configuration"
               480p   H.264 ~10 KB IDR  ->  >=  9, round to 16
               720p   H.264 ~30 KB IDR  ->  >= 26, round to 32
               1080p  H.264 ~60 KB IDR  ->  >= 51, round to 64
-            Set the runtime overrun counter via stats_pkt_ring_overrun
-            (incremented + warned in NANORTC_LOGW) to catch under-sizing
-            in integration testing before it reaches the wire.
+            Monitor stats_pkt_ring_overrun (incremented internally and
+            paired with a NANORTC_LOGW) to catch under-sizing in
+            integration testing before it reaches the wire.
 
     config NANORTC_MEDIA_BUF_SIZE
         int "Media scratch buffer size (bytes)"

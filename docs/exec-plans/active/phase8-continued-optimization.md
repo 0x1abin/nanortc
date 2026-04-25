@@ -29,7 +29,7 @@ Each row is a self-contained PR. `PR-1…PR-5` are the recommended landing order
 | **PR-1** | IoT memory profile: SCTP + DTLS buffer shrink | `include/nanortc_config.h`, `src/nano_dtls.h`, `src/nano_sctp.h`, `tests/test_sizeof.c`, `docs/engineering/memory-profiles.md` | Low–medium | ~9 KB per DC instance |
 | **PR-2** | SCTP connection-failure event propagation | `src/nano_sctp.c`, `src/nano_rtc.c`, `include/nanortc.h` | Low | New `NANORTC_EV_DISCONNECTED` path |
 | **PR-3** | Video `pkt_ring` decoupled from `OUT_QUEUE_SIZE` **[COMPLETED 2026-04-23]** | `include/nanortc.h`, `include/nanortc_config.h`, `Kconfig`, `src/nano_rtc.c`, `tests/test_media.c`, `docs/engineering/memory-profiles.md` | Low | −19 KB at `PKT_RING=16` (host VIDEO profile); −9.6 KB at `PKT_RING=8` (ESP-IDF Kconfig defaults) |
-| **PR-4** | H.264 FU-A caller-provided scratch (zero-copy) | `src/nano_h264.h`, `src/nano_h264.c`, `src/nano_rtc.c`, `tests/test_h264.c` | Medium (internal API change) | −1200 B stack + 1 memcpy/fragment |
+| **PR-4** | H.264 FU-A zero-copy via fragment iterator **[COMPLETED 2026-04-25]** | `src/nano_h264.h`, `src/nano_h264.c`, `src/nano_rtp.c`, `src/nano_rtc.c`, `tests/test_h264.c`, `tests/test_rtp.c` | Medium (internal API change) | −1200 B stack + 1 memcpy/fragment (~50–100 KB/720p IDR) |
 | **PR-5** | ICE CONTROLLING: per-pair pending transaction table | `src/nano_ice.h`, `src/nano_ice.c`, `tests/test_ice.c`, `examples/browser_interop` | Medium (state machine edit) | Unblocks nanortc-as-offerer against real browsers |
 | **P2-A** | Remove SCTP `out_bufs[]` double-buffer | `src/nano_sctp.{h,c}` | **High** (touches every state transition) | −2.4…4.8 KB + 1 memcpy/pkt |
 | **P2-B** | Crypto v-table LTO / `__attribute__((hot))` | `CMakeLists.txt`, `crypto/**` | Low | ~3–5% SRTP CPU |
@@ -65,21 +65,23 @@ Each row is a self-contained PR. `PR-1…PR-5` are the recommended landing order
 
 ---
 
-## PR-2 — SCTP connection-failure event propagation
+## PR-2 — SCTP connection-failure event propagation **[COMPLETED 2026-04-25]**
 
 **Problem.** When `nsctp_handle_timeout` exceeds `NANORTC_SCTP_MAX_RETRANSMITS`, it transitions the SCTP state to `CLOSED` but does not notify the upper layer. Applications only learn about the loss on the next `nanortc_datachannel_send()` failure. This is a silent stall from the app's point of view.
 
-**Approach.**
-1. Add `bool closed_due_to_failure` to `nano_sctp_t`.
-2. `nsctp_handle_timeout()` sets the flag at the same moment it transitions state to `CLOSED`.
-3. After `nsctp_handle_timeout()` in `nano_rtc.c`'s timer processing, check the flag: if set and the RTC was previously `NANORTC_STATE_CONNECTED`, emit `NANORTC_EV_DISCONNECTED` (existing event type) and transition the RTC state to `NANORTC_STATE_CLOSED`.
-4. Add a regression test in `tests/test_sctp.c` that stubs a non-responding peer and asserts the event fires after `NANORTC_SCTP_RTO_MAX_MS * NANORTC_SCTP_MAX_RETRANSMITS` elapsed time.
+**Shipped.**
 
-**Verification.** `test_sctp` + `test_e2e` + interop.
+1. New `closed_due_to_failure` flag on `nano_sctp_t` (`src/nano_sctp.h`), set exactly once in `nsctp_handle_timeout()` when retransmit exhaustion trips the CLOSED transition (`src/nano_sctp.c`). Init-time CLOSED and peer-ABORT-induced CLOSED deliberately do **not** set the flag — they have separate signaling channels (rationale recorded inline in the header comment).
+2. RTC poll layer reads and clears the flag in `rtc_process_timers` (`src/nano_rtc.c`), then emits `NANORTC_EV_DISCONNECTED` and transitions `nanortc_t.state` to `NANORTC_STATE_CLOSED`. Mirrors the existing ICE-failure / consent-expiry paths. Critical detail: emit block is placed **outside** the `if (sctp.state == ESTABLISHED)` guard — once timeout flips state to CLOSED, that guard goes false and the signal would otherwise be lost.
+3. Two regression tests in `tests/test_sctp.c`:
+   - `test_sctp_timeout_sets_closed_flag` (under `#if NANORTC_FEATURE_DC_RELIABLE`) — drives the full RTO ramp (1000 → 2000 → 4000 → 8000 → 10000 capped) through `MAX_RETRANSMITS` cycles of `nsctp_handle_timeout()` + `nsctp_poll_output()`, asserts CLOSED + flag on the threshold-trip iteration.
+   - `test_sctp_abort_does_not_set_failure_flag` — scope guard ensuring peer ABORT does not regress into the failure flag.
 
-**Risk.** Low — purely additive. Existing apps continue to work unchanged.
+**Verification.** Full `ctest` (test_sctp 56/56 with DC_RELIABLE=ON, 55/55 with DC_RELIABLE=OFF), `scripts/ci-check.sh --fast` (15/15 incl. ASan + ICE_SRFLX=OFF combo + format check), and full feature-flag matrix via DC_RELIABLE toggle.
 
-**Rollback.** Revert.
+**Risk realised.** Low. Existing tests untouched; new flag is one-shot, so no observable behavior change unless a real timeout actually happens. The single non-obvious point — emit block outside the ESTABLISHED guard — is documented inline.
+
+**Rollback.** Revert the four changed files: `src/nano_sctp.h`, `src/nano_sctp.c`, `src/nano_rtc.c`, `tests/test_sctp.c`.
 
 ---
 
@@ -99,8 +101,8 @@ Each row is a self-contained PR. `PR-1…PR-5` are the recommended landing order
    ```
 
    `out_queue[].transmit.data` stores a *pointer* into `pkt_ring[]`, and `nanortc_send_video()` emits every FU-A fragment of one access unit before returning to the caller — there is no opportunity to drain mid-frame. Wrapping `pkt_ring_tail` while earlier-fragment pointers are still pending in `out_queue` silently corrupts those buffers (receiver sees newer fragment bytes carrying older RTP seq). The earlier draft text recommending "`PKT_RING=16` ≈ 500 ms NACK window at 30 fps" was wrong for multi-NAL frames at 720p+ and was removed; `docs/engineering/memory-profiles.md` now carries the worked-numbers table (480p ≈ 16, 720p ≈ 32, 1080p ≈ 64).
-5. **Runtime overrun guard + observability counter** (review feedback, commit `c1cb699`). `video_send_fragment_cb` checks `(out_tail - out_head) >= PKT_RING_SIZE` before writing the slot, atomically bumps `nanortc_t.stats_pkt_ring_overrun`, and emits a single `NANORTC_LOGW` so under-sizing surfaces in integration smoke tests rather than as glitched IDRs on the wire. Counter is exposed on the struct for app glue to read.
-6. **Tests** (`tests/test_media.c`): five new tests under `#if NANORTC_FEATURE_VIDEO` — `in_window_lookup`, `out_of_window_miss`, `wraparound_independent_of_out_tail` (PR baseline), plus `overrun_counter_fires_when_undersized` and `aliasing_corruption_demonstrated_without_guard` (review). Verified under default build (`PKT_RING=OUT_QUEUE=32`) and IoT override (`-DNANORTC_VIDEO_PKT_RING_SIZE=8 -DNANORTC_OUT_QUEUE_SIZE=32`).
+5. **Runtime overrun guard + observability counter** (review feedback, commit `c1cb699`; helper-extracted in PR #57 `pkt_ring_alloc_slot`). The slot allocator checks `(out_tail - out_head) >= PKT_RING_SIZE` before handing back the buffer, atomically bumps `nanortc_t.stats_pkt_ring_overrun`, and emits a single `NANORTC_LOGW` so under-sizing surfaces in integration smoke tests rather than as glitched IDRs on the wire. Counter is exposed on the struct for app glue to read. After PR-4 (#56) introduced the H.264 zero-copy path, both the H.264 (`rtc_send_video`) and H.265 (`video_send_fragment_cb`) writers now share the same allocator + commit helper.
+6. **Tests** (`tests/test_media.c`): five new tests under `#if NANORTC_FEATURE_VIDEO` — `in_window_lookup`, `out_of_window_miss`, `wraparound_independent_of_out_tail` (PR baseline), plus `overrun_counter_fires_when_undersized` and `aliasing_corrupts_pending_pointers_when_undersized` (review). Verified under default build (`PKT_RING=OUT_QUEUE=32`) and IoT override (`-DNANORTC_VIDEO_PKT_RING_SIZE=8 -DNANORTC_OUT_QUEUE_SIZE=32`).
 
 **Verification.** All 7 canonical feature combos × {mbedtls, openssl} green, including ASan and libdatachannel interop. `scripts/ci-check.sh --fast` 15/15 passes.
 
@@ -113,21 +115,25 @@ Each row is a self-contained PR. `PR-1…PR-5` are the recommended landing order
 
 ---
 
-## PR-4 — H.264 FU-A zero-copy via caller-provided scratch
+## PR-4 — H.264 FU-A zero-copy via fragment iterator **[COMPLETED 2026-04-25]**
 
-**Problem.** `h264_packetize()` allocates `uint8_t pkt[NANORTC_VIDEO_MTU]` (1200 B) on the stack for every fragment and then `memcpy`s the FU-A payload into it. ESP32 video tasks run with ~4 KB stack; 1200 B is a 30% footprint and a correctness hazard. The `memcpy` is also pure overhead — the data is about to be `memcpy`d again into `pkt_ring[slot]` by the caller.
+**Problem.** `h264_packetize()` allocated `uint8_t pkt[NANORTC_VIDEO_MTU]` (1200 B) on the stack for every fragment and then `memcpy`d the FU-A payload into it. ESP32 video tasks run with ~4 KB stack; 1200 B was a 30% footprint and a correctness hazard. The `memcpy` was also pure overhead — the data was about to be `memcpy`d again into `pkt_ring[slot]` by the caller.
 
-**Approach.**
-1. Change `h264_packetize()` signature to accept a caller-provided `uint8_t *scratch` of at least `mtu` bytes. Pass its length alongside.
-2. In `src/nano_rtc.c`, pass the corresponding `pkt_ring[slot]` buffer directly — the FU-A header is written in place and the fragment is `memcpy`d into the final send buffer once.
-3. Update `tests/test_h264.c` callers to use stack-allocated scratch (test contexts have plenty of stack).
-4. Update `AGENTS.md` "Where to Look" / example integration if it references the old signature.
+**Landed approach** (Option C — iterator instead of monolithic packetizer; PR #56 / commit `fbb5b4f`).
 
-**Verification.** `test_h264` (32 existing tests), fuzz_h264 60s, interop video.
+1. Added `h264_fragment_iter_*` API in `src/nano_h264.{h,c}`. The iterator lets the caller pass a different scratch buffer per fragment, which is the precondition for writing each FU-A payload directly into the final `pkt_ring[]` slot.
+2. `h264_packetize()` was kept as a thin compat wrapper (tests still use it) with a new `(scratch, scratch_len)` parameter — internal API break, but the function is `@internal` and not in `include/nanortc.h`.
+3. `rtp_pack()` (`src/nano_rtp.c:75`) now guards its payload memcpy with `payload != buf + off`. Strictly additive — every existing caller is byte-identical. The H.264 send path passes `pkt_buf + off` as the iterator scratch, so the guard fires on every fragment and the second copy is skipped.
+4. `src/nano_rtc.c:rtc_send_video` was rewritten to drive the iterator directly. `pkt_ring` slot selection + the PR-3 overrun guard were carried over (and as of PR #57 are extracted into `pkt_ring_alloc_slot` / `pkt_ring_commit_slot` helpers shared with the H.265 callback).
+5. `video_send_ctx_t` / `video_send_fragment_cb` stay alive under `NANORTC_FEATURE_H265` — `h265_packetize_au` is still callback-driven; a parallel zero-copy refactor for it is a separate PR.
 
-**Risk.** Medium — breaking internal API. `h264_packetize` is not in the public `nanortc.h`, so downstream applications are unaffected, but in-tree examples and tests need to compile.
+**Tests.** `tests/test_h264.c` 13 existing sites updated to pass scratch; three new tests (iterator writes in place at the caller's buffer, rejects under-sized scratch, single-NAL fast path leaves scratch untouched). `tests/test_rtp.c` two new tests asserting `rtp_pack` with `payload == buf + off` produces the same bytes as the copy path, both with and without the TWCC extension.
 
-**Rollback.** Revert.
+**Measured savings** (from `otool -tV` on the post-merge binary): no function in the H.264 send chain reserves a 1200 B frame any more — `rtc_send_video` 240 B, `h264_packetize` 192 B, `h264_fragment_iter_next` 96 B. One `memcpy` per FU-A fragment removed, ~50–100 KB per 720p IDR.
+
+**Verification.** `scripts/ci-check.sh --fast` 15/15 (clang-format, sans-I/O include audit, no-malloc audit, unbounded-string audit, struct-array-size audit, DATA + MEDIA + ASan + ICE_SRFLX-off feature combos), full host suite 21/21, libdatachannel interop green.
+
+**Rollback.** Revert PR #56. The compat wrapper for `h264_packetize` accepts the old call shape only with the new (scratch, scratch_len) parameters threaded through, so a partial revert would break the in-tree H.264 tests.
 
 ---
 

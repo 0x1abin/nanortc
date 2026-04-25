@@ -1144,6 +1144,7 @@ int nsctp_handle_timeout(nano_sctp_t *sctp, uint32_t now_ms)
                 if (e->retransmit_count >= NANORTC_SCTP_MAX_RETRANSMITS) {
                     NANORTC_LOGE("SCTP", "max retransmits exceeded");
                     sctp->state = NANORTC_SCTP_STATE_CLOSED;
+                    sctp->closed_due_to_failure = true;
                     return NANORTC_ERR_PROTOCOL;
                 }
                 /* Mark for retransmission */

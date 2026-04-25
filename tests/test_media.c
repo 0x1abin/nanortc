@@ -393,7 +393,7 @@ TEST(test_pkt_ring_overrun_counter_fires_when_undersized)
     ASSERT_EQ(rtc->stats_pkt_ring_overrun, 3u);
 }
 
-TEST(test_pkt_ring_aliasing_corruption_demonstrated_without_guard)
+TEST(test_pkt_ring_aliasing_corrupts_pending_pointers_when_undersized)
 {
     nanortc_t *rtc = &g_pkt_ring_rtc;
     memset(rtc, 0, sizeof(*rtc));
@@ -460,6 +460,6 @@ RUN(test_pkt_ring_in_window_lookup_succeeds);
 RUN(test_pkt_ring_out_of_window_lookup_misses);
 RUN(test_pkt_ring_wraparound_independent_of_out_tail);
 RUN(test_pkt_ring_overrun_counter_fires_when_undersized);
-RUN(test_pkt_ring_aliasing_corruption_demonstrated_without_guard);
+RUN(test_pkt_ring_aliasing_corrupts_pending_pointers_when_undersized);
 #endif
 TEST_MAIN_END

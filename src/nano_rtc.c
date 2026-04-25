@@ -1979,6 +1979,24 @@ static int rtc_process_timers(nanortc_t *rtc, uint32_t now_ms)
         /* Pump any SCTP output (retransmits, heartbeats, pending DATA) through DTLS */
         rtc_pump_sctp_through_dtls(rtc, &rtc->remote_addr);
     }
+
+    /* SCTP retransmit exhaustion → emit DISCONNECTED. Mirrors the ICE
+     * failure path (lines 1744-1758): nsctp_handle_timeout() flips state
+     * to CLOSED but cannot reach the event queue. Check the flag outside
+     * the ESTABLISHED guard above — once the timeout fires, that guard
+     * becomes false on the next tick and we'd otherwise lose the signal.
+     * Clear on read so the event fires exactly once. */
+    if (rtc->sctp.closed_due_to_failure) {
+        rtc->sctp.closed_due_to_failure = false;
+        if (rtc->state == NANORTC_STATE_CONNECTED) {
+            nanortc_event_t fdev;
+            memset(&fdev, 0, sizeof(fdev));
+            fdev.type = NANORTC_EV_DISCONNECTED;
+            rtc_emit_event_full(rtc, &fdev);
+            rtc->state = NANORTC_STATE_CLOSED;
+            NANORTC_LOGW("RTC", "SCTP retransmit exhaustion → DISCONNECTED");
+        }
+    }
 #endif
 
 #if NANORTC_HAVE_MEDIA_TRANSPORT
@@ -2729,6 +2747,46 @@ static int rtc_send_audio(nanortc_t *rtc, nanortc_track_t *m, uint32_t timestamp
 }
 
 #if NANORTC_FEATURE_VIDEO
+/* Reserve the next pkt_ring slot for an outbound video fragment.
+ *
+ * pkt_ring_tail is the ring's own write cursor — decoupled from out_tail
+ * so NANORTC_VIDEO_PKT_RING_SIZE can be tuned independently of
+ * NANORTC_OUT_QUEUE_SIZE. See nanortc_config.h for the slot-reuse
+ * invariant when PKT_RING_SIZE < OUT_QUEUE_SIZE.
+ *
+ * Aliasing guard. out_queue[].transmit.data stores a pointer into
+ * pkt_ring[]. nanortc_send_video() emits every FU-A fragment of one
+ * access unit before returning, so the application has no chance to
+ * drain mid-frame. If the in-flight depth has already reached
+ * PKT_RING_SIZE, advancing pkt_ring_tail wraps into a slot whose pointer
+ * is still pending — silent corruption. (out_tail - out_head) is a
+ * conservative upper bound on that depth; bump stats_pkt_ring_overrun
+ * and emit a single static-string NANORTC_LOGW so under-sizing surfaces
+ * in integration smoke tests rather than as glitched IDRs on the wire.
+ * Live counters are in stats_pkt_ring_overrun + out_tail / out_head. */
+static uint8_t *pkt_ring_alloc_slot(nanortc_t *rtc, uint16_t *out_pslot)
+{
+    uint16_t out_inflight = (uint16_t)(rtc->out_tail - rtc->out_head);
+    if (out_inflight >= NANORTC_VIDEO_PKT_RING_SIZE) {
+        __atomic_fetch_add(&rtc->stats_pkt_ring_overrun, 1, __ATOMIC_RELAXED);
+        NANORTC_LOGW("RTC", "pkt_ring overrun — raise NANORTC_VIDEO_PKT_RING_SIZE");
+    }
+    uint16_t pslot = rtc->pkt_ring_tail & (NANORTC_VIDEO_PKT_RING_SIZE - 1);
+    *out_pslot = pslot;
+    return rtc->pkt_ring[pslot];
+}
+
+/* Stamp NACK retransmit metadata on the slot just written and advance
+ * the ring's write cursor. rtp_pack() has already incremented m->rtp.seq,
+ * so the seq value on the wire for this packet is (m->rtp.seq - 1). */
+static void pkt_ring_commit_slot(nanortc_t *rtc, uint16_t pslot, uint16_t wire_seq,
+                                 uint16_t srtp_len)
+{
+    rtc->pkt_ring_meta[pslot].seq = wire_seq;
+    rtc->pkt_ring_meta[pslot].len = srtp_len;
+    rtc->pkt_ring_tail++;
+}
+
 #if NANORTC_FEATURE_H265
 /* Context + callback used by the H.265 send path. H.264 no longer uses this
  * (see rtc_send_video below — it drives h264_fragment_iter_* directly for
@@ -2751,13 +2809,8 @@ static int video_send_fragment_cb(const uint8_t *payload, size_t len, int marker
 
     m->rtp.marker = (uint8_t)((marker && ctx->is_last_nal) ? 1 : 0);
 
-    uint16_t out_inflight = (uint16_t)(rtc->out_tail - rtc->out_head);
-    if (out_inflight >= NANORTC_VIDEO_PKT_RING_SIZE) {
-        __atomic_fetch_add(&rtc->stats_pkt_ring_overrun, 1, __ATOMIC_RELAXED);
-        NANORTC_LOGW("RTC", "pkt_ring overrun — raise NANORTC_VIDEO_PKT_RING_SIZE");
-    }
-    uint16_t pslot = rtc->pkt_ring_tail & (NANORTC_VIDEO_PKT_RING_SIZE - 1);
-    uint8_t *pkt_buf = rtc->pkt_ring[pslot];
+    uint16_t pslot;
+    uint8_t *pkt_buf = pkt_ring_alloc_slot(rtc, &pslot);
 
     size_t rtp_len = 0;
     int rc =
@@ -2780,9 +2833,7 @@ static int video_send_fragment_cb(const uint8_t *payload, size_t len, int marker
     m->rtcp.octets_sent += (uint32_t)len;
     rate_window_on_bytes(&m->rate_window, rtc->now_ms, (uint32_t)srtp_len);
 
-    rtc->pkt_ring_meta[pslot].seq = (uint16_t)(m->rtp.seq - 1);
-    rtc->pkt_ring_meta[pslot].len = (uint16_t)srtp_len;
-    rtc->pkt_ring_tail++;
+    pkt_ring_commit_slot(rtc, pslot, (uint16_t)(m->rtp.seq - 1), (uint16_t)srtp_len);
 
     ctx->last_rc = rtc_enqueue_transmit(rtc, pkt_buf, srtp_len, &rtc->remote_addr, false);
     return ctx->last_rc;
@@ -2819,17 +2870,8 @@ static int rtc_send_video(nanortc_t *rtc, nanortc_track_t *m, uint32_t timestamp
     }
 
     while (h264_fragment_iter_has_next(&it)) {
-        /* pkt_ring slot selection (see the comment block in PR-3 for the
-         * aliasing invariant). One slot is consumed per fragment emitted,
-         * and (out_tail - out_head) is a conservative upper bound on the
-         * number of slots still pointed at by in-flight out_queue entries. */
-        uint16_t out_inflight = (uint16_t)(rtc->out_tail - rtc->out_head);
-        if (out_inflight >= NANORTC_VIDEO_PKT_RING_SIZE) {
-            __atomic_fetch_add(&rtc->stats_pkt_ring_overrun, 1, __ATOMIC_RELAXED);
-            NANORTC_LOGW("RTC", "pkt_ring overrun — raise NANORTC_VIDEO_PKT_RING_SIZE");
-        }
-        uint16_t pslot = rtc->pkt_ring_tail & (NANORTC_VIDEO_PKT_RING_SIZE - 1);
-        uint8_t *pkt_buf = rtc->pkt_ring[pslot];
+        uint16_t pslot;
+        uint8_t *pkt_buf = pkt_ring_alloc_slot(rtc, &pslot);
 
         const uint8_t *payload = NULL;
         size_t payload_len = 0;
@@ -2866,10 +2908,7 @@ static int rtc_send_video(nanortc_t *rtc, nanortc_track_t *m, uint32_t timestamp
          * byte count the network sees and the BWE estimate compares against. */
         rate_window_on_bytes(&m->rate_window, rtc->now_ms, (uint32_t)srtp_len);
 
-        /* NACK retransmit metadata. rtp_pack() has already incremented seq. */
-        rtc->pkt_ring_meta[pslot].seq = (uint16_t)(m->rtp.seq - 1);
-        rtc->pkt_ring_meta[pslot].len = (uint16_t)srtp_len;
-        rtc->pkt_ring_tail++;
+        pkt_ring_commit_slot(rtc, pslot, (uint16_t)(m->rtp.seq - 1), (uint16_t)srtp_len);
 
         rc = rtc_enqueue_transmit(rtc, pkt_buf, srtp_len, &rtc->remote_addr, false);
         if (rc != NANORTC_OK) {
