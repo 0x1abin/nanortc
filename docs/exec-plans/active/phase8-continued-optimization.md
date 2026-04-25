@@ -65,21 +65,23 @@ Each row is a self-contained PR. `PR-1…PR-5` are the recommended landing order
 
 ---
 
-## PR-2 — SCTP connection-failure event propagation
+## PR-2 — SCTP connection-failure event propagation **[COMPLETED 2026-04-25]**
 
 **Problem.** When `nsctp_handle_timeout` exceeds `NANORTC_SCTP_MAX_RETRANSMITS`, it transitions the SCTP state to `CLOSED` but does not notify the upper layer. Applications only learn about the loss on the next `nanortc_datachannel_send()` failure. This is a silent stall from the app's point of view.
 
-**Approach.**
-1. Add `bool closed_due_to_failure` to `nano_sctp_t`.
-2. `nsctp_handle_timeout()` sets the flag at the same moment it transitions state to `CLOSED`.
-3. After `nsctp_handle_timeout()` in `nano_rtc.c`'s timer processing, check the flag: if set and the RTC was previously `NANORTC_STATE_CONNECTED`, emit `NANORTC_EV_DISCONNECTED` (existing event type) and transition the RTC state to `NANORTC_STATE_CLOSED`.
-4. Add a regression test in `tests/test_sctp.c` that stubs a non-responding peer and asserts the event fires after `NANORTC_SCTP_RTO_MAX_MS * NANORTC_SCTP_MAX_RETRANSMITS` elapsed time.
+**Shipped.**
 
-**Verification.** `test_sctp` + `test_e2e` + interop.
+1. New `closed_due_to_failure` flag on `nano_sctp_t` (`src/nano_sctp.h`), set exactly once in `nsctp_handle_timeout()` when retransmit exhaustion trips the CLOSED transition (`src/nano_sctp.c`). Init-time CLOSED and peer-ABORT-induced CLOSED deliberately do **not** set the flag — they have separate signaling channels (rationale recorded inline in the header comment).
+2. RTC poll layer reads and clears the flag in `rtc_process_timers` (`src/nano_rtc.c`), then emits `NANORTC_EV_DISCONNECTED` and transitions `nanortc_t.state` to `NANORTC_STATE_CLOSED`. Mirrors the existing ICE-failure / consent-expiry paths. Critical detail: emit block is placed **outside** the `if (sctp.state == ESTABLISHED)` guard — once timeout flips state to CLOSED, that guard goes false and the signal would otherwise be lost.
+3. Two regression tests in `tests/test_sctp.c`:
+   - `test_sctp_timeout_sets_closed_flag` (under `#if NANORTC_FEATURE_DC_RELIABLE`) — drives the full RTO ramp (1000 → 2000 → 4000 → 8000 → 10000 capped) through `MAX_RETRANSMITS` cycles of `nsctp_handle_timeout()` + `nsctp_poll_output()`, asserts CLOSED + flag on the threshold-trip iteration.
+   - `test_sctp_abort_does_not_set_failure_flag` — scope guard ensuring peer ABORT does not regress into the failure flag.
 
-**Risk.** Low — purely additive. Existing apps continue to work unchanged.
+**Verification.** Full `ctest` (test_sctp 56/56 with DC_RELIABLE=ON, 55/55 with DC_RELIABLE=OFF), `scripts/ci-check.sh --fast` (15/15 incl. ASan + ICE_SRFLX=OFF combo + format check), and full feature-flag matrix via DC_RELIABLE toggle.
 
-**Rollback.** Revert.
+**Risk realised.** Low. Existing tests untouched; new flag is one-shot, so no observable behavior change unless a real timeout actually happens. The single non-obvious point — emit block outside the ESTABLISHED guard — is documented inline.
+
+**Rollback.** Revert the four changed files: `src/nano_sctp.h`, `src/nano_sctp.c`, `src/nano_rtc.c`, `tests/test_sctp.c`.
 
 ---
 
