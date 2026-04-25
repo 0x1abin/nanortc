@@ -71,7 +71,12 @@ int rtp_pack(nano_rtp_t *rtp, uint32_t timestamp, const uint8_t *payload, size_t
         rtp->twcc_seq++;
     }
 
-    if (payload && payload_len > 0) {
+    /* Zero-copy fast path: when the caller has already staged the payload
+     * at the RTP body offset (e.g. the H.264 FU-A packetizer writing
+     * directly into pkt_buf + off), the memcpy is a no-op. Comparing
+     * pointers is cheap and keeps semantics byte-identical for every
+     * caller that still passes a distinct payload pointer. */
+    if (payload && payload_len > 0 && payload != buf + off) {
         memcpy(buf + off, payload, payload_len);
     }
 

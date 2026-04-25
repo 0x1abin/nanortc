@@ -54,6 +54,67 @@
 typedef int (*h264_packet_cb)(const uint8_t *payload, size_t len, int marker, void *userdata);
 
 /**
+ * Iterator state for driving H.264 packetization one fragment at a time.
+ *
+ * The iterator lets the caller pick a different scratch buffer per fragment —
+ * a prerequisite for writing each FU-A payload directly into the final RTP
+ * packet buffer and avoiding the extra memcpy through a shared scratch.
+ * All fields are private; use the h264_fragment_iter_* functions.
+ */
+typedef struct h264_fragment_iter {
+    const uint8_t *nalu;
+    size_t nalu_len;
+    size_t mtu;
+
+    /* FU-A state (unused when single_nal != 0). */
+    uint8_t fu_indicator;
+    uint8_t nal_type;
+    const uint8_t *data;
+    size_t remaining;
+    size_t max_frag;
+
+    uint8_t single_nal; /* 1 when nalu_len <= mtu — emit pass-through. */
+    uint8_t done;       /* 1 once the last fragment has been produced. */
+} h264_fragment_iter_t;
+
+/**
+ * Initialize an H.264 fragment iterator.
+ *
+ * The iterator stores @p nalu by reference; callers must keep its contents
+ * stable until iteration completes (overwriting mid-iteration corrupts
+ * subsequent fragments).
+ *
+ * @return NANORTC_OK on success, NANORTC_ERR_INVALID_PARAM on bad input
+ *         (null nalu, zero-length nalu, or mtu below FU-A minimum).
+ */
+int h264_fragment_iter_init(h264_fragment_iter_t *it, const uint8_t *nalu, size_t nalu_len,
+                            size_t mtu);
+
+/** Non-zero while more fragments remain. */
+int h264_fragment_iter_has_next(const h264_fragment_iter_t *it);
+
+/**
+ * Produce the next RTP payload fragment.
+ *
+ * For the FU-A path the payload bytes are written into @p scratch and
+ * @p payload_out is set to @p scratch. For the single-NAL fast path no bytes
+ * are written to @p scratch and @p payload_out is set to the original nalu
+ * pointer. In both cases the caller receives a contiguous (payload, len)
+ * pair that can be fed straight to rtp_pack().
+ *
+ * @param scratch          Per-fragment output buffer (>= mtu bytes).
+ *                         Ignored in single-NAL mode.
+ * @param scratch_len      Length of the scratch buffer.
+ * @param payload_out      Out: pointer to the fragment payload.
+ * @param payload_len_out  Out: fragment payload length.
+ * @param is_last_out      Out: non-zero if this is the last fragment (M bit).
+ * @return NANORTC_OK, NANORTC_ERR_INVALID_PARAM (bad args / iterator exhausted),
+ *         or NANORTC_ERR_BUFFER_TOO_SMALL if scratch_len < needed.
+ */
+int h264_fragment_iter_next(h264_fragment_iter_t *it, uint8_t *scratch, size_t scratch_len,
+                            const uint8_t **payload_out, size_t *payload_len_out, int *is_last_out);
+
+/**
  * Packetize a single H.264 NAL unit into RTP payloads.
  *
  * - NAL ≤ mtu: emitted as Single NAL Unit (RFC 6184 §5.6).
@@ -62,15 +123,22 @@ typedef int (*h264_packet_cb)(const uint8_t *payload, size_t len, int marker, vo
  * The callback is invoked once per RTP payload. The caller is responsible
  * for wrapping each payload into an RTP packet.
  *
- * @param nalu     Raw NAL unit (including NAL header byte, no start code).
- * @param nalu_len Length of the NAL unit in bytes.
- * @param mtu      Maximum RTP payload size (excluding RTP header).
- * @param cb       Callback for each fragment.
- * @param userdata Opaque pointer passed to callback.
+ * Thin wrapper over the fragment iterator; callers that want zero-copy
+ * packetization should drive h264_fragment_iter_* directly and pass
+ * `pkt_buf + rtp_header_len` as the per-fragment scratch.
+ *
+ * @param nalu        Raw NAL unit (including NAL header byte, no start code).
+ * @param nalu_len    Length of the NAL unit in bytes.
+ * @param mtu         Maximum RTP payload size (excluding RTP header).
+ * @param scratch     Shared output buffer (>= mtu bytes). Only the FU-A path
+ *                    writes to it; the single-NAL path leaves it untouched.
+ * @param scratch_len Length of the scratch buffer.
+ * @param cb          Callback for each fragment.
+ * @param userdata    Opaque pointer passed to callback.
  * @return 0 on success, negative on error.
  */
-int h264_packetize(const uint8_t *nalu, size_t nalu_len, size_t mtu, h264_packet_cb cb,
-                   void *userdata);
+int h264_packetize(const uint8_t *nalu, size_t nalu_len, size_t mtu, uint8_t *scratch,
+                   size_t scratch_len, h264_packet_cb cb, void *userdata);
 
 /**
  * FU-A depacketizer: reassembles fragmented NAL units from RTP payloads.
