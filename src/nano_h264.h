@@ -80,6 +80,10 @@ typedef struct h264_fragment_iter {
 /**
  * Initialize an H.264 fragment iterator.
  *
+ * The iterator stores @p nalu by reference; callers must keep its contents
+ * stable until iteration completes (overwriting mid-iteration corrupts
+ * subsequent fragments).
+ *
  * @return NANORTC_OK on success, NANORTC_ERR_INVALID_PARAM on bad input
  *         (null nalu, zero-length nalu, or mtu below FU-A minimum).
  */
