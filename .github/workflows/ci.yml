@@ -159,8 +159,8 @@ jobs:
 
       - name: Fuzz (30s per harness)
         run: |
-          mkdir -p tests/fuzz/corpus/{stun,sctp,sdp,rtp,h264,addr,bwe}
-          for t in fuzz_stun fuzz_sctp fuzz_sdp fuzz_rtp fuzz_h264 fuzz_addr fuzz_bwe; do
+          mkdir -p tests/fuzz/corpus/{stun,sctp,sdp,rtp,h264,h265,addr,bwe,turn}
+          for t in fuzz_stun fuzz_sctp fuzz_sdp fuzz_rtp fuzz_h264 fuzz_h265 fuzz_addr fuzz_bwe fuzz_turn; do
             echo "=== $t ==="
             CORPUS_DIR="tests/fuzz/corpus/${t#fuzz_}"
             ./build/tests/fuzz/$t "$CORPUS_DIR" \
