@@ -23,7 +23,7 @@ set(VIDEO_TESTS test_h264 test_bwe test_twcc test_annex_b)
 set(H265_TESTS test_h265 test_base64)
 
 # Tests that require DataChannel
-set(DC_TESTS test_datachannel)
+set(DC_TESTS test_datachannel test_crc32)
 
 # Tests that require TURN
 set(TURN_TESTS test_turn)

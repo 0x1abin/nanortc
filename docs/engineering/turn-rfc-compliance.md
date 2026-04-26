@@ -132,9 +132,28 @@ tx_via_turn=8  tx_direct=0  wrap_drop=0  q_full=0
 
 `type=relay` confirms `via_turn` propagated through to `selected_type`; `tx_via_turn=8 / tx_direct=0` confirms every outbound packet at handshake was routed through the lazy wrap. Steady state with the viewer connected for 30 seconds showed no growth in `stats_enqueue_direct`, proving consent freshness was also wrapped (F8).
 
-### Coverage gap (still open)
+### Coverage status
 
-There is **no automated test** for nanortc-as-TURN-client yet. `test_interop_turn_relay.c` only validates the server-side direction (libdc relays, nanortc receives directly). A new harness is needed where nanortc is forced into relay-only mode while libdc has only host candidates, asserting `ice.selected_type == NANORTC_ICE_CAND_RELAY` and `stats_enqueue_via_turn > 0` on the nanortc side. Until that lands, F6–F9 regressions can re-creep undetected on this code path.
+`tests/interop/test_interop_turn_relay_nanortc.c` (5 cases —
+`test_relay_nanortc_handshake`, `_dc_string_bidirectional`,
+`_channel_data_burst`, `_large_payload`, `_echo_roundtrip`) covers the
+nanortc-as-TURN-client direction end-to-end. nanortc is forced into
+`relay_only` mode (no STUN, no host candidate in the SDP) while
+libdatachannel stays host-only — every byte nanortc sends must traverse
+the relay, exercising F6 (`via_turn` propagation), F7 (lazy wrap), F8
+(consent freshness routing), F9 (per-tick `CreatePermission` fan-out),
+and F10 (stats counters).
+
+The dedicated `interop-turn-relay` GitHub Actions job (added 2026-04-26)
+starts coturn via `scripts/start-test-turn.sh` and runs
+`ctest -L turn-relay`, so F6–F10 regressions are now caught in CI.
+Standalone `ctest -R interop` excludes these tests via the `network`
+label (the default `interop` job runs `-LE network`); run
+`ctest -L turn-relay` explicitly when iterating locally.
+
+The complementary direction (libdatachannel-as-relay-client, nanortc
+receiving) is covered by `test_interop_turn_relay.c` in the same
+job-less interop suite.
 
 ## Verification gap addressed
 

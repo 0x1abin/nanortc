@@ -946,7 +946,10 @@ int nanortc_poll_output(nanortc_t *rtc, nanortc_output_t *out)
     return NANORTC_ERR_NO_DATA;
 }
 
-/* Init DTLS (if needed) and begin handshake after ICE connects */
+/* Init DTLS (if needed) and begin handshake after ICE connects.
+ * State is only advanced to DTLS_HANDSHAKING after dtls_start() succeeds,
+ * so a failure leaves state at ICE_CONNECTED and the caller can retry
+ * without a half-initialised DTLS context being driven by inbound bytes. */
 static int rtc_begin_dtls_handshake(nanortc_t *rtc, const nanortc_addr_t *src)
 {
     int is_server = (rtc->sdp.local_setup == NANORTC_SDP_SETUP_PASSIVE);
@@ -958,12 +961,15 @@ static int rtc_begin_dtls_handshake(nanortc_t *rtc, const nanortc_addr_t *src)
             return rc;
     }
 
-    rtc->state = NANORTC_STATE_DTLS_HANDSHAKING;
-
     if (!is_server) {
         int rc = dtls_start(&rtc->dtls);
         if (rc != NANORTC_OK)
             return rc;
+    }
+
+    rtc->state = NANORTC_STATE_DTLS_HANDSHAKING;
+
+    if (!is_server) {
         rtc_drain_dtls_output(rtc, src);
     }
     return NANORTC_OK;
@@ -2316,6 +2322,14 @@ int nanortc_ice_restart(nanortc_t *rtc)
     }
 
     NANORTC_LOGI("RTC", "ICE restart");
+
+    /* Tear down the DTLS context so the next accept_offer/create_offer
+     * re-initialises it with a fresh cert and BIO. Without this, the
+     * `if (!rtc->dtls.crypto_ctx)` guard in rtc_begin_dtls_handshake
+     * would skip dtls_init and reuse the previous DTLS state across the
+     * ICE restart — possible key-material reuse and orphan handshake
+     * timers. dtls_destroy is a no-op when crypto_ctx is NULL. */
+    dtls_destroy(&rtc->dtls);
 
     /* Reset ICE state (preserves role + tie_breaker, bumps generation) */
     int rc = ice_restart(&rtc->ice);
