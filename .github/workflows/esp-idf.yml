@@ -34,6 +34,11 @@ jobs:
           # board-specific and will be added in a follow-up workflow.
     steps:
       - uses: actions/checkout@v4
+        with:
+          # esp32_video bakes sample_data submodule frames into video.blob /
+          # audio.blob at build time; without this, those targets fail with
+          # "sample_data/h264SampleFrames is not a directory".
+          submodules: recursive
 
       - name: ESP-IDF build (${{ matrix.example.target }})
         uses: espressif/esp-idf-ci-action@v1
