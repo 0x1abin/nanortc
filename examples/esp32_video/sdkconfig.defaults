@@ -1,6 +1,11 @@
 # nanortc ESP32 A/V example — default SDK configuration
 #
-# Custom partition table (factory = ~12 MB for firmware + embedded media blobs)
+# Custom partition table (factory ~3.6 MB) — needs >= 4 MB flash.
+# Default IDF flash size is 2 MB, so partition-table generation fails
+# without an explicit FLASHSIZE here. Boards with larger flash can
+# override via menuconfig.
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 
