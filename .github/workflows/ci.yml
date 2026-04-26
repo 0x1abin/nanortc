@@ -234,3 +234,32 @@ jobs:
 
       - name: Test
         run: ctest --test-dir build -R interop -LE network --output-on-failure
+
+  interop-turn-relay:
+    name: Interop TURN Relay (nanortc client)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libssl-dev
+
+      - name: Start coturn
+        run: ./scripts/start-test-turn.sh
+
+      - name: Configure
+        run: |
+          cmake -B build-interop \
+            -DNANORTC_BUILD_INTEROP_TESTS=ON \
+            -DNANORTC_CRYPTO=openssl \
+            -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        run: cmake --build build-interop -j$(nproc)
+
+      - name: Test (nanortc-as-TURN-client relay path)
+        run: ctest --test-dir build-interop -L turn-relay --output-on-failure
+
+      - name: Stop coturn
+        if: always()
+        run: ./scripts/stop-test-turn.sh
