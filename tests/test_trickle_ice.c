@@ -15,6 +15,7 @@
 #include "nano_ice.h"
 #include "nano_stun.h"
 #include "nano_sdp.h"
+#include "nano_dtls.h"
 #include "nanortc_crypto.h"
 #include "nano_test.h"
 #include "nano_test_config.h"
@@ -547,6 +548,66 @@ static void test_api_ice_restart(void)
     nanortc_destroy(&rtc);
 }
 
+/* T20: nanortc_ice_restart tears down DTLS so the next handshake
+ * re-initialises with a fresh cert / BIO. Without this the
+ * `if (!rtc->dtls.crypto_ctx)` guard in rtc_begin_dtls_handshake would
+ * skip dtls_init and reuse the previous DTLS context. */
+static void test_api_ice_restart_clears_dtls(void)
+{
+    nanortc_t rtc;
+    memset(&rtc, 0, sizeof(rtc));
+
+    nanortc_config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.crypto = nano_test_crypto();
+    cfg.role = NANORTC_ROLE_CONTROLLING;
+    nanortc_init(&rtc, &cfg);
+
+    /* Initialise DTLS as a client (mirrors what rtc_begin_dtls_handshake
+     * does during the create_offer path). */
+    int rc = dtls_init(&rtc.dtls, cfg.crypto, 0);
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
+    TEST_ASSERT_NOT_NULL(rtc.dtls.crypto_ctx);
+
+    /* Simulate a connected session on top of the live DTLS context. */
+    rtc.state = NANORTC_STATE_CONNECTED;
+    rtc.ice.state = NANORTC_ICE_STATE_CONNECTED;
+    rtc.ice.nominated = true;
+
+    rc = nanortc_ice_restart(&rtc);
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
+
+    /* The DTLS context must have been torn down so the next
+     * accept_offer/create_offer path re-runs dtls_init. */
+    TEST_ASSERT_NULL(rtc.dtls.crypto_ctx);
+    TEST_ASSERT_EQUAL_INT(NANORTC_DTLS_STATE_CLOSED, rtc.dtls.state);
+
+    nanortc_destroy(&rtc);
+}
+
+/* T21: nanortc_ice_restart is safe to call before any DTLS context exists.
+ * dtls_destroy is documented as a no-op when crypto_ctx is NULL. */
+static void test_api_ice_restart_no_dtls_safe(void)
+{
+    nanortc_t rtc;
+    memset(&rtc, 0, sizeof(rtc));
+
+    nanortc_config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.crypto = nano_test_crypto();
+    cfg.role = NANORTC_ROLE_CONTROLLING;
+    nanortc_init(&rtc, &cfg);
+
+    /* No dtls_init() yet — crypto_ctx is NULL. */
+    TEST_ASSERT_NULL(rtc.dtls.crypto_ctx);
+
+    int rc = nanortc_ice_restart(&rtc);
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
+    TEST_ASSERT_NULL(rtc.dtls.crypto_ctx);
+
+    nanortc_destroy(&rtc);
+}
+
 /* ----------------------------------------------------------------
  * Test runner
  * ---------------------------------------------------------------- */
@@ -586,6 +647,8 @@ int main(void)
     RUN_TEST(test_api_end_of_candidates);
     RUN_TEST(test_api_remote_candidate_parses_type);
     RUN_TEST(test_api_ice_restart);
+    RUN_TEST(test_api_ice_restart_clears_dtls);
+    RUN_TEST(test_api_ice_restart_no_dtls_safe);
 
     return UNITY_END();
 }

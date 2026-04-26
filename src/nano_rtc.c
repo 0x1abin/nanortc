@@ -2323,6 +2323,14 @@ int nanortc_ice_restart(nanortc_t *rtc)
 
     NANORTC_LOGI("RTC", "ICE restart");
 
+    /* Tear down the DTLS context so the next accept_offer/create_offer
+     * re-initialises it with a fresh cert and BIO. Without this, the
+     * `if (!rtc->dtls.crypto_ctx)` guard in rtc_begin_dtls_handshake
+     * would skip dtls_init and reuse the previous DTLS state across the
+     * ICE restart — possible key-material reuse and orphan handshake
+     * timers. dtls_destroy is a no-op when crypto_ctx is NULL. */
+    dtls_destroy(&rtc->dtls);
+
     /* Reset ICE state (preserves role + tie_breaker, bumps generation) */
     int rc = ice_restart(&rtc->ice);
     if (rc != NANORTC_OK) {
