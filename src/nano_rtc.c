@@ -947,9 +947,11 @@ int nanortc_poll_output(nanortc_t *rtc, nanortc_output_t *out)
 }
 
 /* Init DTLS (if needed) and begin handshake after ICE connects.
- * State is only advanced to DTLS_HANDSHAKING after dtls_start() succeeds,
- * so a failure leaves state at ICE_CONNECTED and the caller can retry
- * without a half-initialised DTLS context being driven by inbound bytes. */
+ * State is only advanced to DTLS_HANDSHAKING after dtls_start() succeeds.
+ * On failure, state remains at ICE_CONNECTED so the caller can retry
+ * DTLS startup from the ICE-connected state. Note: this only governs
+ * the FSM; the inbound DTLS gate is handle_input's `state >= ICE_CONNECTED`
+ * check, so DTLS records remain accepted on the failure-retry path. */
 static int rtc_begin_dtls_handshake(nanortc_t *rtc, const nanortc_addr_t *src)
 {
     int is_server = (rtc->sdp.local_setup == NANORTC_SDP_SETUP_PASSIVE);
