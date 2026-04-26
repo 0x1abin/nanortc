@@ -2331,6 +2331,15 @@ int nanortc_ice_restart(nanortc_t *rtc)
      * timers. dtls_destroy is a no-op when crypto_ctx is NULL. */
     dtls_destroy(&rtc->dtls);
 
+    /* Invalidate cached fingerprints tied to the destroyed DTLS identity.
+     * rtc_cache_fingerprint() is a write-once cache that bails when
+     * sdp.local_fingerprint is non-empty; without this clear, the next
+     * create_offer/accept_offer would advertise the *previous* cert's
+     * fingerprint while dtls_init() generates a new one — DTLS verify
+     * would then fail on the peer side. */
+    memset(rtc->sdp.local_fingerprint, 0, sizeof(rtc->sdp.local_fingerprint));
+    memset(rtc->dtls.local_fingerprint, 0, sizeof(rtc->dtls.local_fingerprint));
+
     /* Reset ICE state (preserves role + tie_breaker, bumps generation) */
     int rc = ice_restart(&rtc->ice);
     if (rc != NANORTC_OK) {
