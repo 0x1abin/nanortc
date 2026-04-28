@@ -36,6 +36,9 @@ DataChannel-only 构建（~60KB RAM）到完整的音视频媒体传输。
 #define NANORTC_FEATURE_DC_ORDERED   1   // 有序交付（DC 子特性）
 #define NANORTC_FEATURE_AUDIO        0   // 音频 (RTP/SRTP/Jitter)
 #define NANORTC_FEATURE_VIDEO        0   // 视频 (RTP/SRTP/BWE)
+#define NANORTC_FEATURE_H265         0   // H.265/HEVC（VIDEO 子特性）
+#define NANORTC_FEATURE_IPV6         1   // IPv6 candidate 解析/生成
+#define NANORTC_FEATURE_TURN         1   // TURN relay client
 ```
 
 特性标志 → 模块映射：
@@ -46,36 +49,44 @@ DataChannel-only 构建（~60KB RAM）到完整的音视频媒体传输。
 | `NANORTC_FEATURE_DATACHANNEL` | sctp, datachannel, crc32c |
 | `NANORTC_FEATURE_AUDIO` 或 `VIDEO` | rtp, rtcp, srtp |
 | `NANORTC_FEATURE_AUDIO` | jitter |
-| `NANORTC_FEATURE_VIDEO` | bwe |
+| `NANORTC_FEATURE_VIDEO` | media, rtcp feedback, h264, annex_b, bwe, twcc |
+| `NANORTC_FEATURE_H265` | h265, base64（依赖 `VIDEO`） |
+| `NANORTC_FEATURE_TURN` | turn |
+| `NANORTC_FEATURE_IPV6` | IPv6 address parsing/formatting in addr |
 
-CI 测试的 6 种组合：
+CI 测试的 7 种 canonical 组合：
 
-| 名称 | DC | AUDIO | VIDEO |
-|------|-----|-------|-------|
-| DATA | ON | OFF | OFF |
-| AUDIO | ON | ON | OFF |
-| MEDIA | ON | ON | ON |
-| AUDIO_ONLY | OFF | ON | OFF |
-| MEDIA_ONLY | OFF | ON | ON |
-| CORE_ONLY | OFF | OFF | OFF |
+| 名称 | DC | AUDIO | VIDEO | H265 |
+|------|-----|-------|-------|------|
+| DATA | ON | OFF | OFF | OFF |
+| AUDIO | ON | ON | OFF | OFF |
+| MEDIA | ON | ON | ON | OFF |
+| MEDIA_H265 | ON | ON | ON | ON |
+| AUDIO_ONLY | OFF | ON | OFF | OFF |
+| MEDIA_ONLY | OFF | ON | ON | OFF |
+| CORE_ONLY | OFF | OFF | OFF | OFF |
 
-预估资源占用（ESP32，-Os 编译）：
+当前资源占用以 `docs/engineering/memory-profiles.md` 为准。ESP32-P4 / ESP-IDF 5.5 / `-Os` Kconfig 默认值的代表性数据如下：
 
-| 组合 | Flash | RAM（空闲） | RAM（1 连接） |
-|------|-------|------------|---------------|
-| DC only | ~80KB | ~8KB | ~50-60KB |
-| DC + AUDIO | ~130KB | ~10KB | ~80-100KB |
-| DC + AUDIO + VIDEO | ~180KB | ~12KB | ~120-160KB |
+| 组合 | Flash (.text) | `sizeof(nanortc_t)` |
+|------|---------------|----------------------|
+| CORE_ONLY | 29.0 KB | 10.2 KB |
+| DC only | 38.8 KB | 19.4 KB |
+| Audio only | 40.8 KB | 20.6 KB |
+| DC + Audio | 50.6 KB | 29.9 KB |
+| Media only | 45.3 KB | 51.0 KB |
+| DC + Audio + Video | 55.0 KB | 60.3 KB |
 
 ---
 
 ## 2. 架构设计
 
-### 2.1 Sans I/O 模型（借鉴 str0m）
+### 2.1 Sans I/O 模型
 
-NanoRTC 遵循 [Sans I/O](https://sans-io.readthedocs.io) 模式，参照
-[str0m](https://github.com/algesten/str0m)（Rust WebRTC 实现）的设计。
-核心 `nanortc_t` 是一个无副作用的纯状态机：
+NanoRTC 遵循 [Sans I/O](https://sans-io.readthedocs.io) 模式。核心
+`nanortc_t` 是一个无副作用的纯状态机；协议细节以 RFC 为唯一权威来源，
+第三方实现只可作为 API 形态或测试夹具的工程背景，不作为 wire format /
+状态机行为依据：
 
 ```
                     ┌─────────────────────────────────────┐
@@ -170,7 +181,7 @@ typedef enum {
     NANORTC_EV_DISCONNECTED = 1,         // 连接断开
     NANORTC_EV_ICE_STATE_CHANGE = 2,     // ICE 状态变化
 
-    // 媒体 (str0m-inspired typed events)
+    // 媒体（typed events）
     NANORTC_EV_MEDIA_ADDED = 3,          // 远端添加了新媒体轨道
     NANORTC_EV_MEDIA_CHANGED = 4,        // 媒体方向变化
     NANORTC_EV_MEDIA_DATA = 5,           // 收到媒体帧（音频或视频）
@@ -864,66 +875,21 @@ void nano_stop_easy(nanortc_t *rtc);
 
 ### 7.1 阶段划分
 
-```
-阶段 0: 项目骨架 [✓ 完成]                               [1-2 天]
-├── 仓库结构、CMakeLists.txt、头文件
-├── nanortc_t 结构体定义
-├── 公共 API 桩（nanortc.h）
-├── nanortc_crypto_provider_t 接口
-├── nanortc_crypto_mbedtls.c（DTLS + HMAC + random）
-└── Linux 测试环境（合成数据，无需真实网络）
+当前执行状态以 `docs/PLANS.md`、`docs/QUALITY_SCORE.md` 和
+`docs/exec-plans/**` 为准。本文只保留路线图摘要，避免与可执行计划重复。
 
-阶段 1: DataChannel 端到端 [✓ 代码完成]                  [3-4 周]
-│   成果: 130+ 单元测试, 5/5 libdatachannel 互通测试通过
-│         SDP 兼容性已验证 (controlled + controlling)
-├── 第 1 周: STUN + ICE
-│   ├── nano_stun.c — STUN 消息编解码
-│   ├── nano_ice.c — ICE 状态机（controlled + controlling）
-│   └── 单元测试: STUN 编码往返验证
-│
-├── 第 2 周: DTLS 集成
-│   ├── nano_dtls.c — 基于 BIO 的 DTLS（mbedtls）
-│   ├── 自签名证书生成
-│   └── 测试: 与浏览器完成 DTLS 握手（通过信令适配）
-│
-├── 第 3 周: SCTP-Lite
-│   ├── nano_sctp.c — 四次握手 + DATA/SACK
-│   ├── 重传定时器
-│   ├── 有序/无序交付
-│   └── 单元测试: 状态机 + chunk 编码
-│
-├── 第 4 周: DataChannel + SDP + 集成
-│   ├── nano_datachannel.c — DCEP 协议
-│   ├── nano_sdp.c — DataChannel 最小 SDP
-│   ├── 端到端测试: NanoRTC ↔ 浏览器 DataChannel
-│   └── ESP32 示例: HTTP 信令 + DataChannel echo（复用 http_signaling.c）
-
-阶段 2: 音频（NANORTC_FEATURE_AUDIO）[进行中]              [2-3 周]
-│   已完成: Step 1 RTP/SRTP, Step 2 RTCP/Jitter/SDP audio m-line
-├── nano_srtp.c — SRTP 加解密
-├── nano_rtp.c — RTP 打包/解包（Opus, G.711）
-├── nano_rtcp.c — SR/RR/NACK 生成
-├── nano_jitter.c — 固定 jitter buffer
-├── nano_sdp.c — 增加 audio m-line 支持
-├── 测试: 与浏览器双向音频
-└── ESP32 示例: 音频对讲
-
-阶段 3: 视频（NANORTC_FEATURE_VIDEO）                      [2-3 周]
-├── nano_rtp.c — 增加 H.264 FU-A / VP8 打包
-├── nano_rtcp.c — 增加 PLI（关键帧请求）
-├── nano_sdp.c — 增加 video m-line 支持
-├── nano_bwe.c — 基础带宽估计（可选）
-├── 测试: 从浏览器接收视频
-└── ESP32 示例: 摄像头推流
-
-阶段 4: 加固与优化                                     [持续]
-├── 模糊测试（STUN、SDP、SCTP 解析器）
-├── 内存使用分析与优化
-├── 静态分配模式（无 malloc）
-├── 完整 ICE 支持（可选，应用层集成 libjuice）
-├── TURN 支持（可选）
-└── 文档和 API 参考
-```
+| 阶段 | 状态 | 当前成果 / 下一步 |
+|------|------|-------------------|
+| Phase 0: Skeleton | 完成 | 仓库结构、CMake、公共头、crypto provider、Linux 合成测试环境。 |
+| Phase 1: DataChannel E2E | 完成 | ICE / DTLS / SCTP / DCEP / SDP 打通；浏览器、ESP32-S3 与 libdatachannel 互通。 |
+| Phase 2: Audio | Active | RTP / SRTP / RTCP / Jitter / SDP audio 已实现；剩余人工验证 ESP32 intercom 双向音频。 |
+| Phase 3: Video | 完成 | H.264 FU-A、RTCP NACK/PLI、REMB/BWE、ESP32 camera 与浏览器验证。 |
+| Phase 3.5: H.265/HEVC | Active | `nano_h265.c` + 单元测试已具备；剩余 SDP/RTC wiring、interop、浏览器验证。 |
+| Phase 4: Quality | 完成 | Unity、覆盖率门槛、fuzz harness、CI 约束和 interop 框架。 |
+| Phase 5: Network Traversal | Active | STUN srflx、TURN Allocate/Refresh/Permission/ChannelBind/ChannelData 已实现；继续补 relay-only 自动化覆盖。 |
+| Phase 6-8: Resource / Stability | Active | RAM 优化、hot path hardening、ICE pending table、video pkt_ring、H.264 zero-copy；剩余 IoT profile 与可选 P2 项。 |
+| Phase 9: BWE Perception | Active | TWCC parser、SDP/RTP extmap、loss-based BWE、runtime tunables、track stats 与 example coordinator。 |
+| Phase 10+ 候选 | Draft | TWCC feedback sending、API 边界收敛、RTC 编排拆分、进一步 zero-copy。 |
 
 ### 7.2 测试策略
 
@@ -1030,10 +996,10 @@ HTTP 信令适配层。
 | 项目 | 语言 | I/O 模型 | 对 NanoRTC 的借鉴意义 |
 |------|------|----------|----------------------|
 | [str0m](https://github.com/algesten/str0m) | Rust | **Sans I/O** | 架构灵感：poll/handle 模式、无内部线程、时间作为外部输入 |
-| [libdatachannel](https://github.com/paullouisageneau/libdatachannel) | C++ | 内部 I/O | 完整 WebRTC 参考；对 MCU 太重但协议实现参考价值高 |
-| [libjuice](https://github.com/paullouisageneau/libjuice) | C | 内部 I/O | ICE/STUN/TURN 参考；可选的完整 ICE 集成方案 |
+| [libdatachannel](https://github.com/paullouisageneau/libdatachannel) | C++ | 内部 I/O | 互通测试夹具；不作为 wire format / 状态机实现来源 |
+| [libjuice](https://github.com/paullouisageneau/libjuice) | C | 内部 I/O | ICE/STUN/TURN 工程背景；协议行为仍以 RFC 为准 |
 | [esp_peer](https://components.espressif.com/components/espressif/esp_peer) | C | 内部 I/O | Espressif 官方 WebRTC 组件；展示了 ESP32 优化模式（闭源） |
-| [usrsctp](https://github.com/sctplab/usrsctp) | C | 内部 I/O | SCTP 参考实现；过于复杂但有助于理解 RFC 4960 |
+| [usrsctp](https://github.com/sctplab/usrsctp) | C | 内部 I/O | SCTP 工程背景；协议实现以 RFC 4960 / 8831 / 8832 为准 |
 
 ---
 

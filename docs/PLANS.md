@@ -15,8 +15,9 @@ NanoRTC is built by AI coding agents. Estimates use **agent sessions** (one focu
 | [Phase 5: Network Traversal](exec-plans/active/phase5-network-traversal.md) | 5 | **Active** — Sessions 1-4 complete. All acceptance criteria met. | 3 sessions | NAT traversal for production |
 | [Phase 8: Continued Optimization & Stability](exec-plans/active/phase8-continued-optimization.md) | 8 | **Active** — PR-2 (SCTP failure event propagation) landed 2026-04-25, PR-3 (video pkt_ring decoupling) landed 2026-04-23, PR-4 (H.264 zero-copy iterator) landed 2026-04-25, PR-5 (ICE CONTROLLING fix) landed 2026-04-13. PR-1 pending; P2 series on demand. | 4–6 sessions | IoT memory profile, stability propagation, video pkt_ring decoupling, H.264 zero-copy, ICE CONTROLLING per-pair transaction fix |
 | [Phase 9: BWE Perception for IoT Camera](exec-plans/active/phase9-bwe-perception.md) | 9 | **Active** — PR-1…PR-5 landed + post-review hardening + example-layer BWE coordinator extracted. Browser interop snapshot pending. | 1–2 sessions | TWCC parser + SDP/RTP wiring, loss-based BWE controller, runtime bounds/threshold API, send_fps + send_bitrate + fraction_lost stats, shared `examples/common/bwe_coordinator` glue, rk3588 `capture_set_bitrate()` consumer |
+| [Phase 10: Design Convergence & API Boundary](exec-plans/active/phase10-design-convergence.md) | 10 | **Active** — PR-1 documentation convergence started; API boundary and RTC orchestration PRs pending | 3–4 sessions | Keep authoritative docs current, make output/storage lifetimes explicit, and split RTC orchestration safely |
 
-**Total Phase 1-9:** ~23-29 agent sessions
+**Total Phase 1-10:** ~26-33 agent sessions
 
 ## Completed Plans
 
