@@ -68,6 +68,7 @@ NanoRTC's output queue stores pointers instead of copying every payload. That is
 
 - Existing media/TURN/e2e tests.
 - New aliasing regression tests under small `NANORTC_OUT_QUEUE_SIZE` and small `NANORTC_VIDEO_PKT_RING_SIZE` overrides.
+- Parametrize the burst tests to `NANORTC_OUT_QUEUE_SIZE=4` + `NANORTC_VIDEO_PKT_RING_SIZE=4` so the aliasing window is small enough to actually trigger in CI; at default sizes the window is wide enough that regressions can slip through unnoticed.
 
 ## PR-3 — Add `nanortc_next_timeout_ms()`
 
@@ -104,6 +105,7 @@ Semantics:
 - Unit tests covering core-only, datachannel, TURN-enabled, and media builds.
 - Example update showing event-loop use.
 - Full feature matrix because timer code crosses feature guards.
+- Add a wakeup-aware integration in `examples/desktop/*` (`select()` / `poll()` / `epoll_wait()` driven by `nanortc_next_timeout_ms()`) so the API has a real callsite the moment it lands, not just a header declaration.
 
 ## PR-4 — Split RTC orchestration internals
 
