@@ -544,6 +544,182 @@ TEST(test_e2e_ice_dtls_loopback)
     nanortc_destroy(&answerer);
 }
 
+/*
+ * Helper: re-sync ICE credentials between offerer/answerer after both have
+ * called nanortc_ice_restart(). The restart preserves local_candidates but
+ * blanks the peer-side credentials and remote_candidates; cross-write the
+ * freshly generated ufrag/pwd and re-arm offerer's remote_candidates entry
+ * so the second handshake can drive checks on the same loopback 5-tuple.
+ * Mirrors the final block of e2e_setup_ice_creds().
+ */
+static void e2e_resync_ice_creds(nanortc_t *offerer, nanortc_t *answerer)
+{
+    memcpy(offerer->ice.remote_ufrag, answerer->ice.local_ufrag,
+           sizeof(offerer->ice.remote_ufrag));
+    offerer->ice.remote_ufrag_len = answerer->ice.local_ufrag_len;
+    memcpy(offerer->ice.remote_pwd, answerer->ice.local_pwd, sizeof(offerer->ice.remote_pwd));
+    offerer->ice.remote_pwd_len = answerer->ice.local_pwd_len;
+
+    memcpy(answerer->ice.remote_ufrag, offerer->ice.local_ufrag,
+           sizeof(answerer->ice.remote_ufrag));
+    answerer->ice.remote_ufrag_len = offerer->ice.local_ufrag_len;
+    memcpy(answerer->ice.remote_pwd, offerer->ice.local_pwd, sizeof(answerer->ice.remote_pwd));
+    answerer->ice.remote_pwd_len = offerer->ice.local_pwd_len;
+
+    offerer->ice.remote_candidates[0].family = 4;
+    offerer->ice.remote_candidates[0].addr[0] = 192;
+    offerer->ice.remote_candidates[0].addr[1] = 168;
+    offerer->ice.remote_candidates[0].addr[2] = 1;
+    offerer->ice.remote_candidates[0].addr[3] = 2;
+    offerer->ice.remote_candidates[0].port = 5000;
+    offerer->ice.remote_candidate_count = 1;
+}
+
+/*
+ * E2E: ICE restart drives a full DTLS re-handshake with a fresh certificate.
+ *
+ * Regression for commit 8fea1e8 ("tear down DTLS context on ice_restart").
+ * Without dtls_destroy in nanortc_ice_restart, the next handshake would skip
+ * dtls_init (guarded by `!crypto_ctx`), reuse the original cert, and the
+ * fingerprint would be byte-identical pre/post restart.
+ */
+TEST(test_e2e_ice_restart_dtls_rehandshake)
+{
+    nanortc_t offerer, answerer;
+    nanortc_config_t off_cfg = e2e_default_config();
+    off_cfg.role = NANORTC_ROLE_CONTROLLING;
+    ASSERT_OK(nanortc_init(&offerer, &off_cfg));
+    nanortc_config_t ans_cfg = e2e_default_config();
+    ans_cfg.role = NANORTC_ROLE_CONTROLLED;
+    ASSERT_OK(nanortc_init(&answerer, &ans_cfg));
+
+    e2e_setup_ice_creds(&offerer, &answerer);
+
+    uint32_t now_ms = 100;
+    ASSERT_OK(nanortc_handle_input(&offerer, &(nanortc_input_t){.now_ms = now_ms}));
+
+    int connected = 0;
+    for (int round = 0; round < 30; round++) {
+        e2e_pump(&offerer, &answerer, now_ms, 5);
+        if (offerer.state >= NANORTC_STATE_DTLS_CONNECTED &&
+            answerer.state >= NANORTC_STATE_DTLS_CONNECTED) {
+            connected = 1;
+            break;
+        }
+    }
+    ASSERT_TRUE(connected);
+
+    /* Snapshot fingerprints by value — dtls_destroy will zero the underlying buffer. */
+    char pre_off_fp[sizeof(offerer.dtls.local_fingerprint)];
+    char pre_ans_fp[sizeof(answerer.dtls.local_fingerprint)];
+    ASSERT_TRUE(dtls_get_fingerprint(&offerer.dtls) != NULL);
+    ASSERT_TRUE(dtls_get_fingerprint(&answerer.dtls) != NULL);
+    memcpy(pre_off_fp, offerer.dtls.local_fingerprint, sizeof(pre_off_fp));
+    memcpy(pre_ans_fp, answerer.dtls.local_fingerprint, sizeof(pre_ans_fp));
+
+    ASSERT_OK(nanortc_ice_restart(&offerer));
+    ASSERT_OK(nanortc_ice_restart(&answerer));
+
+    /* Mid-restart invariants — the unit-level T19/T20/T21 properties must hold
+     * on a fully connected nanortc_t, not just on a hand-built one. */
+    ASSERT_TRUE(offerer.dtls.crypto_ctx == NULL);
+    ASSERT_TRUE(answerer.dtls.crypto_ctx == NULL);
+    ASSERT_EQ(offerer.dtls.local_fingerprint[0], '\0');
+    ASSERT_EQ(answerer.dtls.local_fingerprint[0], '\0');
+    ASSERT_EQ(offerer.sdp.local_fingerprint[0], '\0');
+    ASSERT_EQ(answerer.sdp.local_fingerprint[0], '\0');
+    ASSERT_EQ(offerer.state, NANORTC_STATE_NEW);
+    ASSERT_EQ(answerer.state, NANORTC_STATE_NEW);
+
+    e2e_resync_ice_creds(&offerer, &answerer);
+
+    /* Bootstrap the second ICE check round and pump until DTLS reconnects. */
+    ASSERT_OK(nanortc_handle_input(&offerer, &(nanortc_input_t){.now_ms = now_ms}));
+    int reconnected = 0;
+    for (int round = 0; round < 30; round++) {
+        e2e_pump(&offerer, &answerer, now_ms, 5);
+        if (offerer.state >= NANORTC_STATE_DTLS_CONNECTED &&
+            answerer.state >= NANORTC_STATE_DTLS_CONNECTED) {
+            reconnected = 1;
+            break;
+        }
+    }
+    ASSERT_TRUE(reconnected);
+
+    /* Fingerprint must differ — a regenerated cert is the proof that
+     * dtls_init actually ran on the second handshake. */
+    ASSERT_TRUE(dtls_get_fingerprint(&offerer.dtls) != NULL);
+    ASSERT_TRUE(dtls_get_fingerprint(&answerer.dtls) != NULL);
+    ASSERT_NEQ(memcmp(pre_off_fp, offerer.dtls.local_fingerprint, sizeof(pre_off_fp)), 0);
+    ASSERT_NEQ(memcmp(pre_ans_fp, answerer.dtls.local_fingerprint, sizeof(pre_ans_fp)), 0);
+
+    nanortc_destroy(&offerer);
+    nanortc_destroy(&answerer);
+}
+
+/*
+ * E2E: ICE restart re-populates the SDP fingerprint cache with the new cert.
+ *
+ * Regression for commit 9a75412 ("clear cached fingerprints on ice_restart").
+ * rtc_cache_fingerprint() is a write-once cache that bails when
+ * sdp.local_fingerprint is non-empty. Without the memset in ice_restart,
+ * the second nanortc_create_offer() would leave sdp.local_fingerprint at
+ * the *old* cert hash while dtls_init() generates a new cert — causing
+ * any peer that enforces a=fingerprint to reject the DTLS handshake.
+ */
+TEST(test_e2e_ice_restart_sdp_fingerprint_refresh)
+{
+    nanortc_t rtc;
+    nanortc_config_t cfg = e2e_default_config();
+    cfg.role = NANORTC_ROLE_CONTROLLING;
+    ASSERT_OK(nanortc_init(&rtc, &cfg));
+
+#if NANORTC_FEATURE_DATACHANNEL
+    ASSERT(nanortc_create_datachannel(&rtc, "x", NULL) >= 0);
+#elif NANORTC_HAVE_MEDIA_TRANSPORT
+    ASSERT(nanortc_add_audio_track(&rtc, NANORTC_DIR_SENDRECV, NANORTC_CODEC_OPUS, 48000, 2) >= 0);
+#endif
+
+    /* First create_offer triggers dtls_init + rtc_cache_fingerprint. */
+    char offer1[4096];
+    ASSERT_OK(nanortc_create_offer(&rtc, offer1, sizeof(offer1), NULL));
+
+    /* Sanity: SDP cache holds "sha-256 " + dtls.local_fingerprint. */
+    ASSERT_TRUE(rtc.dtls.local_fingerprint[0] != '\0');
+    ASSERT_TRUE(rtc.sdp.local_fingerprint[0] != '\0');
+    ASSERT_EQ(memcmp(rtc.sdp.local_fingerprint, "sha-256 ", 8), 0);
+    ASSERT_EQ(memcmp(rtc.sdp.local_fingerprint + 8, rtc.dtls.local_fingerprint,
+                     sizeof(rtc.dtls.local_fingerprint) - 1),
+              0);
+
+    char pre_dtls_fp[sizeof(rtc.dtls.local_fingerprint)];
+    memcpy(pre_dtls_fp, rtc.dtls.local_fingerprint, sizeof(pre_dtls_fp));
+
+    ASSERT_OK(nanortc_ice_restart(&rtc));
+    ASSERT_EQ(rtc.dtls.local_fingerprint[0], '\0');
+    ASSERT_EQ(rtc.sdp.local_fingerprint[0], '\0');
+
+    /* Second create_offer must regenerate the cert and re-cache the fingerprint. */
+    char offer2[4096];
+    ASSERT_OK(nanortc_create_offer(&rtc, offer2, sizeof(offer2), NULL));
+
+    ASSERT_TRUE(rtc.dtls.local_fingerprint[0] != '\0');
+    ASSERT_NEQ(memcmp(pre_dtls_fp, rtc.dtls.local_fingerprint, sizeof(pre_dtls_fp)), 0);
+
+    /* The advertised SDP fingerprint must match the freshly generated cert,
+     * not the stale pre-restart hash. Reverting 9a75412 fails this assertion:
+     * rtc_cache_fingerprint's early-return on non-empty sdp.local_fingerprint
+     * would leave the SDP cache holding the old "sha-256 OLD..." while the
+     * DTLS layer holds the new cert hash. */
+    ASSERT_TRUE(rtc.sdp.local_fingerprint[0] != '\0');
+    ASSERT_EQ(memcmp(rtc.sdp.local_fingerprint, "sha-256 ", 8), 0);
+    ASSERT_EQ(memcmp(rtc.sdp.local_fingerprint + 8, rtc.dtls.local_fingerprint,
+                     sizeof(rtc.dtls.local_fingerprint) - 1),
+              0);
+
+    nanortc_destroy(&rtc);
+}
+
 /* ----------------------------------------------------------------
  * Helper: check if NUL-terminated haystack contains needle
  * ---------------------------------------------------------------- */
@@ -2603,6 +2779,8 @@ RUN(test_e2e_multiple_instances);
 RUN(test_e2e_demux_byte_ranges);
 RUN(test_e2e_ice_loopback);
 RUN(test_e2e_ice_dtls_loopback);
+RUN(test_e2e_ice_restart_dtls_rehandshake);
+RUN(test_e2e_ice_restart_sdp_fingerprint_refresh);
 RUN(test_e2e_create_offer_content);
 RUN(test_e2e_offer_answer_roundtrip);
 RUN(test_e2e_full_sdp_to_dtls);

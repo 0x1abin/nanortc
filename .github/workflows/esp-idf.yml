@@ -1,0 +1,48 @@
+name: ESP-IDF Build
+
+# Build nanortc ESP-IDF examples to catch component / Kconfig / lwIP regressions
+# without requiring real hardware. Compile-only — no flashing, no on-device tests.
+#
+# The Python E2E test (tests/esp32/test_esp32_dc.py) requires hardware or QEMU and
+# is intentionally not part of this workflow; it runs as workflow_dispatch / manual.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  esp-idf-build:
+    name: ESP-IDF ${{ matrix.example.target }} / ${{ matrix.example.path }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        example:
+          # esp32_datachannel: minimal config — exercise nanortc on every supported target
+          - { path: esp32_datachannel, target: esp32 }
+          - { path: esp32_datachannel, target: esp32s3 }
+          - { path: esp32_datachannel, target: esp32p4 }
+          # esp32_audio / esp32_video: representative target only
+          # (the codec stacks are target-agnostic; if datachannel builds on all
+          # three, the additional codec components only need one verification)
+          - { path: esp32_audio,       target: esp32s3 }
+          - { path: esp32_video,       target: esp32s3 }
+          # esp32_camera (P4 only) is intentionally excluded — its
+          # board_manager.defaults autogen + camera-sensor selection is
+          # board-specific and will be added in a follow-up workflow.
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # esp32_video bakes sample_data submodule frames into video.blob /
+          # audio.blob at build time; without this, those targets fail with
+          # "sample_data/h264SampleFrames is not a directory".
+          submodules: recursive
+
+      - name: ESP-IDF build (${{ matrix.example.target }})
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.5
+          target: ${{ matrix.example.target }}
+          path: examples/${{ matrix.example.path }}
