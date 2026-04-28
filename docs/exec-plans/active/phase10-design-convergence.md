@@ -1,7 +1,7 @@
 # Phase 10: Design Convergence
 
 **Status:** Active — planning document created after design review.
-**Effort:** 3-5 agent sessions, split into independent PRs.
+**Estimated effort:** 2–3 agent sessions, split into independent PRs.
 **Goal:** Convert the current design review findings into small, reviewable changes that keep NanoRTC's embedded/Sans-I/O constraints intact while reducing future integration risk.
 
 ## Context
