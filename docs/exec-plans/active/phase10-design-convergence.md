@@ -1,4 +1,4 @@
-# Phase 10: Design Convergence & API Boundary
+# Phase 10: Design Convergence
 
 **Status:** Active — planning document created after design review.
 **Effort:** 3-5 agent sessions, split into independent PRs.
@@ -11,7 +11,6 @@ NanoRTC's core design is sound: pure C, Sans I/O, no heap allocation, caller-own
 The main risk is now convergence rather than missing protocol blocks:
 
 - The design documents, architecture overview, quality score, and active plans can drift because the implementation evolves faster than the original design draft.
-- The public `include/nanortc.h` exposes the complete `struct nanortc` layout to allow stack/static allocation, but that also makes internal layout churn visible to users.
 - `src/nano_rtc.c` is the load-bearing orchestration layer for ICE, TURN, DTLS, SCTP, media, BWE, timers, and output queue ownership.
 - `nanortc_output_t.transmit.data` is pointer-based, so payload lifetime rules must stay crisp for TURN lazy wrapping, video packet rings, SCTP output, and future zero-copy work.
 
@@ -24,9 +23,7 @@ This phase is intentionally conservative: prefer additive APIs, documentation in
 | **PR-1** | Documentation convergence guardrails | `docs/design-docs/nanortc-design-draft.md`, `ARCHITECTURE.md`, `docs/QUALITY_SCORE.md`, `docs/PLANS.md` | Low | Make one current design source of truth and remove stale feature/resource statements. |
 | **PR-2** | Output payload lifetime contract | `include/nanortc.h`, `ARCHITECTURE.md`, `tests/test_media.c`, `tests/test_turn.c`, `tests/test_e2e.c` | Low-medium | Document and regression-test queue pointer lifetime under bursty TURN/video/DC output. |
 | **PR-3** | Add `nanortc_next_timeout_ms()` | `include/nanortc.h`, `src/nano_rtc.c`, timer-focused tests, examples | Low | Let callers block until the next protocol deadline instead of fixed polling. |
-| **PR-4** | Public stats/accessor cleanup | `include/nanortc.h`, `src/nano_rtc.c`, examples | Low | Replace direct reads of public layout-only fields with accessor APIs where integration code needs observability. |
-| **PR-5** | Split RTC orchestration internals | `src/nano_rtc.c`, new `src/nano_rtc_*.c/.h`, `CMakeLists.txt`, ESP-IDF component sources | Medium | Reduce single-file complexity without changing public API or module dependencies. |
-| **P2-A** | Opaque caller-owned storage prototype | `include/nanortc.h`, tests, examples | High / API-shaping | Explore a future-compatible alternative to exposing full `struct nanortc` layout. Do not ship unless migration story is clear. |
+| **PR-4** | Split RTC orchestration internals | `src/nano_rtc.c`, new `src/nano_rtc_*.c/.h`, `CMakeLists.txt`, ESP-IDF component sources | Medium | Reduce single-file complexity without changing public API or module dependencies. |
 
 ## PR-1 — Documentation convergence guardrails
 
@@ -108,28 +105,7 @@ Semantics:
 - Example update showing event-loop use.
 - Full feature matrix because timer code crosses feature guards.
 
-## PR-4 — Public stats/accessor cleanup
-
-### Problem
-
-Some integration code and tests need observability (`stats_pkt_ring_overrun`, selected ICE candidate type, BWE estimates, queue pressure). Reading fields directly from `nanortc_t` works today because the layout is public, but it makes future layout changes harder.
-
-### Approach
-
-1. Inventory direct field reads in examples/tests.
-2. Add narrow getters for stable observability:
-   - queue stats / overrun counters.
-   - selected ICE pair/candidate type.
-   - media track stats already exist; extend only if needed.
-3. Migrate examples to getters first; tests may still inspect internals when the field is explicitly an invariant test.
-4. Mark layout as public-for-allocation, not public-for-field-access, in `include/nanortc.h`.
-
-### Verification
-
-- Examples still build.
-- Tests still pass with no behavior change.
-
-## PR-5 — Split RTC orchestration internals
+## PR-4 — Split RTC orchestration internals
 
 ### Problem
 
@@ -158,33 +134,11 @@ Rules:
 - Full feature matrix once all file moves are complete.
 - Pay special attention to ESP-IDF source lists.
 
-## P2-A — Opaque caller-owned storage prototype
-
-This is a research item, not a default implementation task.
-
-The current public struct is simple and embedded-friendly. A future ABI-stable shape could preserve no-malloc allocation through a caller-owned storage object:
-
-```c
-typedef struct nanortc_storage {
-    uint8_t bytes[NANORTC_INSTANCE_SIZE];
-    uintptr_t align;
-} nanortc_storage_t;
-```
-
-Risks:
-
-- `NANORTC_INSTANCE_SIZE` depends on feature flags and user config.
-- Alignment must be correct across 32-bit/64-bit and crypto provider state.
-- Existing stack allocation users would need migration docs.
-
-Only pursue if public layout churn becomes a real integration blocker.
-
 ## Acceptance Criteria
 
 - [ ] Design draft, architecture overview, plan index, and quality score agree on current feature matrix and module status.
 - [ ] Output pointer lifetime is documented and covered by regression tests.
 - [ ] `nanortc_next_timeout_ms()` is implemented or explicitly deferred with a testable reason.
-- [ ] Examples avoid direct field reads for observability that should be stable API.
 - [ ] Any `nano_rtc.c` split keeps all feature combinations compiling.
 - [ ] No Sans-I/O, no-malloc, feature-guard, or safe-C constraint is weakened.
 
