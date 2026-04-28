@@ -212,6 +212,21 @@ This bug has existed since the initial ICE implementation; Phase 4's interop sui
 
 **Dependency.** None — independent of PR-1..PR-4. Can land in parallel with any of them. Recommend landing early in Phase 8 because it unblocks real browser-as-answerer deployments.
 
+### Post-merge hardening
+
+Landed 2026-04-26 → 2026-04-27. A Copilot review on PR #59 surfaced three latent correctness gaps in the restart path that the original PR-5 work didn't cover. All three landed on `develop` as small follow-up commits, then were pinned with regression tests:
+
+| Commit | Fix | Reverting it now fails |
+|---|---|---|
+| `d59a528` | Defer `state = NANORTC_STATE_DTLS_HANDSHAKING` until `dtls_start()` returns OK so a failure leaves the FSM at `ICE_CONNECTED` and is retryable. | `tests/test_trickle_ice.c::test_api_ice_restart_clears_dtls` (FSM-level). |
+| `8fea1e8` | Call `dtls_destroy(&rtc->dtls)` first thing in `nanortc_ice_restart()` so the next handshake re-runs `dtls_init()` instead of skipping it via the `if (!crypto_ctx)` guard. | `tests/test_e2e.c::test_e2e_ice_restart_dtls_rehandshake` — without the destroy, the post-restart fingerprint matches the pre-restart fingerprint (cert reused). |
+| `9a75412` | `memset` both `sdp.local_fingerprint` and `dtls.local_fingerprint` after the destroy so `rtc_cache_fingerprint()` (a write-once cache) re-populates from the freshly generated cert. | `tests/test_e2e.c::test_e2e_ice_restart_sdp_fingerprint_refresh` — without the clear, the SDP cache holds the stale hash while DTLS holds the new one, so any peer that enforces `a=fingerprint` rejects the new handshake. |
+| `af8f566` | Doc-only: corrected the rationale comment so the FSM-vs-receive-path distinction is explicit. | n/a (doc). |
+
+The two new E2E tests bracket the unit-level T20/T21 coverage with a full ICE → DTLS round trip on both sides, restart, re-sync, reconnect, and assert new keying material — closing the gap that the unit tests probe state in isolation but cannot show that two peers actually re-handshake. Validation: each new e2e test was confirmed to fail when its target commit is surgically reverted in the working tree (and to pass on baseline `develop`).
+
+See [tech-debt-tracker.md TD-022](../tech-debt-tracker.md#resolved-debt) for the consolidated entry.
+
 ---
 
 ## P2 Series (on-demand)
