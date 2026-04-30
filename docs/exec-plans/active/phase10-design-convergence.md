@@ -22,7 +22,7 @@ This phase is intentionally conservative: prefer additive APIs, documentation in
 |---|---|---|---|---|
 | **PR-1** | Documentation convergence guardrails | `docs/design-docs/nanortc-design-draft.md`, `ARCHITECTURE.md`, `docs/QUALITY_SCORE.md`, `docs/PLANS.md` | Low | Make one current design source of truth and remove stale feature/resource statements. |
 | **PR-2** | Output payload lifetime contract | `include/nanortc.h`, `ARCHITECTURE.md`, `tests/test_media.c`, `tests/test_turn.c`, `tests/test_e2e.c` | Low-medium | Document and regression-test queue pointer lifetime under bursty TURN/video/DC output. |
-| **PR-3** | Add `nanortc_next_timeout_ms()` | `include/nanortc.h`, `src/nano_rtc.c`, timer-focused tests, examples | Low | Let callers block until the next protocol deadline instead of fixed polling. |
+| **PR-3** | Add `nanortc_next_timeout_ms()` **[COMPLETED 2026-04-29]** | `include/nanortc.h`, `src/nano_rtc.c`, `tests/test_next_timeout.c`, `examples/common/run_loop_{linux,esp}.c` | Low | Let callers block until the next protocol deadline instead of fixed polling. |
 | **PR-4** | Split RTC orchestration internals | `src/nano_rtc.c`, new `src/nano_rtc_*.c/.h`, `CMakeLists.txt`, ESP-IDF component sources | Medium | Reduce single-file complexity without changing public API or module dependencies. |
 
 ## PR-1 — Documentation convergence guardrails
@@ -70,42 +70,30 @@ NanoRTC's output queue stores pointers instead of copying every payload. That is
 - New aliasing regression tests under small `NANORTC_OUT_QUEUE_SIZE` and small `NANORTC_VIDEO_PKT_RING_SIZE` overrides.
 - Parametrize the burst tests to `NANORTC_OUT_QUEUE_SIZE=4` + `NANORTC_VIDEO_PKT_RING_SIZE=4` so the aliasing window is small enough to actually trigger in CI; at default sizes the window is wide enough that regressions can slip through unnoticed.
 
-## PR-3 — Add `nanortc_next_timeout_ms()`
+## PR-3 — `nanortc_next_timeout_ms()` [LANDED]
 
-### Problem
+Public deadline-aggregator API so embedded loops can block in
+`select()` / `poll()` / `epoll_wait()` / RTOS waits up to the next protocol
+tick instead of polling on a fixed cadence. Previously the only signal
+was `NANORTC_OUTPUT_TIMEOUT`, which forces a `poll_output()` round-trip
+before every blocking wait.
 
-Applications currently learn the next protocol wakeup through `NANORTC_OUTPUT_TIMEOUT`, but many embedded loops want a direct query before blocking in `select()`, `poll()`, `epoll_wait()`, or an RTOS event wait. Fixed periodic ticking wastes CPU and power.
+Single source of truth for the contract is the public-header doxygen at
+`include/nanortc.h` (`nanortc_next_timeout_ms`) — semantics, aggregated
+deadlines, and idle cap are documented there and not duplicated here.
 
-### Proposed API
+Landed:
 
-```c
-int nanortc_next_timeout_ms(const nanortc_t *rtc, uint32_t now_ms, uint32_t *out_ms);
-```
-
-Semantics:
-
-- `out_ms=0` means call `nanortc_handle_input()` immediately with a timer tick.
-- A positive value is the maximum delay before the next required tick.
-- Return `NANORTC_ERR_INVALID_PARAM` on NULL arguments.
-- Return `NANORTC_ERR_STATE` for destroyed/uninitialized state only if existing API has a comparable state guard; otherwise keep it total and conservative.
-
-### Internal deadlines to consider
-
-- ICE connectivity checks and pending transaction expiry.
-- ICE consent freshness / timeout.
-- STUN srflx retry.
-- TURN Allocate/Refresh/CreatePermission/ChannelBind timers.
-- DTLS retransmit / close_notify progress if exposed by the crypto provider.
-- SCTP RTO / heartbeat.
-- RTCP periodic send.
-- Minimum poll cadence (`NANORTC_MIN_POLL_INTERVAL_MS`) as a safety cap when no finer-grained deadline exists.
-
-### Verification
-
-- Unit tests covering core-only, datachannel, TURN-enabled, and media builds.
-- Example update showing event-loop use.
-- Full feature matrix because timer code crosses feature guards.
-- Add a wakeup-aware integration in `examples/desktop/*` (`select()` / `poll()` / `epoll_wait()` driven by `nanortc_next_timeout_ms()`) so the API has a real callsite the moment it lands, not just a header declaration.
+- API + implementation: `include/nanortc.h` / `src/nano_rtc.c`.
+- Unit coverage: `tests/test_next_timeout.c` exercises idle cap, DTLS
+  handshake clamp to `NANORTC_MIN_POLL_INTERVAL_MS`, ICE check pacing,
+  ICE consent freshness, STUN srflx retry, TURN refresh, and the
+  multi-source `min`. SCTP RTO and RTCP cadence are plumbing-identical
+  and covered structurally rather than via a heavy fixture.
+- Real callsite: `examples/common/run_loop_linux.c:nano_run_loop_step`
+  and the mirrored `examples/common/run_loop_esp.c:nano_run_loop_step`
+  call the aggregator before `select()`, shortening the user's
+  `max_poll_ms` ceiling whenever a protocol deadline is closer.
 
 ## PR-4 — Split RTC orchestration internals
 
@@ -140,7 +128,7 @@ Rules:
 
 - [ ] Design draft, architecture overview, plan index, and quality score agree on current feature matrix and module status.
 - [ ] Output pointer lifetime is documented and covered by regression tests.
-- [ ] `nanortc_next_timeout_ms()` is implemented or explicitly deferred with a testable reason.
+- [x] `nanortc_next_timeout_ms()` implemented (PR-3, 2026-04-29) — public API + `tests/test_next_timeout.c` + run_loop integration on Linux and ESP-IDF.
 - [ ] Any `nano_rtc.c` split keeps all feature combinations compiling.
 - [ ] No Sans-I/O, no-malloc, feature-guard, or safe-C constraint is weakened.
 
