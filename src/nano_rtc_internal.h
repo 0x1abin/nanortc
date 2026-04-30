@@ -28,7 +28,7 @@ extern "C" {
  * offer/answer file can attach ICE-candidate / media-added events to
  * the same queue without re-implementing the helper.
  */
-int rtc_emit_event_full(nanortc_t *rtc, const nanortc_event_t *event);
+int nano_rtc_emit_event_full(nanortc_t *rtc, const nanortc_event_t *event);
 
 /**
  * Format an RFC 8839 §5.1 SDP candidate line ("candidate:<f> 1 UDP <p>
@@ -39,8 +39,9 @@ int rtc_emit_event_full(nanortc_t *rtc, const nanortc_event_t *event);
  *
  * @return Length of the produced string (excluding the NUL terminator).
  */
-size_t rtc_build_candidate_str(char *buf, uint16_t foundation, uint32_t priority, const char *ip,
-                               size_t ip_len, uint16_t port, const char *type, size_t type_len);
+size_t nano_rtc_build_candidate_str(char *buf, uint16_t foundation, uint32_t priority,
+                                    const char *ip, size_t ip_len, uint16_t port, const char *type,
+                                    size_t type_len);
 
 /**
  * Emit a NANORTC_EV_ICE_CANDIDATE event carrying the trickle string.
@@ -48,7 +49,7 @@ size_t rtc_build_candidate_str(char *buf, uint16_t foundation, uint32_t priority
  * nanortc_poll_output() call (matches the pointer-lifetime contract on
  * `nanortc_output_t`). Defined in nano_negotiate.c.
  */
-void rtc_emit_ice_candidate(nanortc_t *rtc, const char *candidate_str);
+void nano_rtc_emit_ice_candidate(nanortc_t *rtc, const char *candidate_str);
 
 /**
  * Cache the local DTLS fingerprint with the "sha-256 " prefix into
@@ -57,7 +58,7 @@ void rtc_emit_ice_candidate(nanortc_t *rtc, const char *candidate_str);
  * places (early DTLS init, post-handshake completion). Defined in
  * nano_negotiate.c.
  */
-void rtc_cache_fingerprint(nanortc_t *rtc);
+void nano_rtc_cache_fingerprint(nanortc_t *rtc);
 
 /**
  * Apply a WebRTC-style iceServers array (RFC 7064 / RFC 7065 URL form)
@@ -67,7 +68,7 @@ void rtc_cache_fingerprint(nanortc_t *rtc);
  * nanortc_init() in nano_rtc.c so cfg-supplied servers are wired up
  * during construction.
  */
-int rtc_apply_ice_servers(nanortc_t *rtc, const nanortc_ice_server_t *servers, size_t count);
+int nano_rtc_apply_ice_servers(nanortc_t *rtc, const nanortc_ice_server_t *servers, size_t count);
 
 #ifdef __cplusplus
 }

@@ -172,7 +172,7 @@ static int rtc_emit_event(nanortc_t *rtc, nanortc_event_type_t type)
 
 /* Emit a typed event with full event struct.
  * Non-static so nano_negotiate.c can call it via nano_rtc_internal.h. */
-int rtc_emit_event_full(nanortc_t *rtc, const nanortc_event_t *event)
+int nano_rtc_emit_event_full(nanortc_t *rtc, const nanortc_event_t *event)
 {
     nanortc_output_t evt;
     memset(&evt, 0, sizeof(evt));
@@ -204,7 +204,7 @@ static int rtc_emit_connected(nanortc_t *rtc)
     event.connected.mid_count = mc;
 #endif
 
-    return rtc_emit_event_full(rtc, &event);
+    return nano_rtc_emit_event_full(rtc, &event);
 }
 
 int nanortc_init(nanortc_t *rtc, const nanortc_config_t *cfg)
@@ -262,7 +262,7 @@ int nanortc_init(nanortc_t *rtc, const nanortc_config_t *cfg)
     turn_init(&rtc->turn);
 #endif
     if (cfg->ice_servers && cfg->ice_server_count > 0) {
-        int irc = rtc_apply_ice_servers(rtc, cfg->ice_servers, cfg->ice_server_count);
+        int irc = nano_rtc_apply_ice_servers(rtc, cfg->ice_servers, cfg->ice_server_count);
         if (irc != NANORTC_OK) {
             return irc;
         }
@@ -493,7 +493,7 @@ static void rtc_deliver_sctp_to_dc(nanortc_t *rtc)
                 break;
             }
         }
-        rtc_emit_event_full(rtc, &oevt);
+        nano_rtc_emit_event_full(rtc, &oevt);
     } else {
         /* CHANNEL_DATA event (binary or string) */
         bool is_binary = (rtc->sctp.delivered_ppid == DCEP_PPID_BINARY ||
@@ -505,7 +505,7 @@ static void rtc_deliver_sctp_to_dc(nanortc_t *rtc)
         devt.datachannel_data.data = rtc->sctp.delivered_data;
         devt.datachannel_data.len = rtc->sctp.delivered_len;
         devt.datachannel_data.binary = is_binary;
-        rtc_emit_event_full(rtc, &devt);
+        nano_rtc_emit_event_full(rtc, &devt);
     }
 }
 
@@ -622,10 +622,10 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
                 rtc->sdp.has_relay_candidate = true;
 
                 /* Emit trickle ICE candidate event (relay) */
-                rtc_build_candidate_str(rtc->relay_cand_str, 2, 16777215,
-                                        rtc->sdp.relay_candidate_ip, ip_len, rtc->turn.relay_port,
-                                        "relay", 5);
-                rtc_emit_ice_candidate(rtc, rtc->relay_cand_str);
+                nano_rtc_build_candidate_str(rtc->relay_cand_str, 2, 16777215,
+                                             rtc->sdp.relay_candidate_ip, ip_len,
+                                             rtc->turn.relay_port, "relay", 5);
+                nano_rtc_emit_ice_candidate(rtc, rtc->relay_cand_str);
 
                 /* Permission fan-out is driven from rtc_process_timers so a
                  * single shared turn_buf can serialize one CreatePermission
@@ -658,10 +658,10 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
                     rtc->srflx_discovered = true;
 
                     /* Emit trickle ICE candidate event (srflx) */
-                    rtc_build_candidate_str(rtc->srflx_cand_str, 3, 1090519295,
-                                            rtc->sdp.srflx_candidate_ip, ip_len, smsg.mapped_port,
-                                            "srflx", 5);
-                    rtc_emit_ice_candidate(rtc, rtc->srflx_cand_str);
+                    nano_rtc_build_candidate_str(rtc->srflx_cand_str, 3, 1090519295,
+                                                 rtc->sdp.srflx_candidate_ip, ip_len,
+                                                 smsg.mapped_port, "srflx", 5);
+                    nano_rtc_emit_ice_candidate(rtc, rtc->srflx_cand_str);
 
                     NANORTC_LOGI("RTC", "srflx candidate discovered");
 
@@ -750,7 +750,7 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
                 memset(&ice_evt, 0, sizeof(ice_evt));
                 ice_evt.type = NANORTC_EV_ICE_STATE_CHANGE;
                 ice_evt.ice_state = (uint16_t)NANORTC_ICE_STATE_CONNECTED;
-                rtc_emit_event_full(rtc, &ice_evt);
+                nano_rtc_emit_event_full(rtc, &ice_evt);
             }
 
             int drc = rtc_begin_dtls_handshake(rtc, src);
@@ -781,7 +781,7 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
             rtc->state = NANORTC_STATE_DTLS_CONNECTED;
             rtc->remote_addr = *src; /* save for timeout-driven output */
 
-            rtc_cache_fingerprint(rtc);
+            nano_rtc_cache_fingerprint(rtc);
 
 #if NANORTC_HAVE_MEDIA_TRANSPORT
             /* Derive SRTP keys from DTLS keying material (RFC 5764 §4.2) */
@@ -973,7 +973,7 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
                                 : (cur_bps < prev_bps) ? (uint8_t)NANORTC_BWE_DIR_DOWN
                                                        : (uint8_t)NANORTC_BWE_DIR_STABLE;
                             bwe_evt.bitrate_estimate.source = (uint8_t)NANORTC_BWE_SRC_REMB;
-                            rtc_emit_event_full(rtc, &bwe_evt);
+                            nano_rtc_emit_event_full(rtc, &bwe_evt);
                         }
                     } else
 #endif
@@ -985,7 +985,7 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
                             memset(&kfevt, 0, sizeof(kfevt));
                             kfevt.type = NANORTC_EV_KEYFRAME_REQUEST;
                             kfevt.keyframe_request.mid = (uint8_t)mid;
-                            rtc_emit_event_full(rtc, &kfevt);
+                            nano_rtc_emit_event_full(rtc, &kfevt);
                         }
                     }
 #if NANORTC_FEATURE_VIDEO
@@ -1048,7 +1048,7 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
                                                            : (uint8_t)NANORTC_BWE_DIR_STABLE;
                                 bwe_evt.bitrate_estimate.source =
                                     (uint8_t)NANORTC_BWE_SRC_TWCC_LOSS;
-                                rtc_emit_event_full(rtc, &bwe_evt);
+                                nano_rtc_emit_event_full(rtc, &bwe_evt);
                             }
                         }
                     }
@@ -1144,7 +1144,7 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
                 aevt.media_data.len = pop_len;
                 aevt.media_data.timestamp = pop_ts;
                 aevt.media_data.contiguous = true; /* jitter buffer ensures order */
-                rtc_emit_event_full(rtc, &aevt);
+                nano_rtc_emit_event_full(rtc, &aevt);
             }
 #endif
         } else {
@@ -1166,7 +1166,7 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
                 vevt.media_data.timestamp = rtp_ts;
                 vevt.media_data.is_keyframe = h264_is_keyframe(nalu_out, nalu_len) ? true : false;
                 vevt.media_data.contiguous = true;
-                rtc_emit_event_full(rtc, &vevt);
+                nano_rtc_emit_event_full(rtc, &vevt);
             }
 #endif
         }
@@ -1225,7 +1225,7 @@ static int rtc_process_timers(nanortc_t *rtc, uint32_t now_ms)
             memset(&isce, 0, sizeof(isce));
             isce.type = NANORTC_EV_ICE_STATE_CHANGE;
             isce.ice_state = (uint16_t)NANORTC_ICE_STATE_CHECKING;
-            rtc_emit_event_full(rtc, &isce);
+            nano_rtc_emit_event_full(rtc, &isce);
         }
 
         /* Schedule next timeout (only when a check was actually sent) */
@@ -1243,14 +1243,14 @@ static int rtc_process_timers(nanortc_t *rtc, uint32_t now_ms)
             memset(&fice, 0, sizeof(fice));
             fice.type = NANORTC_EV_ICE_STATE_CHANGE;
             fice.ice_state = (uint16_t)NANORTC_ICE_STATE_FAILED;
-            rtc_emit_event_full(rtc, &fice);
+            nano_rtc_emit_event_full(rtc, &fice);
             /* TD-018: emit DISCONNECTED symmetric to the consent-expiry path
              * so applications see a consistent signal across both failure
              * modes (ICE check exhaustion and consent loss). */
             nanortc_event_t fdev;
             memset(&fdev, 0, sizeof(fdev));
             fdev.type = NANORTC_EV_DISCONNECTED;
-            rtc_emit_event_full(rtc, &fdev);
+            nano_rtc_emit_event_full(rtc, &fdev);
             rtc->state = NANORTC_STATE_CLOSED;
         }
     }
@@ -1264,12 +1264,12 @@ static int rtc_process_timers(nanortc_t *rtc, uint32_t now_ms)
             memset(&dice, 0, sizeof(dice));
             dice.type = NANORTC_EV_ICE_STATE_CHANGE;
             dice.ice_state = (uint16_t)NANORTC_ICE_STATE_DISCONNECTED;
-            rtc_emit_event_full(rtc, &dice);
+            nano_rtc_emit_event_full(rtc, &dice);
             /* Emit DISCONNECTED application event */
             nanortc_event_t dev;
             memset(&dev, 0, sizeof(dev));
             dev.type = NANORTC_EV_DISCONNECTED;
-            rtc_emit_event_full(rtc, &dev);
+            nano_rtc_emit_event_full(rtc, &dev);
             rtc->state = NANORTC_STATE_CLOSED;
         } else {
             /* Generate consent check if due */
@@ -1489,7 +1489,7 @@ static int rtc_process_timers(nanortc_t *rtc, uint32_t now_ms)
             nanortc_event_t fdev;
             memset(&fdev, 0, sizeof(fdev));
             fdev.type = NANORTC_EV_DISCONNECTED;
-            rtc_emit_event_full(rtc, &fdev);
+            nano_rtc_emit_event_full(rtc, &fdev);
             rtc->state = NANORTC_STATE_CLOSED;
             NANORTC_LOGW("RTC", "SCTP retransmit exhaustion → DISCONNECTED");
         }
@@ -1749,7 +1749,7 @@ int nanortc_datachannel_close(nanortc_t *rtc, uint16_t id)
     memset(&cevt, 0, sizeof(cevt));
     cevt.type = NANORTC_EV_DATACHANNEL_CLOSE;
     cevt.datachannel_id.id = id;
-    rtc_emit_event_full(rtc, &cevt);
+    nano_rtc_emit_event_full(rtc, &cevt);
 
     NANORTC_LOGI("RTC", "channel closed");
     return NANORTC_OK;
@@ -1811,7 +1811,7 @@ int nanortc_ice_restart(nanortc_t *rtc)
     dtls_destroy(&rtc->dtls);
 
     /* Invalidate cached fingerprints tied to the destroyed DTLS identity.
-     * rtc_cache_fingerprint() is a write-once cache that bails when
+     * nano_rtc_cache_fingerprint() is a write-once cache that bails when
      * sdp.local_fingerprint is non-empty; without this clear, the next
      * create_offer/accept_offer would advertise the *previous* cert's
      * fingerprint while dtls_init() generates a new one — DTLS verify
@@ -1865,7 +1865,7 @@ int nanortc_ice_restart(nanortc_t *rtc)
     memset(&ice_evt, 0, sizeof(ice_evt));
     ice_evt.type = NANORTC_EV_ICE_STATE_CHANGE;
     ice_evt.ice_state = (uint16_t)NANORTC_ICE_STATE_NEW;
-    rtc_emit_event_full(rtc, &ice_evt);
+    nano_rtc_emit_event_full(rtc, &ice_evt);
 
     return NANORTC_OK;
 }
@@ -2304,7 +2304,7 @@ void nanortc_set_direction(nanortc_t *rtc, uint8_t mid, nanortc_direction_t dir)
         mce.media_changed.mid = mid;
         mce.media_changed.old_direction = old_dir;
         mce.media_changed.new_direction = dir;
-        rtc_emit_event_full(rtc, &mce);
+        nano_rtc_emit_event_full(rtc, &mce);
     }
 }
 

@@ -84,8 +84,9 @@ static size_t cand_append(char *buf, size_t pos, const char *str, size_t len)
     return pos + len;
 }
 
-size_t rtc_build_candidate_str(char *buf, uint16_t foundation, uint32_t priority, const char *ip,
-                               size_t ip_len, uint16_t port, const char *type, size_t type_len)
+size_t nano_rtc_build_candidate_str(char *buf, uint16_t foundation, uint32_t priority,
+                                    const char *ip, size_t ip_len, uint16_t port, const char *type,
+                                    size_t type_len)
 {
     size_t pos = 0;
     pos = cand_append(buf, pos, "candidate:", 10);
@@ -102,14 +103,14 @@ size_t rtc_build_candidate_str(char *buf, uint16_t foundation, uint32_t priority
     return pos;
 }
 
-void rtc_emit_ice_candidate(nanortc_t *rtc, const char *candidate_str)
+void nano_rtc_emit_ice_candidate(nanortc_t *rtc, const char *candidate_str)
 {
     nanortc_event_t evt;
     memset(&evt, 0, sizeof(evt));
     evt.type = NANORTC_EV_ICE_CANDIDATE;
     evt.ice_candidate.candidate_str = candidate_str;
     evt.ice_candidate.end_of_candidates = false;
-    rtc_emit_event_full(rtc, &evt);
+    nano_rtc_emit_event_full(rtc, &evt);
 }
 
 /* ----------------------------------------------------------------
@@ -259,7 +260,7 @@ static void rtc_apply_negotiated_media(nanortc_t *rtc)
             maevt.media_added.mid = mid;
             maevt.media_added.kind = (uint8_t)kind;
             maevt.media_added.direction = local_dir;
-            rtc_emit_event_full(rtc, &maevt);
+            nano_rtc_emit_event_full(rtc, &maevt);
         }
 
         if (ml->remote_direction != NANORTC_DIR_SENDRECV || m->direction == NANORTC_DIR_SENDRECV) {
@@ -289,7 +290,7 @@ static void rtc_apply_negotiated_media(nanortc_t *rtc)
     (void)rtc;
 }
 
-void rtc_cache_fingerprint(nanortc_t *rtc)
+void nano_rtc_cache_fingerprint(nanortc_t *rtc)
 {
     if (rtc->sdp.local_fingerprint[0] != '\0')
         return;
@@ -343,7 +344,7 @@ int nanortc_accept_offer(nanortc_t *rtc, const char *offer, char *answer_buf, si
         if (drc != NANORTC_OK) {
             return drc;
         }
-        rtc_cache_fingerprint(rtc);
+        nano_rtc_cache_fingerprint(rtc);
     }
 
     size_t answer_len = 0;
@@ -383,7 +384,7 @@ int nanortc_create_offer(nanortc_t *rtc, char *offer_buf, size_t offer_buf_len, 
         if (drc != NANORTC_OK) {
             return drc;
         }
-        rtc_cache_fingerprint(rtc);
+        nano_rtc_cache_fingerprint(rtc);
     }
 
     size_t offer_len = 0;
@@ -486,9 +487,9 @@ int nanortc_add_local_candidate(nanortc_t *rtc, const char *ip, uint16_t port)
     rtc->sdp.local_candidate_count = idx + 1;
     rtc->ice.local_candidate_count = idx + 1;
 
-    rtc_build_candidate_str(rtc->host_cand_str, (uint16_t)(idx + 1), ICE_HOST_PRIORITY(idx), ip,
-                            ip_len, port, "host", 4);
-    rtc_emit_ice_candidate(rtc, rtc->host_cand_str);
+    nano_rtc_build_candidate_str(rtc->host_cand_str, (uint16_t)(idx + 1), ICE_HOST_PRIORITY(idx),
+                                 ip, ip_len, port, "host", 4);
+    nano_rtc_emit_ice_candidate(rtc, rtc->host_cand_str);
 
     NANORTC_LOGI("RTC", "local candidate added");
     return NANORTC_OK;
@@ -684,7 +685,7 @@ static int parse_ice_url(const char *url, char *host, size_t host_size, uint16_t
     return type;
 }
 
-int rtc_apply_ice_servers(nanortc_t *rtc, const nanortc_ice_server_t *servers, size_t count)
+int nano_rtc_apply_ice_servers(nanortc_t *rtc, const nanortc_ice_server_t *servers, size_t count)
 {
     for (size_t i = 0; i < count; i++) {
         const nanortc_ice_server_t *s = &servers[i];
@@ -761,5 +762,5 @@ int nanortc_set_ice_servers(nanortc_t *rtc, const nanortc_ice_server_t *servers,
     if (!rtc || (!servers && count > 0)) {
         return NANORTC_ERR_INVALID_PARAM;
     }
-    return rtc_apply_ice_servers(rtc, servers, count);
+    return nano_rtc_apply_ice_servers(rtc, servers, count);
 }
