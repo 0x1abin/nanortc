@@ -164,6 +164,11 @@ static inline int rtc_enqueue_output(nanortc_t *rtc, const nanortc_output_t *out
 static int rtc_enqueue_transmit(nanortc_t *rtc, const uint8_t *data, size_t len,
                                 const nanortc_addr_t *peer_dest, bool force_via_turn)
 {
+    /* Lifetime contract (see nanortc.h `nanortc_output_t`): @p data must
+     * remain valid until the next nanortc_poll_output() / handle_input() /
+     * destroy() call on this nanortc_t. Producers either point into a
+     * caller-owned static scratch (DTLS, STUN, SRTP/RTP) or a managed slot
+     * (video pkt_ring) — none of them copy here. */
     nanortc_output_t out;
     memset(&out, 0, sizeof(out));
     out.type = NANORTC_OUTPUT_TRANSMIT;
@@ -932,6 +937,11 @@ int nanortc_poll_output(nanortc_t *rtc, nanortc_output_t *out)
                 continue;
             }
 
+            /* Lifetime contract (see nanortc.h `nanortc_output_t`):
+             * `rtc->turn_buf` is per-rtc shared scratch; the next
+             * nanortc_poll_output() call may overwrite it for the next
+             * lazy-wrapped output. The caller MUST consume out->transmit
+             * (or memcpy it) before re-entering the library. */
             out->transmit.data = rtc->turn_buf;
             out->transmit.len = wrap_len;
             out->transmit.dest.family = (rtc->turn.server_family == STUN_FAMILY_IPV4) ? 4 : 6;
@@ -944,6 +954,98 @@ int nanortc_poll_output(nanortc_t *rtc, nanortc_output_t *out)
         return NANORTC_OK;
     }
     return NANORTC_ERR_NO_DATA;
+}
+
+/* ----------------------------------------------------------------
+ * nanortc_next_timeout_ms — deadline aggregator
+ * ----------------------------------------------------------------
+ * Reads the per-subsystem deadline accessors (ICE, TURN, SCTP) plus
+ * the rtc-owned STUN-srflx retry and RTCP-SR cadence. Cap at MIN_POLL
+ * during DTLS handshake because mbedtls / wolfssl drive their own
+ * retransmit clock internally and do not surface a deadline. UINT32_MAX
+ * "no deadline armed" is mapped to a 1-second idle cap so callers
+ * never sleep indefinitely on a fully idle but still-alive connection.
+ */
+#define NANORTC_TIMEOUT_IDLE_CAP_MS 1000u
+
+int nanortc_next_timeout_ms(const nanortc_t *rtc, uint32_t now_ms, uint32_t *out_ms)
+{
+    if (!rtc || !out_ms) {
+        return NANORTC_ERR_INVALID_PARAM;
+    }
+
+    uint32_t best = UINT32_MAX;
+
+    /* ICE: connectivity checks + consent freshness + consent expiry. */
+    {
+        uint32_t d = ice_next_timeout_ms(&rtc->ice, now_ms);
+        if (d < best) {
+            best = d;
+        }
+    }
+
+    /* STUN srflx retry (RFC 8445 §5.1.1.1). */
+    if (rtc->stun_server_configured && !rtc->srflx_discovered && rtc->stun_retries < 3) {
+        if (rtc->stun_retry_at_ms == 0) {
+            best = 0;
+        } else {
+            uint32_t left =
+                (now_ms >= rtc->stun_retry_at_ms) ? 0u : (rtc->stun_retry_at_ms - now_ms);
+            if (left < best) {
+                best = left;
+            }
+        }
+    }
+
+#if NANORTC_FEATURE_TURN
+    {
+        uint32_t d = turn_next_timeout_ms(&rtc->turn, now_ms);
+        if (d < best) {
+            best = d;
+        }
+    }
+#endif
+
+#if NANORTC_FEATURE_DATACHANNEL
+    {
+        uint32_t d = nsctp_next_timeout_ms(&rtc->sctp, now_ms);
+        if (d < best) {
+            best = d;
+        }
+    }
+#endif
+
+#if NANORTC_HAVE_MEDIA_TRANSPORT
+    /* RTCP Sender Report cadence (RFC 3550 §6.2). Only armed once SRTP
+     * keys are derived — before that, the RTCP block in rtc_process_timers
+     * is a no-op. */
+    if (rtc->srtp.ready) {
+        uint32_t since = now_ms - rtc->last_rtcp_send_ms;
+        uint32_t left =
+            (since >= NANORTC_RTCP_INTERVAL_MS) ? 0u : (NANORTC_RTCP_INTERVAL_MS - since);
+        if (left < best) {
+            best = left;
+        }
+    }
+#endif
+
+    /* DTLS handshake retransmit is owned by the crypto provider and not
+     * surfaced as a deadline. Cap to MIN_POLL so retransmits still get
+     * a chance to fire while the handshake progresses. */
+    if (rtc->state == NANORTC_STATE_DTLS_HANDSHAKING) {
+        if (best > NANORTC_MIN_POLL_INTERVAL_MS) {
+            best = NANORTC_MIN_POLL_INTERVAL_MS;
+        }
+    }
+
+    /* Idle cap: if nothing armed a deadline, return the conservative
+     * default so callers don't block forever on a fully idle session. */
+    if (best == UINT32_MAX) {
+        best = NANORTC_TIMEOUT_IDLE_CAP_MS;
+    }
+
+    *out_ms = best;
+    return NANORTC_OK;
 }
 
 /* Init DTLS (if needed) and begin handshake after ICE connects.
