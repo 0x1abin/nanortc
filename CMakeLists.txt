@@ -4,6 +4,7 @@ cmake_minimum_required(VERSION 3.16)
 if(DEFINED ENV{IDF_PATH})
     set(NANORTC_CORE_SRCS
         src/nano_rtc.c
+        src/nano_negotiate.c
         src/nano_log.c
         src/nano_sdp.c
         src/nano_ice.c
@@ -101,6 +102,7 @@ set(NANORTC_CONFIG_FILE "" CACHE STRING "Path to user nanortc config header over
 # ---- Core sources (always compiled) ----
 set(NANORTC_SOURCES
     src/nano_rtc.c
+    src/nano_negotiate.c
     src/nano_log.c
     src/nano_sdp.c
     src/nano_ice.c
