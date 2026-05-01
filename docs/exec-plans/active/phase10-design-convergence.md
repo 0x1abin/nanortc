@@ -21,7 +21,7 @@ This phase is intentionally conservative: prefer additive APIs, documentation in
 | PR | Topic | Primary files | Risk | Target |
 |---|---|---|---|---|
 | **PR-1** | Documentation convergence guardrails | `docs/design-docs/nanortc-design-draft.md`, `ARCHITECTURE.md`, `docs/QUALITY_SCORE.md`, `docs/PLANS.md` | Low | Make one current design source of truth and remove stale feature/resource statements. |
-| **PR-2** | Output payload lifetime contract | `include/nanortc.h`, `ARCHITECTURE.md`, `tests/test_media.c`, `tests/test_turn.c`, `tests/test_e2e.c` | Low-medium | Document and regression-test queue pointer lifetime under bursty TURN/video/DC output. |
+| **PR-2** | Output payload lifetime contract **[LANDED 2026-04-30]** | `include/nanortc.h`, `src/nano_rtc.c`, `tests/test_output_lifetime.c`, `tests/CMakeLists.txt`, `examples/esp32_camera/main/main.c` | Low-medium | Document and regression-test queue pointer lifetime under bursty TURN/video/DC output. |
 | **PR-3** | Add `nanortc_next_timeout_ms()` **[COMPLETED 2026-04-29]** | `include/nanortc.h`, `src/nano_rtc.c`, `tests/test_next_timeout.c`, `examples/common/run_loop_{linux,esp}.c` | Low | Let callers block until the next protocol deadline instead of fixed polling. |
 | **PR-4** | Split RTC orchestration internals | `src/nano_rtc.c`, new `src/nano_rtc_*.c/.h`, `CMakeLists.txt`, ESP-IDF component sources | Medium | Reduce single-file complexity without changing public API or module dependencies. |
 
@@ -44,7 +44,7 @@ The design draft historically described an earlier state of the project: fewer f
 - Link/reference scan for stale "6 combinations", old RAM estimates, or libjuice-as-implementation wording.
 - `./scripts/ci-check.sh --fast` if code-adjacent files are touched; otherwise at least inspect docs-only diff and run a markdown link/path sanity check where available.
 
-## PR-2 — Output payload lifetime contract
+## PR-2 — Output payload lifetime contract [LANDED 2026-04-30]
 
 ### Problem
 
@@ -69,6 +69,79 @@ NanoRTC's output queue stores pointers instead of copying every payload. That is
 - Existing media/TURN/e2e tests.
 - New aliasing regression tests under small `NANORTC_OUT_QUEUE_SIZE` and small `NANORTC_VIDEO_PKT_RING_SIZE` overrides.
 - Parametrize the burst tests to `NANORTC_OUT_QUEUE_SIZE=4` + `NANORTC_VIDEO_PKT_RING_SIZE=4` so the aliasing window is small enough to actually trigger in CI; at default sizes the window is wide enough that regressions can slip through unnoticed.
+
+### Landed work
+
+Single source of truth for the contract is the public-header doxygen at
+`include/nanortc.h` (`nanortc_output_t`) — semantics, scratch-buffer reuse,
+and the drain-or-copy rule are documented there and not duplicated here.
+
+Landed:
+
+- **Contract docstring** — `include/nanortc.h:406-416` makes the rule explicit:
+  pointers in `transmit.data` and `event.*` are valid until the next
+  `nanortc_poll_output()` / `nanortc_handle_input()` / `nanortc_destroy()`
+  on the same `nanortc_t`; lists every internal scratch (DTLS, STUN, TURN
+  wrap, RTP/SRTP, video pkt_ring) that participates in the reuse.
+- **Internal enqueue comment** — `src/nano_rtc.c:87-94` re-states the
+  lifetime invariant at `rtc_enqueue_transmit()` so future code review
+  catches new producers that forget to point into a long-lived buffer.
+- **Drop counters** — `nanortc_t.stats_pkt_ring_overrun` (video pkt_ring
+  wrap before drain), `stats_wrap_dropped` (lazy TURN wrap exceeds
+  `turn_buf`), and `stats_tx_queue_full` (out_queue overflow). The
+  tx_queue_full counter was originally TURN-only; PR-2 promoted it to a
+  universal field (`include/nanortc.h:697`) so CORE_ONLY/DATA/AUDIO builds
+  also surface caller-side drain bugs.
+- **Burst regression test** — `tests/test_output_lifetime.c` covers the
+  four canonical contract-violation paths through the public
+  `nanortc_poll_output()` API: pkt_ring drain-before-wrap, pkt_ring
+  overrun-aliases-pre-drain, TURN lazy-wrap rewrites-turn-buf-between-polls,
+  TURN oversized-payload-drops-silently. Both `stats_pkt_ring_overrun` and
+  `stats_wrap_dropped` are asserted from the test side.
+- **Small-ring CI variant** — `tests/CMakeLists.txt` now also builds
+  `test_output_lifetime_min` with `NANORTC_OUT_QUEUE_SIZE=4` +
+  `NANORTC_VIDEO_PKT_RING_SIZE=4` overrides (per the §Verification third
+  bullet). At default sizes the burst the test generates fits without wrap;
+  the small-ring variant guarantees the alias window is small enough to
+  trip in CI.
+
+### Hardware verification (ESP32-P4 nano, 2026-04-30)
+
+Validated end-to-end on `examples/esp32_camera` running on an ESP32-P4
+nano board against Chrome 1568×778 viewport, 1080p H.264 + Opus stream.
+
+`webrtc_task` and `/debug` HTTP endpoint were extended with periodic
+lifetime audit dumps so the bench operator can observe the counters
+without a working serial monitor.
+
+| Run | Config | Duration | Result |
+|---|---|---|---|
+| Baseline | default 32/32 rings | 5 min | `pkt_overrun=0`, `tx_full=0`, `wrap_drop=0`; browser `framesDecoded` grew monotonically 999 → 5316 (~14.5 fps); `webkitDroppedFrameCount` jumped twice in 30s windows but those are HTML5 playback drops (macOS power throttling) — currentTime advanced cleanly, no decoder corruption |
+| Small-ring stress | `OUT_QUEUE_SIZE=8 + VIDEO_PKT_RING_SIZE=8` via `sdkconfig.defaults.esp32p4` | 5 min | `pkt_overrun=114` (~0.24/s), `tx_full=311` (~1/s), `wrap_drop=0`, `direct=44853` total enqueues (drop rate 0.69%); browser locked in **clean black frame** (no mosaic / green blocks / pixel-aliased garbage), `framesDecoded` froze at 33 (initial keyframe only) and stayed there — every subsequent 1080p keyframe overflowed pkt_ring=8 (each keyframe is ~80–150 FU-A fragments) and the contract dropped them in full rather than ship aliased fragments. Device `steps`/`alive` continued growing linearly throughout — no hangs, no crashes. |
+
+The small-ring failure mode is the success signal: the lifetime contract
+prefers losing whole frames over surfacing aliased payloads.
+
+### Resource sweep follow-up (2026-05-01)
+
+A subsequent attempt to shrink the example's ring sizes (16/16, then
+32/16) initially looked clean over a 5-min static-scene bench but
+broke as soon as the camera saw real motion: 1080p P-frames in motion
+hit 12–15 KB → 11–13 FU-A fragments per `nanortc_send_video()` call,
+which under FreeRTOS scheduling jitter and concurrent audio/RTCP/ICE
+traffic kept tripping `tx queue full, dropping output` and momentary
+playback freezes. **32/32 is the practical floor** for this profile;
+`examples/esp32_camera/sdkconfig.defaults` keeps `OUT_QUEUE_SIZE=32`
+(pkt_ring inherits) and bumps `EXAMPLE_H264_BITRATE_KBPS` from 1024
+to 2048 (Kconfig default) so the encoder isn't starving detail in
+moving scenes — the rings are sized to absorb the resulting bursts.
+Targets that produce smaller access units (lower bitrate, shorter
+GOP, software encoder, IoT-only data path) can still try smaller
+rings via the same `/debug` audit counters, but the sweep needs a
+moving scene and `> 5 min` window to be meaningful.
+
+The temporary `CONFIG_NANORTC_*_SIZE=8` lines in
+`sdkconfig.defaults.esp32p4` were reverted after the stress run.
 
 ## PR-3 — `nanortc_next_timeout_ms()` [LANDED]
 
@@ -127,7 +200,7 @@ Rules:
 ## Acceptance Criteria
 
 - [ ] Design draft, architecture overview, plan index, and quality score agree on current feature matrix and module status.
-- [ ] Output pointer lifetime is documented and covered by regression tests.
+- [x] Output pointer lifetime is documented and covered by regression tests (PR-2, 2026-04-30) — `include/nanortc.h:406-416` + `tests/test_output_lifetime.c` (default + `_min` variant) + ESP32-P4 nano hardware bench.
 - [x] `nanortc_next_timeout_ms()` implemented (PR-3, 2026-04-29) — public API + `tests/test_next_timeout.c` + run_loop integration on Linux and ESP-IDF.
 - [ ] Any `nano_rtc.c` split keeps all feature combinations compiling.
 - [ ] No Sans-I/O, no-malloc, feature-guard, or safe-C constraint is weakened.
