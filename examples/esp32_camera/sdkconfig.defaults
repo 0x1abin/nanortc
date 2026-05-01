@@ -32,7 +32,13 @@ CONFIG_NANORTC_FEATURE_VIDEO=y
 CONFIG_NANORTC_FEATURE_AUDIO=y
 # CONFIG_NANORTC_FEATURE_DATACHANNEL is not set
 
-# Output queue: video FU-A fragments (~40 per IDR) + audio RTP packets (50/sec)
+# Output queue: video FU-A fragments (~40 per IDR) + audio RTP packets (50/sec).
+# Phase 10 PR-2 swept 16/16 and 32/16 on a 1080p H.264 + Opus bench; both
+# triggered "tx queue full, dropping output" + visible freezes once the
+# camera saw real scene motion (12-15 KB P-frames → 11-13 FU-A fragments
+# per call leaves no headroom under FreeRTOS scheduling jitter). 32/32
+# is the practical floor for this profile; pkt_ring inherits OUT_QUEUE
+# unless overridden.
 CONFIG_NANORTC_OUT_QUEUE_SIZE=32
 
 # Media buffer: RTP header (12) + MTU payload (1200) + SRTP tag (10)
