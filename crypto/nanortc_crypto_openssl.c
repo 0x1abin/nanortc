@@ -102,8 +102,35 @@ static int ossl_compute_fingerprint(X509 *cert, char *buf, size_t buf_len)
 
 static int ossl_generate_cert(nanortc_crypto_dtls_ctx_t *ctx)
 {
-    /* Generate ECDSA P-256 key */
+    /* Generate ECDSA P-256 key. EVP_EC_gen() is the OpenSSL 3.0+ shorthand;
+     * fall back to the classic EC_KEY -> EVP_PKEY flow on 1.1.x (Debian 11
+     * Bullseye's libssl, which the Radxa Cubie A7Z BSP sysroot is built on). */
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
     ctx->pkey = EVP_EC_gen("P-256");
+#else
+    {
+        EC_KEY *ec = EC_KEY_new_by_curve_name(NID_X9_62_prime256v1);
+        if (!ec) {
+            return -1;
+        }
+        if (EC_KEY_generate_key(ec) != 1) {
+            EC_KEY_free(ec);
+            return -1;
+        }
+        ctx->pkey = EVP_PKEY_new();
+        if (!ctx->pkey) {
+            EC_KEY_free(ec);
+            return -1;
+        }
+        if (EVP_PKEY_assign_EC_KEY(ctx->pkey, ec) != 1) {
+            EC_KEY_free(ec);
+            EVP_PKEY_free(ctx->pkey);
+            ctx->pkey = NULL;
+            return -1;
+        }
+        /* ec is now owned by ctx->pkey; do not free separately. */
+    }
+#endif
     if (!ctx->pkey) {
         return -1;
     }
