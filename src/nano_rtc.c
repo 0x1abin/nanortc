@@ -104,15 +104,18 @@ static int rtc_enqueue_transmit(nanortc_t *rtc, const uint8_t *data, size_t len,
         out.transmit.src.port = rtc->ice.selected_local_port;
     }
 
+#if NANORTC_FEATURE_TURN
     /* Capture slot before rtc_enqueue_output advances out_tail; rtc_enqueue_output
      * also clears out_wrap_meta[slot].via_turn, so we conditionally re-stamp it
      * below when the destination needs the lazy TURN wrap. */
     uint16_t slot = rtc->out_tail & (NANORTC_OUT_QUEUE_SIZE - 1);
+#endif
     int rc = rtc_enqueue_output(rtc, &out);
     if (rc != NANORTC_OK) {
-#if NANORTC_FEATURE_TURN
+        /* PR-2 lifetime contract audit signal — must fire on all builds (not
+         * just TURN), since CORE_ONLY/DATA/AUDIO can also exhaust out_queue
+         * when callers fail to drain between handle_input ticks. */
         __atomic_fetch_add(&rtc->stats_tx_queue_full, 1, __ATOMIC_RELAXED);
-#endif
         NANORTC_LOGW("RTC", "tx queue full, dropping output");
         return rc;
     }

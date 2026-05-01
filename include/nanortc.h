@@ -690,8 +690,12 @@ struct nanortc {
     uint32_t stats_enqueue_direct;   /**< Enqueues that bypass TURN wrap. */
     uint32_t stats_enqueue_via_turn; /**< Enqueues flagged for TURN wrap. */
     uint32_t stats_wrap_dropped;     /**< Lazy wrap failures in poll_output. */
-    uint32_t stats_tx_queue_full;    /**< rtc_enqueue_transmit out_queue overflow. */
 #endif
+
+    /* PR-2 audit signal — universal across feature combos: incremented when
+     * rtc_enqueue_transmit() finds out_queue full and drops the slot. Fires
+     * on CORE_ONLY/DATA/AUDIO builds too, not just TURN. */
+    uint32_t stats_tx_queue_full; /**< rtc_enqueue_transmit out_queue overflow. */
 
     /* Scratch buffer for STUN encode/decode.
      * Sans I/O contract: caller must drain outputs before next handle_receive. */
