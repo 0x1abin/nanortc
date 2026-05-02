@@ -91,6 +91,29 @@ int nano_rtc_apply_ice_servers(nanortc_t *rtc, const nanortc_ice_server_t *serve
 int nano_rtc_enqueue_transmit(nanortc_t *rtc, const uint8_t *data, size_t len,
                               const nanortc_addr_t *peer_dest, bool force_via_turn);
 
+#if NANORTC_HAVE_MEDIA_TRANSPORT
+/**
+ * Handle an SRTP-protected RTP or RTCP datagram. Mirrors the RFC 7983 §3
+ * dispatch arm for first-byte [0x80-0xBF] and performs the RFC 5761 §4
+ * RTP/RTCP discrimination internally. Defined in nano_rtc_media.c so the
+ * receive backbone in nano_rtc.c stays free of media-specific state
+ * (jitter buffer, depacketizer, BWE feedback, NACK retx from pkt_ring).
+ *
+ * Return contract matches `rtc_process_receive()`: NANORTC_OK on success
+ * or any silent-discard path (bad SRTP, unknown SSRC, malformed RTP);
+ * NANORTC_ERR_PARSE / NANORTC_ERR_BUFFER_TOO_SMALL on hard failure.
+ */
+int nano_rtc_media_handle_rtp_or_rtcp(nanortc_t *rtc, const uint8_t *data, size_t len);
+
+/**
+ * Periodic RTCP Sender Report emission (RFC 3550 §6.2). Called once per
+ * timer tick from `rtc_process_timers()`; cadence-gates on
+ * `rtc->last_rtcp_send_ms` and `NANORTC_RTCP_INTERVAL_MS` internally and
+ * is a no-op when `srtp.ready` is false. Defined in nano_rtc_media.c.
+ */
+void nano_rtc_media_emit_rtcp_sr_cadence(nanortc_t *rtc, uint32_t now_ms);
+#endif /* NANORTC_HAVE_MEDIA_TRANSPORT */
+
 #ifdef __cplusplus
 }
 #endif

@@ -203,8 +203,9 @@ Rules:
 |---|---|---|---|---|
 | 1 | 2026-04-30 | `nano_negotiate.c` (offer/answer + iceServers entry surface) | 2,623 lines | Introduced `src/nano_rtc_internal.h` for the small private interface shared with `nano_rtc.c`. Commit `661b0d1`. |
 | 2 | 2026-05-01 | `nano_rtc_media.c` (audio/video send + pkt_ring + H.265 sprop + keyframe/PLI + track-stats + BWE knobs) | 1,930 lines | Promoted `rtc_enqueue_transmit` → `nano_rtc_enqueue_transmit` and exposed via `nano_rtc_internal.h`; CMake source lists updated for both ESP-IDF and host builds. Full `./scripts/ci-check.sh` passed (42/42 incl. libdatachannel interop). |
+| 3 | 2026-05-02 | RTP/RTCP receive demux + RTCP SR cadence into `nano_rtc_media.c` | 1,619 lines | Added `nano_rtc_media_handle_rtp_or_rtcp()` and `nano_rtc_media_emit_rtcp_sr_cadence()` to `nano_rtc_internal.h`; `rtc_process_receive()` and `rtc_process_timers()` shrink to one-line dispatchers under `#if NANORTC_HAVE_MEDIA_TRANSPORT`. Pruned now-unused `#include`s (`nano_rtcp.h`, `nano_twcc.h`, `nano_h264.h`) from `nano_rtc.c`. Pure-move diff — no behavior change. Full `./scripts/ci-check.sh` passed (42/42 incl. libdatachannel interop). |
 
-Slice 3 (open): receive-side media branches inside `rtc_process_receive()` and the RTCP-send cadence inside `rtc_process_timers()`. These require carving out of multi-concern functions and are deferred until the call shapes stabilize after slice 2.
+PR-4 file split is now complete: `nano_rtc.c` owns the transport backbone (ICE / TURN / DTLS / SCTP demux, output queue, timer dispatcher, public lifecycle), and `nano_rtc_media.c` owns every media-specific path (track APIs, send packetization, pkt_ring, BWE knobs, RTP/RTCP receive, RTCP SR cadence). Further sub-decomposition (per-FMT RTCP helpers, NACK retx behind a media helper) is deferred — none of it is currently required for review or feature work.
 
 ## Acceptance Criteria
 
