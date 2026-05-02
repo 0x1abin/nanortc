@@ -70,6 +70,27 @@ void nano_rtc_cache_fingerprint(nanortc_t *rtc);
  */
 int nano_rtc_apply_ice_servers(nanortc_t *rtc, const nanortc_ice_server_t *servers, size_t count);
 
+/**
+ * Enqueue a NANORTC_OUTPUT_TRANSMIT entry into rtc->out_queue. Used by
+ * every tx producer (DTLS, STUN, RTP/SRTP, RTCP feedback, video pkt_ring,
+ * audio packetizer). Defined in nano_rtc.c next to the output-queue
+ * machinery; declared here so nano_rtc_media.c can enqueue audio/video
+ * and RTCP feedback packets without re-implementing the lazy TURN wrap
+ * path or the lifetime contract documented on `nanortc_output_t`
+ * (`include/nanortc.h`).
+ *
+ * @p data must satisfy the lifetime contract — valid until the next
+ * `nanortc_poll_output()` / `nanortc_handle_input()` / `nanortc_destroy()`
+ * on the same nanortc_t. @p force_via_turn is the RFC 8445 §7.2.2
+ * symmetric-path override (only meaningful for STUN responses received
+ * via a TURN unwrap); all other callers pass false.
+ *
+ * @return NANORTC_OK, or NANORTC_ERR_BUFFER_TOO_SMALL when the queue is
+ * full (also bumps `rtc->stats_tx_queue_full`).
+ */
+int nano_rtc_enqueue_transmit(nanortc_t *rtc, const uint8_t *data, size_t len,
+                              const nanortc_addr_t *peer_dest, bool force_via_turn);
+
 #ifdef __cplusplus
 }
 #endif

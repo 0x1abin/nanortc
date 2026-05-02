@@ -197,6 +197,15 @@ Rules:
 - Full feature matrix once all file moves are complete.
 - Pay special attention to ESP-IDF source lists.
 
+### Slices landed
+
+| Slice | Date | Extracted | nano_rtc.c after | Notes |
+|---|---|---|---|---|
+| 1 | 2026-04-30 | `nano_negotiate.c` (offer/answer + iceServers entry surface) | 2,623 lines | Introduced `src/nano_rtc_internal.h` for the small private interface shared with `nano_rtc.c`. Commit `661b0d1`. |
+| 2 | 2026-05-01 | `nano_rtc_media.c` (audio/video send + pkt_ring + H.265 sprop + keyframe/PLI + track-stats + BWE knobs) | 1,930 lines | Promoted `rtc_enqueue_transmit` → `nano_rtc_enqueue_transmit` and exposed via `nano_rtc_internal.h`; CMake source lists updated for both ESP-IDF and host builds. Full `./scripts/ci-check.sh` passed (42/42 incl. libdatachannel interop). |
+
+Slice 3 (open): receive-side media branches inside `rtc_process_receive()` and the RTCP-send cadence inside `rtc_process_timers()`. These require carving out of multi-concern functions and are deferred until the call shapes stabilize after slice 2.
+
 ## Acceptance Criteria
 
 - [ ] Design draft, architecture overview, plan index, and quality score agree on current feature matrix and module status.
