@@ -44,7 +44,7 @@ generous host defaults:
 | `NANORTC_SCTP_{SEND,RECV,RECV_GAP}_BUF_SIZE` | 4096 each | 2048 each |
 | `NANORTC_SCTP_MAX_SEND_QUEUE` | 16 | 4 |
 | `NANORTC_SCTP_MAX_RECV_GAP` | 8 | 4 |
-| `NANORTC_OUT_QUEUE_SIZE` | 32 | 8 (audio/DC), 16 (video) |
+| `NANORTC_OUT_QUEUE_SIZE` | 32 | 8 (`esp32_audio`/`esp32_datachannel`), 16 (`esp32_video`), 32 (`esp32_camera` — 1080p HW H.264 needs ≥32 to absorb a single P-frame's worth of FU-A fragments without `tx queue full`; see phase 10 PR-2 follow-up) |
 | `NANORTC_VIDEO_PKT_RING_SIZE` | inherits `NANORTC_OUT_QUEUE_SIZE` | inherits `NANORTC_OUT_QUEUE_SIZE` |
 | `NANORTC_MEDIA_BUF_SIZE` | 1232 (formula) | 1232 (fixed; `#error` guards `< MTU + 30`) |
 | `NANORTC_VIDEO_NAL_BUF_SIZE` | 16384 | 8192 |
@@ -91,6 +91,18 @@ override to a smaller power of two:
  * OUT_QUEUE_SIZE=16 (video), PKT_RING_SIZE=8 saves ~9.6 KB. */
 #define NANORTC_VIDEO_PKT_RING_SIZE 16
 ```
+
+Note that `OUT_QUEUE_SIZE` itself is not freely shrinkable on HD profiles:
+phase 10 PR-2 swept `OUT_QUEUE=16` and `OUT_QUEUE=32 + PKT_RING=16` on
+the `esp32_camera` 1080p HW H.264 + Opus bench and both regressed — a
+single P-frame in motion produces 11–13 FU-A fragments via one
+`nanortc_send_video()` call, and combined with concurrent audio (50/sec)
++ RTCP + ICE consent leaves no headroom under FreeRTOS scheduling
+jitter, surfacing as `tx queue full, dropping output` and visible
+playback freezes. Save bytes by shrinking `PKT_RING_SIZE` only; keep
+`OUT_QUEUE_SIZE` ≥ `ceil(max_p_frame_bytes / NANORTC_VIDEO_MTU) + audio
++ control_headroom` (≈ 32 for 2 Mbps 1080p, smaller for ≤1 Mbps lower
+resolutions).
 
 #### Hard sizing rule — not just a drain hint
 

@@ -29,10 +29,14 @@ menu "ESP32 Camera Example"
 
     config EXAMPLE_H264_BITRATE_KBPS
         int "H264 target bitrate (kbps)"
-        default 1024
+        default 2048
         range 256 8192
         help
             Target bitrate for H264 hardware encoder in kilobits per second.
+            Default sized for 1080p hardware encode on ESP32-P4 with the
+            32-slot dispatch / pkt_ring on the nanortc side; lower targets
+            (≤1024) make P-frames small enough that the rings rarely sit
+            near full, but starve detail in moving scenes.
 
     config EXAMPLE_H264_GOP
         int "H264 GOP size (keyframe interval in frames)"

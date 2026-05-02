@@ -224,14 +224,30 @@ static int handle_offer(const char *offer, char *answer, size_t answer_size, siz
  * ---------------------------------------------------------------- */
 static esp_err_t http_get_debug(httpd_req_t *req)
 {
-    char buf[512];
+    char buf[768];
+    /* PR-2 lifetime audit signals — exposed over HTTP so the bench operator
+     * can sample them without a working serial monitor. */
+    uint32_t pkt_overrun = __atomic_load_n(&s_rtc.stats_pkt_ring_overrun, __ATOMIC_RELAXED);
+    uint32_t tx_full = __atomic_load_n(&s_rtc.stats_tx_queue_full, __ATOMIC_RELAXED);
+#if NANORTC_FEATURE_TURN
+    uint32_t wrap_drop = __atomic_load_n(&s_rtc.stats_wrap_dropped, __ATOMIC_RELAXED);
+    uint32_t via_turn = __atomic_load_n(&s_rtc.stats_enqueue_via_turn, __ATOMIC_RELAXED);
+    uint32_t direct = __atomic_load_n(&s_rtc.stats_enqueue_direct, __ATOMIC_RELAXED);
+#else
+    uint32_t wrap_drop = 0, via_turn = 0, direct = 0;
+#endif
     int n = snprintf(buf, sizeof(buf),
                      "running=%d fd=%d connected=%d video_mid=%d mic_mid=%d\n"
                      "ice.remote_candidates=%d ice.state=%d\n"
-                     "state=%d steps=%lu alive=%lu\n",
+                     "state=%d steps=%lu alive=%lu\n"
+                     "lifetime out_q=%u/%u pkt_overrun=%lu wrap_drop=%lu tx_full=%lu "
+                     "via_turn=%lu direct=%lu\n",
                      s_loop.running, s_loop.fds[0], (int)s_connected, s_video_mid, s_mic_mid,
                      s_rtc.ice.remote_candidate_count, s_rtc.ice.state, s_rtc.state,
-                     (unsigned long)s_step_count, (unsigned long)s_task_alive);
+                     (unsigned long)s_step_count, (unsigned long)s_task_alive,
+                     (unsigned)(s_rtc.out_tail - s_rtc.out_head), (unsigned)NANORTC_OUT_QUEUE_SIZE,
+                     (unsigned long)pkt_overrun, (unsigned long)wrap_drop,
+                     (unsigned long)tx_full, (unsigned long)via_turn, (unsigned long)direct);
     httpd_resp_set_type(req, "text/plain");
     httpd_resp_send(req, buf, n);
     return ESP_OK;
@@ -371,6 +387,10 @@ static void webrtc_task(void *arg)
     (void)arg;
     ESP_LOGI(TAG, "WebRTC task started on core %d", xPortGetCoreID());
 
+    /* PR-2 lifetime audit cadence — 5 s suffices to spot drift without
+     * flooding the serial console. */
+    int64_t next_stats_us = 0;
+
     for (;;) {
         s_task_alive++;
         if (s_loop.running) {
@@ -394,6 +414,36 @@ static void webrtc_task(void *arg)
                                        mic_msg.len);
                 }
                 free(mic_msg.data);
+            }
+
+            /* PR-2 audit: when streaming, dump the lifetime/queue counters
+             * every 5 s. All-zero across a run is the success signal — any
+             * non-zero entry pinpoints under-sized rings or caller-side
+             * drain bugs before they reach the wire. */
+            int64_t now_us = esp_timer_get_time();
+            if (s_connected && now_us >= next_stats_us) {
+                next_stats_us = now_us + 5LL * 1000LL * 1000LL;
+                uint32_t pkt_overrun =
+                    __atomic_load_n(&s_rtc.stats_pkt_ring_overrun, __ATOMIC_RELAXED);
+                uint32_t tx_full = __atomic_load_n(&s_rtc.stats_tx_queue_full, __ATOMIC_RELAXED);
+#if NANORTC_FEATURE_TURN
+                uint32_t wrap_drop = __atomic_load_n(&s_rtc.stats_wrap_dropped, __ATOMIC_RELAXED);
+                uint32_t via_turn =
+                    __atomic_load_n(&s_rtc.stats_enqueue_via_turn, __ATOMIC_RELAXED);
+                uint32_t direct = __atomic_load_n(&s_rtc.stats_enqueue_direct, __ATOMIC_RELAXED);
+                ESP_LOGI(TAG,
+                         "lifetime out_q=%u/%u pkt_overrun=%lu wrap_drop=%lu tx_full=%lu "
+                         "via_turn=%lu direct=%lu",
+                         (unsigned)(s_rtc.out_tail - s_rtc.out_head),
+                         (unsigned)NANORTC_OUT_QUEUE_SIZE, (unsigned long)pkt_overrun,
+                         (unsigned long)wrap_drop, (unsigned long)tx_full,
+                         (unsigned long)via_turn, (unsigned long)direct);
+#else
+                ESP_LOGI(TAG, "lifetime out_q=%u/%u pkt_overrun=%lu tx_full=%lu",
+                         (unsigned)(s_rtc.out_tail - s_rtc.out_head),
+                         (unsigned)NANORTC_OUT_QUEUE_SIZE, (unsigned long)pkt_overrun,
+                         (unsigned long)tx_full);
+#endif
             }
         } else {
             vTaskDelay(pdMS_TO_TICKS(100));

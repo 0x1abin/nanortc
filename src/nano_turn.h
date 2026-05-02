@@ -232,6 +232,18 @@ int turn_generate_permission_refresh(nano_turn_t *turn, uint32_t now_ms,
  * Generate a ChannelBind refresh for bound channels (RFC 5766 §11).
  * Returns NANORTC_OK with *out_len=0 if not time yet.
  */
+/**
+ * Compute milliseconds until TURN needs the timer wheel to fire.
+ * Considers Allocate retry, periodic Refresh, periodic CreatePermission
+ * refresh, and per-channel ChannelBind refresh deadlines. Returns
+ * UINT32_MAX when no deadline is currently armed (e.g., not configured,
+ * or in IDLE/CHALLENGED states where fire-on-next-tick is the rule).
+ *
+ * Pure const reader — used by the library's own Sans-I/O timeout
+ * aggregator to let event loops sleep up to the next deadline.
+ */
+uint32_t turn_next_timeout_ms(const nano_turn_t *turn, uint32_t now_ms);
+
 int turn_generate_channel_refresh(nano_turn_t *turn, uint32_t now_ms,
                                   const nanortc_crypto_provider_t *crypto, uint8_t *buf,
                                   size_t buf_len, size_t *out_len);

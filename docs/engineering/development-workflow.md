@@ -152,3 +152,26 @@ warm `--fast` run is under 10 seconds.
 | SRTP | RFC 3711 | 3 (SRTP framework), 4 (pre-defined transforms) |
 | SDP | RFC 8866 | 5 (SDP specification), 9 (SDP attributes) |
 | Mux | RFC 7983 | 3 (demultiplexing algorithm) |
+
+## Design Freshness Checklist
+
+Authoritative design docs drift faster than the implementation does. Any PR
+that changes protocol behavior, public API, feature flags, resource
+footprint, or phase status MUST verify the four canonical docs still match
+reality and update them in the same PR if not:
+
+- [ ] **`docs/design-docs/nanortc-design-draft.md`** — feature flag table,
+      `sizeof(nanortc_t)` / Flash matrix, public API surface, module
+      dependency graph, §7.1 phase status table, §7.4 naming conventions.
+- [ ] **`docs/PLANS.md`** — phase status, effort, target. Match the active
+      plan file under `docs/exec-plans/active/`.
+- [ ] **`docs/engineering/memory-profiles.md`** — re-run
+      `./scripts/measure-sizes.sh --esp32 esp32p4` if any struct member
+      was added/removed/resized; update the configuration matrix.
+- [ ] **`docs/QUALITY_SCORE.md`** — module grade, fuzz coverage, test
+      counts if a module was added or its surface materially changed.
+
+RFCs remain the **sole authoritative source** for wire format and state
+machines. Third-party implementations (libdatachannel, str0m, libjuice,
+kvs-webrtc) are interop fixtures and engineering background only — do not
+import their wire-format decisions or state machine behavior.

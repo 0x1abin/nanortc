@@ -1183,3 +1183,42 @@ int nsctp_handle_timeout(nano_sctp_t *sctp, uint32_t now_ms)
 
     return NANORTC_OK;
 }
+
+uint32_t nsctp_next_timeout_ms(const nano_sctp_t *sctp, uint32_t now_ms)
+{
+    if (!sctp || sctp->state != NANORTC_SCTP_STATE_ESTABLISHED) {
+        return UINT32_MAX;
+    }
+
+    uint32_t best = UINT32_MAX;
+
+#if NANORTC_FEATURE_DC_RELIABLE
+    /* Earliest retransmit deadline across the in-flight send queue. */
+    for (uint8_t idx = sctp->sq_head; idx != sctp->sq_tail; idx++) {
+        const nsctp_send_entry_t *e = &sctp->send_queue[idx & (NANORTC_SCTP_MAX_SEND_QUEUE - 1)];
+        if (!e->in_flight || e->acked) {
+            continue;
+        }
+        uint32_t elapsed = now_ms - e->sent_at_ms;
+        uint32_t left = (elapsed >= sctp->rto_ms) ? 0u : (sctp->rto_ms - elapsed);
+        if (left < best) {
+            best = left;
+        }
+    }
+#endif
+
+    /* Heartbeat deadline (skipped while one is already in flight — the
+     * timeout block above only re-arms after an ACK clears the pending
+     * flag). */
+    if (!sctp->heartbeat_pending) {
+        uint32_t hb_elapsed = now_ms - sctp->last_heartbeat_ms;
+        uint32_t left = (hb_elapsed >= NANORTC_SCTP_HEARTBEAT_INTERVAL_MS)
+                            ? 0u
+                            : (NANORTC_SCTP_HEARTBEAT_INTERVAL_MS - hb_elapsed);
+        if (left < best) {
+            best = left;
+        }
+    }
+
+    return best;
+}
