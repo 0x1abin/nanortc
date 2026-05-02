@@ -163,7 +163,7 @@ static int rtc_emit_event(nanortc_t *rtc, nanortc_event_type_t type)
 }
 
 /* Emit a typed event with full event struct.
- * Non-static so nano_negotiate.c can call it via nano_rtc_internal.h. */
+ * Non-static so nano_rtc_negotiate.c can call it via nano_rtc_internal.h. */
 int nano_rtc_emit_event_full(nanortc_t *rtc, const nanortc_event_t *event)
 {
     nanortc_output_t evt;

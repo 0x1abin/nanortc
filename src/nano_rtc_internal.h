@@ -3,7 +3,7 @@
  *
  * Not part of the public API. Lives under src/ specifically so that
  * <include/> stays untouched. The split exists because the offer/answer
- * + ICE-server entry surface (nano_negotiate.c) is a cleanly
+ * + ICE-server entry surface (nano_rtc_negotiate.c) is a cleanly
  * separable contour from the receive/timer backbone in nano_rtc.c, but
  * the two units still share a handful of small helpers — listed here.
  *
@@ -33,7 +33,7 @@ int nano_rtc_emit_event_full(nanortc_t *rtc, const nanortc_event_t *event);
 /**
  * Format an RFC 8839 §5.1 SDP candidate line ("candidate:<f> 1 UDP <p>
  * <ip> <port> typ <type>") into @p buf and NUL-terminate. Defined in
- * nano_negotiate.c; declared here so rtc_process_receive() (in
+ * nano_rtc_negotiate.c; declared here so rtc_process_receive() (in
  * nano_rtc.c) can format trickle-style srflx and relay candidate strings
  * after STUN srflx discovery / TURN allocation.
  *
@@ -47,7 +47,7 @@ size_t nano_rtc_build_candidate_str(char *buf, uint16_t foundation, uint32_t pri
  * Emit a NANORTC_EV_ICE_CANDIDATE event carrying the trickle string.
  * Caller owns the lifetime of @p candidate_str through the next
  * nanortc_poll_output() call (matches the pointer-lifetime contract on
- * `nanortc_output_t`). Defined in nano_negotiate.c.
+ * `nanortc_output_t`). Defined in nano_rtc_negotiate.c.
  */
 void nano_rtc_emit_ice_candidate(nanortc_t *rtc, const char *candidate_str);
 
@@ -56,7 +56,7 @@ void nano_rtc_emit_ice_candidate(nanortc_t *rtc, const char *candidate_str);
  * `sdp.local_fingerprint` (RFC 8122 §5). Idempotent — the first
  * non-empty cache wins so callers can invoke this cheaply from multiple
  * places (early DTLS init, post-handshake completion). Defined in
- * nano_negotiate.c.
+ * nano_rtc_negotiate.c.
  */
 void nano_rtc_cache_fingerprint(nanortc_t *rtc);
 
@@ -64,7 +64,7 @@ void nano_rtc_cache_fingerprint(nanortc_t *rtc);
  * Apply a WebRTC-style iceServers array (RFC 7064 / RFC 7065 URL form)
  * to the rtc instance: configures the first STUN URL for srflx
  * discovery and, when the TURN feature is enabled, the first TURN URL
- * for relay allocation. Defined in nano_negotiate.c; called from
+ * for relay allocation. Defined in nano_rtc_negotiate.c; called from
  * nanortc_init() in nano_rtc.c so cfg-supplied servers are wired up
  * during construction.
  */
