@@ -1626,6 +1626,130 @@ TEST(test_e2e_send_video_before_connected)
 
     nanortc_destroy(&rtc);
 }
+
+#if NANORTC_FEATURE_H265
+/*
+ * E2E: H.265 video roundtrip between two nanortc instances.
+ *
+ * Phase 3.5 PR-2 acceptance gate. The full SDP / ICE / DTLS / SRTP stack
+ * negotiates an H.265 SENDONLY/RECVONLY pair, the offerer emits a single
+ * IDR access unit through the existing rtc_send_video_h265() path, and
+ * the answerer's receive demux must dispatch to h265_depkt_push() (not
+ * h264_depkt_push) and surface the NAL bytes via NANORTC_EV_MEDIA_DATA.
+ *
+ * Without the codec-dispatched receive demux the answerer would silently
+ * drop the H.265 NAL: h264_depkt_push interprets the H.265 NAL header
+ * (type=19 IDR, byte0=0x26) as H.264 NAL type 6 (SEI) and drops it
+ * because no FU-A is in progress.
+ */
+TEST(test_e2e_h265_loopback)
+{
+    nanortc_t offerer, answerer;
+
+    nanortc_config_t off_cfg = e2e_default_config();
+    off_cfg.role = NANORTC_ROLE_CONTROLLING;
+    ASSERT_OK(nanortc_init(&offerer, &off_cfg));
+
+    nanortc_config_t ans_cfg = e2e_default_config();
+    ans_cfg.role = NANORTC_ROLE_CONTROLLED;
+    ASSERT_OK(nanortc_init(&answerer, &ans_cfg));
+
+    /* Local candidates so the SDP has a c= line and ICE has somewhere to
+     * send the first connectivity check. The e2e_relay helper rewrites the
+     * source address of every relayed packet to 192.168.1.1:9999. */
+    ASSERT_OK(nanortc_add_local_candidate(&offerer, "192.168.1.1", 4000));
+    ASSERT_OK(nanortc_add_local_candidate(&answerer, "192.168.1.2", 5000));
+
+    int off_mid = nanortc_add_video_track(&offerer, NANORTC_DIR_SENDONLY, NANORTC_CODEC_H265);
+    ASSERT_TRUE(off_mid >= 0);
+    int ans_mid = nanortc_add_video_track(&answerer, NANORTC_DIR_RECVONLY, NANORTC_CODEC_H265);
+    ASSERT_TRUE(ans_mid >= 0);
+
+    /* Minimal valid VPS/SPS/PPS NAL bytes (NAL header + dummy payload).
+     * Sizes are below 18 bytes so the level-id extraction is skipped, but
+     * the sprop-* fmtp fragment still gets emitted and round-tripped. */
+    uint8_t vps[] = {0x40, 0x01, 0x0C, 0x01, 0xFF};
+    uint8_t sps[] = {0x42, 0x01, 0x01, 0x01, 0x60};
+    uint8_t pps[] = {0x44, 0x01, 0xC1, 0x72};
+    ASSERT_OK(nanortc_video_set_h265_parameter_sets(&offerer, (uint8_t)off_mid, vps, sizeof(vps),
+                                                    sps, sizeof(sps), pps, sizeof(pps)));
+
+    /* SDP roundtrip negotiates H.265 PT=98 on both sides. */
+    char offer[4096];
+    size_t offer_len = 0;
+    ASSERT_OK(nanortc_create_offer(&offerer, offer, sizeof(offer), &offer_len));
+    offer[offer_len] = '\0';
+
+    char answer[4096];
+    size_t answer_len = 0;
+    ASSERT_OK(nanortc_accept_offer(&answerer, offer, answer, sizeof(answer), &answer_len));
+    answer[answer_len] = '\0';
+
+    ASSERT_OK(nanortc_accept_answer(&offerer, answer));
+
+    /* Mirror test_e2e_full_sdp_to_dtls: arm answerer's remote candidate to
+     * the loopback source the e2e_relay helper rewrites onto every packet. */
+    answerer.ice.remote_candidates[0].family = 4;
+    answerer.ice.remote_candidates[0].addr[0] = 192;
+    answerer.ice.remote_candidates[0].addr[1] = 168;
+    answerer.ice.remote_candidates[0].addr[2] = 1;
+    answerer.ice.remote_candidates[0].addr[3] = 1;
+    answerer.ice.remote_candidates[0].port = 9999;
+    answerer.ice.remote_candidate_count = 1;
+
+    /* ICE + DTLS handshake. */
+    uint32_t now_ms = 100;
+    ASSERT_OK(nanortc_handle_input(&offerer, &(nanortc_input_t){.now_ms = now_ms}));
+    int connected = 0;
+    for (int round = 0; round < 30; round++) {
+        e2e_pump(&offerer, &answerer, now_ms, 5);
+        if (offerer.state >= NANORTC_STATE_DTLS_CONNECTED &&
+            answerer.state >= NANORTC_STATE_DTLS_CONNECTED && offerer.srtp.ready &&
+            answerer.srtp.ready) {
+            connected = 1;
+            break;
+        }
+    }
+    ASSERT_TRUE(connected);
+    ASSERT_TRUE(offerer.srtp.ready);
+    ASSERT_TRUE(answerer.srtp.ready);
+
+    /* Send one Annex-B IDR access unit. Single small NAL (≤ MTU) so the
+     * wire packet is one Single-NAL RTP packet — keeps the test
+     * deterministic and avoids exercising FU reassembly redundantly with
+     * the unit test in test_h265.c. NAL header byte 0x26 = type 19
+     * (IDR_W_RADL), byte 0x01 = layer 0 / TID 1. */
+    uint8_t idr[] = {0x00, 0x00, 0x00, 0x01, 0x26, 0x01, 0xAA, 0xBB, 0xCC, 0xDD};
+    const size_t idr_payload_len = sizeof(idr) - 4; /* skip the 4-byte start code */
+    ASSERT_OK(nanortc_send_video(&offerer, (uint8_t)off_mid, /*pts_ms=*/0, idr, sizeof(idr)));
+
+    /* Drain offerer → answerer one-way. Note: e2e_relay polls (and thus
+     * drains) the source queue, but it does NOT touch the destination
+     * queue, so the answerer's NANORTC_EV_MEDIA_DATA stays parked for the
+     * subsequent poll loop below. e2e_pump would have drained both sides
+     * and consumed the event before we could see it. */
+    e2e_relay(&offerer, &answerer, now_ms);
+
+    /* Walk the answerer's output queue looking for the EV_MEDIA_DATA we
+     * expect. Other event types (e.g., RTCP) may precede or follow it. */
+    int got_media = 0;
+    nanortc_output_t out;
+    while (nanortc_poll_output(&answerer, &out) == NANORTC_OK) {
+        if (out.type != NANORTC_OUTPUT_EVENT || out.event.type != NANORTC_EV_MEDIA_DATA) {
+            continue;
+        }
+        ASSERT_EQ(out.event.media_data.mid, (uint8_t)ans_mid);
+        ASSERT_EQ(out.event.media_data.len, idr_payload_len);
+        ASSERT_TRUE(out.event.media_data.is_keyframe);
+        ASSERT_MEM_EQ(out.event.media_data.data, idr + 4, idr_payload_len);
+        got_media = 1;
+    }
+    ASSERT_TRUE(got_media);
+
+    nanortc_destroy(&offerer);
+    nanortc_destroy(&answerer);
+}
+#endif /* NANORTC_FEATURE_H265 */
 #endif /* NANORTC_FEATURE_VIDEO */
 
 TEST(test_e2e_connected_event_has_mids)
@@ -2817,6 +2941,9 @@ RUN(test_e2e_send_audio_bad_params);
 #if NANORTC_FEATURE_VIDEO
 RUN(test_e2e_send_video_bad_params);
 RUN(test_e2e_send_video_before_connected);
+#if NANORTC_FEATURE_H265
+RUN(test_e2e_h265_loopback);
+#endif
 #endif
 RUN(test_e2e_connected_event_has_mids);
 RUN(test_e2e_request_keyframe_bad_params);

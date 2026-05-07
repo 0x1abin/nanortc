@@ -37,7 +37,14 @@ int track_init(nanortc_track_t *m, uint8_t mid, nanortc_track_kind_t kind,
 
 #if NANORTC_FEATURE_VIDEO
     if (kind == NANORTC_TRACK_VIDEO) {
-        h264_depkt_init(&m->track.video.h264_depkt);
+#if NANORTC_FEATURE_H265
+        if (codec == NANORTC_CODEC_H265) {
+            h265_depkt_init(&m->track.video.depkt.h265);
+        } else
+#endif
+        {
+            h264_depkt_init(&m->track.video.depkt.h264);
+        }
     }
 #endif
 
