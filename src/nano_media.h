@@ -24,6 +24,10 @@
 #include "nano_h264.h"
 #endif
 
+#if NANORTC_FEATURE_H265
+#include "nano_h265.h"
+#endif
+
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -98,7 +102,13 @@ typedef struct nano_media {
 #endif
 #if NANORTC_FEATURE_VIDEO
         struct {
-            nano_h264_depkt_t h264_depkt; /**< H.264 FU-A reassembly. */
+            /** Per-codec depacketizer state (selected by `codec` field). */
+            union {
+                nano_h264_depkt_t h264; /**< H.264 FU-A reassembly (RFC 6184). */
+#if NANORTC_FEATURE_H265
+                nano_h265_depkt_t h265; /**< H.265 FU reassembly (RFC 7798). */
+#endif
+            } depkt;
         } video;
 #endif
     } track;

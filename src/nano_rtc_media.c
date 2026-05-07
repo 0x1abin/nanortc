@@ -997,12 +997,28 @@ int nano_rtc_media_handle_rtp_or_rtcp(nanortc_t *rtc, const uint8_t *data, size_
 #endif
     } else {
 #if NANORTC_FEATURE_VIDEO
-        /* H.264 depacketization */
+        /* Video depacketization — codec-dispatched (RFC 6184 H.264 / RFC 7798 H.265). */
         uint8_t rtp_marker = (pkt[1] >> 7) & 1;
         const uint8_t *nalu_out = NULL;
         size_t nalu_len = 0;
-        int drc = h264_depkt_push(&m->track.video.h264_depkt, payload, payload_len, rtp_marker,
+        int drc;
+        bool is_kf = false;
+#if NANORTC_FEATURE_H265
+        if (m->codec == NANORTC_CODEC_H265) {
+            drc = h265_depkt_push(&m->track.video.depkt.h265, payload, payload_len, rtp_marker,
                                   &nalu_out, &nalu_len);
+            if (drc == NANORTC_OK && nalu_out && nalu_len > 0) {
+                is_kf = h265_is_keyframe(nalu_out, nalu_len) ? true : false;
+            }
+        } else
+#endif
+        {
+            drc = h264_depkt_push(&m->track.video.depkt.h264, payload, payload_len, rtp_marker,
+                                  &nalu_out, &nalu_len);
+            if (drc == NANORTC_OK && nalu_out && nalu_len > 0) {
+                is_kf = h264_is_keyframe(nalu_out, nalu_len) ? true : false;
+            }
+        }
         if (drc == NANORTC_OK && nalu_out && nalu_len > 0) {
             nanortc_event_t vevt;
             memset(&vevt, 0, sizeof(vevt));
@@ -1012,7 +1028,7 @@ int nano_rtc_media_handle_rtp_or_rtcp(nanortc_t *rtc, const uint8_t *data, size_
             vevt.media_data.data = nalu_out;
             vevt.media_data.len = nalu_len;
             vevt.media_data.timestamp = rtp_ts;
-            vevt.media_data.is_keyframe = h264_is_keyframe(nalu_out, nalu_len) ? true : false;
+            vevt.media_data.is_keyframe = is_kf;
             vevt.media_data.contiguous = true;
             nano_rtc_emit_event_full(rtc, &vevt);
         }

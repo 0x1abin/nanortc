@@ -17,6 +17,7 @@
 
 #include "nanortc.h"
 #include "nano_h265.h"
+#include "nano_media.h"
 #include "nano_test.h"
 #include <string.h>
 
@@ -957,6 +958,44 @@ TEST(test_h265_annex_b_two_byte_header)
 }
 
 /* ================================================================
+ * Track / depacketizer integration (PR-2: receive-path wiring)
+ * ================================================================ */
+
+TEST(test_h265_track_init_dispatches_to_h265_depkt)
+{
+    /* Verifies the per-track depkt union (src/nano_media.h) plus track_init
+     * codec dispatch (src/nano_media.c): a video track created with
+     * NANORTC_CODEC_H265 must initialize the H.265 arm and the same FU
+     * three-fragment vector that test_h265_depkt_fu_hand_crafted drives
+     * standalone must reassemble correctly through the union accessor. */
+    nanortc_track_t m;
+    int rc = track_init(&m, /*mid=*/0, NANORTC_TRACK_VIDEO, NANORTC_DIR_RECVONLY,
+                        (uint8_t)NANORTC_CODEC_H265, /*sample_rate=*/0, /*channels=*/0,
+                        /*jitter_depth_ms=*/0);
+    ASSERT_OK(rc);
+    ASSERT_EQ(m.codec, (uint8_t)NANORTC_CODEC_H265);
+
+    /* Same hand-crafted FU vector as test_h265_depkt_fu_hand_crafted (line ~611):
+     * type=19 IDR_W_RADL split across S/M/E. */
+    uint8_t f1[] = {0x62, 0x01, 0x93, 0xAA, 0xBB};
+    uint8_t f2[] = {0x62, 0x01, 0x13, 0xCC, 0xDD};
+    uint8_t f3[] = {0x62, 0x01, 0x53, 0xEE, 0xFF};
+    uint8_t expected_nal[] = {0x26, 0x01, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
+
+    const uint8_t *out = NULL;
+    size_t out_len = 0;
+    ASSERT_OK(h265_depkt_push(&m.track.video.depkt.h265, f1, sizeof(f1), 0, &out, &out_len));
+    ASSERT_TRUE(out == NULL);
+    ASSERT_OK(h265_depkt_push(&m.track.video.depkt.h265, f2, sizeof(f2), 0, &out, &out_len));
+    ASSERT_TRUE(out == NULL);
+    ASSERT_OK(h265_depkt_push(&m.track.video.depkt.h265, f3, sizeof(f3), 1, &out, &out_len));
+    ASSERT_TRUE(out != NULL);
+    ASSERT_EQ(out_len, sizeof(expected_nal));
+    ASSERT_MEM_EQ(out, expected_nal, sizeof(expected_nal));
+    ASSERT_TRUE(h265_is_keyframe(out, out_len));
+}
+
+/* ================================================================
  * Test runner
  * ================================================================ */
 
@@ -1022,4 +1061,6 @@ RUN(test_h265_keyframe_ap_without_idr);
 RUN(test_h265_keyframe_paci_not_keyframe);
 /* Annex-B scanner (H.265 regression) */
 RUN(test_h265_annex_b_two_byte_header);
+/* Track / depacketizer integration (PR-2 receive-path wiring) */
+RUN(test_h265_track_init_dispatches_to_h265_depkt);
 TEST_MAIN_END

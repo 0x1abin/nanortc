@@ -1,6 +1,6 @@
 # Phase 3.5: H.265/HEVC Video Support
 
-**Status:** Active — PR-1 (module + tests + fuzz) ready for review; PR-2 and PR-3 pending.
+**Status:** Active — PR-1 (module + tests + fuzz) landed 2026-04-13; PR-2 (wiring + e2e) landed in two stages — bulk shipped during the 2026-04-16 browser interop hardening session, receive-path demux + first video e2e shipped 2026-05-07. PR-3 (libdatachannel interop + browser + doc finalization) pending.
 **Estimated effort:** 2–3 agent sessions total (split across 3 independent PRs).
 **Authoritative spec:** [RFC 7798](https://www.rfc-editor.org/rfc/rfc7798) — "RTP Payload Format for High Efficiency Video Coding (HEVC)" (December 2016).
 
@@ -148,36 +148,102 @@ H.265 defaults to **PT = 98**, disjoint from H.264's PT = 96, so a future same-m
 
 ## PR-2 — SDP + `nano_rtc` wiring + parameter-sets API + e2e
 
-**Status:** Pending.
+**Status:** Landed in two stages.
 
-### What to land
+### Stage A — bulk wiring (2026-04-16, "browser interop hardening")
 
-- **Public API** (`include/nanortc.h`):
-  - `NANORTC_CODEC_H265` appended to `nanortc_codec_t` enum.
-  - New `nanortc_video_set_h265_parameter_sets()` declaration, gated on `NANORTC_FEATURE_H265`.
-- **SDP m-line state** (`src/nano_sdp.h`): add `video_h265_rtpmap_pt` sibling to `video_h264_rtpmap_pt`, and `h265_sprop_fmtp[]` + length for the pre-formatted sprop-* fragment.
+Driven by a downstream rk3588 camera consumer chasing real Chrome / Safari
+viewers at 1080p. The four bugs uncovered there (see "Decision log"
+2026-04-16 entry) forced the SDP plumbing to ship before the receive-path
+demux even existed. The following items all landed in that session:
+
+- **Public API** (`include/nanortc.h`): `NANORTC_CODEC_H265` enum value;
+  `nanortc_video_set_h265_parameter_sets()` declaration gated on
+  `NANORTC_FEATURE_H265`.
+- **SDP m-line state** (`src/nano_sdp.h`): `video_h265_rtpmap_pt`,
+  `h265_sprop_fmtp[NANORTC_H265_SPROP_FMTP_SIZE]`, `h265_sprop_fmtp_len`,
+  plus `h265_profile_id` / `h265_tier_flag` / `h265_level_id` extracted
+  from the VPS profile_tier_level (so Safari decoders see the actual
+  level instead of the hardcoded default).
 - **SDP parser** (`src/nano_sdp.c`):
-  - `parse_rtpmap` branch for `H265/90000`.
-  - fmtp parser branch accepting `profile-id`, `tier-flag`, `level-id`, rejecting `tx-mode ≠ SRST` and `sprop-max-don-diff > 0`.
-- **SDP builder** (`src/nano_sdp.c` `sdp_append_video_mline`): dispatch on `ml->codec` to emit either H.264 or H.265 rtpmap/fmtp/rtcp-fb block.
-- **PT assignment** (`src/nano_rtc.c` `nanortc_add_track`): H.264 → 96, H.265 → `NANORTC_VIDEO_H265_DEFAULT_PT` (98).
-- **Negotiation** (`src/nano_rtc.c` `rtc_apply_negotiated_media`): select H.264 or H.265 rtpmap PT based on local track's codec.
-- **Send path** (`src/nano_rtc.c` `rtc_send_video` / `nanortc_send_video`): scan Annex-B access unit to build `h265_nal_ref_t` stack array (≤ `NANORTC_MAX_NALS_PER_AU`), call `h265_packetize_au()` when codec is H.265, else `h264_packetize()` per-NAL.
-- **Receive path** (`src/nano_rtc.c` RTP dispatch): call `h265_depkt_push()` or `h264_depkt_push()` based on `m->codec`.
-- **`nanortc_video_set_h265_parameter_sets()` implementation**: validate mid + codec, base64-encode VPS/SPS/PPS via `nano_base64_encode`, format `sprop-vps=..;sprop-sps=..;sprop-pps=..` into the mline scratch buffer.
-- **Per-track union** (`src/nano_media.h`): convert `track.video.h264_depkt` to an inner union of h264/h265 depacketizers. Every access site in `nano_rtc.c` updated.
-- **Tests** (`tests/test_sdp.c`): 4 new SDP tests — basic H.265 offer parse, reject non-SRST tx-mode, reject non-zero sprop-max-don-diff, generate answer with sprop-*.
-- **E2E** (`tests/test_e2e.c` or new `tests/test_e2e_h265.c`): loopback between two `nanortc_t` instances negotiating H.265, sending an Annex-B frame, receiving via `NANORTC_EV_MEDIA_DATA`, comparing bytes.
+  - `parse_rtpmap` H.265 branch — sets `ml->video_h265_rtpmap_pt` and
+    immediately adopts the remote PT when the local track's codec is
+    H.265 (handles Safari offers that omit fmtp).
+  - `parse_fmtp` H.265 branch — accepts `profile-id` / `tier-flag` /
+    `level-id`, rejects `tx-mode ≠ SRST` and `sprop-max-don-diff > 0`.
+  - "Local-H.265 must not be hijacked by H.264 fmtp" gate at line 403:
+    `bool local_is_h265 = (ml->codec == NANORTC_CODEC_H265)` short-circuits
+    H.264 PT selection when the local track has explicitly chosen H.265.
+- **SDP builder** (`src/nano_sdp.c` `sdp_append_video_mline`): codec-branched
+  emission for H.265 rtpmap / fmtp / rtcp-fb; sprop-* fragment is included
+  only when `nanortc_video_set_h265_parameter_sets()` populated it.
+- **PT assignment** (`src/nano_rtc_media.c` `nanortc_add_track`): H.264 → 96
+  (`NANORTC_VIDEO_DEFAULT_PT`), H.265 → 98 (`NANORTC_VIDEO_H265_DEFAULT_PT`).
+- **Send path** (`src/nano_rtc_media.c`): `rtc_send_video_h265()` plus the
+  codec dispatch at `nanortc_send_video()` line 557 (`m->codec ==
+  NANORTC_CODEC_H265` → H.265 path; else falls into the existing H.264
+  zero-copy fragment iterator). Greedy AU packer + callback emits one
+  Single / AP / FU per RTP packet via `pkt_ring_alloc_slot` /
+  `pkt_ring_commit_slot`.
+- **`nanortc_video_set_h265_parameter_sets()` implementation**: base64-encodes
+  VPS/SPS/PPS via `nano_base64_encode`, writes
+  `sprop-vps=…;sprop-sps=…;sprop-pps=…` into the m-line scratch buffer,
+  parses the VPS profile_tier_level to populate `ml->h265_{profile_id,
+  tier_flag, level_id}` (skipping H.265 §7.4.1.1 emulation-prevention
+  bytes).
+- **SDP tests** (`tests/test_sdp.c`): four hardening regressions —
+  `test_sdp_h265_rtpmap_without_fmtp_picks_remote_pt`,
+  `test_sdp_h265_local_track_not_hijacked_by_h264_fmtp`,
+  `test_sdp_parse_preserves_local_h265_state`,
+  `test_sdp_parse_reject_h265_msmt`.
+
+What stage A *did not* ship: the receive-path depacketizer dispatch and
+the per-track depkt union — the camera consumer was send-only, so the
+unwired receive path went unnoticed for three weeks until this PR.
+
+### Stage B — receive-path demux + first video e2e (2026-05-07)
+
+The remaining wiring needed for true bidirectional H.265:
+
+- **Per-track depkt union** (`src/nano_media.h`): the named field
+  `track.video.h264_depkt` becomes a named inner union
+  `track.video.depkt.h264` / `track.video.depkt.h265`. The H.265 arm is
+  conditionally compiled under `#if NANORTC_FEATURE_H265`, so
+  `H265=OFF` builds keep the original `sizeof(nanortc_track_t)`
+  byte-for-byte.
+- **track_init dispatch** (`src/nano_media.c`): `kind == VIDEO` block
+  branches on `m->codec` to call `h265_depkt_init()` for H.265 tracks,
+  else falls back to `h264_depkt_init()`. Unknown video codecs land on
+  the H.264 path (current behavior; the receive demux drops anything
+  whose PT doesn't match a registered track anyway).
+- **Receive demux dispatch** (`src/nano_rtc_media.c:998-1037`): the
+  hardcoded H.264 block becomes codec-dispatched. H.265 calls
+  `h265_depkt_push()` + `h265_is_keyframe()`, H.264 keeps its existing
+  path. The single `NANORTC_EV_MEDIA_DATA` emission site is shared —
+  the event payload is codec-neutral.
+- **Unit test** (`tests/test_h265.c`):
+  `test_h265_track_init_dispatches_to_h265_depkt` uses the public
+  `track_init` + the inner union accessor, then drives the same
+  hand-crafted FU 3-fragment vector as `test_h265_depkt_fu_hand_crafted`
+  to prove the dispatch path matches the stand-alone module path.
+- **First video e2e** (`tests/test_e2e.c`): `test_e2e_h265_loopback` is
+  the project's first true two-instance video roundtrip. Negotiates an
+  H.265 SENDONLY/RECVONLY pair through full SDP/ICE/DTLS, sends one
+  IDR Annex-B access unit via `nanortc_send_video()`, and asserts the
+  answerer surfaces it through `NANORTC_EV_MEDIA_DATA` with
+  byte-identical payload + `is_keyframe == true`. One-way relay (not
+  `e2e_pump`) — `e2e_pump` would drain the answerer's event queue
+  before the test could see it.
 
 ### Acceptance criteria
 
-- [ ] `nanortc_add_video_track(rtc, dir, NANORTC_CODEC_H265)` returns a valid MID
-- [ ] `nanortc_video_set_h265_parameter_sets()` emits correctly base64-encoded sprop-* in the generated SDP
-- [ ] Two-nanortc loopback: `set_parameter_sets` → `create_offer` → `accept_answer` → `send_video(Annex-B AU)` → `EV_MEDIA_DATA` with byte-identical payload
-- [ ] H.264 existing test suite still passes unchanged
-- [ ] 6-profile × 2-crypto × `NANORTC_FEATURE_H265={ON,OFF}` build matrix passes
+- [x] `nanortc_add_video_track(rtc, dir, NANORTC_CODEC_H265)` returns a valid MID — covered by stage A SDP tests.
+- [x] `nanortc_video_set_h265_parameter_sets()` emits correctly base64-encoded sprop-* in the generated SDP — stage A tests + the e2e loopback.
+- [x] Two-nanortc loopback: `set_parameter_sets` → `create_offer` → `accept_answer` → `send_video(Annex-B AU)` → `EV_MEDIA_DATA` with byte-identical payload — `test_e2e_h265_loopback` (stage B).
+- [x] H.264 existing test suite still passes unchanged — `test_h264` 32/32 green after the union rename; verified on host (`MEDIA` profile).
+- [x] 7-profile × 2-crypto × `NANORTC_FEATURE_H265={ON,OFF}` build matrix passes — see `./scripts/ci-check.sh` for the canonical combinations (DATA, AUDIO, MEDIA, MEDIA_H265, AUDIO_ONLY, MEDIA_ONLY, CORE_ONLY).
 
-**Quality grade at end of PR-2:** `nano_h265.c` = **B** (all wiring in place, end-to-end loopback verified, fuzz execs ramped up).
+**Quality grade at end of PR-2:** `nano_h265.c` = **B** (all wiring in place, end-to-end loopback verified, fuzz execs ramped up). Promotes to **A** after PR-3 ships libdatachannel H.265 interop + browser verification + ≥ 50M `fuzz_h265` execs.
 
 ---
 
