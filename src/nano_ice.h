@@ -197,4 +197,16 @@ int ice_generate_consent(nano_ice_t *ice, uint32_t now_ms, const nanortc_crypto_
  */
 bool ice_consent_expired(const nano_ice_t *ice, uint32_t now_ms);
 
+/**
+ * Compute milliseconds until ICE needs the timer wheel to fire.
+ * Considers controlling-role check pacing, post-CONNECTED consent freshness
+ * keepalive, and the consent expiry deadline. Returns UINT32_MAX when no
+ * deadline is currently armed (e.g., FAILED state, or controlled role
+ * without nominated pair).
+ *
+ * Pure const reader — used by the library's own Sans-I/O timeout
+ * aggregator to let event loops sleep up to the next deadline.
+ */
+uint32_t ice_next_timeout_ms(const nano_ice_t *ice, uint32_t now_ms);
+
 #endif /* NANORTC_ICE_H_ */

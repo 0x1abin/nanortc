@@ -75,3 +75,56 @@ foreach(test_source ${TEST_SOURCES})
     )
     add_test(NAME ${test_name} COMMAND ${test_name})
 endforeach()
+
+# ---- Output-lifetime: small-ring variant ----
+# PR-2 §Verification: parametrize the lifetime burst tests to
+# NANORTC_OUT_QUEUE_SIZE=4 + NANORTC_VIDEO_PKT_RING_SIZE=4 so the aliasing
+# window is small enough for the existing tests (drain-before-wrap,
+# overrun-aliases-pre-drain, lazy-wrap-rewrites, oversized-payload-drops)
+# to actually trip in CI. At default sizes (32/32) the burst the test
+# generates fits without wrap, masking regressions.
+#
+# The library's struct layout is sized at compile time, so we cannot just
+# pass `-D` on the test target alone — the test would link against a
+# library compiled with default sizes and read garbage. Instead we compile
+# NANORTC_SOURCES directly into the test executable with the overrides;
+# ccache makes the rebuild near-free.
+if(NANORTC_FEATURE_VIDEO AND NANORTC_FEATURE_TURN)
+    # NANORTC_SOURCES is defined relative to the project root in the parent
+    # CMakeLists.txt. Rebase to absolute paths since tests/ is a subdir.
+    set(_min_lifetime_sources "")
+    foreach(_src ${NANORTC_SOURCES})
+        list(APPEND _min_lifetime_sources "${CMAKE_SOURCE_DIR}/${_src}")
+    endforeach()
+    add_executable(test_output_lifetime_min
+        ${CMAKE_CURRENT_SOURCE_DIR}/test_output_lifetime.c
+        ${_min_lifetime_sources}
+    )
+    target_link_libraries(test_output_lifetime_min PRIVATE unity)
+    target_include_directories(test_output_lifetime_min PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/src
+        ${CMAKE_SOURCE_DIR}/crypto
+    )
+    target_compile_definitions(test_output_lifetime_min PRIVATE
+        NANORTC_FEATURE_DATACHANNEL=$<BOOL:${NANORTC_FEATURE_DATACHANNEL}>
+        NANORTC_FEATURE_DC_RELIABLE=$<BOOL:${NANORTC_FEATURE_DC_RELIABLE}>
+        NANORTC_FEATURE_DC_ORDERED=$<BOOL:${NANORTC_FEATURE_DC_ORDERED}>
+        NANORTC_FEATURE_AUDIO=$<BOOL:${NANORTC_FEATURE_AUDIO}>
+        NANORTC_FEATURE_VIDEO=$<BOOL:${NANORTC_FEATURE_VIDEO}>
+        NANORTC_FEATURE_H265=$<BOOL:${NANORTC_FEATURE_H265}>
+        NANORTC_FEATURE_IPV6=$<BOOL:${NANORTC_FEATURE_IPV6}>
+        NANORTC_FEATURE_TURN=$<BOOL:${NANORTC_FEATURE_TURN}>
+        NANORTC_OUT_QUEUE_SIZE=4
+        NANORTC_VIDEO_PKT_RING_SIZE=4
+    )
+    if(NANORTC_CRYPTO STREQUAL "openssl")
+        target_link_libraries(test_output_lifetime_min PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+        target_compile_definitions(test_output_lifetime_min PRIVATE NANORTC_CRYPTO_OPENSSL=1)
+    else()
+        target_link_libraries(test_output_lifetime_min PRIVATE MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+        target_compile_definitions(test_output_lifetime_min PRIVATE NANORTC_CRYPTO_MBEDTLS=1)
+    endif()
+    set_target_properties(test_output_lifetime_min PROPERTIES C_STANDARD 99)
+    add_test(NAME test_output_lifetime_min COMMAND test_output_lifetime_min)
+endif()

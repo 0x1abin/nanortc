@@ -261,6 +261,17 @@ int nsctp_start(nano_sctp_t *sctp);
 /** Handle timeout (retransmission, heartbeat). */
 int nsctp_handle_timeout(nano_sctp_t *sctp, uint32_t now_ms);
 
+/**
+ * Compute milliseconds until the next deadline this SCTP association
+ * needs the timer wheel to fire. Considers retransmission RTOs on the
+ * send queue and the periodic heartbeat. Returns UINT32_MAX when the
+ * association is not ESTABLISHED or has nothing pending.
+ *
+ * Pure const reader — does not mutate @p sctp; safe to call from the
+ * library's own Sans-I/O timeout aggregator.
+ */
+uint32_t nsctp_next_timeout_ms(const nano_sctp_t *sctp, uint32_t now_ms);
+
 /* ----------------------------------------------------------------
  * Codec functions (parse / encode individual chunks)
  * ---------------------------------------------------------------- */

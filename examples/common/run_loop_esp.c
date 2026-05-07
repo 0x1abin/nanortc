@@ -165,9 +165,19 @@ int nano_run_loop_step(nano_run_loop_t *loop)
         return -1;
     }
 
+    /* Caller's preferred poll cadence is the upper bound (default 100 ms,
+     * which also bounds cooperative-shutdown latency for callers that
+     * tear the loop down by flipping `peer->running`). The library's
+     * next protocol deadline and any legacy NANORTC_OUTPUT_TIMEOUT
+     * entries can only *shorten* this — never extend it. */
     uint32_t timeout_ms = loop->max_poll_ms ? loop->max_poll_ms : 100;
 
-    /* Drain output queue */
+    uint32_t deadline_ms = 0;
+    if (nanortc_next_timeout_ms(loop->rtc, nano_get_millis(), &deadline_ms) == NANORTC_OK &&
+        deadline_ms < timeout_ms) {
+        timeout_ms = deadline_ms;
+    }
+
     dispatch_outputs(loop, &timeout_ms);
 
     /* Wait for network input or timeout */

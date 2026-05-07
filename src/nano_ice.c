@@ -686,3 +686,49 @@ bool ice_consent_expired(const nano_ice_t *ice, uint32_t now_ms)
     }
     return now_ms >= ice->consent_expiry_ms;
 }
+
+uint32_t ice_next_timeout_ms(const nano_ice_t *ice, uint32_t now_ms)
+{
+    if (!ice) {
+        return UINT32_MAX;
+    }
+
+    uint32_t best = UINT32_MAX;
+
+    /* Controlling role: connectivity-check pacing while not yet CONNECTED.
+     * `next_check_ms` is armed by ice_generate_check() at every send; a
+     * zero value before the first check means "fire immediately". */
+    if (ice->is_controlling && ice->state != NANORTC_ICE_STATE_CONNECTED &&
+        ice->state != NANORTC_ICE_STATE_FAILED) {
+        if (ice->next_check_ms == 0 || now_ms >= ice->next_check_ms) {
+            best = 0;
+        } else {
+            uint32_t left = ice->next_check_ms - now_ms;
+            if (left < best) {
+                best = left;
+            }
+        }
+    }
+
+    /* Post-CONNECTED: consent-freshness send + expiry.
+     * `consent_next_ms` schedules the keepalive cadence; `consent_expiry_ms`
+     * is the hard deadline beyond which we tear the connection down. Both
+     * matter — whichever is sooner caps the wakeup. */
+    if (ice->state == NANORTC_ICE_STATE_CONNECTED) {
+        if (ice->consent_next_ms != 0) {
+            uint32_t left = (now_ms >= ice->consent_next_ms) ? 0u : (ice->consent_next_ms - now_ms);
+            if (left < best) {
+                best = left;
+            }
+        }
+        if (ice->consent_expiry_ms != 0) {
+            uint32_t left =
+                (now_ms >= ice->consent_expiry_ms) ? 0u : (ice->consent_expiry_ms - now_ms);
+            if (left < best) {
+                best = left;
+            }
+        }
+    }
+
+    return best;
+}
