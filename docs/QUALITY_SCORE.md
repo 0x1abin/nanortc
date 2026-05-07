@@ -19,7 +19,7 @@ Per-module quality grades for NanoRTC. Updated as implementation progresses.
 
 | Module | File | Grade | Tests | Notes |
 |--------|------|-------|-------|-------|
-| Main FSM | `nano_rtc.c` | **A** | 48 e2e tests: init, demux, ICE→DTLS→SCTP→DC pipeline, offer/answer roundtrip, DC create/close/label, graceful close, state transitions, ICE multi-candidate, IPv6 candidates, param validation, track stats, direction changes, media offer/answer, DC options, codec variants | RFC 7983 demux, full pipeline integration, all public API. 60% line coverage (largest file at 1102 lines — uncovered paths are connected-state media I/O). Fuzz-tested via `fuzz_stun`/`fuzz_sdp`/`fuzz_sctp` (input parsers called by FSM). Browser + interop verified. |
+| Main FSM | `nano_rtc.c` + `nano_rtc_negotiate.c` + `nano_rtc_media.c` | **A** | 48 e2e tests: init, demux, ICE→DTLS→SCTP→DC pipeline, offer/answer roundtrip, DC create/close/label, graceful close, state transitions, ICE multi-candidate, IPv6 candidates, param validation, track stats, direction changes, media offer/answer, DC options, codec variants | RFC 7983 demux, full pipeline integration, all public API. Phase 10 PR-4 split the orchestration into three TUs sharing `src/nano_rtc_internal.h`: `nano_rtc.c` (transport backbone — ICE/TURN/DTLS/SCTP demux, output queue, timer dispatch, public API), `nano_rtc_negotiate.c` (offer/answer + iceServers surface), and `nano_rtc_media.c` (RTP/RTCP/BWE paths, only under `NANORTC_HAVE_MEDIA_TRANSPORT`). Coverage and tests are reported jointly — splitting did not change behavior. Fuzz-tested via `fuzz_stun`/`fuzz_sdp`/`fuzz_sctp` (input parsers called by FSM). Browser + interop verified. |
 | STUN codec | `nano_stun.c` | **A** | 47 tests (RFC 5769 vectors, str0m, roundtrip, edge cases, short-input guards) | Full parser/encoder, MI (HMAC-SHA1), FP (CRC-32), ERROR-CODE. Fuzz-tested (`fuzz_stun`): 76M+ executions clean. 91% line coverage. |
 | ICE | `nano_ice.c` | **A** | 24 tests (§7.1.1, §7.2.1, §7.3, §8, §6.1.2.2 pair filter, credentials, mandatory MI+FP, Binding Error, DISCONNECTED halt) | Dual-role FSM, controlled + controlling, pacing, nomination, same-family pair enforcement, random tie-breaker per §5.2, SDP/STUN priority alignment. Full RFC audit: [docs/engineering/ice-rfc-compliance.md](engineering/ice-rfc-compliance.md). IPv4 + IPv6 dual-stack end-to-end (`test_e2e_ipv6_loopback_connects`). Browser + interop verified. |
 | DTLS | `nano_dtls.c` | **A** | 10 tests (handshake loopback, encrypt/decrypt, keying material, fingerprint, close_notify) | Sans I/O BIO adapter, ECDSA P-256 self-signed cert, RFC 5764 key export, close_notify alert. 82% line coverage. Browser + interop verified. |
@@ -30,6 +30,12 @@ Per-module quality grades for NanoRTC. Updated as implementation progresses.
 | CRC-32 | `nano_crc32.c` | **A** | test vector verified | 100% line coverage. Fuzz-tested via `fuzz_stun` (called by STUN FINGERPRINT verify). |
 | TURN client | `nano_turn.c` | **A** | 24 unit tests + 5 relay-only interop tests with coturn (handshake / DC string / channel-data burst / large payload / echo) | Full RFC 5766/8656: Allocate + 401 challenge + Refresh (incl. LIFETIME=0 deallocate) + CreatePermission (per-tick trickle fan-out, per-permission txid validation) + ChannelBind + Send/Data indication + ChannelData framing. Lazy outbound TURN wrap at `nanortc_poll_output()` time via `out_wrap_meta[]` side-table + dedicated `turn_buf`, gated by `via_turn` signal plumbed through `rtc_process_receive` → `ice_handle_stun`. Consent freshness routed through the same wrap path. Fuzz-tested (`fuzz_turn`). Hand-verified end-to-end with a real cellular phone via a downstream macOS camera SDK example (Phase 5.2). **Coverage gap:** automated test for nanortc-as-TURN-client (relay-only outbound) still pending. |
 | Address utils | `nano_addr.c` | **A** | 48 tests (IPv4/IPv6 parse, format, roundtrip, negative cases, auto-detect) | RFC 4291/5952 IPv6 parsing + formatting. Fuzz-tested (`fuzz_addr`): 70M+ executions clean. 93% line coverage. |
+
+### Media common (AUDIO or VIDEO profiles)
+
+| Module | File | Grade | Tests | Notes |
+|--------|------|-------|-------|-------|
+| Track abstraction | `nano_media.c` | **A** | 21 tests (track init, kind/direction/codec validation, jitter wiring, mid handling, payload-type lookups, error cases) | Shared track container used by both audio and video paths. Compiled under `NANORTC_HAVE_MEDIA_TRANSPORT`. Tests live in `tests/test_media.c`. No fuzz harness (data structure layer; fuzz coverage achieved through SDP / RTP / RTCP). |
 
 ### Audio (AUDIO/MEDIA profiles)
 
@@ -49,11 +55,13 @@ Per-module quality grades for NanoRTC. Updated as implementation progresses.
 | Annex-B scanner | `nano_annex_b.c` | **A** | 6 tests (shared via `test_h264.c`) | Codec-agnostic start-code scanner. Extracted from `nano_h264.c` to be shared with H.265. Fuzz-tested via `fuzz_h264` (31M+ execs) and `fuzz_h265`. |
 | Base64 encoder | `nano_base64.c` | **A** | 12 tests (RFC 4648 §10 canonical 7 vectors + alphabet coverage + buffer overflow + NUL termination + encoded-size helper) | RFC 4648 §4 standard alphabet encoder. Single function, no decoder (not needed). Used by H.265 SDP sprop-vps/sps/pps emission. |
 | BWE | `nano_bwe.c` | **A** | 26 tests (REMB parse, byte vector, EMA smoothing, min/max clamp, event threshold, public API) | REMB parsing, EMA smoothing. Fuzz-tested (`fuzz_bwe`): 82M+ executions clean. 96% line coverage. |
+| TWCC parser | `nano_twcc.c` | **A** | 26 tests (run-length / status-vector 1-bit / status-vector 2-bit chunks, mixed chunks + delta sizes, malformed input, truncation, bad PT/FMT, count overflow) | RFC 8888 Transport-Wide Congestion Control feedback parser. Hand-built byte vectors derived from the RFC, no third-party reference bytes. Phase 9 PR-1. No dedicated fuzz harness — coverage achieved through `fuzz_rtp` (TWCC packets enter via the RTCP demux) and the parser's overflow guards. |
 
 ### Infrastructure
 
 | Component | Grade | Notes |
 |-----------|-------|-------|
+| Logging shim | **A** | `nano_log.c` (84 lines). Caller-injected callback (`nanortc_set_log_callback`) routed through `NANORTC_LOG{T,D,I,W,E}` macros gated by `NANORTC_LOG_LEVEL`. No separate test suite — exercised by every other test indirectly. Designed primarily as an AI-debug tap (memory: `LOG purpose`). |
 | Crypto provider interface | **A** | HMAC-SHA1 + CSPRNG + DTLS + AES-128-CM + `dtls_close_notify`. DTLS-SRTP `use_srtp` in both backends. mbedTLS 3-tier compat. Browser + interop verified. |
 | Build system (CMake) | **A** | 7 feature combos, 2 crypto backends, ESP-IDF, fuzz build, coverage build, `-Wall -Wextra -Werror` |
 | Test infrastructure | **A** | Unity test framework (vendored), 400+ tests across 16 suites, RFC vectors, e2e loopback, 80%+ line coverage |
@@ -82,6 +90,13 @@ All 18 library modules promoted from **B** to **A** grade:
 - **Test count**: 400+ tests across 16 suites (up from 347 across 14)
 - **Test framework**: Unity (ThrowTheSwitch), replacing manual macros
 - **CI**: 6-combo × 2-crypto build matrix + ASan + fuzz + coverage threshold
+
+> *Numbers above are a Phase 4 snapshot. Subsequent phases added more graded
+> modules (h265, annex_b, base64, twcc) and split `nano_rtc.c` into the
+> `nano_rtc.c` + `nano_rtc_negotiate.c` + `nano_rtc_media.c` orchestration
+> trio (Phase 10 PR-4); the CI matrix grew to **7-combo × 2-crypto** when
+> `MEDIA_H265` was added. The per-module rows above are the live source of
+> truth — see [docs/PLANS.md](PLANS.md) for the timeline.*
 
 ## Phase 6 Summary (Resource Optimization)
 

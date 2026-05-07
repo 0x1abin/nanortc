@@ -403,7 +403,17 @@ typedef struct nanortc_event {
  * Output structure
  * ---------------------------------------------------------------- */
 
-/** @brief Output item produced by nanortc_poll_output(). Tagged union on @c type. */
+/**
+ * @brief Output item produced by nanortc_poll_output(). Tagged union on @c type.
+ *
+ * Pointer fields (@c transmit.data, @c event pointer fields) are valid only
+ * until the next call to nanortc_poll_output(), nanortc_handle_input(), or
+ * nanortc_destroy() on the same nanortc_t. The library reuses internal
+ * scratch buffers (DTLS, STUN, TURN wrap, RTP/SRTP, video pkt_ring), so any
+ * payload not transmitted or copied before the next mutating call may be
+ * overwritten or aliased. Drain each output synchronously, or memcpy() the
+ * payload before continuing the event loop.
+ */
 typedef struct nanortc_output {
     nanortc_output_type_t type; /**< Discriminator for the anonymous union. */
     union {
@@ -680,8 +690,12 @@ struct nanortc {
     uint32_t stats_enqueue_direct;   /**< Enqueues that bypass TURN wrap. */
     uint32_t stats_enqueue_via_turn; /**< Enqueues flagged for TURN wrap. */
     uint32_t stats_wrap_dropped;     /**< Lazy wrap failures in poll_output. */
-    uint32_t stats_tx_queue_full;    /**< rtc_enqueue_transmit out_queue overflow. */
 #endif
+
+    /* PR-2 audit signal — universal across feature combos: incremented when
+     * rtc_enqueue_transmit() finds out_queue full and drops the slot. Fires
+     * on CORE_ONLY/DATA/AUDIO builds too, not just TURN. */
+    uint32_t stats_tx_queue_full; /**< rtc_enqueue_transmit out_queue overflow. */
 
     /* Scratch buffer for STUN encode/decode.
      * Sans I/O contract: caller must drain outputs before next handle_receive. */
@@ -883,14 +897,47 @@ NANORTC_API int nanortc_poll_output(nanortc_t *rtc, nanortc_output_t *out);
  *       @c NANORTC_MIN_POLL_INTERVAL_MS (default 50 ms) even when no packet
  *       is pending — pass an input with @c data=NULL to tick timers only.
  *       Slower polling rates may miss DTLS retransmit deadlines and delay
- *       handshake completion. A future @c nanortc_next_timeout_ms() API
- *       will let callers use epoll_wait/select with an exact timeout.
+ *       handshake completion. Use @ref nanortc_next_timeout_ms to drive an
+ *       event loop that blocks in select()/poll()/epoll_wait() up to the
+ *       library's actual next deadline instead of fixed periodic ticks.
  *
  * @param rtc Initialized RTC state.
  * @param in  Input bundle (must not be NULL). See #nanortc_input_t.
  * @return NANORTC_OK on success.
  */
 NANORTC_API int nanortc_handle_input(nanortc_t *rtc, const nanortc_input_t *in);
+
+/**
+ * @brief Compute milliseconds until the next protocol deadline.
+ *
+ * Lets event-loop callers replace fixed periodic @ref nanortc_handle_input
+ * ticks with select() / poll() / epoll_wait() blocking up to the returned
+ * delay. After the wait elapses (or earlier if a socket signals input),
+ * call @ref nanortc_handle_input with the current @c now_ms.
+ *
+ * Aggregates ICE connectivity-check pacing, ICE consent freshness send +
+ * expiry, STUN srflx retry, TURN Allocate / Refresh / CreatePermission /
+ * ChannelBind refresh, SCTP retransmission RTOs and heartbeat, and the
+ * RTCP Sender Report period. While a DTLS handshake is in progress the
+ * result is capped at @c NANORTC_MIN_POLL_INTERVAL_MS so the underlying
+ * crypto provider's retransmits still fire on time. When no deadline is
+ * armed, the function returns a conservative idle cap (1000 ms) so the
+ * caller never sleeps indefinitely.
+ *
+ * Pure const reader — does not mutate @p rtc and may be called from any
+ * thread that already owns the @c nanortc_t under the usual single-owner
+ * discipline. Cheap (a handful of comparisons), so calling it on every
+ * iteration of the event loop is fine.
+ *
+ * @param[in]  rtc     Initialized RTC state.
+ * @param[in]  now_ms  Current monotonic time, same clock as elsewhere.
+ * @param[out] out_ms  Receives the maximum recommended sleep, in ms.
+ *                     0 means "tick immediately".
+ *
+ * @retval NANORTC_OK              Always when params are valid.
+ * @retval NANORTC_ERR_INVALID_PARAM @p rtc or @p out_ms is NULL.
+ */
+NANORTC_API int nanortc_next_timeout_ms(const nanortc_t *rtc, uint32_t now_ms, uint32_t *out_ms);
 
 /* ----------------------------------------------------------------
  * DataChannel types

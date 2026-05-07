@@ -33,7 +33,7 @@ Each row is a self-contained PR. `PR-1…PR-5` are the recommended landing order
 | **PR-5** | ICE CONTROLLING: per-pair pending transaction table | `src/nano_ice.h`, `src/nano_ice.c`, `tests/test_ice.c`, `examples/browser_interop` | Medium (state machine edit) | Unblocks nanortc-as-offerer against real browsers |
 | **P2-A** | Remove SCTP `out_bufs[]` double-buffer | `src/nano_sctp.{h,c}` | **High** (touches every state transition) | −2.4…4.8 KB + 1 memcpy/pkt |
 | **P2-B** | Crypto v-table LTO / `__attribute__((hot))` | `CMakeLists.txt`, `crypto/**` | Low | ~3–5% SRTP CPU |
-| **P2-C** | `nanortc_next_timeout_ms()` public API | `include/nanortc.h`, `src/nano_rtc.c` | Low (additive) | Embedded CPU idle, enables `epoll_wait` |
+| **P2-C** | ~~`nanortc_next_timeout_ms()` public API~~ **[MOVED → Phase 10 PR-3, COMPLETED 2026-04-29]** | — | — | — |
 | **P2-D** | Mutable RX buffer zero-copy | `src/nano_rtc.c`, `include/nanortc.h` | **High (breaking API)** | 1 memcpy/RTP packet |
 
 ---
@@ -220,7 +220,7 @@ Landed 2026-04-26 → 2026-04-27. A Copilot review on PR #59 surfaced three late
 |---|---|---|
 | `d59a528` | Defer `state = NANORTC_STATE_DTLS_HANDSHAKING` until `dtls_start()` returns OK so a failure leaves the FSM at `ICE_CONNECTED` and is retryable. | `tests/test_trickle_ice.c::test_api_ice_restart_clears_dtls` (FSM-level). |
 | `8fea1e8` | Call `dtls_destroy(&rtc->dtls)` first thing in `nanortc_ice_restart()` so the next handshake re-runs `dtls_init()` instead of skipping it via the `if (!crypto_ctx)` guard. | `tests/test_e2e.c::test_e2e_ice_restart_dtls_rehandshake` — without the destroy, the post-restart fingerprint matches the pre-restart fingerprint (cert reused). |
-| `9a75412` | `memset` both `sdp.local_fingerprint` and `dtls.local_fingerprint` after the destroy so `rtc_cache_fingerprint()` (a write-once cache) re-populates from the freshly generated cert. | `tests/test_e2e.c::test_e2e_ice_restart_sdp_fingerprint_refresh` — without the clear, the SDP cache holds the stale hash while DTLS holds the new one, so any peer that enforces `a=fingerprint` rejects the new handshake. |
+| `9a75412` | `memset` both `sdp.local_fingerprint` and `dtls.local_fingerprint` after the destroy so `nano_rtc_cache_fingerprint()` (a write-once cache) re-populates from the freshly generated cert. | `tests/test_e2e.c::test_e2e_ice_restart_sdp_fingerprint_refresh` — without the clear, the SDP cache holds the stale hash while DTLS holds the new one, so any peer that enforces `a=fingerprint` rejects the new handshake. |
 | `af8f566` | Doc-only: corrected the rationale comment so the FSM-vs-receive-path distinction is explicit. | n/a (doc). |
 
 The two new E2E tests bracket the unit-level T20/T21 coverage with a full ICE → DTLS round trip on both sides, restart, re-sync, reconnect, and assert new keying material — closing the gap that the unit tests probe state in isolation but cannot show that two peers actually re-handshake. Validation: each new e2e test was confirmed to fail when its target commit is surgically reverted in the working tree (and to pass on baseline `develop`).
@@ -240,7 +240,7 @@ Saves 2.4–4.8 KB per DC instance and one `memcpy` per outbound SCTP packet. **
 Enable `-flto` for Release builds and mark hot crypto provider functions `__attribute__((hot))`. Keeps the multi-provider v-table but lets LTO inline the hot path. Expected 3–5% SRTP throughput on Cortex-M.
 
 ### P2-C — `nanortc_next_timeout_ms()`
-Public API returning the minimum time until the next timer (ICE check, consent freshness, DTLS retransmit, SCTP RTO, RTCP send). Lets callers replace fixed-interval poll with `epoll_wait(fd, ..., timeout)`. Purely additive.
+Moved to [Phase 10 PR-3](./phase10-design-convergence.md) and completed 2026-04-29. Single source of truth for design context, semantics and acceptance lives there; the public-header doxygen on `nanortc_next_timeout_ms` is authoritative for the contract.
 
 ### P2-D — Mutable RX buffer zero-copy
 Change `nanortc_input_t.data` from `const uint8_t *` to `uint8_t *` so inbound SRTP can be unprotected in place without the scratch copy. Breaking API change — requires major version bump. Defer until profiling proves the RX memcpy is a bottleneck.

@@ -661,7 +661,7 @@ TEST(test_e2e_ice_restart_dtls_rehandshake)
  * E2E: ICE restart re-populates the SDP fingerprint cache with the new cert.
  *
  * Regression for commit 9a75412 ("clear cached fingerprints on ice_restart").
- * rtc_cache_fingerprint() is a write-once cache that bails when
+ * nano_rtc_cache_fingerprint() is a write-once cache that bails when
  * sdp.local_fingerprint is non-empty. Without the memset in ice_restart,
  * the second nanortc_create_offer() would leave sdp.local_fingerprint at
  * the *old* cert hash while dtls_init() generates a new cert — causing
@@ -680,7 +680,7 @@ TEST(test_e2e_ice_restart_sdp_fingerprint_refresh)
     ASSERT(nanortc_add_audio_track(&rtc, NANORTC_DIR_SENDRECV, NANORTC_CODEC_OPUS, 48000, 2) >= 0);
 #endif
 
-    /* First create_offer triggers dtls_init + rtc_cache_fingerprint. */
+    /* First create_offer triggers dtls_init + nano_rtc_cache_fingerprint. */
     char offer1[4096];
     ASSERT_OK(nanortc_create_offer(&rtc, offer1, sizeof(offer1), NULL));
 
@@ -708,7 +708,7 @@ TEST(test_e2e_ice_restart_sdp_fingerprint_refresh)
 
     /* The advertised SDP fingerprint must match the freshly generated cert,
      * not the stale pre-restart hash. Reverting 9a75412 fails this assertion:
-     * rtc_cache_fingerprint's early-return on non-empty sdp.local_fingerprint
+     * nano_rtc_cache_fingerprint's early-return on non-empty sdp.local_fingerprint
      * would leave the SDP cache holding the old "sha-256 OLD..." while the
      * DTLS layer holds the new cert hash. */
     ASSERT_TRUE(rtc.sdp.local_fingerprint[0] != '\0');

@@ -569,7 +569,7 @@ static void test_api_ice_restart_clears_dtls(void)
     TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
     TEST_ASSERT_NOT_NULL(rtc.dtls.crypto_ctx);
 
-    /* Pre-populate the cached fingerprints (rtc_cache_fingerprint is a
+    /* Pre-populate the cached fingerprints (nano_rtc_cache_fingerprint is a
      * write-once cache, so this mirrors a session that already ran an
      * SDP exchange before the restart). */
     memcpy(rtc.sdp.local_fingerprint, "sha-256 AA:BB:CC", 17);
@@ -588,7 +588,7 @@ static void test_api_ice_restart_clears_dtls(void)
     TEST_ASSERT_NULL(rtc.dtls.crypto_ctx);
     TEST_ASSERT_EQUAL_INT(NANORTC_DTLS_STATE_CLOSED, rtc.dtls.state);
 
-    /* Cached fingerprints must be invalidated so rtc_cache_fingerprint
+    /* Cached fingerprints must be invalidated so nano_rtc_cache_fingerprint
      * repopulates them from the next dtls_init's cert (otherwise the
      * peer sees a stale SDP fingerprint and DTLS verify fails). */
     TEST_ASSERT_EQUAL_INT('\0', rtc.sdp.local_fingerprint[0]);

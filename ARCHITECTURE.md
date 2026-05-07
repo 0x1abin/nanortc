@@ -25,10 +25,14 @@ The caller owns the event loop, sockets, and clock. NanoRTC owns protocol logic 
 Dependencies flow strictly downward. No cycles allowed.
 
 ```
-                    ┌──────────┐
-                    │ nano_rtc │  (main FSM, dispatches to all modules)
-                    └────┬─────┘
-           ┌─────────────┼──────────────┬──────────────┐
+                    ┌──────────────────────────────────────────────────────┐
+                    │                    nano_rtc                          │
+                    │  (transport backbone: ICE/TURN/DTLS/SCTP demux,      │
+                    │   output queue, timer dispatch, public API)          │
+                    │  +  nano_rtc_negotiate (offer/answer surface)        │
+                    │  +  nano_rtc_media     (RTP/RTCP/BWE paths)          │
+                    └──────────┬───────────────────────────────────────────┘
+           ┌─────────────┬─────┴────────┬──────────────┐
            ▼             ▼              ▼              ▼
       ┌─────────┐  ┌──────────┐  ┌───────────┐  ┌─────────┐
       │nano_sdp │  │ nano_ice │  │ nano_dtls │  │nano_sctp│
@@ -44,23 +48,30 @@ Dependencies flow strictly downward. No cycles allowed.
                     │  nano_srtp   │    │   nano_rtp   │  ← AUDIO or VIDEO
                     └──────────────┘    └──────┬───────┘
                                                │
-                                    ┌──────────┼──────────┐
-                                    ▼          ▼          ▼
-                              ┌──────────┐ ┌────────┐ ┌────────┐ ┌──────────┐
-                              │nano_rtcp │ │ jitter │ │  bwe   │ │nano_h264 │
-                              └──────────┘ └────────┘ └────────┘ └──────────┘
-                                            ↑ AUDIO    ↑ VIDEO    ↑ VIDEO
+                          ┌──────────┬─────────┼─────────┬─────────┬──────────┐
+                          ▼          ▼         ▼         ▼         ▼          ▼
+                    ┌──────────┐ ┌────────┐ ┌──────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐
+                    │nano_rtcp │ │ jitter │ │ bwe  │ │ nano_twcc│ │nano_h264 │ │nano_h265 │
+                    └──────────┘ └────────┘ └──────┘ └──────────┘ └──────────┘ └──────────┘
+                                  ↑ AUDIO    ↑VIDEO   ↑ VIDEO       ↑ VIDEO     ↑ H265
 
   TURN relay (optional, controlled by NANORTC_FEATURE_TURN):
   ┌──────────┐
   │nano_turn │  (TURN client: Allocate/Refresh/Permission/ChannelBind/Send/Data)
   └──────────┘
 
-  Cross-cutting:
-  ┌──────────────────┐   ┌──────────────┐   ┌────────────┐
-  │ nanortc_crypto.h │   │ nano_crc32c  │   │ nano_addr  │
-  │ (provider iface) │   │ (SCTP csum)  │   │ (IP parse) │
-  └──────────────────┘   └──────────────┘   └────────────┘
+  Cross-cutting (always compiled):
+  ┌──────────────────┐ ┌─────────────┐ ┌───────────┐ ┌──────────┐
+  │ nanortc_crypto.h │ │ nano_crc32c │ │ nano_addr │ │ nano_log │
+  │ (provider iface) │ │ (SCTP csum) │ │ (IP parse)│ │ (callback│
+  │                  │ │             │ │           │ │  inject) │
+  └──────────────────┘ └─────────────┘ └───────────┘ └──────────┘
+
+  Media-only utilities (compiled with NANORTC_HAVE_MEDIA_TRANSPORT):
+  ┌────────────┐ ┌──────────────┐ ┌──────────────────────────┐
+  │ nano_media │ │ nano_annex_b │ │ nano_base64 (H265 sprop) │
+  │ (track ops)│ │ (NAL scanner)│ │                          │
+  └────────────┘ └──────────────┘ └──────────────────────────┘
 ```
 
 ## Layer Model
@@ -71,7 +82,7 @@ Within the library, code is organized in strict layers:
 |-------|-------|------|
 | **Configuration** | `include/nanortc_config.h` | Compile-time tunables with `#ifndef` defaults. User overrides via `NANORTC_CONFIG_FILE` or ESP-IDF Kconfig. |
 | **Public API** | `include/nanortc.h` | Only file users `#include`. Defines all public types, `struct nanortc` layout (for stack allocation), and functions. |
-| **State Machine** | `src/nano_rtc.c` | Orchestrates all modules. Internal helpers: `rtc_generate_ice_credentials`, `rtc_apply_remote_sdp`, `rtc_apply_negotiated_media`, `rtc_add_sdp_candidates`, `rtc_drain_dtls_output`, `rtc_emit_event`, `direction_complement`. |
+| **State Machine** | `src/nano_rtc.c` + `src/nano_rtc_negotiate.c` + `src/nano_rtc_media.c` | Orchestrates all modules across three TUs sharing the private interface in `src/nano_rtc_internal.h`. `nano_rtc.c` owns the transport backbone (ICE/TURN/DTLS/SCTP demux, output queue, timer dispatch, public API entry points); `nano_rtc_negotiate.c` owns offer/answer + iceServers helpers; `nano_rtc_media.c` owns RTP/RTCP/BWE paths and is compiled only under `NANORTC_HAVE_MEDIA_TRANSPORT`. |
 | **Protocol Modules** | `src/nano_*.c` + `src/nano_*.h` | Each module owns one protocol. Communicates via return values and caller buffers — no callbacks between modules. |
 | **Crypto Interface** | `crypto/nanortc_crypto.h` | Abstract boundary. Protocol modules call this, never mbedtls directly. |
 | **Crypto Provider** | `crypto/nanortc_crypto_mbedtls.c` or `nanortc_crypto_openssl.c` | Concrete implementation. Selected at build time via `-DNANORTC_CRYPTO=`. |
@@ -88,12 +99,15 @@ Orthogonal compile-time feature flags control which modules are included:
 
 | Feature flag | Modules compiled | Guard macro |
 |---|---|---|
-| *(core, always)* | rtc, ice, stun, dtls, sdp, crc32, addr | — |
+| *(core, always)* | rtc, rtc_negotiate, ice, stun, dtls, sdp, crc32, addr, log | — |
 | `NANORTC_FEATURE_DATACHANNEL` | sctp, datachannel, crc32c | `#if NANORTC_FEATURE_DATACHANNEL` |
-| `NANORTC_FEATURE_AUDIO` or `VIDEO` | rtp, rtcp, srtp | `#if NANORTC_HAVE_MEDIA_TRANSPORT` |
+| `NANORTC_FEATURE_AUDIO` or `VIDEO` | rtp, rtcp, srtp, media, rtc_media | `#if NANORTC_HAVE_MEDIA_TRANSPORT` |
 | `NANORTC_FEATURE_AUDIO` | jitter | `#if NANORTC_FEATURE_AUDIO` |
-| `NANORTC_FEATURE_VIDEO` | h264, bwe | `#if NANORTC_FEATURE_VIDEO` |
+| `NANORTC_FEATURE_VIDEO` | h264, annex_b, bwe, twcc | `#if NANORTC_FEATURE_VIDEO` |
+| `NANORTC_FEATURE_H265` | h265, base64 (requires VIDEO) | `#if NANORTC_FEATURE_H265` |
+| `NANORTC_FEATURE_TURN` | turn | `#if NANORTC_FEATURE_TURN` |
 | `NANORTC_FEATURE_IPV6` | IPv6 parsing/formatting in addr | `#if NANORTC_FEATURE_IPV6` |
+| `NANORTC_FEATURE_ICE_SRFLX` | srflx candidate gathering in ice | `#if NANORTC_FEATURE_ICE_SRFLX` |
 
 Sub-features (only when `DATACHANNEL=1`):
 - `NANORTC_FEATURE_DC_RELIABLE` — retransmit/RTO logic (default ON)
@@ -181,7 +195,10 @@ Timer-driven lifecycle in `rtc_process_timers()`:
 |---------|------|
 | Configuration defaults | `include/nanortc_config.h` |
 | Public API | `include/nanortc.h` |
-| Main state machine | `src/nano_rtc.c` |
+| Main state machine (transport backbone) | `src/nano_rtc.c` |
+| SDP negotiation surface | `src/nano_rtc_negotiate.c` |
+| Media path orchestration (RTP/RTCP/BWE) | `src/nano_rtc_media.c` |
+| Internal interface shared by the three orchestration TUs | `src/nano_rtc_internal.h` |
 | Address utilities (IPv4/IPv6) | `src/nano_addr.c` |
 | Crypto provider interface | `crypto/nanortc_crypto.h` |
 | Design document (authoritative) | `docs/design-docs/nanortc-design-draft.md` |

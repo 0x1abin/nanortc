@@ -949,3 +949,56 @@ int turn_generate_channel_refresh(nano_turn_t *turn, uint32_t now_ms,
 
     return NANORTC_OK;
 }
+
+uint32_t turn_next_timeout_ms(const nano_turn_t *turn, uint32_t now_ms)
+{
+    if (!turn || !turn->configured) {
+        return UINT32_MAX;
+    }
+
+    /* Pre-allocation states drive themselves on every tick — there is no
+     * armed deadline, so request fire-on-next-tick. The aggregator caps
+     * the result with NANORTC_MIN_POLL_INTERVAL_MS for handshake-class
+     * activity, so this stays power-friendly. */
+    if (turn->state == NANORTC_TURN_IDLE || turn->state == NANORTC_TURN_CHALLENGED) {
+        return 0u;
+    }
+
+    if (turn->state != NANORTC_TURN_ALLOCATED) {
+        return UINT32_MAX;
+    }
+
+    uint32_t best = UINT32_MAX;
+
+    /* Allocation Refresh (RFC 5766 §7). */
+    if (turn->refresh_at_ms != 0) {
+        uint32_t left = (now_ms >= turn->refresh_at_ms) ? 0u : (turn->refresh_at_ms - now_ms);
+        if (left < best) {
+            best = left;
+        }
+    }
+
+    /* Permission refresh (RFC 5766 §8). Only matters when at least one
+     * permission is active; otherwise nothing to refresh. */
+    if (turn->permission_count > 0 && turn->permission_at_ms != 0) {
+        uint32_t left = (now_ms >= turn->permission_at_ms) ? 0u : (turn->permission_at_ms - now_ms);
+        if (left < best) {
+            best = left;
+        }
+    }
+
+    /* Per-channel ChannelBind refresh (RFC 5766 §11). */
+    for (uint8_t i = 0; i < turn->channel_count; i++) {
+        if (!turn->channels[i].bound || turn->channels[i].refresh_at_ms == 0) {
+            continue;
+        }
+        uint32_t left = (now_ms >= turn->channels[i].refresh_at_ms)
+                            ? 0u
+                            : (turn->channels[i].refresh_at_ms - now_ms);
+        if (left < best) {
+            best = left;
+        }
+    }
+
+    return best;
+}
