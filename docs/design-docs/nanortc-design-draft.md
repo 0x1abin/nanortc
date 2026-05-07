@@ -14,7 +14,7 @@ NanoRTC 是一个**纯 C**、**Sans I/O** 架构的 WebRTC 实现，面向运行
 RT-Thread 等 RTOS 的资源受限微控制器。从第一行代码开始就为嵌入式设备设计。
 
 NanoRTC 支持**编译时特性裁剪**，开发者可以根据产品需求只包含必要的功能——从最小的
-DataChannel-only 构建（~60KB RAM）到完整的音视频媒体传输。
+DataChannel-only 构建（详见 §1.3 资源占用表）到完整的音视频媒体传输。
 
 ### 1.2 设计原则
 
@@ -76,6 +76,9 @@ CI 测试的 7 种 canonical 组合：
 | DC + Audio | 50.6 KB | 29.9 KB |
 | Media only | 45.3 KB | 51.0 KB |
 | DC + Audio + Video | 55.0 KB | 60.3 KB |
+| DC + Audio + Video + H265 (MEDIA_H265) | 待补测 | 待补测 |
+
+> MEDIA_H265 的具体数字依赖 Phase 3.5 完成 `nano_h265` 在 `nano_rtc` 的接线（见 [docs/PLANS.md](../PLANS.md) Phase 3.5 PR-2/PR-3），届时通过 `./scripts/measure-sizes.sh --esp32 esp32p4` 与其它行一并刷新到 `docs/engineering/memory-profiles.md`。结构上仅新增 `nano_h265` 与 `nano_base64` 两个静态 codec 模块，`sizeof(nanortc_t)` 与 `DC + Audio + Video` 一致。
 
 ---
 
@@ -513,8 +516,9 @@ Linux 主机开发可使用 OpenSSL 后端（`-DNANORTC_CRYPTO=openssl`）。
 | **OpenSSL** | 加密库（可选） | 同上 | Linux/macOS 主机开发。系统通常已安装。编译时选择：`-DNANORTC_CRYPTO=openssl` |
 | **lwIP**（≥ 2.1.0） | TCP/IP 协议栈 | 仅应用层事件循环 | NanoRTC 核心**绝不**调用 lwIP。应用层使用 lwIP BSD socket API 进行 UDP I/O。 |
 
-**不需要任何其他第三方库。** 不需要 usrsctp、libsrtp、libjuice、cJSON、plog。
-所有协议逻辑都是自包含的。
+**无额外运行时依赖。** §8 列出的 str0m / libdatachannel / libjuice / usrsctp 是工程
+背景与互通夹具，不是 wire format / 状态机的实现来源——所有协议逻辑（SCTP、SRTP、ICE、
+DCEP 等）都在 `src/` 内自包含实现。
 
 
 ---
@@ -555,5 +559,5 @@ NanoRTC 采用 **MIT License** 发布。
 ---
 
 *文档版本: 1.0*
-*最后更新: 2026-03-26*
+*最后更新: 2026-05-03*
 *作者: Bin (0x1abin) + Claude 架构分析*

@@ -157,9 +157,13 @@ warm `--fast` run is under 10 seconds.
 
 Authoritative design docs drift faster than the implementation does. Any PR
 that changes protocol behavior, public API, feature flags, resource
-footprint, or phase status MUST verify the four canonical docs still match
+footprint, or phase status MUST verify the five canonical docs still match
 reality and update them in the same PR if not:
 
+- [ ] **`ARCHITECTURE.md`** — module dependency graph, feature flag table,
+      State Machine layer description, Key Files table. This doc drifts
+      fastest because module additions and orchestration splits land here
+      first.
 - [ ] **`docs/design-docs/nanortc-design-draft.md`** — feature flag table,
       `sizeof(nanortc_t)` / Flash matrix, public API surface, module
       dependency graph, §7.1 phase status table, §7.4 naming conventions.

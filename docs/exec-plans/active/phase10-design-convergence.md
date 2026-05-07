@@ -20,7 +20,7 @@ This phase is intentionally conservative: prefer additive APIs, documentation in
 
 | PR | Topic | Primary files | Risk | Target |
 |---|---|---|---|---|
-| **PR-1** | Documentation convergence guardrails | `docs/design-docs/nanortc-design-draft.md`, `ARCHITECTURE.md`, `docs/QUALITY_SCORE.md`, `docs/PLANS.md` | Low | Make one current design source of truth and remove stale feature/resource statements. |
+| **PR-1** | Documentation convergence guardrails **[LANDED 2026-05-03]** | `docs/design-docs/nanortc-design-draft.md`, `ARCHITECTURE.md`, `docs/QUALITY_SCORE.md`, `docs/engineering/development-workflow.md` | Low | Make one current design source of truth and remove stale feature/resource statements. |
 | **PR-2** | Output payload lifetime contract **[LANDED 2026-04-30]** | `include/nanortc.h`, `src/nano_rtc.c`, `tests/test_output_lifetime.c`, `tests/CMakeLists.txt`, `examples/esp32_camera/main/main.c` | Low-medium | Document and regression-test queue pointer lifetime under bursty TURN/video/DC output. |
 | **PR-3** | Add `nanortc_next_timeout_ms()` **[COMPLETED 2026-04-29]** | `include/nanortc.h`, `src/nano_rtc.c`, `tests/test_next_timeout.c`, `examples/common/run_loop_{linux,esp}.c` | Low | Let callers block until the next protocol deadline instead of fixed polling. |
 | **PR-4** | Split RTC orchestration internals | `src/nano_rtc.c`, new `src/nano_rtc_*.c/.h`, `CMakeLists.txt`, ESP-IDF component sources | Medium | Reduce single-file complexity without changing public API or module dependencies. |
@@ -43,6 +43,41 @@ The design draft historically described an earlier state of the project: fewer f
 
 - Link/reference scan for stale "6 combinations", old RAM estimates, or libjuice-as-implementation wording.
 - `./scripts/ci-check.sh --fast` if code-adjacent files are touched; otherwise at least inspect docs-only diff and run a markdown link/path sanity check where available.
+
+### Landed work (2026-05-03)
+
+Pure-documentation PR; no `src/`, `include/`, `tests/`, `crypto/`, or
+`examples/` files touched.
+
+- **`docs/design-docs/nanortc-design-draft.md`** — replaced inline "~60KB
+  RAM" estimate (§1.1) that contradicted the §1.3 resource matrix; added
+  a `MEDIA_H265` row to the resource matrix with a TBD-with-reason
+  marker (the H.265 SDP/RTC wiring lands in Phase 3.5 PR-2/PR-3, after
+  which `./scripts/measure-sizes.sh` will fill in the numbers); rewrote
+  §6.1's "no third-party libraries" sentence so it no longer
+  contradicts §8's reference table; bumped the trailer "最后更新" to
+  2026-05-03.
+- **`ARCHITECTURE.md`** — extended the module dependency graph to
+  include `nano_h265`, `nano_twcc`, the `nano_rtc.c` ↔ `nano_rtc_negotiate.c`
+  ↔ `nano_rtc_media.c` orchestration trio, and the `nano_log` /
+  `nano_media` / `nano_annex_b` / `nano_base64` cross-cutting and
+  media-only utility blocks; expanded the feature-flag table with
+  explicit rows for `NANORTC_FEATURE_TURN`, `NANORTC_FEATURE_H265`, and
+  `NANORTC_FEATURE_ICE_SRFLX`; rewrote the State Machine layer entry
+  to cite all three orchestration TUs and `src/nano_rtc_internal.h`;
+  added Key Files entries for the two new orchestration TUs and the
+  shared private header.
+- **`docs/QUALITY_SCORE.md`** — added a "Media common" subsection for
+  `nano_media.c`; added `nano_twcc.c` (Phase 9) to the Video table;
+  added the logging shim (`nano_log.c`) to the Infrastructure table;
+  rewrote the Main FSM row to reflect the Phase 10 PR-4 split into
+  three TUs sharing `src/nano_rtc_internal.h`; added a footnote to the
+  historical Phase 4 Summary clarifying the matrix has since grown to
+  7-combo × 2-crypto.
+- **`docs/engineering/development-workflow.md`** — added `ARCHITECTURE.md`
+  as the new first item of the Design Freshness Checklist (it drifts
+  fastest because new modules and orchestration splits land in its
+  graph before anything else updates).
 
 ## PR-2 — Output payload lifetime contract [LANDED 2026-04-30]
 
@@ -209,7 +244,7 @@ PR-4 file split is now complete: `nano_rtc.c` owns the transport backbone (ICE /
 
 ## Acceptance Criteria
 
-- [ ] Design draft, architecture overview, plan index, and quality score agree on current feature matrix and module status.
+- [x] Design draft, architecture overview, plan index, and quality score agree on current feature matrix and module status (PR-1, 2026-05-03) — see "Landed work" subsection above.
 - [x] Output pointer lifetime is documented and covered by regression tests (PR-2, 2026-04-30) — `include/nanortc.h:406-416` + `tests/test_output_lifetime.c` (default + `_min` variant) + ESP32-P4 nano hardware bench.
 - [x] `nanortc_next_timeout_ms()` implemented (PR-3, 2026-04-29) — public API + `tests/test_next_timeout.c` + run_loop integration on Linux and ESP-IDF.
 - [ ] Any `nano_rtc.c` split keeps all feature combinations compiling.
