@@ -372,6 +372,7 @@ CLOSED ──(收到 INIT)──> COOKIE_WAIT
 - 序列号和时间戳管理
 - 音频打包：Opus, G.711（A-law / μ-law）
 - 视频打包（NANORTC_FEATURE_VIDEO）：H.264（FU-A）, VP8
+- H.265/HEVC（NANORTC_FEATURE_H265，opt-in 子特性）：RFC 7798 §4.4.1 Single NAL Unit Packet、§4.4.2 Aggregation Packet（贪心 AP 打包）、§4.4.3 FU 分片；接收侧解 AP 内首个 NAL，FU 重组保留原始 LayerId/TID/F-bit；IRAP 关键帧识别（NAL 类型 16..23）。SDP 走 RFC 7798 §7.1：默认 `profile-id=1; tier-flag=0; level-id=93; tx-mode=SRST`，可选 `sprop-vps/sprop-sps/sprop-pps`（通过 `nanortc_video_set_h265_parameter_sets()` 注入，base64 编码后写入 fmtp）。默认负载类型 PT=98（与 H.264 PT=96 不重叠）。互通：v0.22.5+ libdatachannel、Chrome M125+、Safari 17+。第一遍不实现 PACI（§4.4.4）与 DON 重排（§6.1，遇到 `sprop-max-don-diff>0` 直接拒收）。
 
 **RTCP（nano_rtcp.c）：**
 

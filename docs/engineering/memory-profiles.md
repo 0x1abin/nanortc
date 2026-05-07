@@ -63,6 +63,7 @@ high-jitter cellular, large SDPs), raise the knob you care about.
 |---|---|---|
 | Jitter buffer (per audio track) | ~11 KB host / ~2.8 KB Kconfig | `NANORTC_JITTER_SLOTS`, `NANORTC_JITTER_SLOT_DATA_SIZE` |
 | H.264 NAL reassembly (per video track) | 16 KB host / 8 KB Kconfig | `NANORTC_VIDEO_NAL_BUF_SIZE` |
+| H.265 sprop-* fmtp scratch (per video track) | 512 B (only when H265 enabled) | `NANORTC_H265_SPROP_FMTP_SIZE` (`NANORTC_FEATURE_H265`) |
 | Video packet ring (NACK retransmit window) | 39 KB host / ~20 KB Kconfig | `NANORTC_VIDEO_PKT_RING_SIZE` × `NANORTC_MEDIA_BUF_SIZE` |
 | SCTP send + recv + gap buffers | ~12 KB host / ~6 KB Kconfig | `NANORTC_SCTP_SEND_BUF_SIZE`, `NANORTC_SCTP_RECV_BUF_SIZE`, `NANORTC_SCTP_RECV_GAP_BUF_SIZE` |
 | DTLS buffers (3 × `NANORTC_DTLS_BUF_SIZE`) | 6 KB host / 4.5 KB Kconfig | `NANORTC_DTLS_BUF_SIZE` |
@@ -75,6 +76,12 @@ high-jitter cellular, large SDPs), raise the knob you care about.
 `#error` in `nanortc_config.h`. Default 1232 leaves 2 B headroom;
 `examples/esp32_{video,camera}/sdkconfig.defaults` raise it to 1280 to
 reserve room for additional RTP header extensions.
+
+The H.265 sprop scratch is only populated when the application calls
+`nanortc_video_set_h265_parameter_sets()` to publish VPS/SPS/PPS in the
+generated SDP fmtp (RFC 7798 §7.1). When the field is unused or H.265 is
+disabled at compile time, the buffer reduces to 0 B — no allocation cost
+for in-band parameter-set streams.
 
 ### Video NACK ring — tunable independently of the output queue
 

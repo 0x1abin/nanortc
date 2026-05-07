@@ -44,12 +44,32 @@ static int wait_frame_count(atomic_int *counter, int target, int timeout_ms)
 }
 
 /*
+ * Optional H.265 parameter sets the nanortc peer should publish via
+ * nanortc_video_set_h265_parameter_sets() (RFC 7798 §7.1). NULL fields skip
+ * the publish step. Bytes are caller-owned and must outlive setup_video_pair.
+ */
+typedef struct {
+    const uint8_t *vps;
+    size_t vps_len;
+    const uint8_t *sps;
+    size_t sps_len;
+    const uint8_t *pps;
+    size_t pps_len;
+} video_h265_param_sets_t;
+
+/*
  * Full setup for video interop: create signaling pipe, start both peers
  * with video tracks, wait for connection.
+ *
+ * Codec-parameterized form. nano_to_ldc tests can pass `h265_sets` to publish
+ * sprop-vps/sps/pps on the answer; pass NULL otherwise.
  */
-static int setup_video_pair(interop_sig_pipe_t *pipe, interop_nanortc_media_peer_t *nano,
-                            interop_libdatachannel_media_peer_t *ldc, nanortc_direction_t nano_dir,
-                            ldc_direction_t ldc_dir)
+static int setup_video_pair_codec(interop_sig_pipe_t *pipe, interop_nanortc_media_peer_t *nano,
+                                  interop_libdatachannel_media_peer_t *ldc,
+                                  nanortc_direction_t nano_dir, ldc_direction_t ldc_dir,
+                                  nanortc_codec_t nano_codec, ldc_codec_t ldc_codec,
+                                  uint8_t payload_type,
+                                  const video_h265_param_sets_t *h265_sets)
 {
     uint16_t port = alloc_port();
 
@@ -63,9 +83,17 @@ static int setup_video_pair(interop_sig_pipe_t *pipe, interop_nanortc_media_peer
     memset(&nano_track, 0, sizeof(nano_track));
     nano_track.kind = NANORTC_TRACK_VIDEO;
     nano_track.direction = nano_dir;
-    nano_track.codec = NANORTC_CODEC_H264;
+    nano_track.codec = nano_codec;
     nano_track.sample_rate = 0;
     nano_track.channels = 0;
+    if (h265_sets != NULL) {
+        nano_track.h265_vps = h265_sets->vps;
+        nano_track.h265_vps_len = h265_sets->vps_len;
+        nano_track.h265_sps = h265_sets->sps;
+        nano_track.h265_sps_len = h265_sets->sps_len;
+        nano_track.h265_pps = h265_sets->pps;
+        nano_track.h265_pps_len = h265_sets->pps_len;
+    }
 
     /* Start nanortc peer first (it waits for offer) */
     if (interop_nanortc_media_start(nano, pipe->fd[0], port, &nano_track, 1) != 0) {
@@ -79,9 +107,9 @@ static int setup_video_pair(interop_sig_pipe_t *pipe, interop_nanortc_media_peer
     memset(&ldc_track, 0, sizeof(ldc_track));
     ldc_track.kind = LDC_TRACK_VIDEO;
     ldc_track.direction = ldc_dir;
-    ldc_track.codec = LDC_CODEC_H264;
+    ldc_track.codec = ldc_codec;
     ldc_track.ssrc = 2001;
-    ldc_track.payload_type = 96;
+    ldc_track.payload_type = payload_type;
 
     /* Start libdatachannel peer */
     if (interop_libdatachannel_media_start(ldc, pipe->fd[1], &ldc_track, 1, port) != 0) {
@@ -92,6 +120,15 @@ static int setup_video_pair(interop_sig_pipe_t *pipe, interop_nanortc_media_peer
     }
 
     return 0;
+}
+
+/* H.264 default — preserves byte-identical behavior of existing call sites. */
+static int setup_video_pair(interop_sig_pipe_t *pipe, interop_nanortc_media_peer_t *nano,
+                            interop_libdatachannel_media_peer_t *ldc, nanortc_direction_t nano_dir,
+                            ldc_direction_t ldc_dir)
+{
+    return setup_video_pair_codec(pipe, nano, ldc, nano_dir, ldc_dir, NANORTC_CODEC_H264,
+                                  LDC_CODEC_H264, 96, NULL);
 }
 
 static void teardown_video_pair(interop_sig_pipe_t *pipe, interop_nanortc_media_peer_t *nano,
@@ -430,6 +467,208 @@ TEST(test_interop_audio_video_combined)
     interop_sig_destroy(&pipe);
 }
 
+#if NANORTC_FEATURE_H265
+
+/*
+ * H.265 (HEVC) parameter sets extracted from
+ * examples/sample_data/h265SampleFrames/frame-0001.h265 (1280x720, x265 r3.5+1).
+ * Bytes are the NAL contents (NAL header + RBSP), no Annex-B start code.
+ *
+ * NAL types per RFC 7798 §1.1.4 / H.265 §7.4.2.2:
+ *   VPS = 32 — header byte0 = (32 << 1) = 0x40
+ *   SPS = 33 — header byte0 = (33 << 1) = 0x42
+ *   PPS = 34 — header byte0 = (34 << 1) = 0x44
+ */
+static const uint8_t kSampleVPS[] = {
+    0x40, 0x01, 0x0c, 0x01, 0xff, 0xff, 0x01, 0x60, 0x00, 0x00, 0x03, 0x00,
+    0x90, 0x00, 0x00, 0x03, 0x00, 0x00, 0x03, 0x00, 0x5d, 0xba, 0x02, 0x40,
+};
+static const uint8_t kSampleSPS[] = {
+    0x42, 0x01, 0x01, 0x01, 0x60, 0x00, 0x00, 0x03, 0x00, 0x90, 0x00, 0x00,
+    0x03, 0x00, 0x00, 0x03, 0x00, 0x5d, 0xa0, 0x02, 0x80, 0x80, 0x2d, 0x16,
+    0x5b, 0xa9, 0x24, 0xca, 0xff, 0xf0, 0x00, 0x10, 0x00, 0x16, 0xa0, 0x20,
+    0x20, 0x20, 0x80, 0x00, 0x00, 0x03, 0x00, 0x80, 0x00, 0x00, 0x0c, 0x84,
+};
+static const uint8_t kSamplePPS[] = {
+    0x44, 0x01, 0xc1, 0x72, 0xb4, 0x62, 0x40,
+};
+
+static const video_h265_param_sets_t kSampleH265Sets = {
+    .vps = kSampleVPS,
+    .vps_len = sizeof(kSampleVPS),
+    .sps = kSampleSPS,
+    .sps_len = sizeof(kSampleSPS),
+    .pps = kSamplePPS,
+    .pps_len = sizeof(kSamplePPS),
+};
+
+/*
+ * Build a minimal H.265 Annex-B access unit with a single VCL NAL.
+ * Annex-B format: 0x00 0x00 0x00 0x01 <2-byte NAL header> <payload>
+ *
+ * Per RFC 7798 §1.1.4 the NAL header is 2 bytes:
+ *   F(1) | nal_unit_type(6) | nuh_layer_id(6) | nuh_temporal_id_plus1(3)
+ *
+ * NAL type per H.265 §7.4.2.2:
+ *   IDR_W_RADL = 19  (keyframe, IRAP — RFC 7798 §1.1.4)
+ *   TRAIL_R    = 1   (non-key, reference)
+ *
+ * For TID=0 the second byte is 0x01 (nuh_temporal_id_plus1=1, layer_id=0).
+ */
+static void build_h265_frame(uint8_t *buf, size_t len, bool keyframe, uint8_t fill)
+{
+    /* Annex-B start code */
+    buf[0] = 0x00;
+    buf[1] = 0x00;
+    buf[2] = 0x00;
+    buf[3] = 0x01;
+    /* 2-byte NAL header */
+    if (keyframe) {
+        buf[4] = (uint8_t)(19 << 1); /* IDR_W_RADL */
+    } else {
+        buf[4] = (uint8_t)(1 << 1); /* TRAIL_R */
+    }
+    buf[5] = 0x01;
+    /* Payload */
+    for (size_t i = 6; i < len; i++) {
+        buf[i] = fill;
+    }
+}
+
+/* ----------------------------------------------------------------
+ * Test: H.265 video from libdatachannel to nanortc
+ *
+ * RFC 7798 §4.4.1 Single NAL Unit Packet — small IDR fits in one RTP packet.
+ * ---------------------------------------------------------------- */
+
+TEST(test_interop_video_h265_ldc_to_nano)
+{
+    interop_sig_pipe_t pipe;
+    interop_nanortc_media_peer_t nano;
+    interop_libdatachannel_media_peer_t ldc;
+
+    int rc = setup_video_pair_codec(&pipe, &nano, &ldc, NANORTC_DIR_RECVONLY, LDC_DIR_SENDONLY,
+                                    NANORTC_CODEC_H265, LDC_CODEC_H265, 98, NULL);
+    ASSERT_OK(rc);
+
+    rc = interop_libdatachannel_media_wait_flag(&ldc.connected, INTEROP_TIMEOUT_MS);
+    ASSERT_OK(rc);
+    rc = interop_libdatachannel_media_wait_flag(&ldc.track_open, INTEROP_TIMEOUT_MS);
+    ASSERT_OK(rc);
+    rc = interop_libdatachannel_media_wait_flag((atomic_int *)&nano.connected, INTEROP_TIMEOUT_MS);
+    ASSERT_OK(rc);
+
+    /* Small IDR access unit — Single NAL Unit Packet path. */
+    uint8_t h265_frame[64];
+    build_h265_frame(h265_frame, sizeof(h265_frame), true, 0xAA);
+
+    int initial_count = atomic_load(&nano.frame_count);
+    rc = interop_libdatachannel_media_send(&ldc, 0, h265_frame, sizeof(h265_frame));
+    ASSERT_TRUE(rc >= 0);
+
+    rc = wait_frame_count(&nano.frame_count, initial_count + 1, INTEROP_TIMEOUT_MS);
+    ASSERT_OK(rc);
+
+    interop_media_frame_t received;
+    rc = interop_nanortc_media_get_last_frame(&nano, &received);
+    ASSERT_OK(rc);
+    ASSERT_TRUE(received.len > 0);
+    ASSERT_TRUE(received.is_keyframe);
+
+    teardown_video_pair(&pipe, &nano, &ldc);
+}
+
+/* ----------------------------------------------------------------
+ * Test: H.265 video from nanortc to libdatachannel, with sprop-* fmtp
+ *
+ * The nanortc answer carries sprop-vps/sps/pps (RFC 7798 §7.1) extracted
+ * from a real x265 stream so libdatachannel's decoder receives the
+ * full parameter context.
+ * ---------------------------------------------------------------- */
+
+TEST(test_interop_video_h265_nano_to_ldc)
+{
+    interop_sig_pipe_t pipe;
+    interop_nanortc_media_peer_t nano;
+    interop_libdatachannel_media_peer_t ldc;
+
+    int rc = setup_video_pair_codec(&pipe, &nano, &ldc, NANORTC_DIR_SENDONLY, LDC_DIR_RECVONLY,
+                                    NANORTC_CODEC_H265, LDC_CODEC_H265, 98, &kSampleH265Sets);
+    ASSERT_OK(rc);
+
+    rc = interop_libdatachannel_media_wait_flag(&ldc.connected, INTEROP_TIMEOUT_MS);
+    ASSERT_OK(rc);
+    rc = interop_libdatachannel_media_wait_flag((atomic_int *)&nano.connected, INTEROP_TIMEOUT_MS);
+    ASSERT_OK(rc);
+
+    /* SRTP setup latency. */
+    interop_sleep_ms(200);
+
+    uint8_t h265_frame[64];
+    build_h265_frame(h265_frame, sizeof(h265_frame), true, 0xBB);
+
+    int initial_count = atomic_load(&ldc.frame_count);
+    ASSERT_TRUE(nano.track_mids[0] >= 0);
+    rc = interop_nanortc_media_send_video(&nano, (uint8_t)nano.track_mids[0], nano_get_millis(),
+                                          h265_frame, sizeof(h265_frame));
+    ASSERT_OK(rc);
+
+    rc = wait_frame_count(&ldc.frame_count, initial_count + 1, INTEROP_TIMEOUT_MS);
+    ASSERT_OK(rc);
+
+    interop_media_frame_t received;
+    rc = interop_libdatachannel_media_get_last_frame(&ldc, &received);
+    ASSERT_OK(rc);
+    ASSERT_TRUE(received.len > 0);
+
+    teardown_video_pair(&pipe, &nano, &ldc);
+}
+
+/* ----------------------------------------------------------------
+ * Test: H.265 FU fragmentation (RFC 7798 §4.4.3)
+ *
+ * 1800-byte IDR > 1200-byte MTU forces FU fragmentation on the sender
+ * and reassembly on the receiver.
+ * ---------------------------------------------------------------- */
+
+TEST(test_interop_video_h265_fu_fragmentation)
+{
+    interop_sig_pipe_t pipe;
+    interop_nanortc_media_peer_t nano;
+    interop_libdatachannel_media_peer_t ldc;
+
+    int rc = setup_video_pair_codec(&pipe, &nano, &ldc, NANORTC_DIR_RECVONLY, LDC_DIR_SENDONLY,
+                                    NANORTC_CODEC_H265, LDC_CODEC_H265, 98, NULL);
+    ASSERT_OK(rc);
+
+    rc = interop_libdatachannel_media_wait_flag(&ldc.connected, INTEROP_TIMEOUT_MS);
+    ASSERT_OK(rc);
+    rc = interop_libdatachannel_media_wait_flag(&ldc.track_open, INTEROP_TIMEOUT_MS);
+    ASSERT_OK(rc);
+    rc = interop_libdatachannel_media_wait_flag((atomic_int *)&nano.connected, INTEROP_TIMEOUT_MS);
+    ASSERT_OK(rc);
+
+    uint8_t large_frame[1800];
+    build_h265_frame(large_frame, sizeof(large_frame), true, 0xEE);
+
+    int initial_count = atomic_load(&nano.frame_count);
+    rc = interop_libdatachannel_media_send(&ldc, 0, large_frame, sizeof(large_frame));
+    ASSERT_TRUE(rc >= 0);
+
+    rc = wait_frame_count(&nano.frame_count, initial_count + 1, INTEROP_TIMEOUT_MS);
+    ASSERT_OK(rc);
+
+    interop_media_frame_t received;
+    rc = interop_nanortc_media_get_last_frame(&nano, &received);
+    ASSERT_OK(rc);
+    ASSERT_TRUE(received.len > 0);
+    ASSERT_TRUE(received.is_keyframe);
+
+    teardown_video_pair(&pipe, &nano, &ldc);
+}
+
+#endif /* NANORTC_FEATURE_H265 */
+
 /* ----------------------------------------------------------------
  * Test runner
  * ---------------------------------------------------------------- */
@@ -440,4 +679,9 @@ RUN(test_interop_video_h264_ldc_to_nano);
 RUN(test_interop_video_h264_nano_to_ldc);
 RUN(test_interop_video_keyframe);
 RUN(test_interop_audio_video_combined);
+#if NANORTC_FEATURE_H265
+RUN(test_interop_video_h265_ldc_to_nano);
+RUN(test_interop_video_h265_nano_to_ldc);
+RUN(test_interop_video_h265_fu_fragmentation);
+#endif
 TEST_MAIN_END

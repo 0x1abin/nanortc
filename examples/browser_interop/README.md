@@ -222,16 +222,48 @@ Navigate to `http://localhost:8765/`
 # Browser: select "Answerer", click Connect → should see H.264 video
 ```
 
+### Step 3g: Test H.265/HEVC video (Chrome M125+ / Safari 17+)
+
+H.265 (HEVC) is a sub-feature of `NANORTC_FEATURE_VIDEO`, opt-in via
+`-DNANORTC_FEATURE_H265=ON`. The example reads
+`examples/sample_data/h265SampleFrames/frame-0001.h265`, extracts the
+VPS/SPS/PPS NALs, and publishes them as `sprop-vps/sps/pps` in the
+generated SDP fmtp line per RFC 7798 §7.1 — see `main.c:126-176`.
+This is the path Chrome and Safari decoders need to pick up the parameter
+context out-of-band.
+
+```bash
+# Build with H.265 enabled (mirrors the Step 3 build command above)
+cmake -B build -DNANORTC_BUILD_EXAMPLES=ON \
+    -DNANORTC_FEATURE_AUDIO=ON -DNANORTC_FEATURE_VIDEO=ON \
+    -DNANORTC_FEATURE_H265=ON
+cmake --build build -j$(nproc)
+
+# Terminal: nanortc as answerer streaming H.265 to the browser
+./build/examples/browser_interop/browser_interop --answer -p 9999 \
+    -v examples/sample_data/h265SampleFrames \
+    --video-codec h265
+
+# Browser: select "Offerer", click Connect.
+# Chrome M125+ / Safari 17 should display the decoded H.265 frames.
+# Verify framesReceived > 0 in chrome://webrtc-internals.
+```
+
+The shipped sample stream is 1280x720 / 25 fps / Main profile / Level 3.1
+(x265 r3.5+1) and lasts 1500 frames (~60 s) — long enough to confirm a
+sustained stream rather than a single keyframe burst.
+
 ### CLI Options
 
 ```
-  -p PORT        UDP port (default: 9999)
-  -b IP          Bind/candidate IP (default: auto-detect)
-  -s HOST:PORT   Signaling server (default: localhost:8765)
-  -a DIR         Opus frame directory for audio send
-  -v DIR         H.264 frame directory for video send
-  --offer        Act as offerer (CONTROLLING)
-  --answer       Act as answerer (CONTROLLED, default)
+  -p PORT          UDP port (default: 9999)
+  -b IP            Bind/candidate IP (default: auto-detect)
+  -s HOST:PORT     Signaling server (default: localhost:8765)
+  -a DIR           Opus frame directory for audio send
+  -v DIR           Video frame directory for video send (H.264 or H.265)
+  --video-codec C  Video codec: h264 (default) or h265
+  --offer          Act as offerer (CONTROLLING)
+  --answer         Act as answerer (CONTROLLED, default)
 ```
 
 ## Expected Output

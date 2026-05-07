@@ -117,6 +117,23 @@ static int nanortc_media_do_signaling(interop_nanortc_media_peer_t *peer)
         }
         peer->track_mids[i] = mid;
         fprintf(stderr, "[nanortc-media] Added track %d: kind=%d mid=%d\n", i, tc->kind, mid);
+
+#if NANORTC_FEATURE_H265
+        /* Publish H.265 sprop-vps/sps/pps on the answer (RFC 7798 §7.1) when caller supplied them.
+         * Must run after add_video_track and before accept_offer so the cached fmtp is included
+         * in the generated answer. */
+        if (tc->kind == NANORTC_TRACK_VIDEO && tc->codec == NANORTC_CODEC_H265 && tc->h265_vps &&
+            tc->h265_sps && tc->h265_pps) {
+            int ps_rc = nanortc_video_set_h265_parameter_sets(
+                &peer->rtc, (uint8_t)mid, tc->h265_vps, tc->h265_vps_len, tc->h265_sps,
+                tc->h265_sps_len, tc->h265_pps, tc->h265_pps_len);
+            if (ps_rc != NANORTC_OK) {
+                fprintf(stderr, "[nanortc-media] set_h265_parameter_sets failed: %d\n", ps_rc);
+                return -1;
+            }
+            fprintf(stderr, "[nanortc-media] H.265 sprop-* set on mid=%d\n", mid);
+        }
+#endif
     }
 
     /* Generate answer */
