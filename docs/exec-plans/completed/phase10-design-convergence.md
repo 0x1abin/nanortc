@@ -1,6 +1,6 @@
 # Phase 10: Design Convergence
 
-**Status:** Active — planning document created after design review.
+**Status:** Completed 2026-05-08 — all four sub-PRs landed (PR-1 2026-05-03, PR-2 2026-04-30, PR-3 2026-04-29, PR-4 slices 2026-04-30..2026-05-02). Final sign-off `./scripts/ci-check.sh` 42/42 (7 feature combos × openssl/mbedtls + ASan + libdatachannel interop) on develop @ 9b172f5.
 **Estimated effort:** 2–3 agent sessions, split into independent PRs.
 **Goal:** Convert the current design review findings into small, reviewable changes that keep NanoRTC's embedded/Sans-I/O constraints intact while reducing future integration risk.
 
@@ -247,8 +247,8 @@ PR-4 file split is now complete: `nano_rtc.c` owns the transport backbone (ICE /
 - [x] Design draft, architecture overview, plan index, and quality score agree on current feature matrix and module status (PR-1, 2026-05-03) — see "Landed work" subsection above.
 - [x] Output pointer lifetime is documented and covered by regression tests (PR-2, 2026-04-30) — `include/nanortc.h:406-416` + `tests/test_output_lifetime.c` (default + `_min` variant) + ESP32-P4 nano hardware bench.
 - [x] `nanortc_next_timeout_ms()` implemented (PR-3, 2026-04-29) — public API + `tests/test_next_timeout.c` + run_loop integration on Linux and ESP-IDF.
-- [ ] Any `nano_rtc.c` split keeps all feature combinations compiling.
-- [ ] No Sans-I/O, no-malloc, feature-guard, or safe-C constraint is weakened.
+- [x] Any `nano_rtc.c` split keeps all feature combinations compiling. — PR-4 slices 1/2/3 each ran `./scripts/ci-check.sh` green at landing; archival re-verification 2026-05-08 on develop @ 9b172f5: 7 combos (DATA/AUDIO/MEDIA/MEDIA_H265/AUDIO_ONLY/MEDIA_ONLY/CORE_ONLY) × {openssl, mbedtls} all build+test clean.
+- [x] No Sans-I/O, no-malloc, feature-guard, or safe-C constraint is weakened. — `./scripts/ci-check.sh` "Architecture Constraints" gate green (no platform headers in `src/`, no dynamic allocation in `src/`, no unbounded string functions in `src/+crypto/`, no hardcoded array sizes in struct headers); symbol-prefix and no-global-mutable-state checks also green; `AUDIO_ONLY: no nsctp_ symbols` confirmed.
 
 ## Non-goals
 
