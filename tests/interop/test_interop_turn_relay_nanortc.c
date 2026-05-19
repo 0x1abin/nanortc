@@ -113,15 +113,15 @@ static int parse_turn_host(const char *uri, char *out, size_t out_size)
 }
 
 /* Return 1 if the TURN host resolves to a loopback address. Used to auto-skip
- * the strict relay-path assertions when the test can't actually force data
- * through the relay: on a same-host loopback setup, libdc's source IP as seen
- * by coturn is 127.0.0.1 while nanortc installs permissions only for libdc's
- * advertised host candidates (LAN IPs), so coturn silently drops libdc's
- * checks. The existing turnserver.conf additionally has `no-loopback-peers`
- * which rejects loopback peer targets outright. The test body itself is sound
- * and runs strictly against any non-loopback TURN server — override via
- * NANORTC_TURN_URL, USER, PASS to point at a real relay and the assertions
- * will take effect.
+ * the strict relay-path assertions when the test cannot actually force data
+ * through the relay. With coturn, nanortc, and libdatachannel co-located on
+ * the host, libdc's actual source IP as observed by coturn is 127.0.0.1, but
+ * libjuice/libdc filter loopback host candidates per RFC 8838 — so nanortc
+ * never installs a CreatePermission whose target IP matches what coturn sees
+ * for libdc traffic. The relayed path silently drops. Skipping here keeps
+ * compile + smoke coverage cheap; CI exercises the strict assertions by
+ * setting NANORTC_TURN_URL to a non-loopback host IP (see the workflow's
+ * host-IP detection step).
  *
  * Uses getaddrinfo(AF_UNSPEC) so bracketed IPv6 URIs and DNS names both work. */
 static int is_loopback_turn(void)
@@ -345,7 +345,14 @@ static int setup_relay_pair_nanortc(interop_sig_pipe_t *pipe, interop_nanortc_pe
      * suppress the direct-host fallback injection at
      * interop_libdatachannel_peer.c:141 — otherwise libdc gets a
      * 127.0.0.1:<nanortc_port> typ host candidate handed to it and reaches
-     * nanortc directly, bypassing the TURN relay entirely. */
+     * nanortc directly, bypassing the TURN relay entirely.
+     *
+     * With coturn on the pinned bridge IP (172.28.0.2, see
+     * tests/interop/turn-server/docker-compose.yml), libdc's natural host
+     * candidate enumeration includes the host's IP on that bridge
+     * (172.28.0.1). nanortc installs CreatePermission for it, and coturn's
+     * observed peer source for libdc traffic matches, so the relay path
+     * completes without any loopback alias trickery. */
     if (interop_libdatachannel_start(ldc, pipe->fd[1], dc_label, 0) != 0) {
         fprintf(stderr, "[test] Failed to start libdatachannel peer\n");
         interop_nanortc_stop(nano);
@@ -443,9 +450,10 @@ static void assert_nanortc_relay_path(const interop_nanortc_peer_t *nano)
         if (turn_host_is_loopback) {                                                               \
             fprintf(stderr,                                                                        \
                     "[test] SKIP: loopback TURN cannot force nanortc relay path — "                \
-                    "libdc's loopback source bypasses coturn permissions. Re-run with "            \
-                    "NANORTC_TURN_URL pointing at a non-loopback TURN server to exercise "         \
-                    "the Phase 5.2 wrap path end-to-end.\n");                                      \
+                    "libdc's RFC 8838 loopback filter means coturn never observes a "              \
+                    "permission-matching peer source. Re-run with NANORTC_TURN_URL "                \
+                    "pointing at a non-loopback host IP (CI does this automatically; "             \
+                    "locally e.g. `NANORTC_TURN_URL=turn:$(hostname -I | awk '{print $1}'):3478`).\n"); \
             return;                                                                                \
         }                                                                                          \
     } while (0)
@@ -727,7 +735,7 @@ int main(void)
     printf("  STUN: %s\n", stun_url);
     printf("  TURN: %s user=%s\n", turn_url, turn_user);
     printf("  TURN reachable: %s\n", turn_server_reachable ? "yes" : "no");
-    printf("  TURN loopback: %s\n", turn_host_is_loopback ? "yes (tests will SKIP)" : "no");
+    printf("  TURN loopback: %s\n", turn_host_is_loopback ? "yes (strict tests will SKIP)" : "no");
     if (!turn_server_reachable) {
         printf("  → all tests will be SKIPPED. Start a TURN server with:\n");
         printf("       ./scripts/start-test-turn.sh\n");

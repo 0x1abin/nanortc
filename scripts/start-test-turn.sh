@@ -3,10 +3,20 @@
 #
 # Usage: ./scripts/start-test-turn.sh
 #
-# Endpoint: turn:127.0.0.1:3478
+# Endpoint: turn:127.0.0.1:3478 (loopback; coturn runs in network_mode=host)
 # Credentials: testuser / testpass (long-term, realm=nanortc-test)
 #
 # Stop with ./scripts/stop-test-turn.sh
+#
+# Note: the libdc-relay-only direction (test_interop_turn_relay) works fully
+# over loopback. The nanortc-as-TURN-client direction
+# (test_interop_turn_relay_nanortc) auto-skips its strict assertions when
+# the configured TURN URL resolves to a loopback address — libjuice/libdc
+# filter loopback host candidates per RFC 8838, so coturn cannot observe a
+# permission-matching peer source for libdc's actual traffic. To exercise
+# the strict relay path locally, point NANORTC_TURN_URL at a non-loopback
+# IP that this host listens on (e.g. its LAN address). CI does this
+# automatically via the workflow's host-IP detection step.
 
 set -euo pipefail
 
@@ -33,7 +43,7 @@ cd "${COMPOSE_DIR}"
 
 # Wait for coturn to actually accept UDP on 3478. We probe with a single
 # zero-byte send; coturn drops it but the kernel returns success once the
-# container is listening.
+# container is listening on the pinned bridge IP.
 echo -n "[start-test-turn] waiting for coturn..."
 PROBE_PY=$(cat <<'PY'
 import socket, sys

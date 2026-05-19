@@ -257,7 +257,29 @@ jobs:
       - name: Build
         run: cmake --build build-interop -j$(nproc)
 
+      # Pick the first non-loopback IPv4 the runner exposes. The
+      # nanortc-as-TURN-client test auto-skips its strict relay-path
+      # assertions when the TURN URL resolves to loopback (libdc filters
+      # loopback host candidates per RFC 8838, so no permission ever
+      # matches coturn's observed peer source). Pointing the URL at a
+      # routable host IP exercises the Phase 5.2 F6–F10 wrap path
+      # end-to-end. coturn runs in network_mode=host (see
+      # tests/interop/turn-server/docker-compose.yml), so it already
+      # listens on every interface and no further config is required.
+      - name: Detect non-loopback host IP
+        id: hostip
+        run: |
+          IP=$(hostname -I | awk '{print $1}')
+          if [ -z "$IP" ]; then
+            echo "::error::no non-loopback IPv4 found on runner; relay assertions will SKIP"
+            exit 1
+          fi
+          echo "ip=$IP" >> "$GITHUB_OUTPUT"
+          echo "Selected host IP for TURN URL: $IP"
+
       - name: Test (nanortc-as-TURN-client relay path)
+        env:
+          NANORTC_TURN_URL: turn:${{ steps.hostip.outputs.ip }}:3478
         run: ctest --test-dir build-interop -L turn-relay --output-on-failure
 
       - name: Stop coturn
