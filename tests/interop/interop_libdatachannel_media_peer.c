@@ -139,6 +139,8 @@ static rtcCodec ldc_to_rtc_codec(ldc_codec_t codec)
         return RTC_CODEC_PCMU;
     case LDC_CODEC_H264:
         return RTC_CODEC_H264;
+    case LDC_CODEC_H265:
+        return RTC_CODEC_H265;
     default:
         return RTC_CODEC_H264;
     }
@@ -222,6 +224,12 @@ static int setup_track_packetizer(int tr, const ldc_track_config_t *cfg)
         pkt_init.nalSeparator = RTC_NAL_SEPARATOR_START_SEQUENCE;
         rc = rtcSetH264Packetizer(tr, &pkt_init);
         break;
+    case LDC_CODEC_H265:
+        /* RFC 7798 §4.4: HEVC packetization shares the Annex-B start-code framing with H.264. */
+        pkt_init.clockRate = 90000;
+        pkt_init.nalSeparator = RTC_NAL_SEPARATOR_START_SEQUENCE;
+        rc = rtcSetH265Packetizer(tr, &pkt_init);
+        break;
     }
 
     if (rc < 0) {
@@ -296,9 +304,16 @@ int interop_libdatachannel_media_start(interop_libdatachannel_media_peer_t *peer
         snprintf(mid_str, sizeof(mid_str), "%d", i);
         init.mid = mid_str;
 
-        /* Set profile for H.264 */
+        /* Set profile for H.264 / H.265.
+         *
+         * RFC 7798 §7.1 default fmtp: profile-id=1 (Main), tier-flag=0, level-id=93 (Level 3.1),
+         * tx-mode=SRST. Mirrors `nano_rtc_media.c` `sdp_append_video_mline()` defaults so the
+         * libdatachannel offer aligns with the nanortc emitter on the answer side.
+         */
         if (tc->codec == LDC_CODEC_H264) {
             init.profile = "profile-level-id=42e01f";
+        } else if (tc->codec == LDC_CODEC_H265) {
+            init.profile = "profile-id=1;tier-flag=0;level-id=93;tx-mode=SRST";
         }
 
         int tr = rtcAddTrackEx(peer->pc, &init);

@@ -54,7 +54,9 @@ CC="$CLANG" cmake -B "$BUILD_DIR" \
     -DNANORTC_FEATURE_DATACHANNEL=ON \
     -DNANORTC_FEATURE_AUDIO=ON \
     -DNANORTC_FEATURE_VIDEO=ON \
+    -DNANORTC_FEATURE_H265=ON \
     -DNANORTC_FEATURE_IPV6=ON \
+    -DNANORTC_FEATURE_TURN=ON \
     -DNANORTC_CRYPTO="$CRYPTO" \
     -DCMAKE_C_COMPILER="$CLANG" \
     -DCMAKE_BUILD_TYPE=Debug \
@@ -64,10 +66,10 @@ cmake --build "$BUILD_DIR" -j"$(nproc 2>/dev/null || sysctl -n hw.ncpu)" 2>&1 | 
 echo ""
 
 # Create corpus directories
-mkdir -p "$CORPUS_DIR"/{stun,sctp,sdp,rtp,h264,addr,bwe}
+mkdir -p "$CORPUS_DIR"/{stun,sctp,sdp,rtp,h264,h265,addr,bwe,turn}
 
-# All fuzz targets
-ALL_TARGETS="fuzz_stun fuzz_sctp fuzz_sdp fuzz_rtp fuzz_h264 fuzz_addr fuzz_bwe"
+# All fuzz targets — kept in sync with .github/workflows/ci.yml
+ALL_TARGETS="fuzz_stun fuzz_sctp fuzz_sdp fuzz_rtp fuzz_h264 fuzz_h265 fuzz_addr fuzz_bwe fuzz_turn"
 
 if [ "$TARGET" != "all" ]; then
     ALL_TARGETS="$TARGET"

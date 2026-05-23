@@ -1068,6 +1068,21 @@ static int rtc_process_timers(nanortc_t *rtc, uint32_t now_ms)
              * intervals (<100ms total for typical browser candidate counts). */
             for (uint8_t i = 0; i < rtc->ice.remote_candidate_count; i++) {
                 nano_ice_candidate_t *c = &rtc->ice.remote_candidates[i];
+                /* RFC 6157 §4.2 / RFC 5928 §6: CreatePermission's
+                 * XOR-PEER-ADDRESS family must match the allocation family,
+                 * otherwise coturn replies "443 Peer Address Family Mismatch"
+                 * and the permission slot is wasted. With
+                 * NANORTC_TURN_MAX_PERMISSIONS=4 and browsers/libdc routinely
+                 * trickling 4+ v6 host candidates, filling all 4 slots with
+                 * v6 perms against a v4 relay starves the v4 perm install
+                 * that the actual data path needs. Skip mismatched families
+                 * here so the fan-out only requests perms that can succeed.
+                 * relay_family is stored as STUN_FAMILY_IPV4 (0x01) /
+                 * STUN_FAMILY_IPV6 (0x02); candidate family is plain 4/6. */
+                uint8_t relay_fam_46 = (rtc->turn.relay_family == STUN_FAMILY_IPV4) ? 4 : 6;
+                if (c->family != relay_fam_46) {
+                    continue;
+                }
                 size_t addr_len = (c->family == 4) ? 4 : 16;
                 bool has_perm = false;
                 for (uint8_t j = 0; j < rtc->turn.permission_count; j++) {

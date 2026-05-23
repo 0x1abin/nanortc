@@ -25,13 +25,26 @@ extern "C" {
 #define INTEROP_MEDIA_MAX_FRAMES 32
 #define INTEROP_MEDIA_FRAME_SIZE 2048
 
-/** Configuration for a single media track to add before offer/answer. */
+/** Configuration for a single media track to add before offer/answer.
+ *
+ * Optional H.265 parameter sets (vps/sps/pps): when non-NULL on an H.265 video
+ * track, the peer thread invokes nanortc_video_set_h265_parameter_sets()
+ * between add_video_track() and accept_offer() so the answer carries
+ * sprop-vps/sps/pps per RFC 7798 §7.1. Caller-owned, must outlive
+ * interop_nanortc_media_start().
+ */
 typedef struct {
     nanortc_track_kind_t kind;     /* NANORTC_TRACK_AUDIO or NANORTC_TRACK_VIDEO */
     nanortc_direction_t direction; /* SENDRECV, SENDONLY, RECVONLY */
     nanortc_codec_t codec;         /* e.g. NANORTC_CODEC_OPUS, NANORTC_CODEC_H264 */
     uint32_t sample_rate;          /* Audio sample rate (0 for video) */
     uint8_t channels;              /* Audio channels (0 for video) */
+    const uint8_t *h265_vps;       /* Optional H.265 VPS NAL (NAL header + RBSP, no start code) */
+    size_t h265_vps_len;
+    const uint8_t *h265_sps;       /* Optional H.265 SPS NAL */
+    size_t h265_sps_len;
+    const uint8_t *h265_pps;       /* Optional H.265 PPS NAL */
+    size_t h265_pps_len;
 } interop_media_track_config_t;
 
 /** Received media frame stored for test verification. */

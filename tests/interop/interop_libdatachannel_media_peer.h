@@ -35,6 +35,7 @@ typedef enum {
     LDC_CODEC_PCMA = 1,
     LDC_CODEC_PCMU = 2,
     LDC_CODEC_H264 = 3,
+    LDC_CODEC_H265 = 4,
 } ldc_codec_t;
 
 /** Track direction for libdatachannel media peer. */
