@@ -41,9 +41,10 @@ fi
 cd "${COMPOSE_DIR}"
 "${COMPOSE[@]}" up -d
 
-# Wait for coturn to actually accept UDP on 3478. We probe with a single
-# zero-byte send; coturn drops it but the kernel returns success once the
-# container is listening on the pinned bridge IP.
+# Wait for coturn to actually accept UDP on 3478. coturn runs in
+# network_mode=host (see docker-compose.yml), so it listens on every host
+# interface including loopback; we probe 127.0.0.1 with a single zero-byte
+# send. coturn drops it but the kernel returns success once it is listening.
 echo -n "[start-test-turn] waiting for coturn..."
 PROBE_PY=$(cat <<'PY'
 import socket, sys

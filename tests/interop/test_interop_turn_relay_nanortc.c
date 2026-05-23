@@ -355,12 +355,13 @@ static int setup_relay_pair_nanortc(interop_sig_pipe_t *pipe, interop_nanortc_pe
      * 127.0.0.1:<nanortc_port> typ host candidate handed to it and reaches
      * nanortc directly, bypassing the TURN relay entirely.
      *
-     * With coturn on the pinned bridge IP (172.28.0.2, see
-     * tests/interop/turn-server/docker-compose.yml), libdc's natural host
-     * candidate enumeration includes the host's IP on that bridge
-     * (172.28.0.1). nanortc installs CreatePermission for it, and coturn's
-     * observed peer source for libdc traffic matches, so the relay path
-     * completes without any loopback alias trickery. */
+     * For the strict relay path to actually complete, coturn must see libdc's
+     * traffic arriving from an IP that nanortc has a CreatePermission for —
+     * which requires libdc, nanortc, and the relay to be three distinct
+     * endpoints. That only holds against a real dual-host / external relay;
+     * on a single-host loopback setup the test skips earlier (see
+     * is_loopback_turn / SKIP_IF_NO_TURN). The TURN server itself runs in
+     * network_mode=host (tests/interop/turn-server/docker-compose.yml). */
     if (interop_libdatachannel_start(ldc, pipe->fd[1], dc_label, 0) != 0) {
         fprintf(stderr, "[test] Failed to start libdatachannel peer\n");
         interop_nanortc_stop(nano);
