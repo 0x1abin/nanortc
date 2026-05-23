@@ -114,14 +114,22 @@ static int parse_turn_host(const char *uri, char *out, size_t out_size)
 
 /* Return 1 if the TURN host resolves to a loopback address. Used to auto-skip
  * the strict relay-path assertions when the test cannot actually force data
- * through the relay. With coturn, nanortc, and libdatachannel co-located on
- * the host, libdc's actual source IP as observed by coturn is 127.0.0.1, but
- * libjuice/libdc filter loopback host candidates per RFC 8838 — so nanortc
- * never installs a CreatePermission whose target IP matches what coturn sees
- * for libdc traffic. The relayed path silently drops. Skipping here keeps
- * compile + smoke coverage cheap; CI exercises the strict assertions by
- * setting NANORTC_TURN_URL to a non-loopback host IP (see the workflow's
- * host-IP detection step).
+ * through the relay.
+ *
+ * The nanortc-as-TURN-client strict assertions need three *distinct* network
+ * endpoints — nanortc, libdatachannel, and the relay — so coturn observes a
+ * peer source that matches a CreatePermission target. A single-host setup
+ * cannot provide that:
+ *   - loopback: libjuice/libdc filter 127.0.0.0/8 host candidates per
+ *     RFC 8838, so nanortc never installs a permission for the address coturn
+ *     actually sees libdc traffic from;
+ *   - same non-loopback host IP (coturn in network_mode=host): coturn's relay
+ *     and libdc's socket share one IP, and coturn's relay hairpin back to a
+ *     client on that same IP does not complete reliably.
+ *
+ * So we skip whenever the TURN host is loopback. The strict path is exercised
+ * against a real dual-host / cellular TURN deployment (the Phase 5.2 manual
+ * verification); point NANORTC_TURN_URL at such a relay to run the assertions.
  *
  * Uses getaddrinfo(AF_UNSPEC) so bracketed IPv6 URIs and DNS names both work. */
 static int is_loopback_turn(void)
@@ -449,11 +457,10 @@ static void assert_nanortc_relay_path(const interop_nanortc_peer_t *nano)
         }                                                                                          \
         if (turn_host_is_loopback) {                                                               \
             fprintf(stderr,                                                                        \
-                    "[test] SKIP: loopback TURN cannot force nanortc relay path — "                \
-                    "libdc's RFC 8838 loopback filter means coturn never observes a "              \
-                    "permission-matching peer source. Re-run with NANORTC_TURN_URL "                \
-                    "pointing at a non-loopback host IP (CI does this automatically; "             \
-                    "locally e.g. `NANORTC_TURN_URL=turn:$(hostname -I | awk '{print $1}'):3478`).\n"); \
+                    "[test] SKIP: loopback/single-host TURN cannot exercise the nanortc "         \
+                    "relay path (libdc filters loopback candidates per RFC 8838; same-host "       \
+                    "coturn hairpin is unreliable). Point NANORTC_TURN_URL at a real "            \
+                    "dual-host / external TURN relay to run the strict assertions.\n");            \
             return;                                                                                \
         }                                                                                          \
     } while (0)
