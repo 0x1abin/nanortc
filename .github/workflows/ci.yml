@@ -282,6 +282,20 @@ jobs:
           NANORTC_TURN_URL: turn:${{ steps.hostip.outputs.ip }}:3478
         run: ctest --test-dir build-interop -L turn-relay --output-on-failure
 
+      # TEMP DEBUG (remove after root-causing the SegFault): run the
+      # nanortc-as-TURN-client binary directly under gdb so a crash prints a
+      # full backtrace in the CI log. `|| true` keeps the job from failing
+      # twice on the same crash.
+      - name: Debug backtrace (nanortc relay test under gdb)
+        if: always()
+        env:
+          NANORTC_TURN_URL: turn:${{ steps.hostip.outputs.ip }}:3478
+        run: |
+          sudo apt-get install -y -qq gdb
+          gdb -batch -ex run -ex "bt full" -ex "info threads" -ex "thread apply all bt" \
+            --args ./build-interop/tests/interop/test_interop_turn_relay_nanortc 2>&1 \
+            | grep -vE "Local ICE candidate|Got remote ICE candidate|burst-msg" | tail -120 || true
+
       - name: Stop coturn
         if: always()
         run: ./scripts/stop-test-turn.sh
