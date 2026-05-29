@@ -484,6 +484,11 @@ int nanortc_send_audio(nanortc_t *rtc, uint8_t mid, uint32_t pts_ms, const void 
     if (!m || m->kind != NANORTC_TRACK_AUDIO) {
         return NANORTC_ERR_INVALID_PARAM;
     }
+    /* RFC 3264 §6: a recvonly / inactive track MUST NOT transmit. Read the
+     * live direction (set_direction may change it mid-session). */
+    if (m->direction == NANORTC_DIR_RECVONLY || m->direction == NANORTC_DIR_INACTIVE) {
+        return NANORTC_ERR_STATE;
+    }
 
     uint32_t rtp_ts = pts_ms_to_rtp(pts_ms, m->sample_rate);
     return rtc_send_audio(rtc, m, rtp_ts, (const uint8_t *)data, len);
@@ -543,6 +548,10 @@ int nanortc_send_video(nanortc_t *rtc, uint8_t mid, uint32_t pts_ms, const void 
     nanortc_track_t *m = track_find_by_mid(rtc->media, rtc->media_count, mid);
     if (!m || m->kind != NANORTC_TRACK_VIDEO) {
         return NANORTC_ERR_INVALID_PARAM;
+    }
+    /* RFC 3264 §6: a recvonly / inactive track MUST NOT transmit. */
+    if (m->direction == NANORTC_DIR_RECVONLY || m->direction == NANORTC_DIR_INACTIVE) {
+        return NANORTC_ERR_STATE;
     }
 
     /* One call = one encoded frame for fps accounting. Callers that split
@@ -1056,7 +1065,19 @@ void nano_rtc_media_emit_rtcp_sr_cadence(nanortc_t *rtc, uint32_t now_ms)
     uint32_t ntp_sec = now_ms / 1000;
     uint32_t ntp_frac = (uint32_t)((uint64_t)(now_ms % 1000) * 4294967u);
 
-    for (uint8_t ti = 0; ti < rtc->media_count; ti++) {
+    /* Emit at most ONE SR per cadence tick. The SR is built in the single
+     * shared rtc->stun_buf and enqueued by pointer (out_queue stores only a
+     * pointer per slot), so enqueuing two SRs in one call would alias stun_buf
+     * and the receiver would see only the last track's SR — the exact aliasing
+     * the turn_buf/stun_buf split was built to avoid. Round-robin the starting
+     * track via rtc->sr_cursor so every sending track still emits periodic SRs;
+     * each track's effective interval stretches by the number of sending tracks
+     * (well within RFC 3550 §6.2 tolerance for the small counts supported). */
+    if (rtc->media_count == 0) {
+        return;
+    }
+    for (uint8_t scanned = 0; scanned < rtc->media_count; scanned++) {
+        uint8_t ti = (uint8_t)((rtc->sr_cursor + scanned) % rtc->media_count);
         nanortc_track_t *m = &rtc->media[ti];
         if (!m->active)
             continue;
@@ -1084,6 +1105,9 @@ void nano_rtc_media_emit_rtcp_sr_cadence(nanortc_t *rtc, uint32_t now_ms)
             continue;
 
         nano_rtc_enqueue_transmit(rtc, rtc->stun_buf, srtcp_len, &rtc->remote_addr, false);
+        /* Resume after this track next tick so SR coverage rotates fairly. */
+        rtc->sr_cursor = (uint8_t)((ti + 1) % rtc->media_count);
+        return;
     }
 }
 

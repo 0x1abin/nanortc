@@ -314,6 +314,13 @@ int nanortc_accept_offer(nanortc_t *rtc, const char *offer, char *answer_buf, si
     if (!rtc || !offer || !answer_buf) {
         return NANORTC_ERR_INVALID_PARAM;
     }
+    /* Same precondition as create_offer() / accept_answer(): negotiation may
+     * only start from a fresh (or ice_restart-reset) instance. Without this,
+     * accepting an offer on a live session re-runs rtc_generate_ice_credentials
+     * and overwrites the ufrag/pwd that in-flight STUN auth + consent depend on. */
+    if (rtc->state != NANORTC_STATE_NEW) {
+        return NANORTC_ERR_STATE;
+    }
 
     size_t offer_len = strlen(offer); /* NANORTC_SAFE: API boundary */
 

@@ -204,6 +204,14 @@ int nanortc_init(nanortc_t *rtc, const nanortc_config_t *cfg)
     if (!rtc || !cfg) {
         return NANORTC_ERR_INVALID_PARAM;
     }
+    /* DTLS is mandatory in every feature combo, so a crypto provider with at
+     * least a CSPRNG is always required. The header documents crypto==NULL as
+     * INVALID_PARAM; honor it here with a fail-fast instead of deferring a NULL
+     * deref to first DTLS/SRTP use or to nanortc_ice_restart() (which calls
+     * config.crypto->random_bytes() unguarded). */
+    if (!cfg->crypto || !cfg->crypto->random_bytes) {
+        return NANORTC_ERR_INVALID_PARAM;
+    }
 
     memset(rtc, 0, sizeof(*rtc));
     rtc->config = *cfg;
