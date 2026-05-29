@@ -792,8 +792,7 @@ static void test_turn_allocate_438_no_nonce(void)
     turn_start_allocate(&turn, crypto(), buf, sizeof(buf), &out_len);
 
     uint8_t resp[256];
-    size_t resp_len =
-        build_error_response(resp, STUN_ALLOCATE_ERROR, turn.last_txid, 438, NULL);
+    size_t resp_len = build_error_response(resp, STUN_ALLOCATE_ERROR, turn.last_txid, 438, NULL);
 
     int rc = turn_handle_response(&turn, resp, resp_len, crypto());
     TEST_ASSERT_EQUAL_INT(NANORTC_ERR_PROTOCOL, rc);
@@ -811,8 +810,7 @@ static void test_turn_allocate_unknown_error(void)
     turn_start_allocate(&turn, crypto(), buf, sizeof(buf), &out_len);
 
     uint8_t resp[256];
-    size_t resp_len =
-        build_error_response(resp, STUN_ALLOCATE_ERROR, turn.last_txid, 500, NULL);
+    size_t resp_len = build_error_response(resp, STUN_ALLOCATE_ERROR, turn.last_txid, 500, NULL);
 
     int rc = turn_handle_response(&turn, resp, resp_len, crypto());
     TEST_ASSERT_EQUAL_INT(NANORTC_ERR_PROTOCOL, rc);
@@ -884,8 +882,7 @@ static void test_turn_refresh_error_fails(void)
     turn_generate_refresh(&turn, 1000, crypto(), buf, sizeof(buf), &out_len);
 
     uint8_t resp[256];
-    size_t resp_len =
-        build_error_response(resp, STUN_REFRESH_ERROR, turn.last_txid, 403, NULL);
+    size_t resp_len = build_error_response(resp, STUN_REFRESH_ERROR, turn.last_txid, 403, NULL);
 
     int rc = turn_handle_response(&turn, resp, resp_len, crypto());
     TEST_ASSERT_EQUAL_INT(NANORTC_ERR_PROTOCOL, rc);
@@ -906,8 +903,8 @@ static void test_turn_permission_success_response(void)
     /* Build success response echoing the per-permission txid stored
      * during turn_create_permission(). */
     uint8_t resp[64];
-    size_t resp_len = build_success_response(resp, STUN_CREATE_PERMISSION_RESPONSE,
-                                             turn.permissions[0].txid);
+    size_t resp_len =
+        build_success_response(resp, STUN_CREATE_PERMISSION_RESPONSE, turn.permissions[0].txid);
 
     int rc = turn_handle_response(&turn, resp, resp_len, crypto());
     TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
@@ -947,9 +944,8 @@ static void test_turn_permission_error_fails(void)
     turn_create_permission(&turn, peer, 4, 7000, crypto(), buf, sizeof(buf), &out_len);
 
     uint8_t resp[256];
-    size_t resp_len =
-        build_error_response(resp, STUN_CREATE_PERMISSION_ERROR, turn.permissions[0].txid, 403,
-                             NULL);
+    size_t resp_len = build_error_response(resp, STUN_CREATE_PERMISSION_ERROR,
+                                           turn.permissions[0].txid, 403, NULL);
 
     int rc = turn_handle_response(&turn, resp, resp_len, crypto());
     TEST_ASSERT_EQUAL_INT(NANORTC_ERR_PROTOCOL, rc);
@@ -967,9 +963,8 @@ static void test_turn_channel_bind_438_stale_nonce(void)
     turn_channel_bind(&turn, peer, 4, 5000, crypto(), buf, sizeof(buf), &out_len);
 
     uint8_t resp[256];
-    size_t resp_len =
-        build_error_response(resp, STUN_CHANNEL_BIND_ERROR, turn.channels[0].txid, 438,
-                             "chan_nonce");
+    size_t resp_len = build_error_response(resp, STUN_CHANNEL_BIND_ERROR, turn.channels[0].txid,
+                                           438, "chan_nonce");
 
     int rc = turn_handle_response(&turn, resp, resp_len, crypto());
     TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
@@ -1041,9 +1036,9 @@ static void test_turn_permission_refresh_errors(void)
     uint8_t buf[512];
     size_t out_len = 0;
 
-    TEST_ASSERT_EQUAL_INT(NANORTC_ERR_INVALID_PARAM,
-                          turn_generate_permission_refresh(NULL, 0, crypto(), buf, sizeof(buf),
-                                                          &out_len));
+    TEST_ASSERT_EQUAL_INT(
+        NANORTC_ERR_INVALID_PARAM,
+        turn_generate_permission_refresh(NULL, 0, crypto(), buf, sizeof(buf), &out_len));
 
     /* Not allocated state */
     nano_turn_t turn;
@@ -1060,9 +1055,9 @@ static void test_turn_channel_refresh_errors(void)
     uint8_t buf[512];
     size_t out_len = 0;
 
-    TEST_ASSERT_EQUAL_INT(NANORTC_ERR_INVALID_PARAM,
-                          turn_generate_channel_refresh(NULL, 0, crypto(), buf, sizeof(buf),
-                                                       &out_len));
+    TEST_ASSERT_EQUAL_INT(
+        NANORTC_ERR_INVALID_PARAM,
+        turn_generate_channel_refresh(NULL, 0, crypto(), buf, sizeof(buf), &out_len));
 
     /* Not allocated state */
     nano_turn_t turn;
@@ -1133,8 +1128,8 @@ static void test_turn_channel_data_padding(void)
     uint8_t buf[64];
     size_t out_len = 0;
 
-    int rc = nano_turn_wrap_channel_data(0x4001, payload, sizeof(payload), buf, sizeof(buf),
-                                         &out_len);
+    int rc =
+        nano_turn_wrap_channel_data(0x4001, payload, sizeof(payload), buf, sizeof(buf), &out_len);
     TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
     /* 4 (header) + 5 (payload) + 3 (padding to 8) = 12 */
     TEST_ASSERT_EQUAL_size_t(12, out_len);
@@ -1286,16 +1281,16 @@ static void test_turn_create_permission_txid_validation(void)
 
     /* Spoofed 438 stale-nonce error — must NOT update our nonce. */
     char stale_marker[] = "evilNonce!";
-    size_t err_len = build_error_response(resp, STUN_CREATE_PERMISSION_ERROR, spoof_txid, 438,
-                                          stale_marker);
+    size_t err_len =
+        build_error_response(resp, STUN_CREATE_PERMISSION_ERROR, spoof_txid, 438, stale_marker);
     rc = turn_handle_response(&turn, resp, err_len, crypto());
     TEST_ASSERT_EQUAL_INT(NANORTC_ERR_PROTOCOL, rc);
     /* Our nonce must remain unchanged ("nonce456" from setup_turn_allocated). */
     TEST_ASSERT_EQUAL_STRING("nonce456", turn.nonce);
 
     /* The legitimate response (echoing our txid) is still accepted. */
-    resp_len = build_success_response(resp, STUN_CREATE_PERMISSION_RESPONSE,
-                                      turn.permissions[0].txid);
+    resp_len =
+        build_success_response(resp, STUN_CREATE_PERMISSION_RESPONSE, turn.permissions[0].txid);
     rc = turn_handle_response(&turn, resp, resp_len, crypto());
     TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
 }
@@ -1376,6 +1371,117 @@ static void test_turn_message_integrity_hmac_vector(void)
     TEST_ASSERT_EQUAL_MEMORY(expected, buf + mi_pos + 4, 20);
 }
 
+/* Helper: build a 401 Allocate Error with REALM/NONCE of arbitrary length,
+ * filled with 'R'/'N'. Used to drive the worst-case credential path. */
+static size_t build_401_response_sized(uint8_t *buf, const uint8_t txid[STUN_TXID_SIZE],
+                                       size_t realm_len, size_t nonce_len)
+{
+    nanortc_write_u16be(buf, STUN_ALLOCATE_ERROR);
+    nanortc_write_u16be(buf + 2, 0);
+    nanortc_write_u32be(buf + 4, STUN_MAGIC_COOKIE);
+    memcpy(buf + 8, txid, STUN_TXID_SIZE);
+    size_t pos = STUN_HEADER_SIZE;
+
+    uint8_t ec[4] = {0, 0, 4, 1}; /* 401 */
+    nanortc_write_u16be(buf + pos, STUN_ATTR_ERROR_CODE);
+    nanortc_write_u16be(buf + pos + 2, 4);
+    memcpy(buf + pos + 4, ec, 4);
+    pos += 8;
+
+    nanortc_write_u16be(buf + pos, STUN_ATTR_REALM);
+    nanortc_write_u16be(buf + pos + 2, (uint16_t)realm_len);
+    memset(buf + pos + 4, 'R', realm_len);
+    size_t pr = (realm_len + 3) & ~3u;
+    if (pr > realm_len) {
+        memset(buf + pos + 4 + realm_len, 0, pr - realm_len);
+    }
+    pos += 4 + pr;
+
+    nanortc_write_u16be(buf + pos, STUN_ATTR_NONCE);
+    nanortc_write_u16be(buf + pos + 2, (uint16_t)nonce_len);
+    memset(buf + pos + 4, 'N', nonce_len);
+    size_t pn = (nonce_len + 3) & ~3u;
+    if (pn > nonce_len) {
+        memset(buf + pos + 4 + nonce_len, 0, pn - nonce_len);
+    }
+    pos += 4 + pn;
+
+    nanortc_write_u16be(buf + 2, (uint16_t)(pos - STUN_HEADER_SIZE));
+    return pos;
+}
+
+/* H9: a TURN server with a maximal REALM/NONCE (plus a maximal USERNAME and an
+ * IPv6 peer) must not overflow turn_buf. Regression for the pre-fix bug where
+ * the authenticated request builders only guarded buf_len >= 256 yet could
+ * write up to NANORTC_TURN_MAX_REQUEST_SIZE bytes; in CORE_ONLY/DATA builds
+ * turn_buf was only 256 B, so a large server nonce/realm overflowed adjacent
+ * nanortc_t fields. Run under ASan to catch any out-of-bounds write. */
+static void test_turn_maxlen_credentials_no_overflow(void)
+{
+    nano_turn_t turn;
+    setup_turn(&turn);
+    /* Stress the worst case: maximal stored username (white-box poke, as other
+     * tests here also set internals directly). turn_derive_key reads
+     * username_len when building "user:realm:pass". */
+    memset(turn.username, 'u', NANORTC_TURN_USERNAME_SIZE - 1);
+    turn.username[NANORTC_TURN_USERNAME_SIZE - 1] = '\0';
+    turn.username_len = NANORTC_TURN_USERNAME_SIZE - 1;
+
+    uint8_t reqbuf[512];
+    size_t out_len = 0;
+    int rc = turn_start_allocate(&turn, crypto(), reqbuf, sizeof(reqbuf), &out_len);
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
+
+    /* 401 with a maximal REALM (64) + NONCE (128); the client clamps to
+     * REALM_SIZE-1 / NONCE_SIZE-1 internally — both still pad back up to their
+     * SIZE on the wire, which is exactly what NANORTC_TURN_MAX_REQUEST_SIZE
+     * budgets. */
+    uint8_t resp[512];
+    size_t resp_len = build_401_response_sized(resp, turn.last_txid, NANORTC_TURN_REALM_SIZE,
+                                               NANORTC_TURN_NONCE_SIZE);
+    rc = turn_handle_response(&turn, resp, resp_len, crypto());
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
+    TEST_ASSERT_EQUAL_INT(NANORTC_TURN_CHALLENGED, turn.state);
+
+    /* A buffer of exactly NANORTC_TURN_MAX_REQUEST_SIZE — the builder floor and
+     * the non-media turn_buf size — must hold every authenticated request
+     * without overflow (ASan-checked) and never report out_len beyond itself. */
+    uint8_t tight[NANORTC_TURN_MAX_REQUEST_SIZE];
+    uint8_t peer6[NANORTC_ADDR_SIZE];
+    memset(peer6, 0xAB, sizeof(peer6)); /* IPv6 peer → 24-byte XOR-PEER-ADDRESS */
+
+    out_len = 0;
+    rc = turn_start_allocate(&turn, crypto(), tight, sizeof(tight), &out_len);
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
+    TEST_ASSERT_TRUE(out_len <= sizeof(tight));
+
+    turn.state = NANORTC_TURN_ALLOCATED; /* enable refresh/permission/channel builders */
+    turn.refresh_at_ms = 0;
+    out_len = 0;
+    rc = turn_generate_refresh(&turn, 1000, crypto(), tight, sizeof(tight), &out_len);
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
+    TEST_ASSERT_TRUE(out_len <= sizeof(tight));
+
+    out_len = 0;
+    rc = turn_create_permission(&turn, peer6, 6, 7000, crypto(), tight, sizeof(tight), &out_len);
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
+    TEST_ASSERT_TRUE(out_len <= sizeof(tight));
+
+    out_len = 0;
+    rc = turn_channel_bind(&turn, peer6, 6, 9000, crypto(), tight, sizeof(tight), &out_len);
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
+    TEST_ASSERT_TRUE(out_len <= sizeof(tight));
+
+    /* The old 256-byte floor: with maximal credentials this would have written
+     * ~344 B and overflowed. Post-fix the builder must reject it up front. */
+    uint8_t old_buf[256];
+    out_len = 0;
+    rc =
+        turn_create_permission(&turn, peer6, 6, 7001, crypto(), old_buf, sizeof(old_buf), &out_len);
+    TEST_ASSERT_EQUAL_INT(NANORTC_ERR_BUFFER_TOO_SMALL, rc);
+    TEST_ASSERT_EQUAL_size_t(0, out_len);
+}
+
 /* ----------------------------------------------------------------
  * Test runner
  * ---------------------------------------------------------------- */
@@ -1438,6 +1544,7 @@ int main(void)
     RUN_TEST(test_turn_deallocate_errors);
     RUN_TEST(test_turn_create_permission_txid_validation);
     RUN_TEST(test_turn_message_integrity_hmac_vector);
+    RUN_TEST(test_turn_maxlen_credentials_no_overflow);
 
     return UNITY_END();
 }
