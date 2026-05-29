@@ -633,6 +633,12 @@ struct nanortc {
 
     /** Last time RTCP SR was sent (for periodic RTCP, RFC 3550 §6.2). */
     uint32_t last_rtcp_send_ms;
+
+    /** Round-robin cursor for the multi-track SR cadence. Only one SR is
+     *  emitted per cadence tick (they share the single stun_buf scratch and
+     *  out_queue stores only a pointer), so this rotates which track sends
+     *  next across ticks to keep every sending track's SR interval bounded. */
+    uint8_t sr_cursor;
 #endif
 
 #if NANORTC_FEATURE_VIDEO
@@ -769,6 +775,9 @@ NANORTC_API void nanortc_destroy(nanortc_t *rtc);
  * @return NANORTC_OK on success.
  * @retval NANORTC_ERR_BUFFER_TOO_SMALL  @p answer_buf_len is insufficient.
  * @retval NANORTC_ERR_PARSE             Malformed SDP offer.
+ * @retval NANORTC_ERR_STATE             Called on a non-fresh instance; only
+ *                                       valid in state NEW (or after
+ *                                       nanortc_ice_restart()).
  */
 NANORTC_API int nanortc_accept_offer(nanortc_t *rtc, const char *offer, char *answer_buf,
                                      size_t answer_buf_len, size_t *out_len);
