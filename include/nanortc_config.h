@@ -815,21 +815,32 @@ typedef enum {
  *   STUN header + CHANNEL-NUMBER + XOR-PEER-ADDRESS(IPv6)
  *   + USERNAME + REALM + NONCE + MESSAGE-INTEGRITY.
  * USERNAME/REALM/NONCE are clamped to their storage maxima on copy-in, so this
- * is a compile-time upper bound. Each attribute carries a 4-byte TLV header;
- * XOR-PEER-ADDRESS IPv6 value is 20 B and MESSAGE-INTEGRITY is 4 + 20.
- * nano_turn.c's builders reject buffers smaller than this, and
- * NANORTC_TURN_BUF_SIZE must be >= it (enforced below), so the builders can
- * never overflow turn_buf even against a server with a large REALM/NONCE.
+ * is a compile-time upper bound. Each attribute is sized via
+ * NANORTC_STUN_ATTR_WIRE_SIZE so the 4-byte TLV header AND the RFC 8489 §14
+ * 32-bit value padding are both accounted for — budgeting the full storage
+ * SIZE (rather than SIZE-1) and rounding up keeps the bound safe even when a
+ * user overrides NANORTC_TURN_{USERNAME,REALM,NONCE}_SIZE to a value that is
+ * not a multiple of 4. XOR-PEER-ADDRESS IPv6 value is 20 B; MESSAGE-INTEGRITY
+ * is a 20-byte HMAC-SHA1. nano_turn.c's builders reject buffers smaller than
+ * this, and NANORTC_TURN_BUF_SIZE must be >= it (enforced below), so the
+ * builders can never overflow turn_buf even against a server with a large
+ * REALM/NONCE.
  */
+/* Bytes one STUN attribute occupies on the wire: 4-byte TLV header + value
+ * padded up to a 32-bit boundary (RFC 8489 §14). */
+#ifndef NANORTC_STUN_ATTR_WIRE_SIZE
+#define NANORTC_STUN_ATTR_WIRE_SIZE(vlen) (4u + (((vlen) + 3u) & ~3u))
+#endif
+
 #ifndef NANORTC_TURN_MAX_REQUEST_SIZE
-#define NANORTC_TURN_MAX_REQUEST_SIZE                                                          \
-    ((8 + NANORTC_STUN_TXID_SIZE)       /* STUN header (12-byte txid + 8)                   */ \
-     + (4 + 4)                          /* CHANNEL-NUMBER                                   */ \
-     + (4 + 20)                         /* XOR-PEER-ADDRESS (IPv6)                          */ \
-     + (4 + NANORTC_TURN_USERNAME_SIZE) /* USERNAME                                         */ \
-     + (4 + NANORTC_TURN_REALM_SIZE)    /* REALM                                            */ \
-     + (4 + NANORTC_TURN_NONCE_SIZE)    /* NONCE                                            */ \
-     + (4 + 20))                        /* MESSAGE-INTEGRITY (HMAC-SHA1-80)                 */
+#define NANORTC_TURN_MAX_REQUEST_SIZE                                                     \
+    ((8u + NANORTC_STUN_TXID_SIZE)                             /* STUN header          */ \
+     + NANORTC_STUN_ATTR_WIRE_SIZE(4)                          /* CHANNEL-NUMBER       */ \
+     + NANORTC_STUN_ATTR_WIRE_SIZE(20)                         /* XOR-PEER-ADDR (IPv6) */ \
+     + NANORTC_STUN_ATTR_WIRE_SIZE(NANORTC_TURN_USERNAME_SIZE) /* USERNAME          */    \
+     + NANORTC_STUN_ATTR_WIRE_SIZE(NANORTC_TURN_REALM_SIZE)    /* REALM             */    \
+     + NANORTC_STUN_ATTR_WIRE_SIZE(NANORTC_TURN_NONCE_SIZE)    /* NONCE             */    \
+     + NANORTC_STUN_ATTR_WIRE_SIZE(20))                        /* MESSAGE-INTEGRITY    */
 #endif
 
 #if NANORTC_FEATURE_TURN && (NANORTC_TURN_BUF_SIZE < NANORTC_TURN_MAX_REQUEST_SIZE)
