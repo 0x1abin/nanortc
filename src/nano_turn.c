@@ -94,7 +94,13 @@ static void stun_finalize_length(uint8_t *buf, size_t total_len)
     nanortc_write_u16be(buf + 2, (uint16_t)(total_len - STUN_HEADER_SIZE));
 }
 
-/* Append MESSAGE-INTEGRITY (RFC 8489 §14.5) using the TURN HMAC key. */
+/* Append MESSAGE-INTEGRITY (RFC 8489 §14.5) using the TURN HMAC key.
+ * Precondition: the caller has already validated buf_len >=
+ * NANORTC_TURN_MAX_REQUEST_SIZE, which accounts for the STUN header, every
+ * attribute (USERNAME/REALM/NONCE are clamped to their storage maxima on
+ * copy-in) and these 24 MI bytes. That single up-front check makes the writes
+ * below in-bounds by construction, so no per-write guard is needed here — but
+ * any new attribute MUST also be reflected in NANORTC_TURN_MAX_REQUEST_SIZE. */
 static size_t stun_append_integrity(uint8_t *buf, size_t msg_len,
                                     const uint8_t key[NANORTC_TURN_HMAC_KEY_SIZE],
                                     stun_hmac_sha1_fn hmac_sha1)
@@ -211,7 +217,7 @@ int turn_start_allocate(nano_turn_t *turn, const nanortc_crypto_provider_t *cryp
     }
 
     /* Build Allocate Request */
-    if (buf_len < 256) {
+    if (buf_len < NANORTC_TURN_MAX_REQUEST_SIZE) {
         return NANORTC_ERR_BUFFER_TOO_SMALL;
     }
 
@@ -454,7 +460,7 @@ int turn_generate_refresh(nano_turn_t *turn, uint32_t now_ms,
         return NANORTC_ERR_CRYPTO;
     }
 
-    if (buf_len < 256) {
+    if (buf_len < NANORTC_TURN_MAX_REQUEST_SIZE) {
         return NANORTC_ERR_BUFFER_TOO_SMALL;
     }
 
@@ -497,7 +503,7 @@ int turn_deallocate(nano_turn_t *turn, const nanortc_crypto_provider_t *crypto, 
     if (turn->state != NANORTC_TURN_ALLOCATED || !turn->hmac_key_valid) {
         return NANORTC_ERR_STATE;
     }
-    if (buf_len < 256) {
+    if (buf_len < NANORTC_TURN_MAX_REQUEST_SIZE) {
         return NANORTC_ERR_BUFFER_TOO_SMALL;
     }
 
@@ -549,7 +555,7 @@ int turn_create_permission(nano_turn_t *turn, const uint8_t *peer_addr, uint8_t 
     if (turn->state != NANORTC_TURN_ALLOCATED || !turn->hmac_key_valid) {
         return NANORTC_ERR_STATE;
     }
-    if (buf_len < 256) {
+    if (buf_len < NANORTC_TURN_MAX_REQUEST_SIZE) {
         return NANORTC_ERR_BUFFER_TOO_SMALL;
     }
 
@@ -742,7 +748,7 @@ int turn_channel_bind(nano_turn_t *turn, const uint8_t *peer_addr, uint8_t peer_
     }
     memcpy(turn->channels[ci].txid, txid, STUN_TXID_SIZE);
 
-    if (buf_len < 256) {
+    if (buf_len < NANORTC_TURN_MAX_REQUEST_SIZE) {
         return NANORTC_ERR_BUFFER_TOO_SMALL;
     }
 
