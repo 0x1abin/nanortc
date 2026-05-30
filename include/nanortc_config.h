@@ -477,17 +477,23 @@
 #endif
 #endif
 
-/* Scratch used by lazy TURN wrap at nanortc_poll_output() time. Must hold a
- * full TURN-wrapped packet — Send indication adds up to ~48 B (STUN header +
- * XOR-PEER-ADDRESS-IPv6 + DATA attr header + padding) on top of the largest
- * payload the application may transmit. With media transport enabled the
- * largest payload is a max-size SRTP packet (NANORTC_MEDIA_BUF_SIZE), so the
- * default sums those. Without media this just shadows STUN_BUF_SIZE. */
+/* Scratch used by lazy TURN wrap at nanortc_poll_output() time AND by the TURN
+ * request builders in nano_turn.c. Must hold the larger of:
+ *   - a full TURN-wrapped outbound packet: Send indication adds up to ~48 B
+ *     (STUN header + XOR-PEER-ADDRESS-IPv6 + DATA attr header + padding) on top
+ *     of the largest payload the application may transmit; with media transport
+ *     the largest payload is a max-size SRTP packet (NANORTC_MEDIA_BUF_SIZE), so
+ *     the media default sums those; and
+ *   - the largest authenticated TURN request (NANORTC_TURN_MAX_REQUEST_SIZE),
+ *     which dominates in non-media builds where there is no large payload.
+ * The non-media default is therefore the request bound, not a bare 256 — a
+ * server with a large REALM/NONCE would otherwise overflow turn_buf. The
+ * #error below pins the invariant for any user override. */
 #ifndef NANORTC_TURN_BUF_SIZE
 #if NANORTC_HAVE_MEDIA_TRANSPORT
 #define NANORTC_TURN_BUF_SIZE (NANORTC_MEDIA_BUF_SIZE + 48)
 #else
-#define NANORTC_TURN_BUF_SIZE NANORTC_STUN_BUF_SIZE
+#define NANORTC_TURN_BUF_SIZE NANORTC_TURN_MAX_REQUEST_SIZE
 #endif
 #endif
 
@@ -799,6 +805,47 @@ typedef enum {
 /** @brief Maximum TURN nonce length (bytes). */
 #ifndef NANORTC_TURN_NONCE_SIZE
 #define NANORTC_TURN_NONCE_SIZE 128
+#endif
+
+/**
+ * @brief Worst-case authenticated TURN request size (bytes).
+ *
+ * Upper bound for any long-term-credential TURN request the client builds
+ * (RFC 5766/8656). The largest is ChannelBind:
+ *   STUN header + CHANNEL-NUMBER + XOR-PEER-ADDRESS(IPv6)
+ *   + USERNAME + REALM + NONCE + MESSAGE-INTEGRITY.
+ * USERNAME/REALM/NONCE are clamped to their storage maxima on copy-in, so this
+ * is a compile-time upper bound. Each attribute is sized via
+ * NANORTC_STUN_ATTR_WIRE_SIZE so the 4-byte TLV header AND the RFC 8489 §14
+ * 32-bit value padding are both accounted for — budgeting the full storage
+ * SIZE (rather than SIZE-1) and rounding up keeps the bound safe even when a
+ * user overrides NANORTC_TURN_{USERNAME,REALM,NONCE}_SIZE to a value that is
+ * not a multiple of 4. XOR-PEER-ADDRESS IPv6 value is 20 B; MESSAGE-INTEGRITY
+ * is a 20-byte HMAC-SHA1. nano_turn.c's builders reject buffers smaller than
+ * this, and NANORTC_TURN_BUF_SIZE must be >= it (enforced below), so the
+ * builders can never overflow turn_buf even against a server with a large
+ * REALM/NONCE.
+ */
+/* Bytes one STUN attribute occupies on the wire: 4-byte TLV header + value
+ * padded up to a 32-bit boundary (RFC 8489 §14). */
+#ifndef NANORTC_STUN_ATTR_WIRE_SIZE
+#define NANORTC_STUN_ATTR_WIRE_SIZE(vlen) (4u + (((vlen) + 3u) & ~3u))
+#endif
+
+#ifndef NANORTC_TURN_MAX_REQUEST_SIZE
+#define NANORTC_TURN_MAX_REQUEST_SIZE                                                     \
+    ((8u + NANORTC_STUN_TXID_SIZE)                             /* STUN header          */ \
+     + NANORTC_STUN_ATTR_WIRE_SIZE(4)                          /* CHANNEL-NUMBER       */ \
+     + NANORTC_STUN_ATTR_WIRE_SIZE(20)                         /* XOR-PEER-ADDR (IPv6) */ \
+     + NANORTC_STUN_ATTR_WIRE_SIZE(NANORTC_TURN_USERNAME_SIZE) /* USERNAME          */    \
+     + NANORTC_STUN_ATTR_WIRE_SIZE(NANORTC_TURN_REALM_SIZE)    /* REALM             */    \
+     + NANORTC_STUN_ATTR_WIRE_SIZE(NANORTC_TURN_NONCE_SIZE)    /* NONCE             */    \
+     + NANORTC_STUN_ATTR_WIRE_SIZE(20))                        /* MESSAGE-INTEGRITY    */
+#endif
+
+#if NANORTC_FEATURE_TURN && (NANORTC_TURN_BUF_SIZE < NANORTC_TURN_MAX_REQUEST_SIZE)
+#error \
+    "NANORTC_TURN_BUF_SIZE must be >= NANORTC_TURN_MAX_REQUEST_SIZE; the largest authenticated TURN request would otherwise overflow turn_buf"
 #endif
 
 /** @brief Maximum TURN permissions (peer addresses). */

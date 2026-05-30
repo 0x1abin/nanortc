@@ -204,6 +204,26 @@ int nanortc_init(nanortc_t *rtc, const nanortc_config_t *cfg)
     if (!rtc || !cfg) {
         return NANORTC_ERR_INVALID_PARAM;
     }
+    /* Validate the crypto provider's *required* surface up front (the members
+     * crypto/nanortc_crypto.h marks "required"), so a partially-populated
+     * provider fails fast at init instead of crashing on a NULL function
+     * pointer at first DTLS handshake / STUN MESSAGE-INTEGRITY / SRTP use (or
+     * on the nanortc_ice_restart() random_bytes() path). Optional members
+     * (dtls_close_notify, dtls_set_role, and md5 — only for TURN long-term
+     * credentials, already NULL-checked in turn_derive_key) are not required
+     * here. SRTP members are required only when media transport is compiled. */
+    if (!cfg->crypto || !cfg->crypto->random_bytes || !cfg->crypto->hmac_sha1 ||
+        !cfg->crypto->dtls_ctx_new || !cfg->crypto->dtls_set_bio || !cfg->crypto->dtls_handshake ||
+        !cfg->crypto->dtls_encrypt || !cfg->crypto->dtls_decrypt ||
+        !cfg->crypto->dtls_export_keying_material || !cfg->crypto->dtls_get_fingerprint ||
+        !cfg->crypto->dtls_free) {
+        return NANORTC_ERR_INVALID_PARAM;
+    }
+#if NANORTC_HAVE_MEDIA_TRANSPORT
+    if (!cfg->crypto->aes_128_cm || !cfg->crypto->hmac_sha1_80) {
+        return NANORTC_ERR_INVALID_PARAM;
+    }
+#endif
 
     memset(rtc, 0, sizeof(*rtc));
     rtc->config = *cfg;
