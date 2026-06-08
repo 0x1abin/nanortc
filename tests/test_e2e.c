@@ -1167,6 +1167,20 @@ static int e2e_full_connect(nanortc_t *offerer, nanortc_t *answerer)
 {
     e2e_setup_ice_creds(offerer, answerer);
 
+    /* Both peers must advertise the SCTP/datachannel transport (an m=application
+     * line) so the answerer starts its SCTP server side after DTLS rather than
+     * treating the session as media-only (nano_rtc.c: has_datachannel gate).
+     * This mirrors what a real SDP offer/answer negotiation sets on both ends;
+     * e2e_setup_ice_creds wires ICE by hand and skips SDP. */
+    offerer->sdp.has_datachannel = true;
+    answerer->sdp.has_datachannel = true;
+
+    /* Wire the SCTP crypto provider, which the SDP path sets via
+     * rtc_apply_remote_sdp() (nano_rtc_negotiate.c). Without it nsctp_start()
+     * bails (needs crypto for vtag/cookie randomness) and never sends INIT. */
+    offerer->sctp.crypto = offerer->config.crypto;
+    answerer->sctp.crypto = answerer->config.crypto;
+
     uint32_t now_ms = 100;
 
     /* Pump until both reach CONNECTED (SCTP established) */
@@ -1258,6 +1272,101 @@ TEST(test_e2e_multi_channel_create)
     ASSERT_TRUE(str_contains(nanortc_datachannel_get_label(&rtc, (uint16_t)id3), "channel-3"));
 
     nanortc_destroy(&rtc);
+}
+
+/*
+ * E2E F-1 regression: a nanortc OFFERER that creates a DataChannel completes the
+ * DCEP OPEN/ACK handshake against a nanortc ANSWERER over a full
+ * ICE→DTLS→SCTP loopback, and application data then flows offerer→answerer.
+ *
+ * Before the drain-loop guard in nano_rtc.c, the offerer's DCEP OPEN was popped
+ * from dc->out_buf while SCTP was still COOKIE_ECHOED and then rejected by
+ * nsctp_send() (RFC 9260 §5: DATA only after ESTABLISHED) — and lost, because
+ * dc_poll_output() clears has_output unconditionally. The answerer never saw the
+ * channel (channel_count stayed 0) and the offerer's channel stayed OPENING.
+ * This is the first test to exercise nanortc's offerer-initiated DCEP path; the
+ * other datachannel tests fake NANORTC_STATE_CONNECTED.
+ */
+TEST(test_e2e_datachannel_offerer_initiated)
+{
+    nanortc_t offerer, answerer;
+    nanortc_config_t off_cfg = e2e_default_config();
+    off_cfg.role = NANORTC_ROLE_CONTROLLING;
+    ASSERT_OK(nanortc_init(&offerer, &off_cfg));
+    nanortc_config_t ans_cfg = e2e_default_config();
+    ans_cfg.role = NANORTC_ROLE_CONTROLLED;
+    ASSERT_OK(nanortc_init(&answerer, &ans_cfg));
+
+    /* Offerer registers the DataChannel BEFORE connecting (the F-1 path). */
+    int sid = nanortc_create_datachannel(&offerer, "chat", NULL);
+    ASSERT_TRUE(sid >= 0);
+    ASSERT_EQ(offerer.datachannel.channel_count, 1);
+    ASSERT_EQ(offerer.datachannel.channels[0].state, NANORTC_DC_STATE_OPENING);
+
+    /* Drive ICE → DTLS → SCTP to ESTABLISHED on both peers. */
+    ASSERT_OK(e2e_full_connect(&offerer, &answerer));
+
+    /* Let the DCEP OPEN reach the answerer and the ACK return to the offerer. */
+    uint32_t now_ms = 4000;
+    e2e_pump(&offerer, &answerer, now_ms, 30);
+
+    /* Answerer allocated the channel from the inbound DCEP OPEN and ACKed it. */
+    ASSERT_EQ(answerer.datachannel.channel_count, 1);
+    ASSERT_EQ(answerer.datachannel.channels[0].state, NANORTC_DC_STATE_OPEN);
+    /* Offerer received the DCEP ACK: OPENING → OPEN. */
+    ASSERT_EQ(offerer.datachannel.channels[0].state, NANORTC_DC_STATE_OPEN);
+
+    /* The channel is usable: a send now succeeds (not WOULD_BLOCK / STATE). */
+    const char payload[] = "F-1 fixed";
+    ASSERT_OK(nanortc_datachannel_send(&offerer, (uint16_t)sid, payload, sizeof(payload) - 1));
+
+    /* The message is delivered to the answerer as a DATACHANNEL_DATA event.
+     * nanortc_datachannel_send() only queues the SCTP DATA chunk; a timeout tick
+     * flushes it through DTLS. Relay both directions (the answerer's SACK must
+     * reach the offerer) and scan the answerer's outputs for the data event,
+     * which a plain e2e_pump would discard. */
+    nanortc_addr_t loop_src;
+    memset(&loop_src, 0, sizeof(loop_src));
+    loop_src.family = 4;
+    loop_src.addr[0] = 192;
+    loop_src.addr[1] = 168;
+    loop_src.addr[2] = 1;
+    loop_src.addr[3] = 1;
+    loop_src.port = 9999;
+
+    int got_data = 0;
+    for (int round = 0; round < 40 && !got_data; round++) {
+        nanortc_handle_input(&offerer, &(nanortc_input_t){.now_ms = now_ms});
+        nanortc_handle_input(&answerer, &(nanortc_input_t){.now_ms = now_ms});
+
+        nanortc_output_t o;
+        while (nanortc_poll_output(&offerer, &o) == NANORTC_OK) {
+            if (o.type == NANORTC_OUTPUT_TRANSMIT) {
+                nanortc_handle_input(&answerer, &(nanortc_input_t){.now_ms = now_ms,
+                                                                   .data = o.transmit.data,
+                                                                   .len = o.transmit.len,
+                                                                   .src = loop_src});
+            }
+        }
+        nanortc_output_t e;
+        while (nanortc_poll_output(&answerer, &e) == NANORTC_OK) {
+            if (e.type == NANORTC_OUTPUT_EVENT && e.event.type == NANORTC_EV_DATACHANNEL_DATA) {
+                ASSERT_EQ(e.event.datachannel_data.len, sizeof(payload) - 1);
+                ASSERT_EQ(memcmp(e.event.datachannel_data.data, payload, sizeof(payload) - 1), 0);
+                got_data = 1;
+            } else if (e.type == NANORTC_OUTPUT_TRANSMIT) {
+                nanortc_handle_input(&offerer, &(nanortc_input_t){.now_ms = now_ms,
+                                                                  .data = e.transmit.data,
+                                                                  .len = e.transmit.len,
+                                                                  .src = loop_src});
+            }
+        }
+        now_ms += 10;
+    }
+    ASSERT_TRUE(got_data);
+
+    nanortc_destroy(&offerer);
+    nanortc_destroy(&answerer);
 }
 #endif /* NANORTC_FEATURE_DATACHANNEL */
 
@@ -2924,6 +3033,7 @@ RUN(test_e2e_accept_answer_state_guard);
 #if NANORTC_FEATURE_DATACHANNEL
 RUN(test_e2e_datachannel_send_recv);
 RUN(test_e2e_multi_channel_create);
+RUN(test_e2e_datachannel_offerer_initiated);
 #endif
 /* E2E connection lifecycle */
 RUN(test_e2e_full_lifecycle);
