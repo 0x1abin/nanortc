@@ -888,16 +888,27 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
                 /* Drain SCTP output (SACK, handshake) through DTLS */
                 rtc_pump_sctp_through_dtls(rtc, src);
 
-                /* Also drain DC output (DCEP ACK) → SCTP → DTLS */
-                uint8_t dc_buf[NANORTC_DC_OUT_BUF_SIZE];
-                size_t dc_len = 0;
-                uint16_t dc_stream = 0;
-                while (dc_poll_output(&rtc->datachannel, dc_buf, sizeof(dc_buf), &dc_len,
-                                      &dc_stream) == NANORTC_OK &&
-                       dc_len > 0) {
-                    nsctp_send(&rtc->sctp, dc_stream, DCEP_PPID_CONTROL, dc_buf, dc_len);
-                    rtc_pump_sctp_through_dtls(rtc, src);
-                    dc_len = 0;
+                /* Also drain DC output (DCEP OPEN/ACK) → SCTP → DTLS, but ONLY once
+                 * SCTP is ESTABLISHED. dc_poll_output() pops the buffered message and
+                 * clears has_output unconditionally, while nsctp_send() rejects any
+                 * send before the association is up (RFC 9260 §5: DATA chunks only
+                 * after ESTABLISHED). The offerer (SCTP client) runs this loop while
+                 * processing INIT-ACK — i.e. in COOKIE_ECHOED, not yet ESTABLISHED —
+                 * so an unguarded drain pops the offerer-created DCEP OPEN and then
+                 * drops it, losing it forever (F-1). The COOKIE-ACK that establishes
+                 * the association is itself handled in this same app_data loop, so the
+                 * still-queued OPEN drains in the same pass once the state flips. */
+                if (rtc->sctp.state == NANORTC_SCTP_STATE_ESTABLISHED) {
+                    uint8_t dc_buf[NANORTC_DC_OUT_BUF_SIZE];
+                    size_t dc_len = 0;
+                    uint16_t dc_stream = 0;
+                    while (dc_poll_output(&rtc->datachannel, dc_buf, sizeof(dc_buf), &dc_len,
+                                          &dc_stream) == NANORTC_OK &&
+                           dc_len > 0) {
+                        nsctp_send(&rtc->sctp, dc_stream, DCEP_PPID_CONTROL, dc_buf, dc_len);
+                        rtc_pump_sctp_through_dtls(rtc, src);
+                        dc_len = 0;
+                    }
                 }
 
                 app_len = 0;
