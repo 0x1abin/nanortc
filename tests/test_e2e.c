@@ -1859,6 +1859,150 @@ TEST(test_e2e_h265_loopback)
     nanortc_destroy(&answerer);
 }
 #endif /* NANORTC_FEATURE_H265 */
+
+/*
+ * E2E: per-frame atomic admission on nanortc_send_video().
+ *
+ * A frame either ships whole or is rejected before anything is enqueued —
+ * the pre-guard behavior (enqueue until the queue fills, abandon the rest)
+ * put truncated frames on the wire, guaranteeing receiver loss → PLI →
+ * keyframe storms (the embedded-camera stutter loop). Verifies:
+ *   - a frame larger than min(OUT_QUEUE, PKT_RING) packets is rejected
+ *     with BUFFER_TOO_SMALL and enqueues nothing;
+ *   - a frame that fits an empty queue but not the residual free space is
+ *     rejected with WOULD_BLOCK and enqueues nothing;
+ *   - after draining via nanortc_poll_output() the same frame is accepted;
+ *   - nanortc_output_free_slots() tracks the queue depth across all of it.
+ */
+#define E2E_ADMISSION_CAP                                                                          \
+    ((NANORTC_VIDEO_PKT_RING_SIZE < NANORTC_OUT_QUEUE_SIZE) ? NANORTC_VIDEO_PKT_RING_SIZE         \
+                                                            : NANORTC_OUT_QUEUE_SIZE)
+
+/* 4-byte start code + NAL header + worst-case payload for CAP+1 fragments. */
+static uint8_t g_admission_frame[5 + (size_t)(NANORTC_VIDEO_MTU - 2) * (E2E_ADMISSION_CAP + 1) +
+                                 16];
+
+TEST(test_e2e_video_send_admission)
+{
+    nanortc_t offerer, answerer;
+
+    nanortc_config_t off_cfg = e2e_default_config();
+    off_cfg.role = NANORTC_ROLE_CONTROLLING;
+    ASSERT_OK(nanortc_init(&offerer, &off_cfg));
+
+    nanortc_config_t ans_cfg = e2e_default_config();
+    ans_cfg.role = NANORTC_ROLE_CONTROLLED;
+    ASSERT_OK(nanortc_init(&answerer, &ans_cfg));
+
+    ASSERT_OK(nanortc_add_local_candidate(&offerer, "192.168.1.1", 4000));
+    ASSERT_OK(nanortc_add_local_candidate(&answerer, "192.168.1.2", 5000));
+
+    int off_mid = nanortc_add_video_track(&offerer, NANORTC_DIR_SENDONLY, NANORTC_CODEC_H264);
+    ASSERT_TRUE(off_mid >= 0);
+    int ans_mid = nanortc_add_video_track(&answerer, NANORTC_DIR_RECVONLY, NANORTC_CODEC_H264);
+    ASSERT_TRUE(ans_mid >= 0);
+
+    char offer[4096];
+    size_t offer_len = 0;
+    ASSERT_OK(nanortc_create_offer(&offerer, offer, sizeof(offer), &offer_len));
+    offer[offer_len] = '\0';
+
+    char answer[4096];
+    size_t answer_len = 0;
+    ASSERT_OK(nanortc_accept_offer(&answerer, offer, answer, sizeof(answer), &answer_len));
+    answer[answer_len] = '\0';
+
+    ASSERT_OK(nanortc_accept_answer(&offerer, answer));
+
+    /* Mirror test_e2e_h265_loopback: arm answerer's remote candidate to the
+     * loopback source the e2e_relay helper rewrites onto every packet. */
+    answerer.ice.remote_candidates[0].family = 4;
+    answerer.ice.remote_candidates[0].addr[0] = 192;
+    answerer.ice.remote_candidates[0].addr[1] = 168;
+    answerer.ice.remote_candidates[0].addr[2] = 1;
+    answerer.ice.remote_candidates[0].addr[3] = 1;
+    answerer.ice.remote_candidates[0].port = 9999;
+    answerer.ice.remote_candidate_count = 1;
+
+    uint32_t now_ms = 100;
+    ASSERT_OK(nanortc_handle_input(&offerer, &(nanortc_input_t){.now_ms = now_ms}));
+    int connected = 0;
+    for (int round = 0; round < 30; round++) {
+        e2e_pump(&offerer, &answerer, now_ms, 5);
+        if (offerer.state >= NANORTC_STATE_DTLS_CONNECTED &&
+            answerer.state >= NANORTC_STATE_DTLS_CONNECTED && offerer.srtp.ready &&
+            answerer.srtp.ready) {
+            connected = 1;
+            break;
+        }
+    }
+    ASSERT_TRUE(connected);
+
+    /* Drain handshake leftovers so the queue starts empty. */
+    {
+        nanortc_output_t d;
+        while (nanortc_poll_output(&offerer, &d) == NANORTC_OK) {
+        }
+    }
+    ASSERT_EQ(nanortc_output_free_slots(&offerer), (uint16_t)NANORTC_OUT_QUEUE_SIZE);
+
+    const size_t cap = (size_t)E2E_ADMISSION_CAP;
+    const size_t per = (size_t)NANORTC_VIDEO_MTU - 2; /* FU-A payload bytes per fragment */
+
+    /* Frame A: fragments into exactly cap*3/4 packets — fits an empty
+     * queue, but two back-to-back un-drained sends exceed the capacity. */
+    const size_t fit_packets = cap * 3 / 4;
+    const size_t nal_len_a = (fit_packets - 1) * per + 10 + 1; /* +1 NAL header byte */
+    const size_t frame_len_a = 4 + nal_len_a;
+
+    memset(g_admission_frame, 0xAB, sizeof(g_admission_frame));
+    g_admission_frame[0] = 0x00;
+    g_admission_frame[1] = 0x00;
+    g_admission_frame[2] = 0x00;
+    g_admission_frame[3] = 0x01;
+    g_admission_frame[4] = 0x65; /* IDR slice, NRI=3 */
+
+    ASSERT_OK(nanortc_send_video(&offerer, (uint8_t)off_mid, 0, g_admission_frame, frame_len_a));
+    ASSERT_EQ(nanortc_output_free_slots(&offerer),
+              (uint16_t)(NANORTC_OUT_QUEUE_SIZE - fit_packets));
+
+    /* Second frame without draining: residual space is too small. The
+     * rejected call must not consume a single slot. */
+    ASSERT_EQ(nanortc_send_video(&offerer, (uint8_t)off_mid, 33, g_admission_frame, frame_len_a),
+              NANORTC_ERR_WOULD_BLOCK);
+    ASSERT_EQ(nanortc_output_free_slots(&offerer),
+              (uint16_t)(NANORTC_OUT_QUEUE_SIZE - fit_packets));
+
+    /* Drain, then the same frame is admitted. */
+    {
+        nanortc_output_t d;
+        while (nanortc_poll_output(&offerer, &d) == NANORTC_OK) {
+        }
+    }
+    ASSERT_EQ(nanortc_output_free_slots(&offerer), (uint16_t)NANORTC_OUT_QUEUE_SIZE);
+    ASSERT_OK(nanortc_send_video(&offerer, (uint8_t)off_mid, 33, g_admission_frame, frame_len_a));
+    {
+        nanortc_output_t d;
+        while (nanortc_poll_output(&offerer, &d) == NANORTC_OK) {
+        }
+    }
+
+    /* Frame B: fragments into cap+1 packets — permanently over capacity,
+     * rejected even with an empty queue, nothing enqueued. */
+    const size_t nal_len_b = cap * per + 10 + 1;
+    const size_t frame_len_b = 4 + nal_len_b;
+    ASSERT_EQ(nanortc_send_video(&offerer, (uint8_t)off_mid, 66, g_admission_frame, frame_len_b),
+              NANORTC_ERR_BUFFER_TOO_SMALL);
+    ASSERT_EQ(nanortc_output_free_slots(&offerer), (uint16_t)NANORTC_OUT_QUEUE_SIZE);
+
+    /* No pkt_ring aliasing fired anywhere above. */
+    ASSERT_EQ(offerer.stats_pkt_ring_overrun, 0u);
+    ASSERT_EQ(offerer.stats_tx_queue_full, 0u);
+
+    (void)ans_mid;
+    nanortc_destroy(&offerer);
+    nanortc_destroy(&answerer);
+}
 #endif /* NANORTC_FEATURE_VIDEO */
 
 TEST(test_e2e_connected_event_has_mids)
@@ -3054,6 +3198,7 @@ RUN(test_e2e_send_video_before_connected);
 #if NANORTC_FEATURE_H265
 RUN(test_e2e_h265_loopback);
 #endif
+RUN(test_e2e_video_send_admission);
 #endif
 RUN(test_e2e_connected_event_has_mids);
 RUN(test_e2e_request_keyframe_bad_params);

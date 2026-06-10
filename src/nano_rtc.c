@@ -447,6 +447,18 @@ int nanortc_next_timeout_ms(const nanortc_t *rtc, uint32_t now_ms, uint32_t *out
     return NANORTC_OK;
 }
 
+uint16_t nanortc_output_free_slots(const nanortc_t *rtc)
+{
+    if (!rtc) {
+        return 0;
+    }
+    uint16_t used = (uint16_t)(rtc->out_tail - rtc->out_head);
+    if (used >= NANORTC_OUT_QUEUE_SIZE) {
+        return 0;
+    }
+    return (uint16_t)(NANORTC_OUT_QUEUE_SIZE - used);
+}
+
 /* Init DTLS (if needed) and begin handshake after ICE connects.
  * State is only advanced to DTLS_HANDSHAKING after dtls_start() succeeds.
  * On failure, state remains at ICE_CONNECTED so the caller can retry

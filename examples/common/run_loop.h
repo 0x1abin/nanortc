@@ -28,6 +28,14 @@ typedef struct nano_run_loop {
     nano_event_cb event_cb;
     void *event_userdata;
     uint32_t max_poll_ms; /* max select timeout (0 = default 100ms) */
+
+    /* Socket-layer send health. sendto() can fail transiently when the
+     * stack's TX buffers are exhausted (lwIP: ENOMEM on WiFi TX / pbuf
+     * starvation; POSIX: ENOBUFS/EWOULDBLOCK). Each failure used to be an
+     * invisible drop; now it is retried briefly and counted either way so
+     * bench runs can tell socket starvation apart from queue overflow. */
+    uint32_t stats_send_retry; /* transient failure, retried */
+    uint32_t stats_send_drop;  /* gave up after retries (packet lost) */
 } nano_run_loop_t;
 
 /* Initialize: bind a single UDP socket on INADDR_ANY, associate with nanortc_t.
@@ -45,6 +53,12 @@ void nano_run_loop_set_event_cb(nano_run_loop_t *loop,
 
 /* Run one iteration: poll_output → sendto, select → handle_receive/timeout */
 int nano_run_loop_step(nano_run_loop_t *loop);
+
+/* Drain all pending outputs onto the wire without selecting/receiving.
+ * Use before retrying a nanortc_send_video() that returned
+ * NANORTC_ERR_WOULD_BLOCK: frees output-queue slots so the whole frame
+ * can be admitted atomically. */
+void nano_run_loop_drain(nano_run_loop_t *loop);
 
 /* Block until disconnected or error */
 int nano_run_loop_run(nano_run_loop_t *loop);

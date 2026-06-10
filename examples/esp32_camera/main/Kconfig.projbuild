@@ -33,10 +33,15 @@ menu "ESP32 Camera Example"
         range 256 8192
         help
             Target bitrate for H264 hardware encoder in kilobits per second.
-            Default sized for 1080p hardware encode on ESP32-P4 with the
-            32-slot dispatch / pkt_ring on the nanortc side; lower targets
-            (≤1024) make P-frames small enough that the rings rarely sit
-            near full, but starve detail in moving scenes.
+            This is the CEILING: at runtime the BWE→encoder loop lowers the
+            actual encode rate to the link's estimated capacity (see
+            NANORTC_EV_BITRATE_ESTIMATE handling in main.c), so prefer
+            sizing this to the encoder's comfortable maximum rather than to
+            the network. Frame-size budget: every frame must fragment into
+            fewer RTP packets than min(NANORTC_OUT_QUEUE_SIZE,
+            NANORTC_VIDEO_PKT_RING_SIZE) or nanortc_send_video() rejects it
+            — with the 64/64 defaults that is ~75 KB per frame, far above
+            what 2048 kbps produces (IDR ≈ 60 KB worst case at 1080p).
 
     config EXAMPLE_H264_GOP
         int "H264 GOP size (keyframe interval in frames)"
@@ -45,5 +50,10 @@ menu "ESP32 Camera Example"
         help
             Group of Pictures size. An IDR keyframe is generated every
             GOP frames. At 25fps, GOP=50 means a keyframe every 2 seconds.
+            IDRs are the largest frames the sender ships (5-10× a P-frame),
+            so a larger GOP (e.g. 120) halves keyframe burst frequency —
+            safe because PLI feedback still forces an IDR on demand when
+            the receiver actually loses reference (debounced to 1/s in
+            main.c).
 
 endmenu
