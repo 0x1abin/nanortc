@@ -1,5 +1,7 @@
 # NanoRTC
 
+English | [简体中文](README.zh-CN.md)
+
 A Sans I/O, pure C WebRTC implementation for RTOS and embedded systems.
 
 > **AI-native implementation**: Every line of code in this repository — library source, tests, build system, CI, documentation, and examples — is written by AI coding agents. Humans steer architecture and verify correctness; agents execute. See [How this project is built](#how-this-project-is-built) for details.
@@ -43,10 +45,10 @@ Any combination works — audio without DataChannel, video without audio, etc.
 - **DTLS 1.2** — Via pluggable crypto provider (mbedtls or OpenSSL)
 - **SCTP** — Minimal subset for WebRTC DataChannels (reliable + unreliable)
 - **DataChannel** — DCEP protocol, reliable and unreliable modes
-- **RTP/RTCP/SRTP** — Audio and video media transport, H.264 FU-A packetization
+- **RTP/RTCP/SRTP** — Audio and video media transport, H.264 FU-A and H.265 (RFC 7798) packetization
 - **SDP** — Offer/answer negotiation, multi-track media
 - **NAT traversal** — STUN server-reflexive discovery + TURN relay client (optional, `NANORTC_FEATURE_TURN`)
-- **Bandwidth estimation** — REMB-based receiver BWE for adaptive video
+- **Bandwidth estimation** — REMB + TWCC loss-aware receiver BWE for adaptive video
 - **Single external dependency** — Only mbedtls (built-in on ESP-IDF, Zephyr, RT-Thread, STM32)
 
 ## Quick Start
@@ -176,7 +178,7 @@ The repository structure itself is designed for agent legibility: [AGENTS.md](AG
 
 ## Contributing
 
-NanoRTC is in active development. The core protocol stack — DataChannel, Audio, Video/H.264, ICE+STUN+TURN with RFC 8445 compliance, SRTP, and TWCC/BWE perception — is code-complete and interop-verified against libdatachannel and Chromium. Phase 8 continued-optimization and Phase 3.5 H.265 are in flight; see [docs/PLANS.md](docs/PLANS.md) for current phase status. All 18 library modules at A grade — fuzz-tested, browser-verified, libdatachannel-interop-verified, 80%+ coverage.
+NanoRTC is in active development. The core protocol stack — DataChannel, Audio, Video/H.264/H.265, ICE+STUN+TURN with RFC 8445 compliance, SRTP, and TWCC/BWE perception — is code-complete and interop-verified against libdatachannel and Chromium. Phase 8 continued-optimization and Phase 9 BWE-perception work are in flight; see [docs/PLANS.md](docs/PLANS.md) for current phase status. All 22 library modules at A grade — fuzz-tested, browser-verified, libdatachannel-interop-verified, 80%+ coverage.
 
 Contributions welcome. Please read [AGENTS.md](AGENTS.md) for build instructions and mandatory rules before submitting changes.
 
