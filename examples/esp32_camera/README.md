@@ -123,11 +123,49 @@ Adjustable via `idf.py menuconfig` → "ESP32 Camera Example":
 
 The ESP32-P4-Nano board overrides resolution to 1920x1080 in `sdkconfig.defaults.esp32p4`.
 
+### Streaming health & sizing
+
+The pipeline is sized so a worst-case keyframe ships whole. Every frame
+must fragment into fewer RTP packets than
+`min(NANORTC_OUT_QUEUE_SIZE, NANORTC_VIDEO_PKT_RING_SIZE)`
+(`ceil(frame_bytes / 1200)` packets; both default to **64** here →
+budget ≈ 75 KB/frame, covering ~60 KB 1080p IDRs). Undersized rings no
+longer corrupt or truncate frames — `nanortc_send_video()` rejects the
+frame up front and `main.c` drains + retries.
+
+The encoder bitrate is *adaptive*: `EXAMPLE_H264_BITRATE_KBPS` is the
+ceiling, and the BWE→encoder loop (`NANORTC_EV_BITRATE_ESTIMATE` →
+`bwe_coordinator` → `encoder_set_bitrate`) lowers the encode rate to the
+link's estimated capacity under congestion and ramps back up afterwards.
+
+Diagnostics — `GET /debug` and the 5 s `video ...` log line expose:
+
+| Counter | Meaning when non-zero |
+|---------|----------------------|
+| `tx_full`, `pkt_overrun` | Output queue/ring overflow — should stay 0 with 64/64 |
+| `send_err (kf=...)` | Frames rejected even after drain+retry — sender overloaded |
+| `frame_drop` | Camera outpaced the webrtc task — frames dropped pre-send |
+| `sock_retry`, `sock_drop` | UDP `sendto` hit TX-buffer exhaustion (lwIP `ENOMEM`) |
+| `est`/`applied`/`send` kbps | BWE estimate vs. encoder target vs. actual wire rate |
+
+A healthy motion run keeps every error counter at 0 and `applied`
+tracking `est`. To reproduce stutter conditions: stream a high-motion
+scene and watch which counter moves first — that is the bottleneck tier.
+
+WiFi targets (this board is Ethernet): also set
+`CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=64` so an IDR burst (~50
+datagrams) fits the driver's TX pool — lwIP UDP ignores `SO_SNDBUF`, the
+WiFi TX buffer count is the real knob — and keep power save off
+(`esp_wifi_set_ps(WIFI_PS_NONE)`, already wired in `main.c` behind
+`CONFIG_EXAMPLE_CONNECT_WIFI`); modem sleep adds periodic 100–300 ms
+latency spikes that read as rhythmic stutter.
+
 ## Keyframe Handling
 
 - **Periodic IDR**: Every GOP frames
 - **IDR on connect**: Forced immediately on WebRTC connection
-- **PLI response**: Browser RTCP PLI → `NANORTC_EV_KEYFRAME_REQUEST` → encoder IDR
+- **PLI response**: Browser RTCP PLI → `NANORTC_EV_KEYFRAME_REQUEST` → encoder IDR, debounced to at most one forced IDR per second (IDRs are the largest frames, so answering every PLI 1:1 re-triggers the congestion that caused the PLI)
+- **Local frame drop**: queue-full drops also request a debounced IDR to re-anchor the reference chain without waiting for the receiver's PLI round-trip
 
 ## File Structure
 

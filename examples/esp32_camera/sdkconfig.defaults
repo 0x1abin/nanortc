@@ -32,14 +32,20 @@ CONFIG_NANORTC_FEATURE_VIDEO=y
 CONFIG_NANORTC_FEATURE_AUDIO=y
 # CONFIG_NANORTC_FEATURE_DATACHANNEL is not set
 
-# Output queue: video FU-A fragments (~40 per IDR) + audio RTP packets (50/sec).
+# Output queue + NACK retransmit ring: sized so a worst-case IDR ships whole.
 # Phase 10 PR-2 swept 16/16 and 32/16 on a 1080p H.264 + Opus bench; both
 # triggered "tx queue full, dropping output" + visible freezes once the
 # camera saw real scene motion (12-15 KB P-frames → 11-13 FU-A fragments
 # per call leaves no headroom under FreeRTOS scheduling jitter). 32/32
-# is the practical floor for this profile; pkt_ring inherits OUT_QUEUE
-# unless overridden.
-CONFIG_NANORTC_OUT_QUEUE_SIZE=32
+# survived P-frames but still truncated large IDRs: a 60 KB IDR fragments
+# into ~50 packets > 32 slots, so EVERY large keyframe was cut mid-frame →
+# receiver loss → PLI → new (bigger) IDR → repeat. Sizing rule
+# (docs/engineering/memory-profiles.md): SIZE >= ceil(max_frame/1200) + 1
+# → 64 covers IDRs up to ~75 KB. Cost: pkt_ring 64 × 1280 B = 80 KB.
+# nanortc_send_video() now rejects frames that exceed free slots with
+# NANORTC_ERR_WOULD_BLOCK instead of truncating (see include/nanortc.h).
+CONFIG_NANORTC_OUT_QUEUE_SIZE=64
+CONFIG_NANORTC_VIDEO_PKT_RING_SIZE=64
 
 # Media buffer: RTP header (12) + MTU payload (1200) + SRTP tag (10)
 CONFIG_NANORTC_MEDIA_BUF_SIZE=1280

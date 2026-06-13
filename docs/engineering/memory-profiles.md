@@ -118,9 +118,16 @@ resolutions).
 FU-A fragment of a single access unit before returning to the caller —
 the application has no opportunity to drain in between. Wrapping
 `pkt_ring_tail` while earlier-fragment pointers are still pending in
-`out_queue` silently overwrites their backing buffers; the receiver sees
-the newer fragment's bytes carrying the older fragment's RTP sequence
-number, and decoders typically present this as glitched IDRs.
+`out_queue` would silently overwrite their backing buffers, so
+`nanortc_send_video()` enforces the bound atomically up front: a frame
+whose worst-case packet count exceeds
+`min(NANORTC_OUT_QUEUE_SIZE, NANORTC_VIDEO_PKT_RING_SIZE)` is rejected
+whole with `NANORTC_ERR_BUFFER_TOO_SMALL` (can never fit — shrink the
+encoder's frames or grow the rings), and a frame that merely exceeds the
+*currently free* slots returns `NANORTC_ERR_WOULD_BLOCK` (drain via
+`nanortc_poll_output()` — `nanortc_output_free_slots()` tells you when —
+and retry). Truncated frames and ring aliasing no longer reach the wire;
+under-sizing instead surfaces as rejected keyframes.
 
 Therefore:
 

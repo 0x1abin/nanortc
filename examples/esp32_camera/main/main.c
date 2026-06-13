@@ -12,7 +12,11 @@
  * Architecture:
  *   camera_task    (core 1, pri 6): camera grab -> H264 encode -> frame queue
  *   microphone_task(core 0, pri 7): poll esp_capture for Opus frames -> mic queue
- *   webrtc_task    (core 0, pri 5): nanortc run loop -> dequeue -> RTP send
+ *   webrtc_task    (core 0, pri 8): nanortc run loop -> dequeue -> RTP send
+ *
+ * webrtc_task outranks the mic task: a preempted RTP dispatch loop is what
+ * lets the output queue back up under multi-fragment video bursts. lwIP
+ * (18) and WiFi (23) still outrank everything here.
  *
  * Build: cd examples/esp32_camera && idf.py set-target esp32p4 && idf.py build
  * Flash: idf.py flash monitor
@@ -34,6 +38,9 @@
 #include "nvs_flash.h"
 #include "esp_http_server.h"
 #include "protocol_examples_common.h"
+#if CONFIG_EXAMPLE_CONNECT_WIFI
+#include "esp_wifi.h"
+#endif
 
 #include "esp_board_device.h"
 #include "esp_board_periph.h"
@@ -44,6 +51,7 @@
 #include "nanortc_crypto.h"
 #include "run_loop.h"
 #include "webserver.h"
+#include "bwe_coordinator.h"
 
 #include "camera.h"
 #include "encoder.h"
@@ -74,6 +82,12 @@ extern const uint8_t index_html_end[] asm("_binary_index_html_end");
 static volatile uint32_t s_step_count;
 static volatile uint32_t s_task_alive;
 
+/* Video-path health counters (sampled via /debug + the 5 s stats line). */
+static volatile uint32_t s_vid_send_err;    /* nanortc_send_video failures (after retry) */
+static volatile uint32_t s_vid_send_err_kf; /* ... of which were keyframes */
+static volatile uint32_t s_frame_drop;      /* frames dropped before send (queue policy) */
+static volatile uint32_t s_kf_max_bytes;    /* largest IDR seen this session */
+
 /* Task handles for stack high-water-mark monitoring */
 static TaskHandle_t s_webrtc_handle;
 static TaskHandle_t s_mic_handle;
@@ -98,10 +112,68 @@ typedef struct {
     uint8_t *data;
     size_t len;
     uint32_t pts_ms;
+    bool is_keyframe;
 } frame_msg_t;
 
 #define FRAME_QUEUE_DEPTH 2
 static QueueHandle_t s_frame_queue;
+
+/* ----------------------------------------------------------------
+ * Forced-IDR debounce
+ *
+ * PLI storms (and local frame drops) must not turn into IDR storms:
+ * IDRs are exactly the frames big enough to stress the output queue,
+ * so answering every PLI with a fresh IDR re-triggers the loss that
+ * caused the PLI. One forced IDR per second is plenty for recovery.
+ * ---------------------------------------------------------------- */
+#define IDR_FORCE_MIN_INTERVAL_MS 1000
+static volatile uint32_t s_last_idr_force_ms;
+
+static void request_keyframe_debounced(void)
+{
+    uint32_t now = nano_get_millis();
+    uint32_t last = s_last_idr_force_ms;
+    if (last != 0 && (uint32_t)(now - last) < IDR_FORCE_MIN_INTERVAL_MS) {
+        return;
+    }
+    s_last_idr_force_ms = now;
+    encoder_request_keyframe();
+}
+
+/* ----------------------------------------------------------------
+ * BWE → encoder closed loop
+ *
+ * The library's TWCC/REMB loss-based estimator only reports; driving
+ * the hardware encoder's rate control is the application's job. Without
+ * this loop the encoder pushes its configured bitrate into a congested
+ * link forever and the stream degrades into a PLI/freeze cycle.
+ * Single viewer → the aggregate estimate is just this session's.
+ * ---------------------------------------------------------------- */
+#define BWE_APPLY_INTERVAL_MS 1000
+#define BWE_APPLY_DAMPEN_PCT  5
+
+static bwe_coordinator_t s_bwe;
+
+static int camera_bwe_apply(uint32_t new_bps, void *ctx)
+{
+    (void)ctx;
+    /* encoder_set_bitrate takes kbps and multiplies by 1024 internally —
+     * mirror that convention when converting down from bps. */
+    encoder_set_bitrate(new_bps / 1024);
+    return 0;
+}
+
+static void apply_bwe_estimate(void)
+{
+    uint32_t est = nanortc_get_estimated_bitrate(&s_rtc);
+    if (est == 0) {
+        return;
+    }
+    int rc = bwe_coordinator_try_apply(&s_bwe, est, 1, nano_get_millis());
+    if (rc == BWE_APPLY_OK) {
+        ESP_LOGI(TAG, "[bwe] encoder target -> %lu kbps", (unsigned long)(est / 1024));
+    }
+}
 
 /* ----------------------------------------------------------------
  * nanortc event callback
@@ -120,12 +192,22 @@ static void on_event(nanortc_t *rtc, const nanortc_event_t *evt, void *userdata)
     case NANORTC_EV_CONNECTED:
         ESP_LOGI(TAG, "Connected — starting audio+video stream");
         s_connected = 1;
+        s_last_idr_force_ms = nano_get_millis();
         encoder_request_keyframe();
         break;
 
     case NANORTC_EV_KEYFRAME_REQUEST:
         ESP_LOGI(TAG, "Keyframe requested (mid=%d)", evt->keyframe_request.mid);
-        encoder_request_keyframe();
+        request_keyframe_debounced();
+        break;
+
+    case NANORTC_EV_BITRATE_ESTIMATE:
+        ESP_LOGI(TAG, "BWE %s via %s: %lu kbps (was %lu kbps)",
+                 bwe_dir_str(evt->bitrate_estimate.direction),
+                 bwe_src_str(evt->bitrate_estimate.source),
+                 (unsigned long)(evt->bitrate_estimate.bitrate_bps / 1024),
+                 (unsigned long)(evt->bitrate_estimate.prev_bitrate_bps / 1024));
+        apply_bwe_estimate();
         break;
 
     case NANORTC_EV_DISCONNECTED:
@@ -157,6 +239,12 @@ static int setup_camera_tracks(nanortc_t *rtc, void *userdata)
         ESP_LOGE(TAG, "nanortc_add_video_track failed: %d", s_video_mid);
         return s_video_mid;
     }
+
+    /* Clamp BWE to what the hardware encoder is configured to deliver and
+     * seed the initial estimate, so pre-feedback packets go out at a sane
+     * rate and the estimator never suggests an unreachable ceiling. */
+    nanortc_set_bitrate_bounds(rtc, 300000, (uint32_t)CONFIG_EXAMPLE_H264_BITRATE_KBPS * 1024);
+    nanortc_set_initial_bitrate(rtc, (uint32_t)CONFIG_EXAMPLE_H264_BITRATE_KBPS * 1024);
     return 0;
 }
 
@@ -179,6 +267,16 @@ static int handle_offer(const char *offer, char *answer, size_t answer_size, siz
     while (xQueueReceive(s_mic_queue, &mic_stale, 0) == pdTRUE) {
         free(mic_stale.data);
     }
+
+    /* Fresh session: reset the BWE apply state (a stale applied_bps from a
+     * dead session would dampen-reject the first new estimate) and the
+     * per-session health counters. */
+    bwe_coordinator_reset(&s_bwe);
+    s_last_idr_force_ms = 0;
+    s_vid_send_err = 0;
+    s_vid_send_err_kf = 0;
+    s_frame_drop = 0;
+    s_kf_max_bytes = 0;
 
     nanortc_config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
@@ -224,7 +322,7 @@ static int handle_offer(const char *offer, char *answer, size_t answer_size, siz
  * ---------------------------------------------------------------- */
 static esp_err_t http_get_debug(httpd_req_t *req)
 {
-    char buf[768];
+    char buf[1024];
     /* PR-2 lifetime audit signals — exposed over HTTP so the bench operator
      * can sample them without a working serial monitor. */
     uint32_t pkt_overrun = __atomic_load_n(&s_rtc.stats_pkt_ring_overrun, __ATOMIC_RELAXED);
@@ -236,18 +334,33 @@ static esp_err_t http_get_debug(httpd_req_t *req)
 #else
     uint32_t wrap_drop = 0, via_turn = 0, direct = 0;
 #endif
+    nanortc_track_stats_t vstats;
+    memset(&vstats, 0, sizeof(vstats));
+    if (s_connected && s_video_mid >= 0) {
+        nanortc_get_track_stats(&s_rtc, (uint8_t)s_video_mid, &vstats);
+    }
     int n = snprintf(buf, sizeof(buf),
                      "running=%d fd=%d connected=%d video_mid=%d mic_mid=%d\n"
                      "ice.remote_candidates=%d ice.state=%d\n"
                      "state=%d steps=%lu alive=%lu\n"
                      "lifetime out_q=%u/%u pkt_overrun=%lu wrap_drop=%lu tx_full=%lu "
-                     "via_turn=%lu direct=%lu\n",
+                     "via_turn=%lu direct=%lu\n"
+                     "video send_err=%lu (kf=%lu) frame_drop=%lu kf_max=%lu B\n"
+                     "sock send_retry=%lu send_drop=%lu\n"
+                     "bwe est=%lu kbps applied=%lu kbps send=%lu kbps lost=%u/255\n",
                      s_loop.running, s_loop.fds[0], (int)s_connected, s_video_mid, s_mic_mid,
                      s_rtc.ice.remote_candidate_count, s_rtc.ice.state, s_rtc.state,
                      (unsigned long)s_step_count, (unsigned long)s_task_alive,
                      (unsigned)(s_rtc.out_tail - s_rtc.out_head), (unsigned)NANORTC_OUT_QUEUE_SIZE,
                      (unsigned long)pkt_overrun, (unsigned long)wrap_drop,
-                     (unsigned long)tx_full, (unsigned long)via_turn, (unsigned long)direct);
+                     (unsigned long)tx_full, (unsigned long)via_turn, (unsigned long)direct,
+                     (unsigned long)s_vid_send_err, (unsigned long)s_vid_send_err_kf,
+                     (unsigned long)s_frame_drop, (unsigned long)s_kf_max_bytes,
+                     (unsigned long)s_loop.stats_send_retry, (unsigned long)s_loop.stats_send_drop,
+                     (unsigned long)(vstats.estimated_bitrate_bps / 1024),
+                     (unsigned long)(s_bwe.applied_bps / 1024),
+                     (unsigned long)(vstats.send_bitrate_bps / 1024),
+                     (unsigned)vstats.fraction_lost);
     httpd_resp_set_type(req, "text/plain");
     httpd_resp_send(req, buf, n);
     return ESP_OK;
@@ -331,9 +444,29 @@ static void camera_task(void *arg)
             .data = copy,
             .len = h264_len,
             .pts_ms = (uint32_t)(esp_timer_get_time() / 1000),
+            .is_keyframe = is_keyframe,
         };
-        if (xQueueSend(s_frame_queue, &msg, pdMS_TO_TICKS(50)) != pdTRUE) {
-            heap_caps_free(copy);
+        if (xQueueSend(s_frame_queue, &msg, 0) != pdTRUE) {
+            /* Queue full — webrtc_task is behind. Drop the OLDEST frame so
+             * latency stays bounded and the freshest frame ships (blocking
+             * here for 50 ms only deepened the backlog). Any local drop
+             * breaks the H264 reference chain, so re-anchor with a
+             * debounced IDR request instead of waiting for the receiver's
+             * PLI round-trip. */
+            frame_msg_t old;
+            if (xQueueReceive(s_frame_queue, &old, 0) == pdTRUE) {
+                heap_caps_free(old.data);
+                s_frame_drop++;
+            }
+            bool enqueued = (xQueueSend(s_frame_queue, &msg, 0) == pdTRUE);
+            if (!enqueued) {
+                heap_caps_free(msg.data); /* still full (race) — drop new */
+                s_frame_drop++;
+            }
+            /* A keyframe that made it in re-anchors the chain by itself. */
+            if (!enqueued || !msg.is_keyframe) {
+                request_keyframe_debounced();
+            }
         }
     }
 }
@@ -397,11 +530,46 @@ static void webrtc_task(void *arg)
             nano_run_loop_step(&s_loop);
             s_step_count++;
 
-            /* Send pending video frames */
+            /* Send at most ONE video frame per loop step, so every
+             * multi-fragment burst is followed by a full dispatch pass.
+             * Phase 10 found back-to-back sends under FreeRTOS scheduling
+             * jitter are what overflow the output queue; at 30 fps
+             * (33 ms/frame) one frame per ≤20 ms step still keeps up. */
             frame_msg_t msg;
-            while (xQueueReceive(s_frame_queue, &msg, 0) == pdTRUE) {
+            if (xQueueReceive(s_frame_queue, &msg, 0) == pdTRUE) {
                 if (s_connected) {
-                    nanortc_send_video(&s_rtc, (uint8_t)s_video_mid, msg.pts_ms, msg.data, msg.len);
+                    int rc = nanortc_send_video(&s_rtc, (uint8_t)s_video_mid, msg.pts_ms, msg.data,
+                                                msg.len);
+                    if (rc == NANORTC_ERR_WOULD_BLOCK) {
+                        /* Flush pending packets onto the wire and retry
+                         * once. Admission is atomic: the retry either ships
+                         * the whole frame or rejects it again untouched. */
+                        nano_run_loop_drain(&s_loop);
+                        rc = nanortc_send_video(&s_rtc, (uint8_t)s_video_mid, msg.pts_ms, msg.data,
+                                                msg.len);
+                    }
+                    if (rc != NANORTC_OK) {
+                        /* Frame dropped whole — reference chain is broken
+                         * until the next IDR, so request one (debounced). */
+                        s_vid_send_err++;
+                        if (msg.is_keyframe) {
+                            s_vid_send_err_kf++;
+                        }
+                        request_keyframe_debounced();
+                    }
+                    if (msg.is_keyframe) {
+                        if (msg.len > s_kf_max_bytes) {
+                            s_kf_max_bytes = msg.len;
+                        }
+                        /* One line answers "do IDRs fit the queue/ring":
+                         * frags is the worst-case packet count, q_free the
+                         * post-send queue headroom. */
+                        ESP_LOGI(TAG, "IDR %u B -> %u frags rc=%d (q_free=%u/%u)",
+                                 (unsigned)msg.len,
+                                 (unsigned)((msg.len + NANORTC_VIDEO_MTU - 1) / NANORTC_VIDEO_MTU),
+                                 rc, (unsigned)nanortc_output_free_slots(&s_rtc),
+                                 (unsigned)NANORTC_OUT_QUEUE_SIZE);
+                    }
                 }
                 heap_caps_free(msg.data);
             }
@@ -426,6 +594,29 @@ static void webrtc_task(void *arg)
                 uint32_t pkt_overrun =
                     __atomic_load_n(&s_rtc.stats_pkt_ring_overrun, __ATOMIC_RELAXED);
                 uint32_t tx_full = __atomic_load_n(&s_rtc.stats_tx_queue_full, __ATOMIC_RELAXED);
+
+                /* Video-path health + BWE tracking. send/est diverging with
+                 * fraction_lost > 0 is the encoder outrunning the link. */
+                nanortc_track_stats_t vstats;
+                memset(&vstats, 0, sizeof(vstats));
+                if (s_video_mid >= 0) {
+                    nanortc_get_track_stats(&s_rtc, (uint8_t)s_video_mid, &vstats);
+                }
+                ESP_LOGI(TAG,
+                         "video send=%lu est=%lu applied=%lu kbps lost=%u/255 "
+                         "send_err=%lu (kf=%lu) frame_drop=%lu kf_max=%lu "
+                         "sock_retry=%lu sock_drop=%lu",
+                         (unsigned long)(vstats.send_bitrate_bps / 1024),
+                         (unsigned long)(vstats.estimated_bitrate_bps / 1024),
+                         (unsigned long)(s_bwe.applied_bps / 1024), (unsigned)vstats.fraction_lost,
+                         (unsigned long)s_vid_send_err, (unsigned long)s_vid_send_err_kf,
+                         (unsigned long)s_frame_drop, (unsigned long)s_kf_max_bytes,
+                         (unsigned long)s_loop.stats_send_retry,
+                         (unsigned long)s_loop.stats_send_drop);
+
+                /* Periodic BWE convergence: estimates that move slowly may
+                 * never cross the event threshold — converge here too. */
+                apply_bwe_estimate();
 #if NANORTC_FEATURE_TURN
                 uint32_t wrap_drop = __atomic_load_n(&s_rtc.stats_wrap_dropped, __ATOMIC_RELAXED);
                 uint32_t via_turn =
@@ -471,6 +662,13 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     ESP_ERROR_CHECK(example_connect());
+
+#if CONFIG_EXAMPLE_CONNECT_WIFI
+    /* Modem power-save (the default) wakes only at DTIM beacons, adding
+     * periodic 100–300 ms TX latency spikes — a classic source of rhythmic
+     * stutter in live video. Trade idle power for stable latency. */
+    esp_wifi_set_ps(WIFI_PS_NONE);
+#endif
 
     esp_netif_t *netif = get_example_netif();
     if (!netif) {
@@ -524,8 +722,10 @@ void app_main(void)
         return;
     }
 
-    /* 8. Run loop state (not started until POST /offer) */
+    /* 8. Run loop state (not started until POST /offer) + BWE→encoder glue */
     memset(&s_loop, 0, sizeof(s_loop));
+    bwe_coordinator_init(&s_bwe, BWE_APPLY_INTERVAL_MS, BWE_APPLY_DAMPEN_PCT, camera_bwe_apply,
+                         NULL);
 
     /* 9. HTTP server */
     nano_webserver_config_t wscfg;
@@ -546,8 +746,10 @@ void app_main(void)
     };
     httpd_register_uri_handler(server, &uri_debug);
 
-    /* 10. Start tasks */
-    xTaskCreatePinnedToCore(webrtc_task, "webrtc", 6 * 1024, NULL, 5, &s_webrtc_handle, 0);
+    /* 10. Start tasks. webrtc_task outranks the mic task (see header):
+     * RTP dispatch must not be preempted mid-burst by audio capture, or
+     * the output queue backs up exactly when a video frame needs it. */
+    xTaskCreatePinnedToCore(webrtc_task, "webrtc", 6 * 1024, NULL, 8, &s_webrtc_handle, 0);
     xTaskCreatePinnedToCore(microphone_task, "mic", 3 * 1024, NULL, 7, &s_mic_handle, 0);
     xTaskCreatePinnedToCore(camera_task, "camera", 4 * 1024, NULL, 6, &s_camera_handle, 1);
 

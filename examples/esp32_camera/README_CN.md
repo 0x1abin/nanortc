@@ -120,11 +120,42 @@ Core 0 — microphone_task (pri 7)
 
 ESP32-P4-Nano 板在 `sdkconfig.defaults.esp32p4` 中覆盖分辨率为 1920x1080。
 
+### 推流健康与容量设计
+
+发送管线按"最坏关键帧整帧可发"设计：每帧分片后的 RTP 包数必须小于
+`min(NANORTC_OUT_QUEUE_SIZE, NANORTC_VIDEO_PKT_RING_SIZE)`（约
+`ceil(帧字节数 / 1200)`；本示例均默认 **64** → 单帧预算约 75 KB，覆盖
+1080p 约 60 KB 的 IDR）。环偏小不再导致截断或数据损坏 ——
+`nanortc_send_video()` 会在入队前整帧拒绝，`main.c` 先排空再重试。
+
+编码器码率是**自适应**的：`EXAMPLE_H264_BITRATE_KBPS` 只是上限，
+BWE→编码器闭环（`NANORTC_EV_BITRATE_ESTIMATE` → `bwe_coordinator` →
+`encoder_set_bitrate`）在拥塞时把实际编码码率压到链路估计容量，恢复后回升。
+
+诊断 —— `GET /debug` 与每 5 秒的 `video ...` 日志行：
+
+| 计数器 | 非零时的含义 |
+|--------|-------------|
+| `tx_full`、`pkt_overrun` | 输出队列/环溢出 —— 64/64 下应恒为 0 |
+| `send_err (kf=...)` | 排空重试后仍被拒的帧 —— 发送端过载 |
+| `frame_drop` | 摄像头出帧快于 webrtc 任务 —— 发送前丢帧 |
+| `sock_retry`、`sock_drop` | UDP `sendto` 撞上 TX 缓冲耗尽（lwIP `ENOMEM`） |
+| `est`/`applied`/`send` kbps | BWE 估计 vs 编码器目标 vs 实际线上码率 |
+
+健康的运动场景测试中所有错误计数器保持 0，且 `applied` 跟随 `est`。
+WiFi 板型（本板为以太网）还应设置
+`CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=64`（lwIP UDP 忽略 `SO_SNDBUF`，
+WiFi TX 缓冲数才是真正的旋钮）并保持关闭省电模式
+（`esp_wifi_set_ps(WIFI_PS_NONE)`，`main.c` 已在
+`CONFIG_EXAMPLE_CONNECT_WIFI` 下接好）—— modem 省电的 DTIM 唤醒会带来
+周期性 100–300 ms 延迟尖峰，表现为节律性卡顿。
+
 ## 关键帧处理
 
 - **定时 IDR**: 每 GOP 帧自动生成
 - **连接时 IDR**: WebRTC 连接建立后立即强制输出
-- **PLI 响应**: 浏览器 RTCP PLI → `NANORTC_EV_KEYFRAME_REQUEST` → 编码器 IDR
+- **PLI 响应**: 浏览器 RTCP PLI → `NANORTC_EV_KEYFRAME_REQUEST` → 编码器 IDR，防抖为每秒至多一次强制 IDR（IDR 恰是最大的帧，1:1 响应 PLI 会再次触发引起 PLI 的拥塞）
+- **本地丢帧**: 帧队列满丢帧后同样请求防抖 IDR，重新锚定参考链，不等接收端 PLI 往返
 
 ## 文件结构
 

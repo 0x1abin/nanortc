@@ -948,6 +948,23 @@ NANORTC_API int nanortc_handle_input(nanortc_t *rtc, const nanortc_input_t *in);
  */
 NANORTC_API int nanortc_next_timeout_ms(const nanortc_t *rtc, uint32_t now_ms, uint32_t *out_ms);
 
+/**
+ * @brief Number of free slots in the output queue.
+ *
+ * Each pending TRANSMIT / EVENT output occupies one slot until drained by
+ * @ref nanortc_poll_output. Senders that emit multi-packet bursts (one
+ * video frame fragments into ceil(len / NANORTC_VIDEO_MTU) RTP packets)
+ * can query this before sending and drain the queue first instead of
+ * overflowing it mid-frame.
+ *
+ * Pure const reader — same single-owner threading discipline as
+ * @ref nanortc_next_timeout_ms.
+ *
+ * @param rtc  Initialized RTC state.
+ * @return Free slot count (0..NANORTC_OUT_QUEUE_SIZE); 0 if @p rtc is NULL.
+ */
+NANORTC_API uint16_t nanortc_output_free_slots(const nanortc_t *rtc);
+
 /* ----------------------------------------------------------------
  * DataChannel types
  * ---------------------------------------------------------------- */
@@ -1069,12 +1086,27 @@ NANORTC_API int nanortc_send_audio(nanortc_t *rtc, uint8_t mid, uint32_t pts_ms,
  * @p pts_ms is a monotonic timestamp in milliseconds (e.g. millis()).
  * The library converts to RTP clock (90 kHz) internally.
  *
+ * Admission is atomic per frame: the worst-case RTP packet count is
+ * computed up front and the frame is rejected before anything is enqueued
+ * if it cannot ship whole. A partially sent frame is never put on the
+ * wire (truncation guarantees receiver loss → PLI → keyframe storms).
+ *
  * @param rtc     Initialized RTC state (must be connected).
  * @param mid     Video track MID.
  * @param pts_ms  Presentation timestamp in milliseconds (monotonic clock).
  * @param data    Video frame (Annex-B for H.264).
  * @param len     Frame length in bytes.
  * @return NANORTC_OK on success.
+ * @retval NANORTC_ERR_WOULD_BLOCK      Output queue too full for this frame
+ *                                      right now — drain via
+ *                                      nanortc_poll_output() and retry.
+ *                                      See nanortc_output_free_slots().
+ * @retval NANORTC_ERR_BUFFER_TOO_SMALL Frame can never fit: it fragments
+ *                                      into more packets than
+ *                                      min(NANORTC_OUT_QUEUE_SIZE,
+ *                                      NANORTC_VIDEO_PKT_RING_SIZE). Lower
+ *                                      the encoder bitrate / bound IDR size
+ *                                      or enlarge the rings.
  */
 NANORTC_API int nanortc_send_video(nanortc_t *rtc, uint8_t mid, uint32_t pts_ms, const void *data,
                                    size_t len);

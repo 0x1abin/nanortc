@@ -535,6 +535,46 @@ static int rtc_send_video_h265(nanortc_t *rtc, nanortc_track_t *m, uint32_t time
 #endif /* NANORTC_FEATURE_VIDEO && NANORTC_FEATURE_H265 */
 
 #if NANORTC_FEATURE_VIDEO
+/* Worst-case RTP packet count for one Annex-B frame, computed before any
+ * fragment is enqueued so a frame either ships whole or not at all.
+ * H.264 (RFC 6184): Single NAL when nal_len <= MTU, else FU-A carries
+ * (MTU - 2) payload bytes per fragment over (nal_len - 1) bytes (the NAL
+ * header byte is replaced by the FU indicator/header pair).
+ * H.265 (RFC 7798): Single NAL / AP when nal_len <= MTU — AP merging only
+ * reduces the packet count, so 1 per NAL is a safe upper bound — else FU
+ * carries (MTU - 3) payload bytes per fragment over (nal_len - 2) bytes. */
+static size_t video_frame_worst_packets(const uint8_t *buf, size_t len, uint8_t codec)
+{
+    size_t total = 0;
+    size_t offset = 0;
+    size_t nal_len = 0;
+
+    while (offset < len) {
+        const uint8_t *nal = h264_annex_b_find_nal(buf, len, &offset, &nal_len);
+        if (!nal || nal_len == 0) {
+            break;
+        }
+        if (nal_len <= NANORTC_VIDEO_MTU) {
+            total += 1;
+            continue;
+        }
+#if NANORTC_FEATURE_H265
+        if (codec == NANORTC_CODEC_H265) {
+            size_t per = NANORTC_VIDEO_MTU - H265_FU_HEADER_SIZE;
+            total += (nal_len - H265_NAL_HEADER_SIZE + per - 1) / per;
+            continue;
+        }
+#else
+        (void)codec;
+#endif
+        {
+            size_t per = NANORTC_VIDEO_MTU - H264_FUA_HEADER_SIZE;
+            total += (nal_len - 1 + per - 1) / per;
+        }
+    }
+    return total;
+}
+
 int nanortc_send_video(nanortc_t *rtc, uint8_t mid, uint32_t pts_ms, const void *data, size_t len)
 {
     if (!rtc || !data || len == 0) {
@@ -554,13 +594,43 @@ int nanortc_send_video(nanortc_t *rtc, uint8_t mid, uint32_t pts_ms, const void 
         return NANORTC_ERR_STATE;
     }
 
+    const uint8_t *buf = (const uint8_t *)data;
+
+    /* Atomic admission check: a frame either ships whole or is rejected
+     * before anything is enqueued. The pre-guard behavior — enqueue until
+     * the queue fills, then abandon the rest of the frame — put truncated
+     * frames on the wire, guaranteeing receiver loss → PLI → an even
+     * larger IDR that overflows again. Two capacity constraints share one
+     * bound: out_queue free slots, and the pkt_ring aliasing window
+     * (out_tail - out_head is the conservative upper bound on pkt_ring
+     * slots still referenced by undrained outputs; see pkt_ring_alloc_slot). */
+    size_t needed = video_frame_worst_packets(buf, len, (uint8_t)m->codec);
+    if (needed == 0) {
+        return NANORTC_OK; /* no NAL units found — nothing to send */
+    }
+    {
+        size_t cap = (NANORTC_VIDEO_PKT_RING_SIZE < NANORTC_OUT_QUEUE_SIZE)
+                         ? (size_t)NANORTC_VIDEO_PKT_RING_SIZE
+                         : (size_t)NANORTC_OUT_QUEUE_SIZE;
+        if (needed > cap) {
+            /* Permanently over capacity — retrying cannot help. The frame
+             * must shrink (encoder bitrate/GOP) or the rings must grow. */
+            NANORTC_LOGW("RTP", "video frame exceeds out_queue/pkt_ring capacity");
+            return NANORTC_ERR_BUFFER_TOO_SMALL;
+        }
+        size_t inflight = (size_t)(uint16_t)(rtc->out_tail - rtc->out_head);
+        if (inflight >= cap || needed > cap - inflight) {
+            /* Retryable backpressure: drain outputs and call again. */
+            return NANORTC_ERR_WOULD_BLOCK;
+        }
+    }
+
     /* One call = one encoded frame for fps accounting. Callers that split
      * a frame across multiple send calls will over-report, which we accept
      * because the API contract is "caller passes one complete frame". */
     rate_window_on_frame(&m->rate_window, rtc->now_ms);
 
     uint32_t ts = pts_ms_to_rtp(pts_ms, 90000);
-    const uint8_t *buf = (const uint8_t *)data;
 
 #if NANORTC_FEATURE_H265
     if (m->codec == NANORTC_CODEC_H265) {

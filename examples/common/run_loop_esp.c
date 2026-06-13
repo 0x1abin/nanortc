@@ -13,6 +13,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 #include <lwip/sockets.h>
 #include <lwip/netdb.h>
 #include <esp_timer.h>
@@ -101,6 +102,30 @@ void nano_run_loop_set_event_cb(nano_run_loop_t *loop, nano_event_cb cb, void *u
     }
 }
 
+/* Bounded-retry UDP send. lwIP returns ENOMEM when the WiFi TX buffer /
+ * pbuf pool is exhausted (EWOULDBLOCK/ENOBUFS with some netif drivers) —
+ * exactly what a multi-fragment video burst provokes. Previously the
+ * return value was ignored and every such packet silently vanished; a
+ * short bounded wait lets the (higher-priority) WiFi/lwIP tasks free
+ * buffers, and both outcomes are counted for the bench stats. Worst-case
+ * stall is 3 ms per packet. */
+static void send_udp(nano_run_loop_t *loop, const void *data, size_t len,
+                     const struct sockaddr *dest, socklen_t dest_len)
+{
+    for (int attempt = 0;; attempt++) {
+        if (sendto(loop->fds[0], data, len, 0, dest, dest_len) >= 0) {
+            return;
+        }
+        int e = errno;
+        if (attempt >= 3 || (e != ENOMEM && e != ENOBUFS && e != EWOULDBLOCK && e != EAGAIN)) {
+            loop->stats_send_drop++;
+            return;
+        }
+        loop->stats_send_retry++;
+        usleep(1000);
+    }
+}
+
 static void dispatch_outputs(nano_run_loop_t *loop, uint32_t *timeout_ms)
 {
     nanortc_output_t out;
@@ -116,8 +141,8 @@ static void dispatch_outputs(nano_run_loop_t *loop, uint32_t *timeout_ms)
                 dest6.sin6_family = AF_INET6;
                 memcpy(&dest6.sin6_addr, out.transmit.dest.addr, 16);
                 dest6.sin6_port = htons(out.transmit.dest.port);
-                sendto(loop->fds[0], out.transmit.data, out.transmit.len, 0,
-                       (struct sockaddr *)&dest6, sizeof(dest6));
+                send_udp(loop, out.transmit.data, out.transmit.len, (struct sockaddr *)&dest6,
+                         sizeof(dest6));
             } else {
                 /* IPv4: wrap in IPv4-mapped IPv6 for dual-stack socket */
                 struct sockaddr_in6 dest6;
@@ -128,8 +153,8 @@ static void dispatch_outputs(nano_run_loop_t *loop, uint32_t *timeout_ms)
                 dest6.sin6_addr.s6_addr[11] = 0xff;
                 memcpy(&dest6.sin6_addr.s6_addr[12], out.transmit.dest.addr, 4);
                 dest6.sin6_port = htons(out.transmit.dest.port);
-                sendto(loop->fds[0], out.transmit.data, out.transmit.len, 0,
-                       (struct sockaddr *)&dest6, sizeof(dest6));
+                send_udp(loop, out.transmit.data, out.transmit.len, (struct sockaddr *)&dest6,
+                         sizeof(dest6));
             }
 #else
             {
@@ -138,8 +163,8 @@ static void dispatch_outputs(nano_run_loop_t *loop, uint32_t *timeout_ms)
                 dest.sin_family = AF_INET;
                 memcpy(&dest.sin_addr, out.transmit.dest.addr, 4);
                 dest.sin_port = htons(out.transmit.dest.port);
-                sendto(loop->fds[0], out.transmit.data, out.transmit.len, 0,
-                       (struct sockaddr *)&dest, sizeof(dest));
+                send_udp(loop, out.transmit.data, out.transmit.len, (struct sockaddr *)&dest,
+                         sizeof(dest));
             }
 #endif
             break;
@@ -157,6 +182,15 @@ static void dispatch_outputs(nano_run_loop_t *loop, uint32_t *timeout_ms)
             break;
         }
     }
+}
+
+void nano_run_loop_drain(nano_run_loop_t *loop)
+{
+    if (!loop || loop->fd_count == 0) {
+        return;
+    }
+    uint32_t unused_timeout = UINT32_MAX;
+    dispatch_outputs(loop, &unused_timeout);
 }
 
 int nano_run_loop_step(nano_run_loop_t *loop)

@@ -11,12 +11,23 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <errno.h>
 #include <time.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <sys/select.h>
 #include <ifaddrs.h>
 #include <net/if.h>
+
+/* UDP send buffer for burst-y media: a 60 KB IDR fragments into ~50 RTP
+ * packets pushed in one dispatch pass. The platform default (often 64 KB
+ * less overhead, 9216 B per datagram on macOS) can overflow into ENOBUFS;
+ * 256 KB absorbs several frames. Best-effort — failure is non-fatal. */
+static void tune_udp_sndbuf(int fd)
+{
+    int sndbuf = 256 * 1024;
+    setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
+}
 
 uint32_t nano_get_millis(void)
 {
@@ -73,6 +84,7 @@ static int bind_udp_any(uint16_t port)
         return -1;
     }
 #endif
+    tune_udp_sndbuf(fd);
     return fd;
 }
 
@@ -99,6 +111,7 @@ static int bind_udp_ipv4(const char *ip, uint16_t port)
         close(fd);
         return -1;
     }
+    tune_udp_sndbuf(fd);
     return fd;
 }
 
@@ -132,6 +145,7 @@ static int bind_udp_ipv6(const char *ip, uint16_t port)
         close(fd);
         return -1;
     }
+    tune_udp_sndbuf(fd);
     return fd;
 }
 #endif
@@ -286,6 +300,30 @@ static int find_fd_for_src(nano_run_loop_t *loop, const nanortc_addr_t *src)
     return loop->fds[0]; /* fallback */
 }
 
+/* Bounded-retry UDP send. POSIX UDP fails transiently with ENOBUFS when
+ * the interface queue is full (macOS does this readily under multi-
+ * fragment video bursts) or EWOULDBLOCK on a saturated non-blocking
+ * socket. Previously the return value was ignored and the packet
+ * silently vanished; retry briefly and count both outcomes so bench
+ * runs can tell socket starvation apart from queue overflow. Worst-case
+ * stall is 3 ms per packet. */
+static void send_udp(nano_run_loop_t *loop, int fd, const void *data, size_t len,
+                     const struct sockaddr *dest, socklen_t dest_len)
+{
+    for (int attempt = 0;; attempt++) {
+        if (sendto(fd, data, len, 0, dest, dest_len) >= 0) {
+            return;
+        }
+        int e = errno;
+        if (attempt >= 3 || (e != ENOMEM && e != ENOBUFS && e != EWOULDBLOCK && e != EAGAIN)) {
+            loop->stats_send_drop++;
+            return;
+        }
+        loop->stats_send_retry++;
+        usleep(1000);
+    }
+}
+
 static void dispatch_outputs(nano_run_loop_t *loop, uint32_t *timeout_ms)
 {
     nanortc_output_t out;
@@ -301,8 +339,8 @@ static void dispatch_outputs(nano_run_loop_t *loop, uint32_t *timeout_ms)
                 dest6.sin6_family = AF_INET6;
                 memcpy(&dest6.sin6_addr, out.transmit.dest.addr, 16);
                 dest6.sin6_port = htons(out.transmit.dest.port);
-                sendto(fd, out.transmit.data, out.transmit.len, 0, (struct sockaddr *)&dest6,
-                       sizeof(dest6));
+                send_udp(loop, fd, out.transmit.data, out.transmit.len,
+                         (struct sockaddr *)&dest6, sizeof(dest6));
             } else {
                 /* IPv4: wrap as IPv4-mapped IPv6 for dual-stack socket */
                 struct sockaddr_in6 dest6;
@@ -312,8 +350,8 @@ static void dispatch_outputs(nano_run_loop_t *loop, uint32_t *timeout_ms)
                 dest6.sin6_addr.s6_addr[11] = 0xff;
                 memcpy(&dest6.sin6_addr.s6_addr[12], out.transmit.dest.addr, 4);
                 dest6.sin6_port = htons(out.transmit.dest.port);
-                sendto(fd, out.transmit.data, out.transmit.len, 0, (struct sockaddr *)&dest6,
-                       sizeof(dest6));
+                send_udp(loop, fd, out.transmit.data, out.transmit.len,
+                         (struct sockaddr *)&dest6, sizeof(dest6));
             }
 #else
             {
@@ -322,8 +360,8 @@ static void dispatch_outputs(nano_run_loop_t *loop, uint32_t *timeout_ms)
                 dest.sin_family = AF_INET;
                 memcpy(&dest.sin_addr, out.transmit.dest.addr, 4);
                 dest.sin_port = htons(out.transmit.dest.port);
-                sendto(fd, out.transmit.data, out.transmit.len, 0, (struct sockaddr *)&dest,
-                       sizeof(dest));
+                send_udp(loop, fd, out.transmit.data, out.transmit.len,
+                         (struct sockaddr *)&dest, sizeof(dest));
             }
 #endif
             break;
@@ -341,6 +379,15 @@ static void dispatch_outputs(nano_run_loop_t *loop, uint32_t *timeout_ms)
             break;
         }
     }
+}
+
+void nano_run_loop_drain(nano_run_loop_t *loop)
+{
+    if (!loop || loop->fd_count == 0) {
+        return;
+    }
+    uint32_t unused_timeout = UINT32_MAX;
+    dispatch_outputs(loop, &unused_timeout);
 }
 
 int nano_run_loop_step(nano_run_loop_t *loop)
