@@ -134,7 +134,7 @@ TEST(test_rtcp_nack_basic)
 {
     uint8_t buf[32];
     size_t out_len = 0;
-    ASSERT_OK(rtcp_generate_nack(0xAAAAAAAA, 0xBBBBBBBB, 42, buf, sizeof(buf), &out_len));
+    ASSERT_OK(rtcp_generate_nack(0xAAAAAAAA, 0xBBBBBBBB, 42, 0, buf, sizeof(buf), &out_len));
     ASSERT_EQ(out_len, RTCP_NACK_SIZE); /* 16 bytes */
 
     /* Header */
@@ -156,7 +156,7 @@ TEST(test_rtcp_nack_buffer_too_small)
 {
     uint8_t buf[8];
     size_t out_len = 0;
-    ASSERT_FAIL(rtcp_generate_nack(1, 2, 3, buf, sizeof(buf), &out_len));
+    ASSERT_FAIL(rtcp_generate_nack(1, 2, 3, 0, buf, sizeof(buf), &out_len));
 }
 
 /* ================================================================
@@ -205,7 +205,7 @@ TEST(test_rtcp_parse_nack)
 {
     uint8_t buf[32];
     size_t out_len = 0;
-    ASSERT_OK(rtcp_generate_nack(0x33333333, 0x44444444, 999, buf, sizeof(buf), &out_len));
+    ASSERT_OK(rtcp_generate_nack(0x33333333, 0x44444444, 999, 0, buf, sizeof(buf), &out_len));
 
     nano_rtcp_info_t info;
     ASSERT_OK(rtcp_parse(buf, out_len, &info));

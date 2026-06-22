@@ -65,6 +65,8 @@ high-jitter cellular, large SDPs), raise the knob you care about.
 | H.264 NAL reassembly (per video track) | 16 KB host / 8 KB Kconfig | `NANORTC_VIDEO_NAL_BUF_SIZE` |
 | H.265 sprop-* fmtp scratch (per video track) | 512 B (only when H265 enabled) | `NANORTC_H265_SPROP_FMTP_SIZE` (`NANORTC_FEATURE_H265`) |
 | Video packet ring (NACK retransmit window) | 39 KB host / ~20 KB Kconfig | `NANORTC_VIDEO_PKT_RING_SIZE` × `NANORTC_MEDIA_BUF_SIZE` |
+| Video send pacer (`nano_pacer_t`) | `4 × NANORTC_VIDEO_PKT_RING_SIZE` + 16 B ≈ 144 B host / ~80 B Kconfig | `NANORTC_FEATURE_VIDEO_PACING` (per-slot `enqueue_ms[]` for the latency cap) |
+| Video receive reorder buffer (`nano_reorder_t`, per video track) | `NANORTC_VIDEO_REORDER_SLOTS × NANORTC_MEDIA_BUF_SIZE` ≈ 9.6 KB at 8 slots — **0 when disabled** | `NANORTC_FEATURE_VIDEO_REORDER` (opt-in, default off; a send-only camera leaves it off) |
 | SCTP send + recv + gap buffers | ~12 KB host / ~6 KB Kconfig | `NANORTC_SCTP_SEND_BUF_SIZE`, `NANORTC_SCTP_RECV_BUF_SIZE`, `NANORTC_SCTP_RECV_GAP_BUF_SIZE` |
 | DTLS buffers (3 × `NANORTC_DTLS_BUF_SIZE`) | 6 KB host / 4.5 KB Kconfig | `NANORTC_DTLS_BUF_SIZE` |
 | Shared STUN/RTCP/RTP scratch | 256 B (DC-only) / 1232 B (media) | `NANORTC_STUN_BUF_SIZE` (feature-gated — see below) |

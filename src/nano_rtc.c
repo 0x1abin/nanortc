@@ -267,6 +267,12 @@ int nanortc_init(nanortc_t *rtc, const nanortc_config_t *cfg)
 
 #if NANORTC_FEATURE_VIDEO
     bwe_init(&rtc->bwe);
+#if NANORTC_FEATURE_VIDEO_PACING
+    /* Token bucket starts full so the first frame keeps a small initial burst
+     * (up to NANORTC_PACING_MAX_BURST_BYTES) before metering engages. All
+     * other pacer fields are already zeroed by the rtc memset in init. */
+    rtc->pacer.budget_bytes = NANORTC_PACING_MAX_BURST_BYTES;
+#endif
 #endif
 
     /* Process ICE servers (WebRTC RTCConfiguration.iceServers) */
@@ -299,6 +305,14 @@ int nanortc_poll_output(nanortc_t *rtc, nanortc_output_t *out)
     if (!rtc || !out) {
         return NANORTC_ERR_INVALID_PARAM;
     }
+
+#if NANORTC_FEATURE_VIDEO && NANORTC_FEATURE_VIDEO_PACING
+    /* Release any paced video fragments that have come due (relative to
+     * rtc->now_ms from the last handle_input) before draining the queue, so
+     * metered media interleaves with control output on the universal
+     * handle_input → drain-poll_output loop. */
+    nano_rtc_pacer_pump(rtc);
+#endif
 
     while (rtc->out_head != rtc->out_tail) {
         uint16_t slot = rtc->out_head & (NANORTC_OUT_QUEUE_SIZE - 1);
@@ -352,6 +366,28 @@ int nanortc_poll_output(nanortc_t *rtc, nanortc_output_t *out)
         rtc->out_head++;
         return NANORTC_OK;
     }
+
+#if NANORTC_FEATURE_VIDEO && NANORTC_FEATURE_VIDEO_REORDER
+    /* Output queue drained: release one reordered video NAL directly into *out
+     * (one per call so the application consumes the event before the next call's
+     * pop reuses the shared depkt buffer). A skip during the drain may enqueue
+     * an auto-PLI — re-enter once to dispatch it through the queue path (incl.
+     * TURN wrap). The re-entry is bounded: it drains that queued PLI and returns
+     * it, and the auto-PLI debounce prevents an unbounded skip→PLI loop. */
+    if (nano_rtc_media_reorder_produce(rtc, out) == NANORTC_OK) {
+        return NANORTC_OK;
+    }
+    if (rtc->out_head != rtc->out_tail) {
+        return nanortc_poll_output(rtc, out);
+    }
+#endif
+#if NANORTC_FEATURE_AUDIO
+    /* Output queue drained: release one due audio frame directly into *out (one
+     * per call so the application consumes it before the next reuses media_buf). */
+    if (nano_rtc_media_audio_produce(rtc, out) == NANORTC_OK) {
+        return NANORTC_OK;
+    }
+#endif
     return NANORTC_ERR_NO_DATA;
 }
 
@@ -426,6 +462,27 @@ int nanortc_next_timeout_ms(const nanortc_t *rtc, uint32_t now_ms, uint32_t *out
             best = left;
         }
     }
+
+#if NANORTC_FEATURE_VIDEO && NANORTC_FEATURE_VIDEO_PACING
+    /* Send pacer: wake when the next paced video fragment is due so the
+     * application drains and pumps it on schedule (UINT32_MAX when idle). */
+    {
+        uint32_t d = nano_rtc_pacer_next_deadline_ms(rtc, now_ms);
+        if (d < best) {
+            best = d;
+        }
+    }
+#endif
+#if NANORTC_FEATURE_VIDEO && NANORTC_FEATURE_VIDEO_REORDER
+    /* Receive reorder buffer: wake when a held packet hits the skip cap so the
+     * gap is declared lost and the frame released even if no further RTP comes. */
+    {
+        uint32_t d = nano_rtc_media_reorder_next_timeout(rtc, now_ms);
+        if (d < best) {
+            best = d;
+        }
+    }
+#endif
 #endif
 
     /* DTLS handshake retransmit is owned by the crypto provider and not

@@ -51,6 +51,7 @@ typedef struct nano_bwe {
     uint32_t last_update_ms;     /* monotonic time of last REMB update */
     uint32_t remb_count;         /* number of REMB packets processed */
     uint32_t twcc_count;         /* number of TWCC feedbacks processed */
+    uint16_t smoothed_loss_q8;   /* EMA of the TWCC loss fraction (q8: 256 = 100%) */
     uint8_t last_source;         /* nanortc_bwe_source_t of most recent update */
 
     /* Runtime-tunable parameters (0 means "use compile-time default").
@@ -90,6 +91,16 @@ int bwe_on_rtcp_feedback(nano_bwe_t *bwe, const uint8_t *data, size_t len, uint3
  * @return Estimated bitrate in bps, or 0 if bwe is NULL.
  */
 uint32_t bwe_get_bitrate(const nano_bwe_t *bwe);
+
+/**
+ * @brief Current smoothed packet-loss fraction (q8: 256 = 100%).
+ *
+ * EMA of the TWCC loss samples fed to bwe_on_twcc_loss(). 0 until the first
+ * TWCC feedback. Used by adaptive FEC to scale protection to measured loss.
+ * @param bwe  Bandwidth estimator state.
+ * @return loss fraction in 256-ths (0..256), or 0 if @p bwe is NULL.
+ */
+uint16_t bwe_get_loss_q8(const nano_bwe_t *bwe);
 
 /**
  * @brief Parse REMB bitrate from raw RTCP PSFB packet.

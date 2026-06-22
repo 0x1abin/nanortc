@@ -143,13 +143,34 @@ nanortc_handle_input(rtc, &(nanortc_input_t){.now_ms, .data, .len, .src, .dst})
   │
   └── byte[0] ∈ [0x80-0xBF] → nano_srtp → nano_rtp  (AUDIO/MEDIA only)
                                              ├── nano_jitter → audio/video event
+                                             ├── (video) forward RTP seq gap →
+                                             │     debounced auto-PLI keyframe request
                                              └── nano_rtcp feedback
 ```
+
+**Receive-side loss recovery (video).** Each inbound video RTP packet's sequence
+number is checked against the track's last in-order seq (`NANORTC_FEATURE_VIDEO_AUTO_PLI`,
+default on). A forward gap — a lost packet — triggers a debounced RTCP PLI
+(`NANORTC_VIDEO_PLI_MIN_INTERVAL_MS`) so the sender re-sends a keyframe and the
+decoder resyncs, instead of the receiver freezing until the app asks. The
+emitted `NANORTC_EV_MEDIA_DATA.contiguous` flag reflects whether a gap preceded
+the frame. Late/reordered packets are ignored by the gap test. An optional bounded receive
+reorder buffer (`NANORTC_FEATURE_VIDEO_REORDER`, `nano_reorder.c`, **opt-in /
+default off**) sits in front of the depacketizer: it releases packets strictly
+in seq order — healing benign WiFi/cellular reordering before it breaks FU
+reassembly — and makes the loss signal *precise* (its skip, not a raw seq gap,
+is the only loss source, so reordering stops false-firing auto-PLI). It is
+latency-capped (`NANORTC_VIDEO_REORDER_MAX_WAIT_MS`) and costs `SLOTS ×
+NANORTC_MEDIA_BUF_SIZE` per video track, so a send-only camera leaves it off.
 
 ### Outbound (application → UDP)
 
 ```
 nanortc_poll_output(rtc, &out)
+  │
+  ├── (video pacer pump, if NANORTC_FEATURE_VIDEO_PACING) releases due video
+  │     RTP fragments from the pkt_ring pace FIFO into out_queue at the
+  │     BWE-derived rate before the queue is drained
   │
   ├── NANORTC_OUTPUT_TRANSMIT → caller does sendto()
   │     (if ICE selected pair is RELAY and TURN is allocated: lazy wrap into
@@ -158,6 +179,21 @@ nanortc_poll_output(rtc, &out)
   ├── NANORTC_OUTPUT_EVENT    → caller processes event
   └── NANORTC_OUTPUT_TIMEOUT  → caller sets select() timeout
 ```
+
+**Send pacing (video).** Video RTP egress is metered by a Sans-I/O leaky token
+bucket (`NANORTC_FEATURE_VIDEO_PACING`, default on). A multi-fragment IDR is
+spread across up to one frame interval at `BWE_estimate × NANORTC_PACING_FACTOR_PCT`
+instead of bursting onto the wire and overrunning the network bottleneck buffer
+(self-inflicted loss → PLI → larger IDR). The fragments stage in the existing
+`pkt_ring` (a `[head, tail)` pace FIFO over the same slots the NACK history
+uses); `nano_rtc_pacer_pump()` releases the due ones into `out_queue` at the top
+of `nanortc_poll_output()`, and `nanortc_next_timeout_ms()` reports the next
+release deadline so the caller's loop wakes on schedule. A backlog older than
+`NANORTC_PACING_MAX_QUEUE_MS` is flushed immediately (catch-up), capping the
+latency the pacer can ever add. NACK retransmits, RTCP/PLI, control packets and
+audio bypass the pacer. The atomic frame-admission gate accounts for the pace
+backlog so a frame still ships whole or returns `WOULD_BLOCK` — it never
+truncates. This is the egress complement to the admission gate added in #67.
 
 The TURN wrap is **deferred** to `nanortc_poll_output()` rather than done at
 enqueue time: `rtc_enqueue_transmit()` stamps a `via_turn` flag + the original

@@ -71,6 +71,11 @@ typedef struct nano_rtcp_info {
     uint16_t nack_pid;        /* Packet ID (first lost seq number) */
     uint16_t nack_blp;        /* Bitmask of following 16 lost packets */
 
+    /* PSFB-specific (RFC 4585 §6.3 / RFC 5104 §4.3). The SSRC of the media
+     * source the feedback (PLI/FIR) is about — i.e. *our* outbound stream a
+     * keyframe is requested for. 0 if the packet was too short to carry it. */
+    uint32_t psfb_media_ssrc;
+
     /* RR/SR report block — only valid when block_valid is true.
      * rb_source_ssrc is the SSRC of the stream the block reports on. */
     bool rb_valid;
@@ -89,7 +94,7 @@ int rtcp_generate_rr(nano_rtcp_t *rtcp, uint32_t remote_ssrc, uint8_t *buf, size
                      size_t *out_len);
 
 /* Generate Generic NACK (RFC 4585 §6.2.1) — 16 bytes */
-int rtcp_generate_nack(uint32_t ssrc, uint32_t media_ssrc, uint16_t seq, uint8_t *buf,
+int rtcp_generate_nack(uint32_t ssrc, uint32_t media_ssrc, uint16_t seq, uint16_t blp, uint8_t *buf,
                        size_t buf_len, size_t *out_len);
 
 /* Generate PLI — Picture Loss Indication (RFC 4585 §6.3.1)
