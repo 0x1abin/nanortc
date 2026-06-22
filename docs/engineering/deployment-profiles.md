@@ -1,11 +1,15 @@
 # Deployment Profiles — recommended feature configuration
 
-NanoRTC ships the loss-recovery and robustness primitives **off by default** so
-the baseline build is minimal (a memory-constrained send-only camera shouldn't
-pay for a receiver's reorder buffer). "Most suitable for embedded real-time
-video" means *providing* the primitives and making the right configuration
-obvious — not forcing every buffer on every device. This page maps the three
-real deployment shapes to the feature flags to enable.
+NanoRTC ships the **heavier receive-side** loss-recovery primitives — the reorder
+buffer, receiver NACK, and FEC (`NANORTC_FEATURE_VIDEO_REORDER` / `_NACK_RX` /
+`_FEC`) — **off by default** so the baseline build stays minimal (a
+memory-constrained send-only camera shouldn't pay for a receiver's reorder
+buffer). The lightweight, always-on robustness — the **send pacer** and
+**auto-PLI** keyframe recovery — is **default-on** (negligible cost; detailed
+below). "Most suitable for embedded real-time video" means *providing* the
+primitives and making the right configuration obvious — not forcing every buffer
+on every device. This page maps the three real deployment shapes to the feature
+flags to enable.
 
 The always-compiled, zero-config baseline already includes: the **send pacer**
 (`NANORTC_FEATURE_VIDEO_PACING`, default **on** — anti-burst, no cost when idle),
