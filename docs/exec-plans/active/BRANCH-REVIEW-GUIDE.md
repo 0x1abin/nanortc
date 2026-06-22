@@ -51,12 +51,15 @@ retransmit → reorder-fill → recover).
 3. (Viewer/two-way) enable `NANORTC_FEATURE_VIDEO_REORDER` + `_NACK_RX`
    (see `deployment-profiles.md`); induce loss; confirm recovery without freeze.
 
-## Tracked debt left open (intentional)
+## Tracked debt — resolved in this branch
 
-- **TD-023** (active): NACK-retransmit non-contiguous pkt_ring slot vs the
-  entry-count admission gate — pre-existing, latent (doesn't manifest in the
-  bundled run-loops), bounded. Fix sketched in the tracker; resolve before FEC
-  PR-3 (which adds more pkt_ring-referencing outputs).
+- **TD-023** (resolved): the NACK-retransmit non-contiguous pkt_ring slot vs the
+  entry-count admission gate — pre-existing, latent (didn't manifest in the
+  bundled run-loops), bounded — is **fixed in this branch**. The generic-NACK
+  answer now copies the matched packet into a dedicated `nack_retx_buf` scratch
+  ring and enqueues the copy, so a later `send_video()` wrapping `pkt_ring` can no
+  longer corrupt an in-flight retransmit. Revert-verified in
+  `test_e2e_video_nack_recovers_drop`; tracker entry marked RESOLVED.
 
 ## After landing
 

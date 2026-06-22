@@ -100,8 +100,10 @@ enqueue sites (`rtc_send_video` H.264, `video_send_fragment_cb` H.265) were rero
   - *F1 (medium)* — generic-NACK retransmit pins a non-contiguous pkt_ring slot the
     entry-count admission gate doesn't protect. **Pre-existing & pacing-independent**
     (identical `cap` in the default config; doesn't manifest in the bundled
-    run-loops); tracked as **TD-023** with a fix sketch, comment tightened in
-    `nano_rtc_media.c`. Out of this PR's scope (would be a NACK refactor).
+    run-loops). Was tracked as **TD-023**; **now resolved in this branch** — the
+    retransmit copies the matched packet into a dedicated `nack_retx_buf` scratch
+    ring and enqueues the copy (revert-verified in
+    `test_e2e_video_nack_recovers_drop`).
 - **Pending:** human browser smoke (camera → Chrome, confirm no stutter, `/debug`
   `pace_catchup` rare on a healthy link).
 
