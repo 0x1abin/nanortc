@@ -108,6 +108,10 @@ if(NANORTC_FEATURE_VIDEO)
     target_compile_definitions(fuzz_fec PRIVATE
         NANORTC_FEATURE_VIDEO=1
         NANORTC_FEATURE_VIDEO_FEC=1
+        # FEC requires the reorder buffer (re-injection path); config.h enforces
+        # this with a #error. The FEC codec itself does not call into reorder, so
+        # the flag only satisfies the guard — no nano_reorder.c link needed.
+        NANORTC_FEATURE_VIDEO_REORDER=1
     )
     target_compile_options(fuzz_fec PRIVATE ${FUZZ_FLAGS})
     target_link_options(fuzz_fec PRIVATE ${FUZZ_FLAGS})
