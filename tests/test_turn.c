@@ -733,9 +733,7 @@ static size_t build_error_response(uint8_t *buf, uint16_t msg_type,
 
     /* NONCE (optional) */
     if (nonce) {
-        size_t nlen = 0;
-        while (nonce[nlen])
-            nlen++;
+        size_t nlen = strlen(nonce);
         nanortc_write_u16be(buf + pos, STUN_ATTR_NONCE);
         nanortc_write_u16be(buf + pos + 2, (uint16_t)nlen);
         memcpy(buf + pos + 4, nonce, nlen);

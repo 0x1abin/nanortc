@@ -472,7 +472,6 @@ typedef struct {
     nanortc_track_t *media;
     uint32_t timestamp;
     int last_rc;
-    int is_last_nal;
 } video_send_ctx_t;
 
 static int video_send_fragment_cb(const uint8_t *payload, size_t len, int marker, void *userdata)
@@ -481,7 +480,7 @@ static int video_send_fragment_cb(const uint8_t *payload, size_t len, int marker
     nanortc_t *rtc = ctx->rtc;
     nanortc_track_t *m = ctx->media;
 
-    m->rtp.marker = (uint8_t)((marker && ctx->is_last_nal) ? 1 : 0);
+    m->rtp.marker = (uint8_t)(marker ? 1 : 0);
 
     uint16_t pslot;
     uint8_t *pkt_buf = pkt_ring_alloc_slot(rtc, &pslot);
@@ -674,7 +673,8 @@ int nanortc_send_audio(nanortc_t *rtc, uint8_t mid, uint32_t pts_ms, const void 
 
 #if NANORTC_FEATURE_VIDEO && NANORTC_FEATURE_H265
 /* RFC 7798 §4.4: h265_packetize_au greedy-packs Single NAL / AP / FU and
- * sets the RTP marker bit on the final callback, so is_last_nal stays 1. */
+ * drives the RTP marker bit via the `marker` callback argument on the final
+ * fragment, so the send callback just forwards it. */
 static int rtc_send_video_h265(nanortc_t *rtc, nanortc_track_t *m, uint32_t timestamp,
                                const uint8_t *buf, size_t len)
 {
@@ -702,7 +702,6 @@ static int rtc_send_video_h265(nanortc_t *rtc, nanortc_track_t *m, uint32_t time
     ctx.media = m;
     ctx.timestamp = timestamp;
     ctx.last_rc = NANORTC_OK;
-    ctx.is_last_nal = 1; /* packetize_au drives the marker bit internally */
 
     int rc = h265_packetize_au(nals, n_nals, NANORTC_VIDEO_MTU, video_send_fragment_cb, &ctx);
     if (rc != NANORTC_OK) {
@@ -728,7 +727,7 @@ static size_t video_frame_worst_packets(const uint8_t *buf, size_t len, uint8_t 
     size_t nal_len = 0;
 
     while (offset < len) {
-        const uint8_t *nal = h264_annex_b_find_nal(buf, len, &offset, &nal_len);
+        const uint8_t *nal = nano_annex_b_find_nal(buf, len, &offset, &nal_len);
         if (!nal || nal_len == 0) {
             break;
         }
@@ -851,7 +850,7 @@ int nanortc_send_video(nanortc_t *rtc, uint8_t mid, uint32_t pts_ms, const void 
     int last_rc = NANORTC_OK;
 
     while (offset < len) {
-        const uint8_t *nal = h264_annex_b_find_nal(buf, len, &offset, &nal_len);
+        const uint8_t *nal = nano_annex_b_find_nal(buf, len, &offset, &nal_len);
         if (!nal || nal_len == 0) {
             break;
         }
@@ -863,7 +862,7 @@ int nanortc_send_video(nanortc_t *rtc, uint8_t mid, uint32_t pts_ms, const void 
 
         size_t peek_off = offset;
         size_t peek_len = 0;
-        if (!h264_annex_b_find_nal(buf, len, &peek_off, &peek_len)) {
+        if (!nano_annex_b_find_nal(buf, len, &peek_off, &peek_len)) {
             flags |= NANORTC_VIDEO_FLAG_MARKER;
         }
 

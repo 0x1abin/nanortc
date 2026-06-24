@@ -20,7 +20,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     /* Stateless: Annex B NAL unit search */
     size_t offset = 0;
     size_t nal_len = 0;
-    h264_annex_b_find_nal(data, size, &offset, &nal_len);
+    nano_annex_b_find_nal(data, size, &offset, &nal_len);
 
     /* Stateful: FU-A depacketization.
      * Feed the fuzz input as a single RTP payload. */

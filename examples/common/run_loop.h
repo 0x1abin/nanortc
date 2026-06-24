@@ -43,10 +43,6 @@ typedef struct nano_run_loop {
  * With NANORTC_FEATURE_IPV6: uses AF_INET6 dual-stack socket. */
 int nano_run_loop_init(nano_run_loop_t *loop, nanortc_t *rtc, uint16_t port);
 
-/* Auto-detect local interfaces and bind one socket per non-loopback IPv4 address.
- * Calls nanortc_add_local_candidate() for each. Linux/macOS only (uses getifaddrs). */
-int nano_run_loop_auto_candidates(nano_run_loop_t *loop, nanortc_t *rtc, uint16_t port);
-
 /* Set application event callback */
 void nano_run_loop_set_event_cb(nano_run_loop_t *loop,
                                 nano_event_cb cb, void *userdata);
@@ -59,9 +55,6 @@ int nano_run_loop_step(nano_run_loop_t *loop);
  * NANORTC_ERR_WOULD_BLOCK: frees output-queue slots so the whole frame
  * can be admitted atomically. */
 void nano_run_loop_drain(nano_run_loop_t *loop);
-
-/* Block until disconnected or error */
-int nano_run_loop_run(nano_run_loop_t *loop);
 
 /* Stop the loop (can be called from signal handler) */
 void nano_run_loop_stop(nano_run_loop_t *loop);

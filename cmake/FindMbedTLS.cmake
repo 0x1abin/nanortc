@@ -13,7 +13,7 @@
 # Result variables:
 #   MbedTLS_FOUND       - True if mbedTLS was found
 #   MBEDTLS_INCLUDE_DIR - Include directory
-#   MBEDTLS_LIBRARIES   - All mbedTLS libraries
+# Consumers link the imported MbedTLS::mbedtls / ::mbedx509 / ::mbedcrypto targets.
 
 # ---- Try CMake config package first (mbedtls 4.x provides one) ----
 find_package(MbedTLS CONFIG QUIET)
@@ -60,8 +60,6 @@ find_package_handle_standard_args(MbedTLS
 )
 
 if(MbedTLS_FOUND)
-    set(MBEDTLS_LIBRARIES ${MBEDTLS_LIBRARY} ${MBEDX509_LIBRARY} ${MBEDCRYPTO_LIBRARY})
-
     if(NOT TARGET MbedTLS::mbedcrypto)
         add_library(MbedTLS::mbedcrypto UNKNOWN IMPORTED)
         set_target_properties(MbedTLS::mbedcrypto PROPERTIES

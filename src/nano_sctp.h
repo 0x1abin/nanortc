@@ -57,12 +57,12 @@ typedef struct nanortc_crypto_provider nanortc_crypto_provider_t;
  * Parsed chunk structures (for internal codec use)
  * ---------------------------------------------------------------- */
 
-/** Parsed SCTP common header (12 bytes on wire). */
+/** Parsed SCTP common header (12 bytes on wire). The wire checksum is not kept
+ * here — nsctp_verify_checksum() validates it directly off the packet bytes. */
 typedef struct {
     uint16_t src_port;
     uint16_t dst_port;
     uint32_t vtag;
-    uint32_t checksum;
 } nsctp_header_t;
 
 /** Parsed INIT / INIT-ACK body. */
@@ -94,11 +94,6 @@ typedef struct {
     uint16_t num_gap_blocks;
     uint16_t num_dup_tsns;
 } nsctp_sack_t;
-
-/** Parsed FORWARD-TSN chunk. */
-typedef struct {
-    uint32_t new_cumulative_tsn;
-} nsctp_forward_tsn_t;
 
 /* ----------------------------------------------------------------
  * Send queue entry
@@ -215,17 +210,11 @@ typedef struct nano_sctp {
     uint16_t cookie_len;
     uint8_t cookie_secret[NSCTP_SECRET_SIZE]; /* HMAC key for cookie generation (server) */
 
-    /* Peer parameters (from INIT/INIT-ACK) */
-    uint32_t peer_a_rwnd;
-    uint16_t peer_num_istreams;
-    uint16_t peer_num_ostreams;
-
     /* Output ring buffer (assembled SCTP packets for poll_output) */
     uint8_t out_bufs[NANORTC_SCTP_OUT_QUEUE_SIZE][NANORTC_SCTP_MTU];
     uint16_t out_lens[NANORTC_SCTP_OUT_QUEUE_SIZE];
     uint8_t out_head;
     uint8_t out_tail;
-    bool has_output; /* compat: true when out_head != out_tail */
 
     /* Delivered message (available to caller after handle_data) */
     const uint8_t *delivered_data;

@@ -74,9 +74,6 @@ int nano_srtp_init(nano_srtp_t *srtp, const nanortc_crypto_provider_t *crypto, i
     memset(srtp, 0, sizeof(*srtp));
     srtp->crypto = crypto;
     srtp->is_client = is_client;
-    /* -1 means "no cached SSRC lookup yet" (0 is a valid slot index). */
-    srtp->last_send_idx = -1;
-    srtp->last_recv_idx = -1;
     return NANORTC_OK;
 }
 
@@ -233,28 +230,13 @@ static inline void srtp_compute_iv(uint8_t iv[16], const uint8_t salt[NANORTC_SR
 /*
  * Find or create per-SSRC state entry.
  * In BUNDLE, session keys are shared but ROC/seq tracking is per-SSRC.
- *
- * @p cache_idx points to the caller's last-used slot index cache
- * (srtp->last_send_idx or srtp->last_recv_idx). On a cache hit this
- * returns in O(1); on a miss we fall back to a linear scan and update
- * the cache with the hit slot index.
+ * NANORTC_MAX_SSRC_MAP is small (~2× tracks), so a linear scan is fine.
  */
-static nano_srtp_ssrc_state_t *srtp_get_ssrc_state(nano_srtp_t *srtp, uint32_t ssrc,
-                                                   int8_t *cache_idx)
+static nano_srtp_ssrc_state_t *srtp_get_ssrc_state(nano_srtp_t *srtp, uint32_t ssrc)
 {
-    /* Fast path: cached slot still valid for this SSRC */
-    int8_t hinted = *cache_idx;
-    if (hinted >= 0 && hinted < NANORTC_MAX_SSRC_MAP) {
-        nano_srtp_ssrc_state_t *s = &srtp->ssrc_states[hinted];
-        if (s->active && s->ssrc == ssrc) {
-            return s;
-        }
-    }
-
-    /* Slow path: scan for an existing entry */
+    /* Scan for an existing entry */
     for (int i = 0; i < NANORTC_MAX_SSRC_MAP; i++) {
         if (srtp->ssrc_states[i].active && srtp->ssrc_states[i].ssrc == ssrc) {
-            *cache_idx = (int8_t)i;
             return &srtp->ssrc_states[i];
         }
     }
@@ -265,7 +247,6 @@ static nano_srtp_ssrc_state_t *srtp_get_ssrc_state(nano_srtp_t *srtp, uint32_t s
             srtp->ssrc_states[i].roc = 0;
             srtp->ssrc_states[i].seq_max = 0;
             srtp->ssrc_states[i].active = true;
-            *cache_idx = (int8_t)i;
             return &srtp->ssrc_states[i];
         }
     }
@@ -320,7 +301,7 @@ int nano_srtp_protect(nano_srtp_t *srtp, uint8_t *packet, size_t len, size_t *ou
     }
 
     /* Per-SSRC ROC tracking (RFC 3711 §3.3) */
-    nano_srtp_ssrc_state_t *ss = srtp_get_ssrc_state(srtp, ssrc, &srtp->last_send_idx);
+    nano_srtp_ssrc_state_t *ss = srtp_get_ssrc_state(srtp, ssrc);
     if (!ss) {
         return NANORTC_ERR_BUFFER_TOO_SMALL;
     }
@@ -501,7 +482,7 @@ int nano_srtp_unprotect(nano_srtp_t *srtp, uint8_t *packet, size_t len, size_t *
     }
 
     /* Per-SSRC ROC tracking */
-    nano_srtp_ssrc_state_t *ss = srtp_get_ssrc_state(srtp, ssrc, &srtp->last_recv_idx);
+    nano_srtp_ssrc_state_t *ss = srtp_get_ssrc_state(srtp, ssrc);
     if (!ss) {
         return NANORTC_ERR_BUFFER_TOO_SMALL;
     }

@@ -105,16 +105,6 @@ menu "NanoRTC Configuration"
             Ethernet MTU with TLS record overhead; raise to 2048 if your
             peer fragments ClientHello across larger records.
 
-    config NANORTC_SDP_BUF_SIZE
-        int "SDP parsing buffer size (bytes)"
-        default 1024
-        range 512 16384
-        help
-            Size of the buffer used for SDP offer/answer parsing. 1024 fits
-            single-track / small-offer IoT SDPs; raise to 2048 for multi-
-            track offers or when exchanging with browsers that emit many
-            codecs and extmap lines.
-
     config NANORTC_SCTP_SEND_BUF_SIZE
         int "SCTP send buffer size (bytes)"
         default 2048

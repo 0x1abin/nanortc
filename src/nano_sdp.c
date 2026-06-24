@@ -710,46 +710,37 @@ static bool sdp_append_relay_candidate(nano_sdp_t *sdp, char *buf, size_t buf_le
 
 /** Return the SDP connection line based on local candidate address family.
  *  IPv6 local candidate (contains ':') → "c=IN IP6 ::\r\n", else IPv4. */
-static const char *sdp_connection_line(const nano_sdp_t *sdp)
+/** True when the first local candidate is an IPv6 literal (contains ':'). */
+static bool sdp_local_is_ipv6(const nano_sdp_t *sdp)
 {
 #if NANORTC_FEATURE_IPV6
     if (sdp->local_candidate_count > 0) {
-        const char *p = sdp->local_candidates[0].addr;
-        while (*p) {
+        for (const char *p = sdp->local_candidates[0].addr; *p; p++) {
             if (*p == ':') {
-                return "c=IN IP6 ::\r\n";
+                return true;
             }
-            p++;
         }
     }
 #else
     (void)sdp;
 #endif
-    return "c=IN IP4 0.0.0.0\r\n";
+    return false;
+}
+
+static const char *sdp_connection_line(const nano_sdp_t *sdp)
+{
+    return sdp_local_is_ipv6(sdp) ? "c=IN IP6 ::\r\n" : "c=IN IP4 0.0.0.0\r\n";
 }
 
 /** Return the SDP origin line based on local candidate address family. */
 static const char *sdp_origin_line(const nano_sdp_t *sdp)
 {
-#if NANORTC_FEATURE_IPV6
-    if (sdp->local_candidate_count > 0) {
-        const char *p = sdp->local_candidates[0].addr;
-        while (*p) {
-            if (*p == ':') {
-                return "o=- 1 1 IN IP6 ::\r\n";
-            }
-            p++;
-        }
-    }
-#else
-    (void)sdp;
-#endif
-    return "o=- 1 1 IN IP4 0.0.0.0\r\n";
+    return sdp_local_is_ipv6(sdp) ? "o=- 1 1 IN IP6 ::\r\n" : "o=- 1 1 IN IP4 0.0.0.0\r\n";
 }
 
 /** Append DataChannel (application) m-line block. */
 static bool sdp_append_datachannel_mline(nano_sdp_t *sdp, char *buf, size_t buf_len, size_t *pos,
-                                         const char *mid)
+                                         uint16_t mid)
 {
     if (!sdp_append(buf, buf_len, pos, "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n"))
         return false;
@@ -757,7 +748,7 @@ static bool sdp_append_datachannel_mline(nano_sdp_t *sdp, char *buf, size_t buf_
         return false;
     if (!sdp_append(buf, buf_len, pos, "a=mid:"))
         return false;
-    if (!sdp_append(buf, buf_len, pos, mid))
+    if (!sdp_append_u16(buf, buf_len, pos, mid))
         return false;
     if (!sdp_append(buf, buf_len, pos, "\r\n"))
         return false;
@@ -798,7 +789,7 @@ static bool sdp_append_direction(char *buf, size_t buf_len, size_t *pos, nanortc
 
 /** Append audio m-line block. Reads PT/direction/sample_rate from the mline entry. */
 static bool sdp_append_audio_mline(nano_sdp_t *sdp, nano_sdp_mline_t *ml, char *buf, size_t buf_len,
-                                   size_t *pos, const char *mid)
+                                   size_t *pos, uint16_t mid)
 {
     if (!sdp_append(buf, buf_len, pos, "m=audio 9 UDP/TLS/RTP/SAVPF "))
         return false;
@@ -810,7 +801,7 @@ static bool sdp_append_audio_mline(nano_sdp_t *sdp, nano_sdp_mline_t *ml, char *
         return false;
     if (!sdp_append(buf, buf_len, pos, "a=mid:"))
         return false;
-    if (!sdp_append(buf, buf_len, pos, mid))
+    if (!sdp_append_u16(buf, buf_len, pos, mid))
         return false;
     if (!sdp_append(buf, buf_len, pos, "\r\n"))
         return false;
@@ -864,7 +855,7 @@ static bool sdp_append_audio_mline(nano_sdp_t *sdp, nano_sdp_mline_t *ml, char *
  *  nanortc_video_set_h265_parameter_sets().
  */
 static bool sdp_append_video_mline(nano_sdp_t *sdp, nano_sdp_mline_t *ml, char *buf, size_t buf_len,
-                                   size_t *pos, const char *mid)
+                                   size_t *pos, uint16_t mid)
 {
     if (!sdp_append(buf, buf_len, pos, "m=video 9 UDP/TLS/RTP/SAVPF "))
         return false;
@@ -876,7 +867,7 @@ static bool sdp_append_video_mline(nano_sdp_t *sdp, nano_sdp_mline_t *ml, char *
         return false;
     if (!sdp_append(buf, buf_len, pos, "a=mid:"))
         return false;
-    if (!sdp_append(buf, buf_len, pos, mid))
+    if (!sdp_append_u16(buf, buf_len, pos, mid))
         return false;
     if (!sdp_append(buf, buf_len, pos, "\r\n"))
         return false;
@@ -1052,35 +1043,20 @@ int sdp_generate_answer(nano_sdp_t *sdp, char *buf, size_t buf_len, size_t *out_
             goto overflow;
 
         /* Write m-lines in order. ICE candidate on first m-line (BUNDLE anchor). */
-        char mid_str[4];
         for (int i = 0; i < n_entries; i++) {
-            /* Convert MID to string (supports MID 0-255) */
-            if (entries[i].mid < 10) {
-                mid_str[0] = '0' + entries[i].mid;
-                mid_str[1] = '\0';
-            } else if (entries[i].mid < 100) {
-                mid_str[0] = '0' + (entries[i].mid / 10);
-                mid_str[1] = '0' + (entries[i].mid % 10);
-                mid_str[2] = '\0';
-            } else {
-                mid_str[0] = '0' + (entries[i].mid / 100);
-                mid_str[1] = '0' + ((entries[i].mid / 10) % 10);
-                mid_str[2] = '0' + (entries[i].mid % 10);
-                mid_str[3] = '\0';
-            }
             switch (entries[i].type) {
             case SDP_MLINE_APPLICATION:
-                if (!sdp_append_datachannel_mline(sdp, buf, buf_len, &pos, mid_str))
+                if (!sdp_append_datachannel_mline(sdp, buf, buf_len, &pos, entries[i].mid))
                     goto overflow;
                 break;
             case SDP_MLINE_AUDIO:
                 if (!sdp_append_audio_mline(sdp, &sdp->mlines[entries[i].ml_idx], buf, buf_len,
-                                            &pos, mid_str))
+                                            &pos, entries[i].mid))
                     goto overflow;
                 break;
             case SDP_MLINE_VIDEO:
                 if (!sdp_append_video_mline(sdp, &sdp->mlines[entries[i].ml_idx], buf, buf_len,
-                                            &pos, mid_str))
+                                            &pos, entries[i].mid))
                     goto overflow;
                 break;
             }
@@ -1097,7 +1073,7 @@ int sdp_generate_answer(nano_sdp_t *sdp, char *buf, size_t buf_len, size_t *out_
 #else
     if (!sdp_append(buf, buf_len, &pos, "a=group:BUNDLE 0\r\n"))
         goto overflow;
-    if (!sdp_append_datachannel_mline(sdp, buf, buf_len, &pos, "0"))
+    if (!sdp_append_datachannel_mline(sdp, buf, buf_len, &pos, 0))
         goto overflow;
     if (!sdp_append_host_candidates(sdp, buf, buf_len, &pos))
         goto overflow;

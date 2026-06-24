@@ -761,29 +761,11 @@ TEST(test_e2e_ice_restart_sdp_fingerprint_refresh)
 }
 
 /* ----------------------------------------------------------------
- * Helper: check if NUL-terminated haystack contains needle
+ * Helper: check if NUL-terminated haystack contains needle (NULL-safe)
  * ---------------------------------------------------------------- */
 static int str_contains(const char *haystack, const char *needle)
 {
-    if (!haystack || !needle)
-        return 0;
-    size_t nlen = 0;
-    while (needle[nlen])
-        nlen++;
-    if (nlen == 0)
-        return 1;
-    for (const char *p = haystack; *p; p++) {
-        int match = 1;
-        for (size_t i = 0; i < nlen; i++) {
-            if (p[i] == '\0' || p[i] != needle[i]) {
-                match = 0;
-                break;
-            }
-        }
-        if (match)
-            return 1;
-    }
-    return 0;
+    return (haystack && needle) ? (strstr(haystack, needle) != NULL) : 0;
 }
 
 /* ----------------------------------------------------------------

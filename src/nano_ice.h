@@ -133,7 +133,6 @@ typedef struct nano_ice {
 
     /* Trickle ICE (RFC 8838) */
     bool end_of_candidates; /**< Remote signaled no more candidates. */
-    uint8_t generation;     /**< ICE generation counter (bumped on restart). */
 
     /* Consent freshness (RFC 7675) */
     uint32_t consent_next_ms;             /**< When to send next consent check. */
@@ -178,7 +177,7 @@ bool ice_is_stun(const uint8_t *data, size_t len);
 
 /**
  * Reset ICE state for a restart (RFC 8445 §9).
- * Clears remote candidates, resets state to NEW, bumps generation.
+ * Clears remote candidates, resets state to NEW.
  * Preserves local credentials (caller must regenerate and set them).
  */
 int ice_restart(nano_ice_t *ice);

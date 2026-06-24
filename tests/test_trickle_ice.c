@@ -193,7 +193,6 @@ static void test_ice_restart_resets_state(void)
     ice.nominated = true;
     ice.check_count = 5;
     ice.end_of_candidates = true;
-    uint8_t gen_before = ice.generation;
 
     int rc = ice_restart(&ice);
     TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
@@ -202,7 +201,6 @@ static void test_ice_restart_resets_state(void)
     TEST_ASSERT_EQUAL_INT(0, ice.check_count);
     TEST_ASSERT_FALSE(ice.nominated);
     TEST_ASSERT_FALSE(ice.end_of_candidates);
-    TEST_ASSERT_EQUAL_INT(gen_before + 1, ice.generation);
     /* Role and tie_breaker preserved */
     TEST_ASSERT_TRUE(ice.is_controlling);
 }
@@ -406,9 +404,7 @@ static void test_sdp_end_of_candidates_parsed(void)
                           "a=candidate:1 1 UDP 2130706431 10.0.0.1 5000 typ host\r\n"
                           "a=end-of-candidates\r\n";
 
-    size_t len = 0;
-    while (sdp_str[len])
-        len++;
+    size_t len = strlen(sdp_str);
 
     int rc = sdp_parse(&sdp, sdp_str, len);
     TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
@@ -434,9 +430,7 @@ static void test_sdp_no_end_of_candidates(void)
                           "a=setup:actpass\r\n"
                           "a=sctp-port:5000\r\n";
 
-    size_t len = 0;
-    while (sdp_str[len])
-        len++;
+    size_t len = strlen(sdp_str);
 
     int rc = sdp_parse(&sdp, sdp_str, len);
     TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
@@ -536,7 +530,6 @@ static void test_api_ice_restart(void)
     TEST_ASSERT_EQUAL_INT(NANORTC_STATE_NEW, rtc.state);
     TEST_ASSERT_EQUAL_INT(NANORTC_ICE_STATE_NEW, rtc.ice.state);
     TEST_ASSERT_FALSE(rtc.ice.nominated);
-    TEST_ASSERT_EQUAL_INT(1, rtc.ice.generation);
 
     /* Credentials should have changed */
     TEST_ASSERT_TRUE(memcmp(orig_ufrag, rtc.ice.local_ufrag, NANORTC_ICE_UFRAG_LEN) != 0 ||

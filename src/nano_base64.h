@@ -16,26 +16,14 @@
 #include <stddef.h>
 
 /**
- * Compute the number of bytes required (including a trailing NUL terminator)
- * to hold the base64-encoded form of @p src_len raw bytes. Useful for sizing
- * output buffers at compile time.
- *
- * @param src_len  Raw byte count.
- * @return Encoded length in bytes (ceil(src_len / 3) * 4 + 1).
- */
-static inline size_t nano_base64_encoded_size(size_t src_len)
-{
-    return ((src_len + 2) / 3) * 4 + 1;
-}
-
-/**
  * Encode a byte buffer to base64 using the RFC 4648 §4 standard alphabet
  * (A–Z, a–z, 0–9, +, /). Output is zero-terminated and padded with '='
  * characters per §3.2.
  *
- * The output buffer must have at least nano_base64_encoded_size(src_len)
- * bytes of capacity. On success, @p out_len receives the number of encoded
- * bytes (excluding the trailing NUL).
+ * The output buffer must have at least ceil(src_len / 3) * 4 + 1 bytes of
+ * capacity (4 encoded chars per 3 input bytes, plus a trailing NUL). On
+ * success, @p out_len receives the number of encoded bytes (excluding the
+ * trailing NUL).
  *
  * @param src      Input bytes (may be NULL iff src_len == 0).
  * @param src_len  Length of the input in bytes.

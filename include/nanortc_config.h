@@ -70,10 +70,6 @@
 #define NANORTC_DTLS_BUF_SIZE CONFIG_NANORTC_DTLS_BUF_SIZE
 #endif
 
-#if defined(CONFIG_NANORTC_SDP_BUF_SIZE) && !defined(NANORTC_SDP_BUF_SIZE)
-#define NANORTC_SDP_BUF_SIZE CONFIG_NANORTC_SDP_BUF_SIZE
-#endif
-
 #if defined(CONFIG_NANORTC_SCTP_SEND_BUF_SIZE) && !defined(NANORTC_SCTP_SEND_BUF_SIZE)
 #define NANORTC_SCTP_SEND_BUF_SIZE CONFIG_NANORTC_SCTP_SEND_BUF_SIZE
 #endif
@@ -476,14 +472,6 @@
 #define NANORTC_DTLS_BUF_SIZE 2048
 #endif
 
-/* ----------------------------------------------------------------
- * SDP buffer size
- * ---------------------------------------------------------------- */
-
-#ifndef NANORTC_SDP_BUF_SIZE
-#define NANORTC_SDP_BUF_SIZE 2048
-#endif
-
 /* Maximum ICE candidates parsed from a single SDP offer/answer */
 #ifndef NANORTC_SDP_MAX_CANDIDATES
 #define NANORTC_SDP_MAX_CANDIDATES 12
@@ -596,10 +584,6 @@
 #define NANORTC_SCTP_RTO_INITIAL_MS 1000
 #endif
 
-#ifndef NANORTC_SCTP_RTO_MIN_MS
-#define NANORTC_SCTP_RTO_MIN_MS 200
-#endif
-
 #ifndef NANORTC_SCTP_RTO_MAX_MS
 #define NANORTC_SCTP_RTO_MAX_MS 10000
 #endif
@@ -607,11 +591,6 @@
 /* Maximum DATA chunk retransmissions before error */
 #ifndef NANORTC_SCTP_MAX_RETRANSMITS
 #define NANORTC_SCTP_MAX_RETRANSMITS 10
-#endif
-
-/* Maximum INIT retransmissions (RFC 4960 §5.1) */
-#ifndef NANORTC_SCTP_MAX_INIT_RETRANSMITS
-#define NANORTC_SCTP_MAX_INIT_RETRANSMITS 8
 #endif
 
 /* HEARTBEAT interval in milliseconds (RFC 4960 §8.3) */
@@ -1306,14 +1285,6 @@ typedef enum {
 
 #if NANORTC_MAX_SSRC_MAP < NANORTC_MAX_MEDIA_TRACKS
 #error "NANORTC_MAX_SSRC_MAP must be at least NANORTC_MAX_MEDIA_TRACKS"
-#endif
-
-/* nano_srtp_t uses int8_t cache indices (last_send_idx / last_recv_idx)
- * to keep the struct compact. Silently wrapping the (int8_t)i cast in
- * srtp_get_ssrc_state() would turn the cache into a no-op, so we refuse
- * to build if the map is configured past the representable range. */
-#if NANORTC_MAX_SSRC_MAP > 127
-#error "NANORTC_MAX_SSRC_MAP must be <= 127 (nano_srtp_t uses int8_t SSRC cache indices)"
 #endif
 
 #endif /* NANORTC_CONFIG_H_ */

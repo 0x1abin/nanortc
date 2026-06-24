@@ -35,8 +35,6 @@ static int dcep_parse_open(const uint8_t *data, size_t len, dcep_open_t *out)
     }
 
     out->channel_type = data[1];
-    out->priority = nanortc_read_u16be(data + 2);
-    out->reliability_param = nanortc_read_u32be(data + 4);
     out->label_len = nanortc_read_u16be(data + 8);
     out->protocol_len = nanortc_read_u16be(data + 10);
 
@@ -48,7 +46,6 @@ static int dcep_parse_open(const uint8_t *data, size_t len, dcep_open_t *out)
     }
 
     out->label = (out->label_len > 0) ? (const char *)(data + 12) : "";
-    out->protocol = (out->protocol_len > 0) ? (const char *)(data + 12 + out->label_len) : "";
 
     return NANORTC_OK;
 }
@@ -161,7 +158,6 @@ int dc_handle_message(nano_dc_t *dc, uint16_t stream_id, uint32_t ppid, const ui
             }
 
             ch->state = NANORTC_DC_STATE_OPEN;
-            ch->channel_type = open.channel_type;
             ch->ordered = !(open.channel_type & 0x80);
 
             /* Copy label (truncate to fit) */
@@ -225,9 +221,7 @@ int dc_open(nano_dc_t *dc, uint16_t stream_id, const char *label, bool ordered,
     }
 
     ch->state = NANORTC_DC_STATE_OPENING;
-    ch->channel_type = ctype;
     ch->ordered = ordered;
-    ch->max_retransmits = max_retransmits;
 
     uint16_t label_len = 0;
     while (label[label_len] && label_len < sizeof(ch->label) - 1) {

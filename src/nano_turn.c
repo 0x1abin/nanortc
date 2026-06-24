@@ -240,7 +240,6 @@ int turn_start_allocate(nano_turn_t *turn, const nanortc_crypto_provider_t *cryp
         pos += stun_write_attr(buf + pos, STUN_ATTR_REALM, turn->realm, (uint16_t)turn->realm_len);
         pos += stun_write_attr(buf + pos, STUN_ATTR_NONCE, turn->nonce, (uint16_t)turn->nonce_len);
 
-        stun_finalize_length(buf, pos);
         pos = stun_append_integrity(buf, pos, turn->hmac_key, crypto->hmac_sha1);
         turn->state = NANORTC_TURN_ALLOCATING; /* awaiting success/error response */
     } else {
@@ -252,6 +251,16 @@ int turn_start_allocate(nano_turn_t *turn, const nanortc_crypto_provider_t *cryp
     *out_len = pos;
     NANORTC_LOGD("TURN", "allocate request sent");
     return NANORTC_OK;
+}
+
+/* Clamp a fresh NONCE from a TURN error response into turn->nonce (NUL-terminated). */
+static void turn_store_nonce(nano_turn_t *turn, const char *nonce, size_t nonce_len)
+{
+    size_t nlen =
+        nonce_len < NANORTC_TURN_NONCE_SIZE - 1 ? nonce_len : (size_t)(NANORTC_TURN_NONCE_SIZE - 1);
+    memcpy(turn->nonce, nonce, nlen);
+    turn->nonce[nlen] = '\0';
+    turn->nonce_len = nlen;
 }
 
 int turn_handle_response(nano_turn_t *turn, const uint8_t *data, size_t len,
@@ -312,11 +321,7 @@ int turn_handle_response(nano_turn_t *turn, const uint8_t *data, size_t len,
             turn->realm[rlen] = '\0';
             turn->realm_len = rlen;
 
-            size_t nlen = msg.nonce_len < NANORTC_TURN_NONCE_SIZE - 1 ? msg.nonce_len
-                                                                      : NANORTC_TURN_NONCE_SIZE - 1;
-            memcpy(turn->nonce, msg.nonce, nlen);
-            turn->nonce[nlen] = '\0';
-            turn->nonce_len = nlen;
+            turn_store_nonce(turn, msg.nonce, msg.nonce_len);
 
             /* Derive HMAC key */
             rc = turn_derive_key(turn, crypto);
@@ -332,12 +337,7 @@ int turn_handle_response(nano_turn_t *turn, const uint8_t *data, size_t len,
         } else if (msg.error_code == 438) {
             /* 438 Stale Nonce: update nonce, retry */
             if (msg.nonce && msg.nonce_len > 0) {
-                size_t nlen = msg.nonce_len < NANORTC_TURN_NONCE_SIZE - 1
-                                  ? msg.nonce_len
-                                  : NANORTC_TURN_NONCE_SIZE - 1;
-                memcpy(turn->nonce, msg.nonce, nlen);
-                turn->nonce[nlen] = '\0';
-                turn->nonce_len = nlen;
+                turn_store_nonce(turn, msg.nonce, msg.nonce_len);
                 turn->state = NANORTC_TURN_CHALLENGED;
                 NANORTC_LOGD("TURN", "438 stale nonce, retrying");
                 return NANORTC_OK;
@@ -359,11 +359,7 @@ int turn_handle_response(nano_turn_t *turn, const uint8_t *data, size_t len,
     } else if (msg.type == STUN_REFRESH_ERROR) {
         if (msg.error_code == 438 && msg.nonce) {
             /* Stale nonce on refresh — update and retry */
-            size_t nlen = msg.nonce_len < NANORTC_TURN_NONCE_SIZE - 1 ? msg.nonce_len
-                                                                      : NANORTC_TURN_NONCE_SIZE - 1;
-            memcpy(turn->nonce, msg.nonce, nlen);
-            turn->nonce[nlen] = '\0';
-            turn->nonce_len = nlen;
+            turn_store_nonce(turn, msg.nonce, msg.nonce_len);
             turn->refresh_at_ms = 0; /* Retry immediately */
             return NANORTC_OK;
         }
@@ -398,11 +394,7 @@ int turn_handle_response(nano_turn_t *turn, const uint8_t *data, size_t len,
             return NANORTC_ERR_PROTOCOL;
         }
         if (msg.error_code == 438 && msg.nonce) {
-            size_t nlen = msg.nonce_len < NANORTC_TURN_NONCE_SIZE - 1 ? msg.nonce_len
-                                                                      : NANORTC_TURN_NONCE_SIZE - 1;
-            memcpy(turn->nonce, msg.nonce, nlen);
-            turn->nonce[nlen] = '\0';
-            turn->nonce_len = nlen;
+            turn_store_nonce(turn, msg.nonce, msg.nonce_len);
             NANORTC_LOGD("TURN", "permission 438 stale nonce, retrying");
             return NANORTC_OK;
         }
@@ -424,11 +416,7 @@ int turn_handle_response(nano_turn_t *turn, const uint8_t *data, size_t len,
 
     } else if (msg.type == STUN_CHANNEL_BIND_ERROR) {
         if (msg.error_code == 438 && msg.nonce) {
-            size_t nlen = msg.nonce_len < NANORTC_TURN_NONCE_SIZE - 1 ? msg.nonce_len
-                                                                      : NANORTC_TURN_NONCE_SIZE - 1;
-            memcpy(turn->nonce, msg.nonce, nlen);
-            turn->nonce[nlen] = '\0';
-            turn->nonce_len = nlen;
+            turn_store_nonce(turn, msg.nonce, msg.nonce_len);
             NANORTC_LOGD("TURN", "channel bind 438 stale nonce");
             return NANORTC_OK;
         }
@@ -478,7 +466,6 @@ int turn_generate_refresh(nano_turn_t *turn, uint32_t now_ms,
     pos += stun_write_attr(buf + pos, STUN_ATTR_REALM, turn->realm, (uint16_t)turn->realm_len);
     pos += stun_write_attr(buf + pos, STUN_ATTR_NONCE, turn->nonce, (uint16_t)turn->nonce_len);
 
-    stun_finalize_length(buf, pos);
     pos = stun_append_integrity(buf, pos, turn->hmac_key, crypto->hmac_sha1);
 
     *out_len = pos;
@@ -523,7 +510,6 @@ int turn_deallocate(nano_turn_t *turn, const nanortc_crypto_provider_t *crypto, 
     pos += stun_write_attr(buf + pos, STUN_ATTR_REALM, turn->realm, (uint16_t)turn->realm_len);
     pos += stun_write_attr(buf + pos, STUN_ATTR_NONCE, turn->nonce, (uint16_t)turn->nonce_len);
 
-    stun_finalize_length(buf, pos);
     pos = stun_append_integrity(buf, pos, turn->hmac_key, crypto->hmac_sha1);
 
     *out_len = pos;
@@ -605,7 +591,6 @@ int turn_create_permission(nano_turn_t *turn, const uint8_t *peer_addr, uint8_t 
     pos += stun_write_attr(buf + pos, STUN_ATTR_REALM, turn->realm, (uint16_t)turn->realm_len);
     pos += stun_write_attr(buf + pos, STUN_ATTR_NONCE, turn->nonce, (uint16_t)turn->nonce_len);
 
-    stun_finalize_length(buf, pos);
     pos = stun_append_integrity(buf, pos, turn->hmac_key, crypto->hmac_sha1);
 
     *out_len = pos;
@@ -772,7 +757,6 @@ int turn_channel_bind(nano_turn_t *turn, const uint8_t *peer_addr, uint8_t peer_
     pos += stun_write_attr(buf + pos, STUN_ATTR_REALM, turn->realm, (uint16_t)turn->realm_len);
     pos += stun_write_attr(buf + pos, STUN_ATTR_NONCE, turn->nonce, (uint16_t)turn->nonce_len);
 
-    stun_finalize_length(buf, pos);
     pos = stun_append_integrity(buf, pos, turn->hmac_key, crypto->hmac_sha1);
 
     *out_len = pos;

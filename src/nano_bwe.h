@@ -47,12 +47,10 @@
 typedef struct nano_bwe {
     uint32_t estimated_bitrate;  /* bps — current smoothed estimate */
     uint32_t prev_event_bitrate; /* bps — bitrate at last event emission */
-    uint32_t last_remb_bitrate;  /* bps — last raw REMB value received */
-    uint32_t last_update_ms;     /* monotonic time of last REMB update */
+    uint32_t last_update_ms;     /* monotonic time of last update */
     uint32_t remb_count;         /* number of REMB packets processed */
     uint32_t twcc_count;         /* number of TWCC feedbacks processed */
     uint16_t smoothed_loss_q8;   /* EMA of the TWCC loss fraction (q8: 256 = 100%) */
-    uint8_t last_source;         /* nanortc_bwe_source_t of most recent update */
 
     /* Runtime-tunable parameters (0 means "use compile-time default").
      * Changed via nanortc_set_bitrate_bounds/_initial_bitrate/

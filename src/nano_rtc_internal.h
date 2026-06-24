@@ -71,6 +71,15 @@ void nano_rtc_cache_fingerprint(nanortc_t *rtc);
 int nano_rtc_apply_ice_servers(nanortc_t *rtc, const nanortc_ice_server_t *servers, size_t count);
 
 /**
+ * Generate fresh local ICE ufrag/pwd (hex-encoded) into both `sdp` and `ice`
+ * state. Defined in nano_rtc_negotiate.c; shared so nanortc_ice_restart() in
+ * nano_rtc.c regenerates credentials without duplicating the encoder. Returns
+ * NANORTC_ERR_CRYPTO if the RNG fails, NANORTC_OK otherwise (the no-crypto
+ * case is a no-op).
+ */
+int nano_rtc_generate_ice_credentials(nanortc_t *rtc);
+
+/**
  * Enqueue a NANORTC_OUTPUT_TRANSMIT entry into rtc->out_queue. Used by
  * every tx producer (DTLS, STUN, RTP/SRTP, RTCP feedback, video pkt_ring,
  * audio packetizer). Defined in nano_rtc.c next to the output-queue

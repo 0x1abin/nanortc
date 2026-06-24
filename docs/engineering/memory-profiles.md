@@ -40,7 +40,6 @@ generous host defaults:
 | `NANORTC_MAX_DATACHANNELS` | 8 | 2 |
 | `NANORTC_MAX_ICE_CANDIDATES` | 8 | 4 |
 | `NANORTC_DTLS_BUF_SIZE` | 2048 | 1536 |
-| `NANORTC_SDP_BUF_SIZE` | 2048 | 1024 |
 | `NANORTC_SCTP_{SEND,RECV,RECV_GAP}_BUF_SIZE` | 4096 each | 2048 each |
 | `NANORTC_SCTP_MAX_SEND_QUEUE` | 16 | 4 |
 | `NANORTC_SCTP_MAX_RECV_GAP` | 8 | 4 |
@@ -206,7 +205,6 @@ overrides in your `NANORTC_CONFIG_FILE` header:
 #define NANORTC_SCTP_SEND_BUF_SIZE  2048
 #define NANORTC_SCTP_RECV_BUF_SIZE  2048
 #define NANORTC_SCTP_MAX_SEND_QUEUE 8
-#define NANORTC_SDP_BUF_SIZE        1024
 ```
 
 ## Phase 9 additions (BWE perception)

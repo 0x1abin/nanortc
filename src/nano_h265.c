@@ -20,18 +20,8 @@
  * Packetizer — Single NAL / FU / AP (RFC 7798 §4.4.1, §4.4.2, §4.4.3)
  * ================================================================ */
 
-/**
- * Emit a single Single NAL Unit Packet (RFC 7798 §4.4.1).
- *
- * Per §4.4.1: "The RTP payload [...] MUST contain a single NAL unit."
- * There is no RTP-level header added on top of the NAL unit in Single NAL
- * mode — the NAL header bytes are the first bytes of the RTP payload.
- */
-static int h265_emit_single(const uint8_t *nalu, size_t nalu_len, int marker, h265_packet_cb cb,
-                            void *userdata)
-{
-    return cb(nalu, nalu_len, marker, userdata);
-}
+/* Single NAL Unit Packet (RFC 7798 §4.4.1): the NAL bytes ARE the RTP payload,
+ * no extra header — emit the NAL straight through the callback (see call sites). */
 
 /**
  * Emit a Fragmentation Unit sequence (RFC 7798 §4.4.3).
@@ -287,7 +277,8 @@ int h265_packetize_au(const h265_nal_ref_t *nals, size_t nal_count, size_t mtu, 
             i = j + 1;
         } else {
             int is_last = (i + 1 == nal_count) ? 1 : 0;
-            int rc = h265_emit_single(n->data, n->len, is_last, cb, userdata);
+            /* §4.4.1 Single NAL: payload is the NAL itself. */
+            int rc = cb(n->data, n->len, is_last, userdata);
             if (rc != 0) {
                 return rc;
             }
@@ -305,10 +296,9 @@ int h265_packetize(const uint8_t *nalu, size_t nalu_len, size_t mtu, h265_packet
         return NANORTC_ERR_INVALID_PARAM;
     }
 
-    /* Fast path: Single NAL Unit Packet (§4.4.1). */
+    /* Fast path: Single NAL Unit Packet (§4.4.1) — the NAL is the payload. */
     if (nalu_len <= mtu) {
-        return h265_emit_single(nalu, nalu_len, 1 /* marker: last packet of one-NAL AU */, cb,
-                                userdata);
+        return cb(nalu, nalu_len, 1 /* marker: last packet of one-NAL AU */, userdata);
     }
     /* Slow path: fragment into an FU sequence (§4.4.3). */
     return h265_emit_fu(nalu, nalu_len, mtu, 1 /* marker_last_au */, cb, userdata);

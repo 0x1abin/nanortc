@@ -40,7 +40,6 @@ int nsctp_parse_header(const uint8_t *data, size_t len, nsctp_header_t *hdr)
     hdr->src_port = nanortc_read_u16be(data + 0);
     hdr->dst_port = nanortc_read_u16be(data + 2);
     hdr->vtag = nanortc_read_u32be(data + 4);
-    hdr->checksum = nanortc_read_u32be(data + 8);
     return NANORTC_OK;
 }
 
@@ -446,7 +445,6 @@ static void nsctp_queue_output(nano_sctp_t *sctp, size_t len)
     nsctp_finalize_checksum(sctp->out_bufs[idx], padded);
     sctp->out_lens[idx] = (uint16_t)padded;
     sctp->out_tail++;
-    sctp->has_output = (sctp->out_head != sctp->out_tail);
 }
 
 /** Begin building an outbound packet in the next output slot. Returns header size (12). */
@@ -534,9 +532,6 @@ static int nsctp_handle_init(nano_sctp_t *sctp, const uint8_t *chunk, size_t cle
     sctp->remote_vtag = init.initiate_tag;
     sctp->peer_initial_tsn = init.initial_tsn;
     sctp->cumulative_tsn = init.initial_tsn - 1;
-    sctp->peer_a_rwnd = init.a_rwnd;
-    sctp->peer_num_istreams = init.num_istreams;
-    sctp->peer_num_ostreams = init.num_ostreams;
 
     /* Generate our own vtag + TSN if not yet done */
     if (sctp->local_vtag == 0 && sctp->crypto) {
@@ -586,7 +581,6 @@ static int nsctp_handle_init_ack(nano_sctp_t *sctp, const uint8_t *chunk, size_t
     sctp->remote_vtag = init.initiate_tag;
     sctp->peer_initial_tsn = init.initial_tsn;
     sctp->cumulative_tsn = init.initial_tsn - 1;
-    sctp->peer_a_rwnd = init.a_rwnd;
 
     /* Extract and store cookie */
     if (!init.cookie || init.cookie_len == 0 || init.cookie_len > NANORTC_SCTP_COOKIE_SIZE) {
@@ -1029,7 +1023,6 @@ int nsctp_poll_output(nano_sctp_t *sctp, uint8_t *buf, size_t buf_len, size_t *o
         memcpy(buf, sctp->out_bufs[ridx], pkt_len);
         *out_len = pkt_len;
         sctp->out_head++;
-        sctp->has_output = (sctp->out_head != sctp->out_tail);
         return NANORTC_OK;
     }
 
@@ -1054,7 +1047,6 @@ int nsctp_poll_output(nano_sctp_t *sctp, uint8_t *buf, size_t buf_len, size_t *o
                 memcpy(buf, sctp->out_bufs[ridx], pkt_len);
                 *out_len = pkt_len;
                 sctp->out_head++;
-                sctp->has_output = (sctp->out_head != sctp->out_tail);
                 return NANORTC_OK;
             }
             idx++;

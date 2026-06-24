@@ -152,16 +152,6 @@ static void rtc_drain_dtls_output(nanortc_t *rtc, const nanortc_addr_t *dest)
     }
 }
 
-/* A4: Emit a simple event (no extra data) */
-static int rtc_emit_event(nanortc_t *rtc, nanortc_event_type_t type)
-{
-    nanortc_output_t evt;
-    memset(&evt, 0, sizeof(evt));
-    evt.type = NANORTC_OUTPUT_EVENT;
-    evt.event.type = type;
-    return rtc_enqueue_output(rtc, &evt);
-}
-
 /* Emit a typed event with full event struct.
  * Non-static so nano_rtc_negotiate.c can call it via nano_rtc_internal.h. */
 int nano_rtc_emit_event_full(nanortc_t *rtc, const nanortc_event_t *event)
@@ -1004,6 +994,21 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
  * Timer processing (extracted from former nanortc_handle_timeout)
  * ---------------------------------------------------------------- */
 
+#if NANORTC_FEATURE_TURN
+/* Enqueue a TURN control packet (Allocate/Refresh/Permission/ChannelBind)
+ * sitting in rtc->turn_buf for transmit to the relay at @p dest. */
+static void rtc_enqueue_turn_tx(nanortc_t *rtc, const nanortc_addr_t *dest, size_t len)
+{
+    nanortc_output_t out;
+    memset(&out, 0, sizeof(out));
+    out.type = NANORTC_OUTPUT_TRANSMIT;
+    out.transmit.data = rtc->turn_buf;
+    out.transmit.len = len;
+    out.transmit.dest = *dest;
+    rtc_enqueue_output(rtc, &out);
+}
+#endif /* NANORTC_FEATURE_TURN */
+
 static int rtc_process_timers(nanortc_t *rtc, uint32_t now_ms)
 {
     /* ICE: generate connectivity checks (controlling role) */
@@ -1128,33 +1133,15 @@ static int rtc_process_timers(nanortc_t *rtc, uint32_t now_ms)
          * in nanortc_output_t, so whoever writes last wins). Fixed as part
          * of investigating a "TURN Allocate corrupted into STUN Binding
          * Request" packet-level bug on a downstream camera SDK. */
-        if (rtc->turn.state == NANORTC_TURN_IDLE) {
-            /* Start Allocate when we begin ICE checking */
+        if (rtc->turn.state == NANORTC_TURN_IDLE || rtc->turn.state == NANORTC_TURN_CHALLENGED) {
+            /* Start Allocate (IDLE, at ICE checking) or retry with credentials
+             * after a 401 (CHALLENGED). turn_start_allocate is state-aware and
+             * emits the correct form for each. */
             size_t alloc_len = 0;
             int trc = turn_start_allocate(&rtc->turn, rtc->config.crypto, rtc->turn_buf,
                                           sizeof(rtc->turn_buf), &alloc_len);
             if (trc == NANORTC_OK && alloc_len > 0) {
-                nanortc_output_t out;
-                memset(&out, 0, sizeof(out));
-                out.type = NANORTC_OUTPUT_TRANSMIT;
-                out.transmit.data = rtc->turn_buf;
-                out.transmit.len = alloc_len;
-                out.transmit.dest = turn_dest;
-                rtc_enqueue_output(rtc, &out);
-            }
-        } else if (rtc->turn.state == NANORTC_TURN_CHALLENGED) {
-            /* Retry Allocate with credentials after 401 */
-            size_t alloc_len = 0;
-            int trc = turn_start_allocate(&rtc->turn, rtc->config.crypto, rtc->turn_buf,
-                                          sizeof(rtc->turn_buf), &alloc_len);
-            if (trc == NANORTC_OK && alloc_len > 0) {
-                nanortc_output_t out;
-                memset(&out, 0, sizeof(out));
-                out.type = NANORTC_OUTPUT_TRANSMIT;
-                out.transmit.data = rtc->turn_buf;
-                out.transmit.len = alloc_len;
-                out.transmit.dest = turn_dest;
-                rtc_enqueue_output(rtc, &out);
+                rtc_enqueue_turn_tx(rtc, &turn_dest, alloc_len);
             }
         } else if (rtc->turn.state == NANORTC_TURN_ALLOCATED) {
             /* Initial / trickle CreatePermission fan-out.
@@ -1200,13 +1187,7 @@ static int rtc_process_timers(nanortc_t *rtc, uint32_t now_ms)
                                                  rtc->config.crypto, rtc->turn_buf,
                                                  sizeof(rtc->turn_buf), &perm_len);
                 if (prc == NANORTC_OK && perm_len > 0) {
-                    nanortc_output_t out;
-                    memset(&out, 0, sizeof(out));
-                    out.type = NANORTC_OUTPUT_TRANSMIT;
-                    out.transmit.data = rtc->turn_buf;
-                    out.transmit.len = perm_len;
-                    out.transmit.dest = turn_dest;
-                    rtc_enqueue_output(rtc, &out);
+                    rtc_enqueue_turn_tx(rtc, &turn_dest, perm_len);
                     /* Defer the periodic refresh past this tick so the
                      * refresh block below doesn't immediately overwrite
                      * turn_buf with a refresh of permissions[0]. */
@@ -1220,13 +1201,7 @@ static int rtc_process_timers(nanortc_t *rtc, uint32_t now_ms)
             int trc = turn_generate_refresh(&rtc->turn, now_ms, rtc->config.crypto, rtc->turn_buf,
                                             sizeof(rtc->turn_buf), &ref_len);
             if (trc == NANORTC_OK && ref_len > 0) {
-                nanortc_output_t out;
-                memset(&out, 0, sizeof(out));
-                out.type = NANORTC_OUTPUT_TRANSMIT;
-                out.transmit.data = rtc->turn_buf;
-                out.transmit.len = ref_len;
-                out.transmit.dest = turn_dest;
-                rtc_enqueue_output(rtc, &out);
+                rtc_enqueue_turn_tx(rtc, &turn_dest, ref_len);
             }
 
             /* Permission refresh (RFC 5766 §8: expires at 5 min, refresh at 4 min) */
@@ -1236,13 +1211,7 @@ static int rtc_process_timers(nanortc_t *rtc, uint32_t now_ms)
                                                            rtc->turn_buf, sizeof(rtc->turn_buf),
                                                            &perm_len);
                 if (prc == NANORTC_OK && perm_len > 0) {
-                    nanortc_output_t out;
-                    memset(&out, 0, sizeof(out));
-                    out.type = NANORTC_OUTPUT_TRANSMIT;
-                    out.transmit.data = rtc->turn_buf;
-                    out.transmit.len = perm_len;
-                    out.transmit.dest = turn_dest;
-                    rtc_enqueue_output(rtc, &out);
+                    rtc_enqueue_turn_tx(rtc, &turn_dest, perm_len);
                 }
             }
 
@@ -1253,13 +1222,7 @@ static int rtc_process_timers(nanortc_t *rtc, uint32_t now_ms)
                     turn_generate_channel_refresh(&rtc->turn, now_ms, rtc->config.crypto,
                                                   rtc->turn_buf, sizeof(rtc->turn_buf), &chan_len);
                 if (crc == NANORTC_OK && chan_len > 0) {
-                    nanortc_output_t out;
-                    memset(&out, 0, sizeof(out));
-                    out.type = NANORTC_OUTPUT_TRANSMIT;
-                    out.transmit.data = rtc->turn_buf;
-                    out.transmit.len = chan_len;
-                    out.transmit.dest = turn_dest;
-                    rtc_enqueue_output(rtc, &out);
+                    rtc_enqueue_turn_tx(rtc, &turn_dest, chan_len);
                 }
             }
         }
@@ -1623,33 +1586,12 @@ int nanortc_ice_restart(nanortc_t *rtc)
         return rc;
     }
 
-    /* Generate new local ICE credentials */
-    uint8_t ufrag_bytes[4];
-    uint8_t pwd_bytes[11];
-    if (rtc->config.crypto->random_bytes(ufrag_bytes, sizeof(ufrag_bytes)) != 0 ||
-        rtc->config.crypto->random_bytes(pwd_bytes, sizeof(pwd_bytes)) != 0) {
-        return NANORTC_ERR_CRYPTO;
+    /* Regenerate local ICE credentials into both ice + sdp state (shared with
+     * the offer/answer path; see nano_rtc_negotiate.c). */
+    rc = nano_rtc_generate_ice_credentials(rtc);
+    if (rc != NANORTC_OK) {
+        return rc;
     }
-
-    /* Hex-encode credentials */
-    static const char hex[] = "0123456789abcdef";
-    for (int i = 0; i < 4; i++) {
-        rtc->ice.local_ufrag[i * 2] = hex[ufrag_bytes[i] >> 4];
-        rtc->ice.local_ufrag[i * 2 + 1] = hex[ufrag_bytes[i] & 0x0F];
-    }
-    rtc->ice.local_ufrag[NANORTC_ICE_UFRAG_LEN] = '\0';
-    rtc->ice.local_ufrag_len = NANORTC_ICE_UFRAG_LEN;
-
-    for (int i = 0; i < 11; i++) {
-        rtc->ice.local_pwd[i * 2] = hex[pwd_bytes[i] >> 4];
-        rtc->ice.local_pwd[i * 2 + 1] = hex[pwd_bytes[i] & 0x0F];
-    }
-    rtc->ice.local_pwd[NANORTC_ICE_PWD_LEN] = '\0';
-    rtc->ice.local_pwd_len = NANORTC_ICE_PWD_LEN;
-
-    /* Copy new credentials into SDP state */
-    memcpy(rtc->sdp.local_ufrag, rtc->ice.local_ufrag, NANORTC_ICE_UFRAG_SIZE);
-    memcpy(rtc->sdp.local_pwd, rtc->ice.local_pwd, NANORTC_ICE_PWD_SIZE);
 
     /* Reset SDP candidate state */
     rtc->sdp.candidate_count = 0;
@@ -1697,7 +1639,10 @@ void nanortc_disconnect(nanortc_t *rtc)
     rtc_drain_dtls_output(rtc, &rtc->remote_addr);
 
     rtc->state = NANORTC_STATE_CLOSED;
-    rtc_emit_event(rtc, NANORTC_EV_DISCONNECTED);
+    nanortc_event_t evt;
+    memset(&evt, 0, sizeof(evt));
+    evt.type = NANORTC_EV_DISCONNECTED;
+    nano_rtc_emit_event_full(rtc, &evt);
 
     NANORTC_LOGI("RTC", "disconnected");
 }

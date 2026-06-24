@@ -29,8 +29,7 @@ typedef struct {
     uint16_t port;
 } nano_sdp_candidate_t;
 
-/* m-line type constants */
-#define SDP_MLINE_NONE        0
+/* m-line type constants (0 = unset / zero-initialized) */
 #define SDP_MLINE_APPLICATION 1
 #define SDP_MLINE_AUDIO       2
 #define SDP_MLINE_VIDEO       3

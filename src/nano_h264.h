@@ -190,13 +190,7 @@ int h264_depkt_push(nano_h264_depkt_t *d, const uint8_t *payload, size_t len, in
  */
 int h264_is_keyframe(const uint8_t *rtp_payload, size_t len);
 
-/**
- * Find next NAL unit in an Annex-B bitstream.
- *
- * The Annex-B scanner is codec-agnostic and now lives in nano_annex_b.{c,h}.
- * This alias is preserved so existing H.264 call sites and tests continue to
- * compile unchanged.
- */
-#define h264_annex_b_find_nal nano_annex_b_find_nal
+/* The Annex-B NAL scanner is codec-agnostic and lives in nano_annex_b.{c,h};
+ * call nano_annex_b_find_nal() directly. */
 
 #endif /* NANORTC_H264_H_ */

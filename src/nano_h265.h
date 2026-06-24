@@ -57,34 +57,16 @@
 #define H265_NAL_HEADER_SIZE 2
 #define H265_NAL_F_BIT       0x80 /* byte[0] bit 7 */
 
-/* RFC 7798 §1.1.4 / H.265 Table 7-1 — selected NAL unit type codes */
-#define H265_NAL_TRAIL_N        0
+/* RFC 7798 §1.1.4 / H.265 Table 7-1 — NAL unit type codes actually referenced.
+ * BLA_W_LP / RSV_IRAP_VCL23 bound the IRAP range (see H265_IS_IRAP below); the
+ * rest are the VCL / parameter-set types the packetizer and tests use. */
 #define H265_NAL_TRAIL_R        1
-#define H265_NAL_TSA_N          2
-#define H265_NAL_TSA_R          3
-#define H265_NAL_STSA_N         4
-#define H265_NAL_STSA_R         5
-#define H265_NAL_RADL_N         6
-#define H265_NAL_RADL_R         7
-#define H265_NAL_RASL_N         8
-#define H265_NAL_RASL_R         9
 #define H265_NAL_BLA_W_LP       16 /* IRAP range start */
-#define H265_NAL_BLA_W_RADL     17
-#define H265_NAL_BLA_N_LP       18
 #define H265_NAL_IDR_W_RADL     19
-#define H265_NAL_IDR_N_LP       20
-#define H265_NAL_CRA_NUT        21
-#define H265_NAL_RSV_IRAP_VCL22 22
 #define H265_NAL_RSV_IRAP_VCL23 23 /* IRAP range end */
 #define H265_NAL_VPS_NUT        32
 #define H265_NAL_SPS_NUT        33
 #define H265_NAL_PPS_NUT        34
-#define H265_NAL_AUD_NUT        35
-#define H265_NAL_EOS_NUT        36
-#define H265_NAL_EOB_NUT        37
-#define H265_NAL_FD_NUT         38
-#define H265_NAL_PREFIX_SEI_NUT 39
-#define H265_NAL_SUFFIX_SEI_NUT 40
 
 /* RFC 7798 §4.4 — RTP payload structure types (nal_unit_type values used in
  * the PayloadHdr to signal the RTP packetization mode) */

@@ -112,13 +112,6 @@ int bwe_parse_remb(const uint8_t *data, size_t len, uint32_t *bitrate)
  * RTCP feedback handler
  * ================================================================ */
 
-/* REMB source ID = 0 (NANORTC_BWE_SRC_REMB),
- * TWCC loss source ID = 1 (NANORTC_BWE_SRC_TWCC_LOSS).
- * We keep the numeric values here rather than including the public
- * header so src/ stays free of public-API inclusion cycles. */
-#define BWE_SRC_REMB      0
-#define BWE_SRC_TWCC_LOSS 1
-
 static uint32_t bwe_effective_min(const nano_bwe_t *bwe)
 {
     return bwe->runtime_min_bps ? bwe->runtime_min_bps : (uint32_t)NANORTC_BWE_MIN_BITRATE;
@@ -142,8 +135,7 @@ static uint32_t bwe_clamp(const nano_bwe_t *bwe, uint32_t bps)
     return bps;
 }
 
-static void bwe_apply(nano_bwe_t *bwe, uint32_t candidate_bps, uint8_t source, uint32_t now_ms,
-                      bool first_sample)
+static void bwe_apply(nano_bwe_t *bwe, uint32_t candidate_bps, uint32_t now_ms, bool first_sample)
 {
     candidate_bps = bwe_clamp(bwe, candidate_bps);
 
@@ -157,7 +149,6 @@ static void bwe_apply(nano_bwe_t *bwe, uint32_t candidate_bps, uint8_t source, u
         bwe->estimated_bitrate = (uint32_t)smoothed;
     }
     bwe->last_update_ms = now_ms;
-    bwe->last_source = source;
 }
 
 int bwe_on_rtcp_feedback(nano_bwe_t *bwe, const uint8_t *data, size_t len, uint32_t now_ms)
@@ -173,9 +164,8 @@ int bwe_on_rtcp_feedback(nano_bwe_t *bwe, const uint8_t *data, size_t len, uint3
     }
 
     bwe->remb_count++;
-    bwe->last_remb_bitrate = bwe_clamp(bwe, remb_bitrate);
 
-    bwe_apply(bwe, remb_bitrate, BWE_SRC_REMB, now_ms, bwe->remb_count == 1);
+    bwe_apply(bwe, remb_bitrate, now_ms, bwe->remb_count == 1);
 
     NANORTC_LOGD("BWE", "REMB received, estimate updated");
 
@@ -229,7 +219,7 @@ int bwe_on_twcc_loss(nano_bwe_t *bwe, uint16_t loss_fraction_q8, uint32_t now_ms
     bwe->twcc_count++;
     /* First TWCC sample jumps directly to target (like REMB) so the first
      * feedback is not blended with the compile-time initial estimate. */
-    bwe_apply(bwe, target, BWE_SRC_TWCC_LOSS, now_ms, bwe->twcc_count == 1);
+    bwe_apply(bwe, target, now_ms, bwe->twcc_count == 1);
 
     NANORTC_LOGD("BWE", "TWCC loss sample processed");
     return NANORTC_OK;

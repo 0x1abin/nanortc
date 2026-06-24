@@ -120,22 +120,25 @@ void nano_rtc_emit_ice_candidate(nanortc_t *rtc, const char *candidate_str)
 /* Generate random ufrag+pwd into SDP and ICE state. Hex-encoded so the
  * RFC 8839 candidate / RFC 8866 SDP serialisation can use the values
  * verbatim without further escaping. */
-static int rtc_generate_ice_credentials(nanortc_t *rtc)
+int nano_rtc_generate_ice_credentials(nanortc_t *rtc)
 {
     if (!rtc->config.crypto) {
         return NANORTC_OK;
     }
 
     uint8_t rnd[NANORTC_ICE_UFRAG_LEN / 2];
-    rtc->config.crypto->random_bytes(rnd, sizeof(rnd));
+    uint8_t rnd2[NANORTC_ICE_PWD_LEN / 2];
+    if (rtc->config.crypto->random_bytes(rnd, sizeof(rnd)) != 0 ||
+        rtc->config.crypto->random_bytes(rnd2, sizeof(rnd2)) != 0) {
+        return NANORTC_ERR_CRYPTO;
+    }
+
     for (int i = 0; i < (int)sizeof(rnd); i++) {
         rtc->sdp.local_ufrag[i * 2] = hex_chars[(rnd[i] >> 4) & 0xF];
         rtc->sdp.local_ufrag[i * 2 + 1] = hex_chars[rnd[i] & 0xF];
     }
     rtc->sdp.local_ufrag[NANORTC_ICE_UFRAG_LEN] = '\0';
 
-    uint8_t rnd2[NANORTC_ICE_PWD_LEN / 2];
-    rtc->config.crypto->random_bytes(rnd2, sizeof(rnd2));
     for (int i = 0; i < (int)sizeof(rnd2); i++) {
         rtc->sdp.local_pwd[i * 2] = hex_chars[(rnd2[i] >> 4) & 0xF];
         rtc->sdp.local_pwd[i * 2 + 1] = hex_chars[rnd2[i] & 0xF];
@@ -330,7 +333,7 @@ int nanortc_accept_offer(nanortc_t *rtc, const char *offer, char *answer_buf, si
     }
 
     rtc_apply_remote_sdp(rtc);
-    rtc_generate_ice_credentials(rtc);
+    nano_rtc_generate_ice_credentials(rtc);
 
     rtc_apply_negotiated_media(rtc);
 
@@ -379,7 +382,7 @@ int nanortc_create_offer(nanortc_t *rtc, char *offer_buf, size_t offer_buf_len, 
         return NANORTC_ERR_STATE;
     }
 
-    rtc_generate_ice_credentials(rtc);
+    nano_rtc_generate_ice_credentials(rtc);
 
     /* Offerer is DTLS active, setup=actpass in SDP (RFC 8842) */
     rtc->sdp.local_setup = NANORTC_SDP_SETUP_ACTPASS;

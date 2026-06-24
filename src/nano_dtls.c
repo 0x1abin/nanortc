@@ -334,7 +334,7 @@ int dtls_encrypt(nano_dtls_t *dtls, const uint8_t *in, size_t in_len)
     }
 
     nanortc_crypto_dtls_ctx_t *ctx = (nanortc_crypto_dtls_ctx_t *)dtls->crypto_ctx;
-    int rc = dtls->crypto->dtls_encrypt(ctx, in, in_len, NULL, NULL);
+    int rc = dtls->crypto->dtls_encrypt(ctx, in, in_len);
     if (rc < 0) {
         return NANORTC_ERR_CRYPTO;
     }

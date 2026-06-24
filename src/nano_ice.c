@@ -589,7 +589,6 @@ int ice_restart(nano_ice_t *ice)
     /* Reset state but preserve role, tie_breaker, and local candidates */
     int is_controlling = ice->is_controlling;
     uint64_t tie_breaker = ice->tie_breaker;
-    uint8_t generation = ice->generation;
     /* Save local candidates — they survive restart */
     nano_ice_candidate_t saved_local[NANORTC_MAX_LOCAL_CANDIDATES];
     uint8_t saved_local_count = ice->local_candidate_count;
@@ -599,7 +598,6 @@ int ice_restart(nano_ice_t *ice)
     ice->state = NANORTC_ICE_STATE_NEW;
     ice->is_controlling = is_controlling;
     ice->tie_breaker = tie_breaker;
-    ice->generation = generation + 1;
     ice->check_interval_ms = NANORTC_ICE_CHECK_INTERVAL_MS;
     /* Restore local candidates */
     memcpy(ice->local_candidates, saved_local, sizeof(saved_local));

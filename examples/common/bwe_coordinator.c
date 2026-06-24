@@ -37,10 +37,10 @@ int bwe_coordinator_try_apply(bwe_coordinator_t *c, uint32_t candidate_bps, int 
     if (!c || !c->apply)
         return -1;
     if (candidate_bps == 0)
-        return BWE_APPLY_SKIP_NO_CONTRIB;
+        return BWE_APPLY_SKIP; /* no live contributor (candidate==0) */
 
     if (c->last_apply_ms && (now_ms - c->last_apply_ms) < c->apply_interval_ms) {
-        return BWE_APPLY_SKIP_INTERVAL;
+        return BWE_APPLY_SKIP; /* last apply too recent */
     }
 
     /* Dead-band check: skip updates that barely move the needle. */
@@ -48,7 +48,7 @@ int bwe_coordinator_try_apply(bwe_coordinator_t *c, uint32_t candidate_bps, int 
         uint32_t diff = candidate_bps > c->applied_bps ? candidate_bps - c->applied_bps
                                                        : c->applied_bps - candidate_bps;
         if ((uint64_t)diff * 100u / c->applied_bps < c->dampen_pct) {
-            return BWE_APPLY_SKIP_DAMPEN;
+            return BWE_APPLY_SKIP; /* candidate inside ±dampen_pct of applied */
         }
     }
 

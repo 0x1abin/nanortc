@@ -249,9 +249,6 @@ int rtcp_parse(const uint8_t *data, size_t len, nano_rtcp_info_t *info)
         }
         info->ntp_sec = nanortc_read_u32be(data + 8);
         info->ntp_frac = nanortc_read_u32be(data + 12);
-        info->rtp_ts = nanortc_read_u32be(data + 16);
-        info->sr_packets = nanortc_read_u32be(data + 20);
-        info->sr_octets = nanortc_read_u32be(data + 24);
         /* Optional report block follows sender info at offset 28
          * (RFC 3550 §6.4.1). Present when RC field >= 1. */
         {
@@ -286,8 +283,8 @@ int rtcp_parse(const uint8_t *data, size_t len, nano_rtcp_info_t *info)
         /* FMT field */
         uint8_t fmt = data[0] & 0x1F;
         if (fmt == 1) {
-            /* RFC 4585 §6.2.1: media SSRC at offset 8, FCI at offset 12 */
-            info->nack_media_ssrc = nanortc_read_u32be(data + 8);
+            /* RFC 4585 §6.2.1: FCI at offset 12 (media SSRC at offset 8 is not
+             * consumed — NACK handling keys off info->ssrc / nack_pid / blp). */
             info->nack_pid = nanortc_read_u16be(data + 12);
             info->nack_blp = nanortc_read_u16be(data + 14);
         }

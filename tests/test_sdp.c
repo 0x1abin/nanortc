@@ -36,9 +36,7 @@ TEST(test_sdp_parse_chrome_offer)
     nano_sdp_t sdp;
     sdp_init(&sdp);
 
-    size_t len = 0;
-    while (CHROME_OFFER[len])
-        len++;
+    size_t len = strlen(CHROME_OFFER);
 
     ASSERT_OK(sdp_parse(&sdp, CHROME_OFFER, len));
     ASSERT_TRUE(sdp.parsed);
@@ -59,9 +57,7 @@ TEST(test_sdp_parse_missing_ufrag)
     sdp_init(&sdp);
 
     const char *bad_sdp = "v=0\r\na=ice-pwd:test\r\n";
-    size_t len = 0;
-    while (bad_sdp[len])
-        len++;
+    size_t len = strlen(bad_sdp);
 
     ASSERT_FAIL(sdp_parse(&sdp, bad_sdp, len));
 }
@@ -83,9 +79,7 @@ TEST(test_sdp_parse_setup_active)
                         "a=ice-ufrag:test\r\n"
                         "a=ice-pwd:testpassword\r\n"
                         "a=setup:active\r\n";
-    size_t len = 0;
-    while (offer[len])
-        len++;
+    size_t len = strlen(offer);
 
     ASSERT_OK(sdp_parse(&sdp, offer, len));
     ASSERT_EQ(sdp.remote_setup, NANORTC_SDP_SETUP_ACTIVE);
@@ -195,9 +189,7 @@ TEST(test_sdp_parse_firefox_offer)
     nano_sdp_t sdp;
     sdp_init(&sdp);
 
-    size_t len = 0;
-    while (FIREFOX_OFFER[len])
-        len++;
+    size_t len = strlen(FIREFOX_OFFER);
 
     ASSERT_OK(sdp_parse(&sdp, FIREFOX_OFFER, len));
     ASSERT_TRUE(sdp.parsed);
@@ -233,9 +225,7 @@ TEST(test_sdp_parse_safari_offer)
     nano_sdp_t sdp;
     sdp_init(&sdp);
 
-    size_t len = 0;
-    while (SAFARI_OFFER[len])
-        len++;
+    size_t len = strlen(SAFARI_OFFER);
 
     ASSERT_OK(sdp_parse(&sdp, SAFARI_OFFER, len));
     ASSERT_TRUE(sdp.parsed);
@@ -256,9 +246,7 @@ TEST(test_sdp_parse_minimal)
                         "a=ice-ufrag:min\r\n"
                         "a=ice-pwd:minimalpassword\r\n"
                         "a=setup:passive\r\n";
-    size_t len = 0;
-    while (offer[len])
-        len++;
+    size_t len = strlen(offer);
 
     ASSERT_OK(sdp_parse(&sdp, offer, len));
     ASSERT_MEM_EQ(sdp.remote_ufrag, "min", 3);
@@ -299,9 +287,7 @@ TEST(test_sdp_parse_libdatachannel_offer)
     nano_sdp_t sdp;
     sdp_init(&sdp);
 
-    size_t len = 0;
-    while (LIBDATACHANNEL_OFFER[len])
-        len++;
+    size_t len = strlen(LIBDATACHANNEL_OFFER);
 
     ASSERT_OK(sdp_parse(&sdp, LIBDATACHANNEL_OFFER, len));
     ASSERT_TRUE(sdp.parsed);
@@ -330,9 +316,7 @@ TEST(test_sdp_parse_no_candidates)
     nano_sdp_t sdp;
     sdp_init(&sdp);
 
-    size_t len = 0;
-    while (CHROME_OFFER[len])
-        len++;
+    size_t len = strlen(CHROME_OFFER);
 
     ASSERT_OK(sdp_parse(&sdp, CHROME_OFFER, len));
     ASSERT_EQ(sdp.candidate_count, 0);
@@ -409,9 +393,7 @@ TEST(test_sdp_parse_audio_offer)
     nano_sdp_t sdp;
     sdp_init(&sdp);
 
-    size_t len = 0;
-    while (CHROME_AUDIO_OFFER[len])
-        len++;
+    size_t len = strlen(CHROME_AUDIO_OFFER);
 
     ASSERT_OK(sdp_parse(&sdp, CHROME_AUDIO_OFFER, len));
     ASSERT_TRUE(sdp.parsed);
@@ -449,9 +431,7 @@ TEST(test_sdp_parse_audio_only_offer)
     nano_sdp_t sdp;
     sdp_init(&sdp);
 
-    size_t len = 0;
-    while (AUDIO_ONLY_OFFER[len])
-        len++;
+    size_t len = strlen(AUDIO_ONLY_OFFER);
 
     ASSERT_OK(sdp_parse(&sdp, AUDIO_ONLY_OFFER, len));
     ASSERT_TRUE(sdp.mline_count >= 1);
@@ -546,9 +526,7 @@ TEST(test_sdp_parse_video_offer)
     nano_sdp_t sdp;
     sdp_init(&sdp);
 
-    size_t len = 0;
-    while (CHROME_VIDEO_OFFER[len])
-        len++;
+    size_t len = strlen(CHROME_VIDEO_OFFER);
 
     ASSERT_OK(sdp_parse(&sdp, CHROME_VIDEO_OFFER, len));
     ASSERT_TRUE(sdp.parsed);
@@ -596,9 +574,7 @@ TEST(test_sdp_parse_full_media_offer)
     nano_sdp_t sdp;
     sdp_init(&sdp);
 
-    size_t len = 0;
-    while (FULL_MEDIA_OFFER[len])
-        len++;
+    size_t len = strlen(FULL_MEDIA_OFFER);
 
     ASSERT_OK(sdp_parse(&sdp, FULL_MEDIA_OFFER, len));
 
@@ -1084,9 +1060,7 @@ TEST(test_sdp_parse_media_directions)
 
     nano_sdp_t sdp;
     sdp_init(&sdp);
-    size_t len = 0;
-    while (sdp_sendonly[len])
-        len++;
+    size_t len = strlen(sdp_sendonly);
     ASSERT_OK(sdp_parse(&sdp, sdp_sendonly, len));
     ASSERT_EQ(sdp.mlines[0].remote_direction, NANORTC_DIR_SENDONLY);
 
@@ -1110,9 +1084,7 @@ TEST(test_sdp_parse_media_directions)
 
     nano_sdp_t sdp2;
     sdp_init(&sdp2);
-    len = 0;
-    while (sdp_recvonly[len])
-        len++;
+    len = strlen(sdp_recvonly);
     ASSERT_OK(sdp_parse(&sdp2, sdp_recvonly, len));
     ASSERT_EQ(sdp2.mlines[0].remote_direction, NANORTC_DIR_RECVONLY);
 
@@ -1136,9 +1108,7 @@ TEST(test_sdp_parse_media_directions)
 
     nano_sdp_t sdp3;
     sdp_init(&sdp3);
-    len = 0;
-    while (sdp_inactive[len])
-        len++;
+    len = strlen(sdp_inactive);
     ASSERT_OK(sdp_parse(&sdp3, sdp_inactive, len));
     ASSERT_EQ(sdp3.mlines[0].remote_direction, NANORTC_DIR_INACTIVE);
 }

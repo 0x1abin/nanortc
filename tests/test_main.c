@@ -62,16 +62,8 @@ TEST(test_byte_order)
     ASSERT_EQ(nanortc_ntohl(0x04030201), 0x01020304);
 }
 
-#if NANORTC_FEATURE_DATACHANNEL
-TEST(test_crc32c)
-{
-    /* Known CRC-32c test vector: "123456789" -> 0xE3069283 */
-    extern uint32_t nano_crc32c(const uint8_t *data, size_t len);
-    const uint8_t data[] = "123456789";
-    uint32_t crc = nano_crc32c(data, 9);
-    ASSERT_EQ(crc, 0xE3069283);
-}
-#endif
+/* CRC-32c (Castagnoli) is covered by test_crc32.c::test_crc32c_check_value
+ * (same canonical vector); not re-asserted here. */
 
 TEST(test_crc32)
 {
@@ -89,8 +81,5 @@ TEST_MAIN_BEGIN("nanortc basic tests")
     RUN(test_init_null_params);
     RUN(test_poll_empty);
     RUN(test_byte_order);
-#if NANORTC_FEATURE_DATACHANNEL
-    RUN(test_crc32c);
-#endif
     RUN(test_crc32);
 TEST_MAIN_END

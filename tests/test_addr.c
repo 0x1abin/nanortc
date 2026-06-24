@@ -139,8 +139,7 @@ TEST(test_ipv4_roundtrip)
     for (size_t i = 0; i < sizeof(addrs) / sizeof(addrs[0]); i++) {
         uint8_t bin[4];
         const char *s = addrs[i];
-        size_t slen = 0;
-        while (s[slen]) slen++;
+        size_t slen = strlen(s);
         ASSERT_OK(addr_parse_ipv4(s, slen, bin));
         char out[16];
         size_t out_len;
@@ -413,8 +412,7 @@ TEST(test_ipv6_roundtrip)
     for (size_t i = 0; i < sizeof(addrs) / sizeof(addrs[0]); i++) {
         uint8_t bin[16];
         const char *s = addrs[i];
-        size_t slen = 0;
-        while (s[slen]) slen++;
+        size_t slen = strlen(s);
         ASSERT_OK(addr_parse_ipv6(s, slen, bin));
         char out[NANORTC_IPV6_STR_SIZE];
         size_t out_len;

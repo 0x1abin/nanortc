@@ -357,11 +357,8 @@ static int ossl_dtls_handshake(nanortc_crypto_dtls_ctx_t *ctx)
     return -1; /* Error */
 }
 
-static int ossl_dtls_encrypt(nanortc_crypto_dtls_ctx_t *ctx, const uint8_t *in, size_t in_len,
-                             uint8_t *out, size_t *out_len)
+static int ossl_dtls_encrypt(nanortc_crypto_dtls_ctx_t *ctx, const uint8_t *in, size_t in_len)
 {
-    (void)out;
-    (void)out_len;
     if (!ctx || !ctx->handshake_done) {
         return -1;
     }

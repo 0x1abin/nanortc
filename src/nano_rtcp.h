@@ -59,17 +59,14 @@ typedef struct nano_rtcp_info {
     uint8_t type;  /* RTCP_SR, RTCP_RR, RTCP_RTPFB, RTCP_PSFB */
     uint32_t ssrc; /* Sender SSRC */
 
-    /* SR-specific */
+    /* SR-specific — only NTP feeds DLSR/RTT; sender's rtp_ts/packet/octet
+     * counts are not consumed, so they are not parsed. */
     uint32_t ntp_sec;
     uint32_t ntp_frac;
-    uint32_t rtp_ts;
-    uint32_t sr_packets;
-    uint32_t sr_octets;
 
     /* NACK-specific (RFC 4585 §6.2.1) */
-    uint32_t nack_media_ssrc; /* SSRC of the media source whose packets were lost */
-    uint16_t nack_pid;        /* Packet ID (first lost seq number) */
-    uint16_t nack_blp;        /* Bitmask of following 16 lost packets */
+    uint16_t nack_pid; /* Packet ID (first lost seq number) */
+    uint16_t nack_blp; /* Bitmask of following 16 lost packets */
 
     /* PSFB-specific (RFC 4585 §6.3 / RFC 5104 §4.3). The SSRC of the media
      * source the feedback (PLI/FIR) is about — i.e. *our* outbound stream a

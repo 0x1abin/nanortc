@@ -133,20 +133,6 @@ TEST(test_base64_empty_with_dst)
     ASSERT_EQ(out[0], '\0');
 }
 
-/* Encoded size calculation helper matches the encoder output length. */
-TEST(test_base64_encoded_size_helper)
-{
-    /* 0 → 1 (just NUL), 1 → 5 ("X===\0"), 2 → 5, 3 → 5, 4 → 9, 5 → 9, 6 → 9, 7 → 13 */
-    ASSERT_EQ(nano_base64_encoded_size(0), 1u);
-    ASSERT_EQ(nano_base64_encoded_size(1), 5u);
-    ASSERT_EQ(nano_base64_encoded_size(2), 5u);
-    ASSERT_EQ(nano_base64_encoded_size(3), 5u);
-    ASSERT_EQ(nano_base64_encoded_size(4), 9u);
-    ASSERT_EQ(nano_base64_encoded_size(5), 9u);
-    ASSERT_EQ(nano_base64_encoded_size(6), 9u);
-    ASSERT_EQ(nano_base64_encoded_size(7), 13u);
-}
-
 /* ================================================================
  * Test runner
  * ================================================================ */
@@ -165,5 +151,4 @@ RUN(test_base64_all_alphabet);
 RUN(test_base64_buffer_too_small);
 RUN(test_base64_null_params);
 RUN(test_base64_empty_with_dst);
-RUN(test_base64_encoded_size_helper);
 TEST_MAIN_END

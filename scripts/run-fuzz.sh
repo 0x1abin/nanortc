@@ -65,8 +65,7 @@ CC="$CLANG" cmake -B "$BUILD_DIR" \
 cmake --build "$BUILD_DIR" -j"$(nproc 2>/dev/null || sysctl -n hw.ncpu)" 2>&1 | tail -5
 echo ""
 
-# Create corpus directories
-mkdir -p "$CORPUS_DIR"/{stun,sctp,sdp,rtp,h264,h265,addr,bwe,turn}
+# Per-target corpus dirs are created on demand in the run loop below.
 
 # All fuzz targets — kept in sync with .github/workflows/ci.yml
 ALL_TARGETS="fuzz_stun fuzz_sctp fuzz_sdp fuzz_rtp fuzz_h264 fuzz_h265 fuzz_addr fuzz_bwe fuzz_turn"

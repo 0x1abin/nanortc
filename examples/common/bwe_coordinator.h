@@ -69,11 +69,9 @@ void bwe_coordinator_init(bwe_coordinator_t *c, uint32_t apply_interval_ms,
 int bwe_coordinator_try_apply(bwe_coordinator_t *c, uint32_t candidate_bps,
                               int contributors, uint32_t now_ms);
 
-/* Skip reasons (positive return codes from try_apply). */
-#define BWE_APPLY_OK                0  /* encoder was updated */
-#define BWE_APPLY_SKIP_INTERVAL     1  /* last apply was too recent */
-#define BWE_APPLY_SKIP_DAMPEN       2  /* candidate inside ±dampen_pct of applied */
-#define BWE_APPLY_SKIP_NO_CONTRIB   3  /* no live contributor (candidate==0) */
+/* Return codes from try_apply. Callers only distinguish applied vs not. */
+#define BWE_APPLY_OK   0 /* encoder was updated */
+#define BWE_APPLY_SKIP 1 /* intentionally skipped (interval / dampen / no contributor) */
 
 /**
  * @brief Reset the coordinator's applied/last-apply state.

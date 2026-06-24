@@ -88,68 +88,6 @@ static int bind_udp_any(uint16_t port)
     return fd;
 }
 
-/* Bind a UDP socket to a specific IPv4 address and port (for auto_candidates).
- * Returns fd on success, -1 on failure. */
-static int bind_udp_ipv4(const char *ip, uint16_t port)
-{
-    int fd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (fd < 0) {
-        perror("socket");
-        return -1;
-    }
-    int reuse = 1;
-    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
-
-    struct sockaddr_in local;
-    memset(&local, 0, sizeof(local));
-    local.sin_family = AF_INET;
-    local.sin_port = htons(port);
-    inet_pton(AF_INET, ip, &local.sin_addr);
-
-    if (bind(fd, (struct sockaddr *)&local, sizeof(local)) < 0) {
-        perror("bind");
-        close(fd);
-        return -1;
-    }
-    tune_udp_sndbuf(fd);
-    return fd;
-}
-
-#if NANORTC_FEATURE_IPV6
-/* Bind a UDP socket to a specific IPv6 address and port.
- * IPV6_V6ONLY=1 so v4-mapped traffic goes through the dedicated v4 fd.
- * Returns fd on success, -1 on failure. */
-static int bind_udp_ipv6(const char *ip, uint16_t port)
-{
-    int fd = socket(AF_INET6, SOCK_DGRAM, 0);
-    if (fd < 0) {
-        perror("socket(AF_INET6)");
-        return -1;
-    }
-    int reuse = 1;
-    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
-    int v6only = 1;
-    setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &v6only, sizeof(v6only));
-
-    struct sockaddr_in6 local;
-    memset(&local, 0, sizeof(local));
-    local.sin6_family = AF_INET6;
-    local.sin6_port = htons(port);
-    if (inet_pton(AF_INET6, ip, &local.sin6_addr) != 1) {
-        close(fd);
-        return -1;
-    }
-
-    if (bind(fd, (struct sockaddr *)&local, sizeof(local)) < 0) {
-        perror("bind(IPv6)");
-        close(fd);
-        return -1;
-    }
-    tune_udp_sndbuf(fd);
-    return fd;
-}
-#endif
-
 int nano_run_loop_init(nano_run_loop_t *loop, nanortc_t *rtc, uint16_t port)
 {
     if (!loop || !rtc) {
@@ -172,107 +110,6 @@ int nano_run_loop_init(nano_run_loop_t *loop, nanortc_t *rtc, uint16_t port)
     loop->fd_count = 1;
     /* local_addrs[0].family stays 0 = wildcard (matches any transmit src) */
 
-    return 0;
-}
-
-int nano_run_loop_auto_candidates(nano_run_loop_t *loop, nanortc_t *rtc, uint16_t port)
-{
-    if (!loop || !rtc) {
-        return -1;
-    }
-
-    memset(loop, 0, sizeof(*loop));
-    loop->rtc = rtc;
-    loop->port = port;
-    loop->running = 0;
-    for (int i = 0; i < NANORTC_MAX_LOCAL_CANDIDATES; i++) {
-        loop->fds[i] = -1;
-    }
-
-    struct ifaddrs *ifas, *ifa;
-    if (getifaddrs(&ifas) != 0) {
-        perror("getifaddrs");
-        /* Fall back to wildcard bind */
-        int fd = bind_udp_any(port);
-        if (fd < 0)
-            return -1;
-        loop->fds[0] = fd;
-        loop->fd_count = 1;
-        return 0;
-    }
-
-    uint8_t count = 0;
-    for (ifa = ifas; ifa && count < NANORTC_MAX_LOCAL_CANDIDATES; ifa = ifa->ifa_next) {
-        if (!ifa->ifa_addr)
-            continue;
-        if (ifa->ifa_flags & IFF_LOOPBACK)
-            continue;
-        if (!(ifa->ifa_flags & IFF_UP))
-            continue;
-
-        if (ifa->ifa_addr->sa_family == AF_INET) {
-            struct sockaddr_in *sa = (struct sockaddr_in *)ifa->ifa_addr;
-            char ip_str[INET_ADDRSTRLEN];
-            inet_ntop(AF_INET, &sa->sin_addr, ip_str, sizeof(ip_str));
-
-            int fd = bind_udp_ipv4(ip_str, port);
-            if (fd < 0)
-                continue;
-
-            loop->fds[count] = fd;
-            loop->local_addrs[count].family = 4;
-            memcpy(loop->local_addrs[count].addr, &sa->sin_addr, 4);
-            loop->local_addrs[count].port = port;
-
-            nanortc_add_local_candidate(rtc, ip_str, port);
-            count++;
-            continue;
-        }
-
-#if NANORTC_FEATURE_IPV6
-        if (ifa->ifa_addr->sa_family == AF_INET6) {
-            struct sockaddr_in6 *sa6 = (struct sockaddr_in6 *)ifa->ifa_addr;
-            /* Skip link-local (needs scope_id, unsupported by ICE wire format)
-             * and multicast; loopback already filtered above by IFF_LOOPBACK. */
-            if (IN6_IS_ADDR_LINKLOCAL(&sa6->sin6_addr))
-                continue;
-            if (IN6_IS_ADDR_MULTICAST(&sa6->sin6_addr))
-                continue;
-            if (IN6_IS_ADDR_UNSPECIFIED(&sa6->sin6_addr))
-                continue;
-
-            char ip_str[INET6_ADDRSTRLEN];
-            if (!inet_ntop(AF_INET6, &sa6->sin6_addr, ip_str, sizeof(ip_str)))
-                continue;
-
-            int fd = bind_udp_ipv6(ip_str, port);
-            if (fd < 0)
-                continue;
-
-            loop->fds[count] = fd;
-            loop->local_addrs[count].family = 6;
-            memcpy(loop->local_addrs[count].addr, &sa6->sin6_addr, 16);
-            loop->local_addrs[count].port = port;
-
-            nanortc_add_local_candidate(rtc, ip_str, port);
-            count++;
-            continue;
-        }
-#endif
-    }
-    freeifaddrs(ifas);
-
-    if (count == 0) {
-        /* No interfaces found — fall back to wildcard */
-        int fd = bind_udp_any(port);
-        if (fd < 0)
-            return -1;
-        loop->fds[0] = fd;
-        loop->fd_count = 1;
-        return 0;
-    }
-
-    loop->fd_count = count;
     return 0;
 }
 
@@ -460,10 +297,10 @@ int nano_run_loop_step(nano_run_loop_t *loop)
                 }
                 in.src.port = ntohs(from6.sin6_port);
                 /* dst = the local socket the packet arrived on. With one
-                 * socket, local_addrs[0] is wildcard (family==0) and ICE
-                 * falls back to selected_local_idx=0; with auto_candidates,
-                 * each socket has its specific bound IP and dst lets ICE
-                 * record the right candidate type on USE-CANDIDATE. */
+                 * wildcard socket (family==0) ICE falls back to
+                 * selected_local_idx=0; if a caller binds per-IP sockets and
+                 * fills local_addrs[i], dst lets ICE record the right
+                 * candidate type on USE-CANDIDATE. */
                 if (loop->local_addrs[i].family != 0) {
                     in.dst = loop->local_addrs[i];
                 }
@@ -494,22 +331,6 @@ int nano_run_loop_step(nano_run_loop_t *loop)
     /* Dispatch any new output generated by handle_input */
     dispatch_outputs(loop, &timeout_ms);
 
-    return 0;
-}
-
-int nano_run_loop_run(nano_run_loop_t *loop)
-{
-    if (!loop) {
-        return -1;
-    }
-
-    loop->running = 1;
-    while (loop->running) {
-        int rc = nano_run_loop_step(loop);
-        if (rc < 0) {
-            return rc;
-        }
-    }
     return 0;
 }
 

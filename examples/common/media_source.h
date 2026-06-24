@@ -61,12 +61,6 @@ void nano_media_source_reset(nano_media_source_t *src);
 
 void nano_media_source_destroy(nano_media_source_t *src);
 
-/* Convenience: frame interval for timing loops */
-static inline uint32_t nano_media_source_interval_ms(const nano_media_source_t *src)
-{
-    return src ? src->frame_interval_ms : 0;
-}
-
 #ifdef __cplusplus
 }
 #endif

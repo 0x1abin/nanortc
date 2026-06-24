@@ -52,12 +52,9 @@
 
 typedef struct {
     uint8_t channel_type;
-    uint16_t priority;
-    uint32_t reliability_param;
     const char *label;
     uint16_t label_len;
-    const char *protocol;
-    uint16_t protocol_len;
+    uint16_t protocol_len; /* validated for bounds; protocol string itself unused */
 } dcep_open_t;
 
 /* ----------------------------------------------------------------
@@ -74,9 +71,7 @@ typedef struct nano_dc_channel {
     nano_dc_state_t state;
     uint16_t stream_id;
     char label[NANORTC_DC_LABEL_SIZE];
-    uint8_t channel_type;
     bool ordered;
-    uint16_t max_retransmits;
 } nano_dc_channel_t;
 
 /* ----------------------------------------------------------------

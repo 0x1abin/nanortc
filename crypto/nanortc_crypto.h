@@ -55,8 +55,9 @@ struct nanortc_crypto_provider {
     int (*dtls_set_bio)(nanortc_crypto_dtls_ctx_t *ctx, void *userdata,
                         nanortc_dtls_send_fn send_cb, nanortc_dtls_recv_fn recv_cb);
     int (*dtls_handshake)(nanortc_crypto_dtls_ctx_t *ctx);
-    int (*dtls_encrypt)(nanortc_crypto_dtls_ctx_t *ctx, const uint8_t *in, size_t in_len,
-                        uint8_t *out, size_t *out_len);
+    /* Encrypts and sends via the BIO send callback; produces no caller-visible
+     * output buffer (unlike dtls_decrypt). */
+    int (*dtls_encrypt)(nanortc_crypto_dtls_ctx_t *ctx, const uint8_t *in, size_t in_len);
     int (*dtls_decrypt)(nanortc_crypto_dtls_ctx_t *ctx, const uint8_t *in, size_t in_len,
                         uint8_t *out, size_t *out_len);
     int (*dtls_export_keying_material)(nanortc_crypto_dtls_ctx_t *ctx, const char *label,
