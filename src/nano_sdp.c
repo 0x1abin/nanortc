@@ -955,6 +955,18 @@ static bool sdp_append_video_mline(nano_sdp_t *sdp, nano_sdp_mline_t *ml, char *
     if (!sdp_append(buf, buf_len, pos, " nack pli\r\n"))
         return false;
 
+    /* Transport-wide CC rtcp-fb (draft-holmer-rmcat-transport-wide-cc-extensions-01
+     * §4). Required in addition to the extmap below: per libwebrtc, a receiver
+     * only emits transport-cc RTCP feedback when this rtcp-fb attribute is
+     * negotiated. Without it Chrome sends no congestion feedback and our BWE
+     * stays at its seed (no encoder rate adaptation). */
+    if (!sdp_append(buf, buf_len, pos, "a=rtcp-fb:"))
+        return false;
+    if (!sdp_append_u16(buf, buf_len, pos, (uint16_t)ml->pt))
+        return false;
+    if (!sdp_append(buf, buf_len, pos, " transport-cc\r\n"))
+        return false;
+
     /* Transport-wide CC extmap (RFC 8285 / draft-holmer-rmcat-twcc-01).
      * When answering, ml->twcc_ext_id is the offerer's ID (parsed from
      * the remote SDP). When offering, it starts at 0 — fall back to the
