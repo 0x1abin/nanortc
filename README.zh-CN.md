@@ -137,7 +137,7 @@ examples/                   Application templates
   common/                   Reusable event loop, signaling, media source
   browser_interop/          DataChannel + media browser harness
   macos_camera/             macOS camera/mic → browser streaming
-  esp32_{datachannel,audio,video,camera}/   ESP-IDF targets
+  esp32_{datachannel,media,camera}/         ESP-IDF targets
   linux_uvc_camera/         Linux UVC camera → browser (libx264 / NVENC / Rockchip MPP, -e selectable)
   tools/                    Dev utilities
   sample_data/              Media samples (git submodule)

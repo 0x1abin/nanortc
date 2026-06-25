@@ -44,7 +44,7 @@ generous host defaults:
 | `NANORTC_SCTP_{SEND,RECV,RECV_GAP}_BUF_SIZE` | 4096 each | 2048 each |
 | `NANORTC_SCTP_MAX_SEND_QUEUE` | 16 | 4 |
 | `NANORTC_SCTP_MAX_RECV_GAP` | 8 | 4 |
-| `NANORTC_OUT_QUEUE_SIZE` | 32 | 8 (`esp32_audio`/`esp32_datachannel`), 16 (`esp32_video`), 32 (`esp32_camera` — 1080p HW H.264 needs ≥32 to absorb a single P-frame's worth of FU-A fragments without `tx queue full`; see phase 10 PR-2 follow-up) |
+| `NANORTC_OUT_QUEUE_SIZE` | 32 | 8 (`esp32_datachannel`), 16 (`esp32_media`), 32 (`esp32_camera` — 1080p HW H.264 needs ≥32 to absorb a single P-frame's worth of FU-A fragments without `tx queue full`; see phase 10 PR-2 follow-up) |
 | `NANORTC_VIDEO_PKT_RING_SIZE` | inherits `NANORTC_OUT_QUEUE_SIZE` | inherits `NANORTC_OUT_QUEUE_SIZE` |
 | `NANORTC_MEDIA_BUF_SIZE` | 1232 (formula) | 1232 (fixed; `#error` guards `< MTU + 30`) |
 | `NANORTC_VIDEO_NAL_BUF_SIZE` | 16384 | 8192 |
