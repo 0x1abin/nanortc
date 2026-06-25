@@ -134,7 +134,7 @@ TEST(test_rtcp_nack_basic)
 {
     uint8_t buf[32];
     size_t out_len = 0;
-    ASSERT_OK(rtcp_generate_nack(0xAAAAAAAA, 0xBBBBBBBB, 42, buf, sizeof(buf), &out_len));
+    ASSERT_OK(rtcp_generate_nack(0xAAAAAAAA, 0xBBBBBBBB, 42, 0, buf, sizeof(buf), &out_len));
     ASSERT_EQ(out_len, RTCP_NACK_SIZE); /* 16 bytes */
 
     /* Header */
@@ -156,7 +156,7 @@ TEST(test_rtcp_nack_buffer_too_small)
 {
     uint8_t buf[8];
     size_t out_len = 0;
-    ASSERT_FAIL(rtcp_generate_nack(1, 2, 3, buf, sizeof(buf), &out_len));
+    ASSERT_FAIL(rtcp_generate_nack(1, 2, 3, 0, buf, sizeof(buf), &out_len));
 }
 
 /* ================================================================
@@ -205,7 +205,7 @@ TEST(test_rtcp_parse_nack)
 {
     uint8_t buf[32];
     size_t out_len = 0;
-    ASSERT_OK(rtcp_generate_nack(0x33333333, 0x44444444, 999, buf, sizeof(buf), &out_len));
+    ASSERT_OK(rtcp_generate_nack(0x33333333, 0x44444444, 999, 0, buf, sizeof(buf), &out_len));
 
     nano_rtcp_info_t info;
     ASSERT_OK(rtcp_parse(buf, out_len, &info));
@@ -517,6 +517,50 @@ TEST(test_rtcp_parse_sr_with_report_block)
     ASSERT_EQ(info.rb_fraction_lost, 0xA0);
 }
 
+/* Compound-RTCP iteration (RFC 3550 §6.1). Browsers bundle their feedback
+ * (transport-cc / PLI / NACK) AFTER a leading RR/SR in a single datagram.
+ * The receive path must walk every member by its length field — parsing
+ * only the first (the RR) silently drops all feedback, which stalls BWE
+ * adaptation and keyframe recovery against Chrome. This guards that the
+ * SECOND member (here a PLI) is reachable and parses correctly. */
+TEST(test_rtcp_compound_rr_then_pli)
+{
+    uint8_t buf[20];
+    /* Member 1 — RR, RC=0: V=2 PT=201 len=1 → 8 bytes. */
+    buf[0] = 0x80;
+    buf[1] = (uint8_t)RTCP_RR;
+    nanortc_write_u16be(buf + 2, 1);
+    nanortc_write_u32be(buf + 4, 0x11223344u); /* reporter ssrc */
+    /* Member 2 — PSFB PLI, FMT=1: V=2 PT=206 len=2 → 12 bytes. */
+    buf[8] = 0x81;
+    buf[9] = (uint8_t)RTCP_PSFB;
+    nanortc_write_u16be(buf + 10, 2);
+    nanortc_write_u32be(buf + 12, 0x55667788u); /* sender ssrc */
+    nanortc_write_u32be(buf + 16, 0xAABBCCDDu); /* media ssrc (PLI target) */
+
+    /* Walk the compound by length field, exactly as the receive path does. */
+    size_t off = 0;
+    nano_rtcp_info_t info;
+
+    size_t len0 = ((size_t)nanortc_read_u16be(buf + off + 2) + 1u) * 4u;
+    ASSERT_EQ(len0, 8u);
+    ASSERT_OK(rtcp_parse(buf + off, len0, &info));
+    ASSERT_EQ(info.type, (uint8_t)RTCP_RR);
+    off += len0;
+
+    /* The second member must be reachable — the bug stopped after the RR. */
+    ASSERT_TRUE(off < sizeof(buf));
+    size_t len1 = ((size_t)nanortc_read_u16be(buf + off + 2) + 1u) * 4u;
+    ASSERT_EQ(len1, 12u);
+    ASSERT_OK(rtcp_parse(buf + off, len1, &info));
+    ASSERT_EQ(info.type, (uint8_t)RTCP_PSFB);
+    ASSERT_EQ((unsigned)(buf[off] & 0x1F), 1u); /* FMT=1 → PLI */
+    ASSERT_EQ(info.psfb_media_ssrc, 0xAABBCCDDu);
+    off += len1;
+
+    ASSERT_EQ(off, sizeof(buf)); /* consumed the whole compound exactly */
+}
+
 /* ================================================================
  * Test runner
  * ================================================================ */
@@ -549,4 +593,5 @@ RUN(test_rtcp_sr_independent_vector);
 /* PR-5: report-block (fraction_lost) extraction */
 RUN(test_rtcp_parse_rr_fraction_lost);
 RUN(test_rtcp_parse_sr_with_report_block);
+RUN(test_rtcp_compound_rr_then_pli);
 TEST_MAIN_END

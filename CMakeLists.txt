@@ -43,7 +43,7 @@ if(DEFINED ENV{IDF_PATH})
         list(APPEND NANORTC_CORE_SRCS src/nano_jitter.c)
     endif()
     if(CONFIG_NANORTC_FEATURE_VIDEO)
-        list(APPEND NANORTC_CORE_SRCS src/nano_bwe.c src/nano_twcc.c src/nano_annex_b.c src/nano_h264.c)
+        list(APPEND NANORTC_CORE_SRCS src/nano_bwe.c src/nano_twcc.c src/nano_annex_b.c src/nano_h264.c src/nano_reorder.c src/nano_fec.c)
         if(CONFIG_NANORTC_FEATURE_H265)
             list(APPEND NANORTC_CORE_SRCS src/nano_h265.c src/nano_base64.c)
         endif()
@@ -153,6 +153,8 @@ if(NANORTC_FEATURE_VIDEO)
         src/nano_twcc.c
         src/nano_annex_b.c
         src/nano_h264.c
+        src/nano_reorder.c
+        src/nano_fec.c
     )
     if(NANORTC_FEATURE_H265)
         list(APPEND NANORTC_SOURCES

@@ -50,6 +50,12 @@
 #include "nano_base64.h"
 #include "nano_annex_b.h"
 #endif
+#if NANORTC_FEATURE_VIDEO_FEC
+#include "nano_fec.h"
+/* Forward decl: the FEC capture hook fires from the send path (above), but the
+ * helper is defined alongside the other FEC helpers further down. */
+static void rtc_fec_capture(nanortc_t *rtc, nanortc_track_t *m, const uint8_t *pkt, size_t len);
+#endif
 /* Internal video flags for RTP packetization */
 #define NANORTC_VIDEO_FLAG_KEYFRAME 0x01 /* NAL is part of a keyframe (IDR) */
 #define NANORTC_VIDEO_FLAG_MARKER   0x02 /* Last NAL in access unit (RTP marker bit) */
@@ -284,6 +290,12 @@ static int rtc_send_audio(nanortc_t *rtc, nanortc_track_t *m, uint32_t timestamp
 static uint8_t *pkt_ring_alloc_slot(nanortc_t *rtc, uint16_t *out_pslot)
 {
     uint16_t out_inflight = (uint16_t)(rtc->out_tail - rtc->out_head);
+#if NANORTC_FEATURE_VIDEO_PACING
+    /* With pacing, unreleased fragments live in the pace FIFO (not yet in
+     * out_queue) but still occupy pkt_ring slots that must not be wrapped
+     * over. Add the pace backlog to the occupancy tripwire. */
+    out_inflight = (uint16_t)(out_inflight + (uint16_t)(rtc->pacer.tail - rtc->pacer.head));
+#endif
     if (out_inflight >= NANORTC_VIDEO_PKT_RING_SIZE) {
         __atomic_fetch_add(&rtc->stats_pkt_ring_overrun, 1, __ATOMIC_RELAXED);
         NANORTC_LOGW("RTC", "pkt_ring overrun — raise NANORTC_VIDEO_PKT_RING_SIZE");
@@ -303,6 +315,151 @@ static void pkt_ring_commit_slot(nanortc_t *rtc, uint16_t pslot, uint16_t wire_s
     rtc->pkt_ring_meta[pslot].len = srtp_len;
     rtc->pkt_ring_tail++;
 }
+
+#if NANORTC_FEATURE_VIDEO_PACING
+/* ================================================================
+ * Send pacer (RFC-agnostic; mirrors libwebrtc PacedSender intent)
+ *
+ * A leaky token bucket meters video fragments out of pkt_ring into the
+ * output queue at `BWE_estimate * NANORTC_PACING_FACTOR_PCT%`, so a
+ * multi-fragment IDR is spread across ~one frame interval instead of
+ * bursting onto the wire and overrunning the network bottleneck buffer
+ * (self-inflicted loss → PLI → larger IDR). The FIFO is the [head, tail)
+ * window over the pkt_ring slots: `tail` tracks pkt_ring_tail (every
+ * committed fragment is pace-enqueued), `head` is the release cursor.
+ * Catch-up: any fragment older than NANORTC_PACING_MAX_QUEUE_MS is flushed
+ * immediately, so the pacer never adds unbounded latency. Control packets,
+ * NACK retransmits and audio bypass the pacer entirely.
+ * ================================================================ */
+
+/* Effective pacing rate (bits/sec) = max(BWE, floor) * factor. 64-bit math
+ * so a high BWE estimate * factor cannot overflow. */
+static uint32_t pacer_rate_bps(const nanortc_t *rtc)
+{
+    uint32_t est = rtc->bwe.estimated_bitrate;
+    if (est < NANORTC_PACING_MIN_RATE_BPS) {
+        est = NANORTC_PACING_MIN_RATE_BPS;
+    }
+    uint64_t rate = ((uint64_t)est * (uint64_t)NANORTC_PACING_FACTOR_PCT) / 100u;
+    return (rate > UINT32_MAX) ? UINT32_MAX : (uint32_t)rate;
+}
+
+void nano_rtc_pacer_enqueue(nanortc_t *rtc, uint16_t pslot)
+{
+    /* pkt_ring_commit_slot() already advanced pkt_ring_tail past this slot;
+     * keep the pacer tail in lock-step so depth = tail - head counts the
+     * unreleased fragments. Stamp the enqueue time for the catch-up cap. */
+    rtc->pacer.enqueue_ms[pslot] = rtc->now_ms;
+    rtc->pacer.tail = rtc->pkt_ring_tail;
+}
+
+void nano_rtc_pacer_pump(nanortc_t *rtc)
+{
+    nano_pacer_t *p = &rtc->pacer;
+    if (p->head == p->tail) {
+        return; /* nothing pending */
+    }
+
+    uint32_t now = rtc->now_ms;
+    uint32_t rate = pacer_rate_bps(rtc);
+
+    /* Token-bucket refill. now_ms is monotonic per the Sans-I/O contract, so
+     * `now - last` here and the `aged` check below both use plain modular
+     * subtraction — the same convention as every other timer in the stack —
+     * which stays correct across the ~49-day uint32 wrap (a guard like
+     * `now < last ? 0` would instead mis-age packets straddling the wrap). The
+     * `== 0` test only anchors the very first pump so it never credits a full
+     * epoch. A non-monotonic (backward) clock is out of contract; the elapsed
+     * clamp + burst cap bound it to one capped refill (and, below, one bounded
+     * catch-up flush) — never unbounded latency, credit, or 64-bit overflow. */
+    if (p->last_refill_ms == 0) {
+        p->last_refill_ms = now;
+    }
+    {
+        uint32_t elapsed = now - p->last_refill_ms;
+        if (elapsed > 1000u) {
+            elapsed = 1000u; /* >1 s of credit only ever fills to the burst cap */
+        }
+        if (elapsed > 0) {
+            uint64_t budget = (uint64_t)p->budget_bytes + ((uint64_t)rate * elapsed) / 8000u;
+            if (budget > NANORTC_PACING_MAX_BURST_BYTES) {
+                budget = NANORTC_PACING_MAX_BURST_BYTES;
+            }
+            p->budget_bytes = (uint32_t)budget;
+            p->last_refill_ms = now;
+        }
+    }
+
+    /* Release due fragments into out_queue. */
+    while (p->head != p->tail) {
+        uint16_t slot = p->head & (NANORTC_VIDEO_PKT_RING_SIZE - 1);
+        uint16_t len = rtc->pkt_ring_meta[slot].len;
+        if (len == 0) {
+            p->head++; /* defensive: skip a stale/empty slot */
+            continue;
+        }
+
+        bool have_budget = (p->budget_bytes >= len);
+        bool aged = (uint32_t)(now - p->enqueue_ms[slot]) >= (uint32_t)NANORTC_PACING_MAX_QUEUE_MS;
+        if (!have_budget && !aged) {
+            break; /* not enough credit and not yet aged out — wait */
+        }
+
+        /* Respect out_queue capacity; if full, retry on the next pump. */
+        if ((uint16_t)(rtc->out_tail - rtc->out_head) >= NANORTC_OUT_QUEUE_SIZE) {
+            break;
+        }
+        if (nano_rtc_enqueue_transmit(rtc, rtc->pkt_ring[slot], len, &rtc->remote_addr, false) !=
+            NANORTC_OK) {
+            break;
+        }
+
+        if (have_budget) {
+            p->budget_bytes -= len;
+        } else {
+            /* Catch-up release: latency cap forced this out without credit.
+             * Atomic to match stats_pkt_ring_overrun — read cross-task by
+             * example /debug endpoints. */
+            __atomic_fetch_add(&rtc->stats_pace_catchup, 1, __ATOMIC_RELAXED);
+            p->budget_bytes = 0;
+        }
+        __atomic_fetch_add(&rtc->stats_paced_packets, 1, __ATOMIC_RELAXED);
+        p->head++;
+    }
+
+    /* Cache the next-release deadline for nanortc_next_timeout_ms(). */
+    if (p->head == p->tail) {
+        p->next_release_ms = now; /* drained */
+    } else {
+        uint16_t slot = p->head & (NANORTC_VIDEO_PKT_RING_SIZE - 1);
+        uint16_t len = rtc->pkt_ring_meta[slot].len;
+        uint32_t deficit = (len > p->budget_bytes) ? (uint32_t)(len - p->budget_bytes) : 0u;
+        /* ms to accrue `deficit` bytes at `rate` (ceil): deficit*8000/rate. */
+        uint32_t wait =
+            (rate > 0) ? (uint32_t)(((uint64_t)deficit * 8000u + rate - 1u) / rate) : 1u;
+        /* Never wait past the catch-up age cap. */
+        uint32_t age = now - p->enqueue_ms[slot];
+        uint32_t until_age =
+            (age >= NANORTC_PACING_MAX_QUEUE_MS) ? 0u : (NANORTC_PACING_MAX_QUEUE_MS - age);
+        if (until_age < wait) {
+            wait = until_age;
+        }
+        p->next_release_ms = now + wait;
+    }
+}
+
+uint32_t nano_rtc_pacer_next_deadline_ms(const nanortc_t *rtc, uint32_t now_ms)
+{
+    const nano_pacer_t *p = &rtc->pacer;
+    if (p->head == p->tail) {
+        return UINT32_MAX; /* pace FIFO empty — no deadline armed */
+    }
+    /* next_release_ms is the absolute deadline cached by the last pump.
+     * A stale-low value only costs one extra (idempotent) pump, never a
+     * missed release, so clamping to 0 here is always safe. */
+    return (p->next_release_ms > now_ms) ? (p->next_release_ms - now_ms) : 0u;
+}
+#endif /* NANORTC_FEATURE_VIDEO_PACING */
 
 #if NANORTC_FEATURE_H265
 /* Context + callback used by the H.265 send path. H.264 no longer uses this
@@ -338,6 +495,11 @@ static int video_send_fragment_cb(const uint8_t *payload, size_t len, int marker
         return rc;
     }
 
+#if NANORTC_FEATURE_VIDEO_FEC
+    /* FEC protects the plaintext RTP — capture before SRTP encrypts in place. */
+    rtc_fec_capture(rtc, m, pkt_buf, rtp_len);
+#endif
+
     size_t srtp_len = 0;
     rc = nano_srtp_protect(&rtc->srtp, pkt_buf, rtp_len, &srtp_len);
     if (rc != NANORTC_OK) {
@@ -352,7 +514,12 @@ static int video_send_fragment_cb(const uint8_t *payload, size_t len, int marker
 
     pkt_ring_commit_slot(rtc, pslot, (uint16_t)(m->rtp.seq - 1), (uint16_t)srtp_len);
 
+#if NANORTC_FEATURE_VIDEO_PACING
+    nano_rtc_pacer_enqueue(rtc, pslot);
+    ctx->last_rc = NANORTC_OK;
+#else
     ctx->last_rc = nano_rtc_enqueue_transmit(rtc, pkt_buf, srtp_len, &rtc->remote_addr, false);
+#endif
     return ctx->last_rc;
 }
 #endif /* NANORTC_FEATURE_H265 */
@@ -411,6 +578,11 @@ static int rtc_send_video(nanortc_t *rtc, nanortc_track_t *m, uint32_t timestamp
             return rc;
         }
 
+#if NANORTC_FEATURE_VIDEO_FEC
+        /* FEC protects the plaintext RTP — capture before SRTP encrypts in place. */
+        rtc_fec_capture(rtc, m, pkt_buf, rtp_len);
+#endif
+
         size_t srtp_len = 0;
         rc = nano_srtp_protect(&rtc->srtp, pkt_buf, rtp_len, &srtp_len);
         if (rc != NANORTC_OK) {
@@ -427,10 +599,16 @@ static int rtc_send_video(nanortc_t *rtc, nanortc_track_t *m, uint32_t timestamp
 
         pkt_ring_commit_slot(rtc, pslot, (uint16_t)(m->rtp.seq - 1), (uint16_t)srtp_len);
 
+#if NANORTC_FEATURE_VIDEO_PACING
+        /* Hand the fragment to the pacer; it releases into out_queue at the
+         * BWE-derived rate (admission above guaranteed pkt_ring headroom). */
+        nano_rtc_pacer_enqueue(rtc, pslot);
+#else
         rc = nano_rtc_enqueue_transmit(rtc, pkt_buf, srtp_len, &rtc->remote_addr, false);
         if (rc != NANORTC_OK) {
             return rc;
         }
+#endif
     }
 
     return NANORTC_OK;
@@ -609,6 +787,33 @@ int nanortc_send_video(nanortc_t *rtc, uint8_t mid, uint32_t pts_ms, const void 
         return NANORTC_OK; /* no NAL units found — nothing to send */
     }
     {
+#if NANORTC_FEATURE_VIDEO_PACING
+        /* With pacing, fragments queue in the pkt_ring (pace FIFO) and trickle
+         * into out_queue over ~one frame interval, so the binding capacity is
+         * the ring — not the output queue. `occupied` reserves headroom for the
+         * unreleased pace backlog plus the freshly-pumped media still in
+         * out_queue (the contiguous block ending at pkt_ring_tail), so a new
+         * frame's `needed` slots never wrap over an unsent fragment. Same
+         * whole-frame-or-nothing contract as the pre-pacer gate.
+         * NOTE: this entry-count reservation assumes pinned slots are
+         * contiguous with that live block. A generic-NACK retransmit pins a
+         * *non-contiguous* older slot — but it now enqueues a COPY in the
+         * nack_retx_buf ring (TD-023, resolved), so a later send_video wrapping
+         * pkt_ring over that slot can no longer corrupt the in-flight
+         * retransmit. */
+        size_t cap = (size_t)NANORTC_VIDEO_PKT_RING_SIZE;
+        if (needed > cap) {
+            NANORTC_LOGW("RTP", "video frame exceeds pkt_ring capacity");
+            return NANORTC_ERR_BUFFER_TOO_SMALL;
+        }
+        size_t occupied = (size_t)(uint16_t)(rtc->out_tail - rtc->out_head) +
+                          (size_t)(uint16_t)(rtc->pacer.tail - rtc->pacer.head);
+        if (occupied >= cap || needed > cap - occupied) {
+            /* Retryable backpressure: drain outputs (and let time advance so
+             * the pacer releases its backlog), then call again. */
+            return NANORTC_ERR_WOULD_BLOCK;
+        }
+#else
         size_t cap = (NANORTC_VIDEO_PKT_RING_SIZE < NANORTC_OUT_QUEUE_SIZE)
                          ? (size_t)NANORTC_VIDEO_PKT_RING_SIZE
                          : (size_t)NANORTC_OUT_QUEUE_SIZE;
@@ -623,6 +828,7 @@ int nanortc_send_video(nanortc_t *rtc, uint8_t mid, uint32_t pts_ms, const void 
             /* Retryable backpressure: drain outputs and call again. */
             return NANORTC_ERR_WOULD_BLOCK;
         }
+#endif
     }
 
     /* One call = one encoded frame for fps accounting. Callers that split
@@ -671,6 +877,55 @@ int nanortc_send_video(nanortc_t *rtc, uint8_t mid, uint32_t pts_ms, const void 
 }
 #endif /* NANORTC_FEATURE_VIDEO */
 
+/* Emit one RTCP PLI (RFC 4585 §6.3.1) for video track @p m: generate → SRTCP
+ * protect (RFC 3711 §3.4) → enqueue. Shared by the public
+ * nanortc_request_keyframe() and the receive-side auto-PLI loss-recovery path.
+ * Caller guarantees @p m is a connected video track with SRTP ready. */
+static int rtc_emit_pli(nanortc_t *rtc, nanortc_track_t *m)
+{
+    /* Build into the persistent rtcp_fb_buf, NOT a stack buffer: the auto-PLI
+     * path calls this mid-receive-processing, so a stack buffer would be
+     * clobbered before nanortc_poll_output() hands the pointer to the caller
+     * (the out_queue stores only a pointer — nanortc_output_t lifetime
+     * contract). stun_buf is unavailable here too — it holds the inbound RTP
+     * packet being depacketized. */
+    size_t pli_len = 0;
+    int rc = rtcp_generate_pli(m->rtcp.ssrc, m->rtcp.remote_ssrc, rtc->rtcp_fb_buf,
+                               sizeof(rtc->rtcp_fb_buf), &pli_len);
+    if (rc != NANORTC_OK) {
+        return rc;
+    }
+    size_t srtcp_len = 0;
+    rc = nano_srtp_protect_rtcp(&rtc->srtp, rtc->rtcp_fb_buf, pli_len, &srtcp_len);
+    if (rc != NANORTC_OK) {
+        return rc;
+    }
+    return nano_rtc_enqueue_transmit(rtc, rtc->rtcp_fb_buf, srtcp_len, &rtc->remote_addr, false);
+}
+
+#if NANORTC_FEATURE_VIDEO && NANORTC_FEATURE_VIDEO_NACK_RX
+/* Emit one RTCP Generic NACK (RFC 4585 §6.2.1) for video track @p m: PID =
+ * first lost seq, @p blp = bitmask of the next 16. Built into the persistent
+ * nack_buf (the gap pass may also emit a PLI into rtcp_fb_buf — distinct
+ * buffers avoid aliasing). Caller guarantees @p m is connected with SRTP. */
+static int rtc_emit_nack(nanortc_t *rtc, nanortc_track_t *m, uint16_t pid, uint16_t blp)
+{
+    size_t nack_len = 0;
+    int rc = rtcp_generate_nack(m->rtcp.ssrc, m->rtcp.remote_ssrc, pid, blp, rtc->nack_buf,
+                                sizeof(rtc->nack_buf), &nack_len);
+    if (rc != NANORTC_OK) {
+        return rc;
+    }
+    size_t srtcp_len = 0;
+    rc = nano_srtp_protect_rtcp(&rtc->srtp, rtc->nack_buf, nack_len, &srtcp_len);
+    if (rc != NANORTC_OK) {
+        return rc;
+    }
+    __atomic_fetch_add(&rtc->stats_nack_sent, 1, __ATOMIC_RELAXED);
+    return nano_rtc_enqueue_transmit(rtc, rtc->nack_buf, srtcp_len, &rtc->remote_addr, false);
+}
+#endif /* NANORTC_FEATURE_VIDEO && NANORTC_FEATURE_VIDEO_NACK_RX */
+
 int nanortc_request_keyframe(nanortc_t *rtc, uint8_t mid)
 {
     if (!rtc) {
@@ -685,24 +940,397 @@ int nanortc_request_keyframe(nanortc_t *rtc, uint8_t mid)
         return NANORTC_ERR_INVALID_PARAM;
     }
 
-    /* Generate PLI (RFC 4585 §6.3.1) */
-    uint8_t pli_buf[RTCP_PLI_SIZE + NANORTC_SRTP_AUTH_TAG_SIZE + 4];
-    size_t pli_len = 0;
-    int rc =
-        rtcp_generate_pli(m->rtcp.ssrc, m->rtcp.remote_ssrc, pli_buf, sizeof(pli_buf), &pli_len);
-    if (rc != NANORTC_OK) {
-        return rc;
-    }
-
-    /* SRTCP protect (RFC 3711 §3.4) */
-    size_t srtcp_len = 0;
-    int prc = nano_srtp_protect_rtcp(&rtc->srtp, pli_buf, pli_len, &srtcp_len);
-    if (prc != NANORTC_OK) {
-        return prc;
-    }
-
-    return nano_rtc_enqueue_transmit(rtc, pli_buf, srtcp_len, &rtc->remote_addr, false);
+    return rtc_emit_pli(rtc, m);
 }
+
+#if NANORTC_FEATURE_VIDEO
+/* React to a forward gap preceding the current payload: arm the `contiguous`
+ * flag and fire a debounced auto-PLI for keyframe recovery. The loss source
+ * differs by build — the reorder buffer's skip (precise) when
+ * NANORTC_FEATURE_VIDEO_REORDER is on, else the raw forward-seq gap. */
+static void rtc_video_on_lost(nanortc_t *rtc, nanortc_track_t *m, bool lost)
+{
+#if NANORTC_FEATURE_VIDEO_AUTO_PLI
+    if (lost) {
+        m->track.video.recv_lost_pending = true;
+        uint32_t since = rtc->now_ms - m->track.video.recv_last_pli_ms;
+        if (m->track.video.recv_last_pli_ms == 0 || since >= NANORTC_VIDEO_PLI_MIN_INTERVAL_MS) {
+            if (rtc_emit_pli(rtc, m) == NANORTC_OK) {
+                m->track.video.recv_last_pli_ms = rtc->now_ms;
+                __atomic_fetch_add(&rtc->stats_auto_pli_sent, 1, __ATOMIC_RELAXED);
+                NANORTC_LOGD("RTCP", "auto-PLI on receive loss");
+            }
+        }
+    }
+#else
+    (void)rtc;
+    (void)m;
+    (void)lost;
+#endif
+}
+
+/* Push one in-order payload into the depacketizer; on a complete NAL, fill @p ev
+ * with the NANORTC_EV_MEDIA_DATA and return true (else false). Does NOT emit —
+ * the caller decides whether to queue it (non-reorder, at most one NAL per
+ * handle_input) or hand it straight to poll_output (reorder, one per poll call),
+ * since `ev.media_data.data` aliases the single per-track depkt buffer and must
+ * be consumed before the next NAL overwrites it. */
+static bool rtc_video_complete_event(nanortc_t *rtc, nanortc_track_t *m, const uint8_t *payload,
+                                     size_t payload_len, uint32_t rtp_ts, uint8_t rtp_marker,
+                                     nanortc_event_t *ev)
+{
+    (void)rtc;
+    const uint8_t *nalu_out = NULL;
+    size_t nalu_len = 0;
+    int drc;
+    bool is_kf = false;
+#if NANORTC_FEATURE_H265
+    if (m->codec == NANORTC_CODEC_H265) {
+        drc = h265_depkt_push(&m->track.video.depkt.h265, payload, payload_len, rtp_marker,
+                              &nalu_out, &nalu_len);
+        if (drc == NANORTC_OK && nalu_out && nalu_len > 0) {
+            is_kf = h265_is_keyframe(nalu_out, nalu_len) ? true : false;
+        }
+    } else
+#endif
+    {
+        drc = h264_depkt_push(&m->track.video.depkt.h264, payload, payload_len, rtp_marker,
+                              &nalu_out, &nalu_len);
+        if (drc == NANORTC_OK && nalu_out && nalu_len > 0) {
+            is_kf = h264_is_keyframe(nalu_out, nalu_len) ? true : false;
+        }
+    }
+    if (!(drc == NANORTC_OK && nalu_out && nalu_len > 0)) {
+        return false;
+    }
+    memset(ev, 0, sizeof(*ev));
+    ev->type = NANORTC_EV_MEDIA_DATA;
+    ev->media_data.mid = m->mid;
+    ev->media_data.pt = m->rtp.payload_type;
+    ev->media_data.data = nalu_out;
+    ev->media_data.len = nalu_len;
+    ev->media_data.timestamp = rtp_ts;
+    ev->media_data.is_keyframe = is_kf;
+#if NANORTC_FEATURE_VIDEO_AUTO_PLI
+    /* Report whether a gap preceded this frame, then clear so the next clean
+     * frame is flagged contiguous again. Combine with is_keyframe to gate a
+     * decoder. */
+    ev->media_data.contiguous = !m->track.video.recv_lost_pending;
+    m->track.video.recv_lost_pending = false;
+#else
+    ev->media_data.contiguous = true;
+#endif
+    return true;
+}
+
+#if !NANORTC_FEATURE_VIDEO_REORDER
+/* Non-reorder path: react to loss, depacketize, and queue the event (at most
+ * one NAL completes per handle_input, so the queued events never alias). */
+static void rtc_video_deliver(nanortc_t *rtc, nanortc_track_t *m, const uint8_t *payload,
+                              size_t payload_len, uint32_t rtp_ts, uint8_t rtp_marker, bool lost)
+{
+    rtc_video_on_lost(rtc, m, lost);
+    nanortc_event_t ev;
+    if (rtc_video_complete_event(rtc, m, payload, payload_len, rtp_ts, rtp_marker, &ev)) {
+        nano_rtc_emit_event_full(rtc, &ev);
+    }
+}
+#endif /* !NANORTC_FEATURE_VIDEO_REORDER */
+
+#if NANORTC_FEATURE_VIDEO_REORDER
+/* Poll-time reorder drain: release at most ONE completed NAL across all video
+ * tracks directly into @p out, so the event is consumed by the application
+ * before the next call's pop reuses the per-track depkt buffer (Sans-I/O
+ * lifetime contract — fixes the multi-emit aliasing of a synchronous drain).
+ * Skips found during the drain emit debounced auto-PLIs into the output queue.
+ * @return NANORTC_OK with *out filled, or NANORTC_ERR_NO_DATA. */
+int nano_rtc_media_reorder_produce(nanortc_t *rtc, nanortc_output_t *out)
+{
+    for (uint8_t i = 0; i < rtc->media_count; i++) {
+        nanortc_track_t *m = &rtc->media[i];
+        if (!m->active || m->kind != NANORTC_TRACK_VIDEO) {
+            continue;
+        }
+        uint16_t r_seq;
+        uint32_t r_ts;
+        uint8_t r_marker;
+        const uint8_t *r_data;
+        size_t r_len;
+        bool r_lost;
+        while (reorder_pop(&m->track.video.reorder, rtc->now_ms, &r_seq, &r_ts, &r_marker, &r_data,
+                           &r_len, &r_lost) == NANORTC_OK) {
+            rtc_video_on_lost(rtc, m, r_lost);
+            if (rtc_video_complete_event(rtc, m, r_data, r_len, r_ts, r_marker, &out->event)) {
+                out->type = NANORTC_OUTPUT_EVENT;
+                return NANORTC_OK; /* one NAL per call — no depkt-buffer aliasing */
+            }
+        }
+    }
+    return NANORTC_ERR_NO_DATA;
+}
+
+/* Earliest reorder release/skip deadline across video tracks (UINT32_MAX = none). */
+uint32_t nano_rtc_media_reorder_next_timeout(const nanortc_t *rtc, uint32_t now_ms)
+{
+    uint32_t best = UINT32_MAX;
+    for (uint8_t i = 0; i < rtc->media_count; i++) {
+        const nanortc_track_t *m = &rtc->media[i];
+        if (!m->active || m->kind != NANORTC_TRACK_VIDEO) {
+            continue;
+        }
+        uint32_t d = reorder_next_timeout_ms(&m->track.video.reorder, now_ms);
+        if (d < best) {
+            best = d;
+        }
+    }
+    return best;
+}
+#endif /* NANORTC_FEATURE_VIDEO_REORDER */
+#endif /* NANORTC_FEATURE_VIDEO */
+
+#if NANORTC_FEATURE_AUDIO
+/* Poll-time jitter drain: pop at most ONE due audio frame across audio tracks
+ * directly into @p out, so the application consumes the event before the next
+ * call's pop reuses the per-track m->media_buf (Sans-I/O lifetime contract —
+ * fixes TD-025's multi-emit aliasing of a synchronous in-handle_input drain).
+ * @return NANORTC_OK with *out filled, or NANORTC_ERR_NO_DATA. */
+int nano_rtc_media_audio_produce(nanortc_t *rtc, nanortc_output_t *out)
+{
+    for (uint8_t i = 0; i < rtc->media_count; i++) {
+        nanortc_track_t *m = &rtc->media[i];
+        if (!m->active || m->kind != NANORTC_TRACK_AUDIO) {
+            continue;
+        }
+        size_t pop_len = 0;
+        uint32_t pop_ts = 0;
+        if (jitter_pop(&m->track.audio.jitter, rtc->now_ms, m->media_buf, sizeof(m->media_buf),
+                       &pop_len, &pop_ts) == NANORTC_OK) {
+            memset(&out->event, 0, sizeof(out->event));
+            out->type = NANORTC_OUTPUT_EVENT;
+            out->event.type = NANORTC_EV_MEDIA_DATA;
+            out->event.media_data.mid = m->mid;
+            out->event.media_data.pt = m->rtp.payload_type;
+            out->event.media_data.data = m->media_buf;
+            out->event.media_data.len = pop_len;
+            out->event.media_data.timestamp = pop_ts;
+            out->event.media_data.contiguous = true; /* jitter buffer ensures order */
+            return NANORTC_OK; /* one frame per call — no media_buf aliasing */
+        }
+    }
+    return NANORTC_ERR_NO_DATA;
+}
+#endif /* NANORTC_FEATURE_AUDIO */
+
+#if NANORTC_FEATURE_VIDEO && NANORTC_FEATURE_VIDEO_FEC
+/* Adaptive FEC group size from the smoothed TWCC loss fraction (RFC 8888): 0 (no
+ * FEC, zero overhead) on a clean link, the configured max group at moderate
+ * loss, the smallest group (most protection) at high loss. K only varies DOWN
+ * from NANORTC_FEC_GROUP_SIZE, so the fixed-size rings never overflow and the
+ * receiver stays K-agnostic (the level-0 mask carries the group size). */
+static uint8_t rtc_fec_effective_k(const nanortc_t *rtc)
+{
+#if NANORTC_FEC_ADAPTIVE
+    uint16_t loss = bwe_get_loss_q8(&rtc->bwe);
+    uint8_t k;
+    if (loss < NANORTC_FEC_LOSS_OFF_Q8) {
+        return 0; /* clean link: send no FEC */
+    } else if (loss >= NANORTC_FEC_LOSS_HIGH_Q8) {
+        k = (uint8_t)NANORTC_FEC_MIN_GROUP; /* high loss: most protection */
+    } else {
+        k = (uint8_t)NANORTC_FEC_GROUP_SIZE; /* moderate loss: default overhead */
+    }
+    /* Clamp to the ring size so a (mis)configured MIN_GROUP can never exceed the
+     * fixed fec_tx_grp[NANORTC_FEC_GROUP_SIZE] array. */
+    if (k > (uint8_t)NANORTC_FEC_GROUP_SIZE) {
+        k = (uint8_t)NANORTC_FEC_GROUP_SIZE;
+    }
+    return k;
+#else
+    (void)rtc;
+    return (uint8_t)NANORTC_FEC_GROUP_SIZE;
+#endif
+}
+
+/* Capture one plaintext media RTP packet for FEC; on a full group of K, emit one
+ * ULPFEC packet on a separate SSRC (media SSRC + 1), PT NANORTC_VIDEO_FEC_PT.
+ * K is chosen adaptively per rtc_fec_effective_k(). Called from the video send
+ * path after rtp_pack(), before SRTP. */
+static void rtc_fec_capture(nanortc_t *rtc, nanortc_track_t *m, const uint8_t *pkt, size_t len)
+{
+    uint8_t k = rtc_fec_effective_k(rtc);
+    if (k == 0) {
+        rtc->fec_tx_n = 0; /* FEC disabled (clean link): drop any partial group */
+        return;
+    }
+    if (len < FEC_RTP_HDR || len > NANORTC_MEDIA_BUF_SIZE) {
+        return;
+    }
+    if (rtc->fec_tx_n >= k) {
+        rtc->fec_tx_n = 0; /* defensive; also re-seats the group if K just shrank */
+    }
+    memcpy(rtc->fec_tx_grp[rtc->fec_tx_n], pkt, len);
+    rtc->fec_tx_len[rtc->fec_tx_n] = (uint16_t)len;
+    rtc->fec_tx_n++;
+    if (rtc->fec_tx_n < k) {
+        return;
+    }
+    rtc->fec_tx_n = 0; /* start a fresh group regardless of what follows */
+
+    /* Pick a FEC tx buffer whose previous output has been dequeued (out_head
+     * reached its free-at). Each in-flight FEC needs its own buffer so the
+     * pointers in out_queue never alias a live output (which would put corrupt
+     * FEC on the wire). With NANORTC_FEC_TX_RING slots, a bursty multi-group
+     * frame emits FEC for up to N groups in one send call; if all slots are
+     * still in flight this group's FEC is dropped (best-effort — reorder/NACK/
+     * auto-PLI still cover it). */
+    int8_t fslot = -1;
+    for (uint8_t i = 0; i < NANORTC_FEC_TX_RING; i++) {
+        if ((int16_t)(rtc->out_head - rtc->fec_tx_free_at[i]) >= 0) {
+            fslot = (int8_t)i;
+            break;
+        }
+    }
+    if (fslot < 0) {
+        return; /* all FEC buffers still referenced by undrained outputs */
+    }
+
+    const uint8_t *pkts[NANORTC_FEC_GROUP_SIZE];
+    for (uint8_t i = 0; i < k; i++) {
+        pkts[i] = rtc->fec_tx_grp[i];
+    }
+    uint8_t *fb = rtc->fec_tx_buf[fslot];
+    fb[0] = 0x80; /* V=2 */
+    fb[1] = (uint8_t)(NANORTC_VIDEO_FEC_PT & 0x7Fu);
+    nanortc_write_u16be(fb + 2, rtc->fec_tx_seq);
+    nanortc_write_u32be(fb + 4, nanortc_read_u32be(rtc->fec_tx_grp[k - 1] + 4));
+    nanortc_write_u32be(fb + 8, m->rtp.ssrc + 1u); /* FEC SSRC */
+
+    size_t body = 0;
+    int rc = fec_encode(pkts, rtc->fec_tx_len, k, fb + FEC_RTP_HDR,
+                        NANORTC_FEC_BUF_SIZE - FEC_RTP_HDR - NANORTC_SRTP_AUTH_TAG_SIZE, &body);
+    if (rc != NANORTC_OK) {
+        return;
+    }
+
+    size_t srtp_len = 0;
+    if (nano_srtp_protect(&rtc->srtp, fb, FEC_RTP_HDR + body, &srtp_len) != NANORTC_OK) {
+        return;
+    }
+    if (nano_rtc_enqueue_transmit(rtc, fb, srtp_len, &rtc->remote_addr, false) != NANORTC_OK) {
+        return; /* queue full — buffer stays free (free_at unchanged) */
+    }
+    rtc->fec_tx_seq++;
+    /* The FEC now occupies the out_queue slot (out_tail - 1); it is dequeued
+     * once out_head reaches out_tail, so this slot frees at out_tail. */
+    rtc->fec_tx_free_at[fslot] = rtc->out_tail;
+    __atomic_fetch_add(&rtc->stats_fec_sent, 1, __ATOMIC_RELAXED);
+}
+
+/* Try to recover the one missing member of @p fec_rtp's group from the media
+ * ring; on success, re-inject the recovered packet and return true. Returns
+ * false if 0 or >= 2 members are absent (level-0 recovers exactly one). */
+static bool rtc_fec_try(nanortc_t *rtc, nanortc_track_t *vm, const uint8_t *fec_rtp,
+                        size_t fec_rtp_len)
+{
+    if (fec_rtp_len < (size_t)FEC_RTP_HDR + FEC_OVERHEAD) {
+        return false;
+    }
+    const uint8_t *recv[NANORTC_FEC_GROUP_SIZE];
+    uint16_t rlens[NANORTC_FEC_GROUP_SIZE];
+    uint8_t have =
+        (rtc->fec_rx_n < NANORTC_FEC_GROUP_SIZE) ? rtc->fec_rx_n : NANORTC_FEC_GROUP_SIZE;
+    for (uint8_t i = 0; i < have; i++) {
+        recv[i] = rtc->fec_rx_med[i];
+        rlens[i] = rtc->fec_rx_len[i];
+    }
+
+    /* The protected media stream is the remote sender's SSRC. */
+    uint32_t media_ssrc = vm->rtcp.remote_ssrc;
+    size_t rec_len = 0;
+    uint16_t rec_seq = 0;
+    if (fec_recover(fec_rtp + FEC_RTP_HDR, fec_rtp_len - FEC_RTP_HDR, media_ssrc, recv, rlens, have,
+                    rtc->fec_rx_recov, NANORTC_MEDIA_BUF_SIZE, &rec_len, &rec_seq) != NANORTC_OK) {
+        return false;
+    }
+    __atomic_fetch_add(&rtc->stats_fec_recovered, 1, __ATOMIC_RELAXED);
+
+    /* Re-inject the recovered plaintext media packet into the video path. */
+    uint8_t rpt = 0;
+    uint16_t rseq = 0;
+    uint32_t rts = 0, rssrc = 0;
+    const uint8_t *rpayload = NULL;
+    size_t rpaylen = 0;
+    if (rtp_unpack(rtc->fec_rx_recov, rec_len, &rpt, &rseq, &rts, &rssrc, &rpayload, &rpaylen) !=
+        NANORTC_OK) {
+        return false;
+    }
+    (void)rpt;
+    (void)rssrc;
+    (void)rec_seq;
+    uint8_t rmarker = (uint8_t)((rtc->fec_rx_recov[1] >> 7) & 1u);
+    /* Re-inject via the reorder buffer only (FEC requires REORDER — see the
+     * config guard). reorder_push copies the NAL into its own slot and the
+     * poll-time producer releases one-per-poll, so the recovered packet and the
+     * live packet that triggered recovery never alias the depacketizer buffer. */
+    reorder_push(&vm->track.video.reorder, rseq, rts, rmarker, rpayload, rpaylen, rtc->now_ms);
+    return true;
+}
+
+/* True if a packet with sequence number @p sn is covered by the most recent
+ * pending FEC's protected window (so a receiver NACK for it would duplicate the
+ * FEC's recovery — RFC 5109/4585 complementary recovery). */
+static bool rtc_fec_protects(const nanortc_t *rtc, uint16_t sn)
+{
+    if (!rtc->fec_prot_valid) {
+        return false;
+    }
+    uint16_t off = (uint16_t)(sn - rtc->fec_prot_base);
+    return off < FEC_MAX_GROUP && (rtc->fec_prot_mask & (uint16_t)(0x8000u >> off));
+}
+
+/* Handle a received FEC packet. Recovery is independent of FEC-vs-media wire
+ * ordering: if the group's members have not all arrived yet (FEC raced ahead of
+ * its media), buffer the FEC and retry as each media packet is admitted. */
+static void rtc_fec_on_recv(nanortc_t *rtc, nanortc_track_t *vm, const uint8_t *fec_rtp,
+                            size_t fec_rtp_len)
+{
+    /* Record the protected SN window (RFC 5109 level-0: SN base at body+2, mask
+     * at body+12) so the receiver NACK can skip a packet this FEC will recover.
+     * Done before recovery so it holds even when the gap is observed first. */
+    if (fec_rtp_len >= (size_t)FEC_RTP_HDR + FEC_OVERHEAD) {
+        rtc->fec_prot_base = nanortc_read_u16be(fec_rtp + FEC_RTP_HDR + 2);
+        rtc->fec_prot_mask = nanortc_read_u16be(fec_rtp + FEC_RTP_HDR + 12);
+        rtc->fec_prot_valid = true;
+    }
+    if (rtc_fec_try(rtc, vm, fec_rtp, fec_rtp_len)) {
+        rtc->fec_rx_pending_len = 0;
+        return;
+    }
+    if (fec_rtp_len >= (size_t)FEC_RTP_HDR + FEC_OVERHEAD && fec_rtp_len <= NANORTC_FEC_BUF_SIZE) {
+        memcpy(rtc->fec_rx_pending, fec_rtp, fec_rtp_len);
+        rtc->fec_rx_pending_len = (uint16_t)fec_rtp_len;
+    }
+}
+
+/* Buffer one received plaintext media RTP packet for FEC recovery, then retry
+ * any pending FEC whose group this packet may now complete. */
+static void rtc_fec_buffer_media(nanortc_t *rtc, nanortc_track_t *vm, const uint8_t *pkt,
+                                 size_t len)
+{
+    if (len < FEC_RTP_HDR || len > NANORTC_MEDIA_BUF_SIZE) {
+        return;
+    }
+    uint8_t slot = (uint8_t)(rtc->fec_rx_n % NANORTC_FEC_GROUP_SIZE);
+    memcpy(rtc->fec_rx_med[slot], pkt, len);
+    rtc->fec_rx_len[slot] = (uint16_t)len;
+    rtc->fec_rx_n++;
+
+    if (rtc->fec_rx_pending_len > 0 &&
+        rtc_fec_try(rtc, vm, rtc->fec_rx_pending, rtc->fec_rx_pending_len)) {
+        rtc->fec_rx_pending_len = 0;
+    }
+}
+#endif /* NANORTC_FEATURE_VIDEO && NANORTC_FEATURE_VIDEO_FEC */
 
 /* ================================================================
  * Track statistics
@@ -851,118 +1479,57 @@ int nano_rtc_media_handle_rtp_or_rtcp(nanortc_t *rtc, const uint8_t *data, size_
         if (urc != NANORTC_OK) {
             return NANORTC_OK; /* Silently discard bad SRTCP packets */
         }
-        nano_rtcp_info_t info;
-        memset(&info, 0, sizeof(info));
-        int rrc = rtcp_parse(rtc->stun_buf, rtcp_len, &info);
-        if (rrc == NANORTC_OK) {
-            if (info.type == RTCP_SR) {
-                /* Sender Report — update receiver stats for DLSR (RFC 3550 §6.4.1).
-                 * Compact NTP = middle 32 bits of NTP timestamp. */
-                int mid = ssrc_map_lookup(rtc->ssrc_map, NANORTC_MAX_SSRC_MAP, info.ssrc);
-                if (mid >= 0) {
-                    nanortc_track_t *m =
-                        track_find_by_mid(rtc->media, rtc->media_count, (uint8_t)mid);
-                    if (m) {
-                        m->rtcp.last_sr_ntp =
-                            ((info.ntp_sec & 0xFFFFu) << 16) | (info.ntp_frac >> 16);
-                        m->rtcp.last_sr_recv_ms = rtc->now_ms;
-                        if (info.rb_valid) {
-                            m->fraction_lost = info.rb_fraction_lost;
-                        }
-                    }
-                }
-            } else if (info.type == RTCP_RR && info.rb_valid) {
-                /* Receiver Report addressed at our outbound SSRC. Store
-                 * fraction_lost so nanortc_get_track_stats() can surface it. */
-                for (uint8_t i = 0; i < rtc->media_count; i++) {
-                    nanortc_track_t *m = &rtc->media[i];
-                    if (m->active && m->rtp.ssrc == info.rb_source_ssrc) {
-                        m->fraction_lost = info.rb_fraction_lost;
-                        break;
-                    }
-                }
-            } else if (info.type == RTCP_PSFB) {
-                /* PSFB — check FMT to distinguish PLI (FMT=1) from REMB (FMT=15) */
-                uint8_t psfb_fmt = rtc->stun_buf[0] & 0x1F;
-#if NANORTC_FEATURE_VIDEO
-                if (psfb_fmt == BWE_REMB_FMT) {
-                    /* REMB — feed to bandwidth estimator */
-                    uint32_t prev_bps = rtc->bwe.estimated_bitrate;
-                    bwe_on_rtcp_feedback(&rtc->bwe, rtc->stun_buf, rtcp_len, rtc->now_ms);
-                    /* Emit event if estimate changed significantly */
-                    if (bwe_should_emit_event(&rtc->bwe)) {
-                        nanortc_event_t bwe_evt;
-                        memset(&bwe_evt, 0, sizeof(bwe_evt));
-                        bwe_evt.type = NANORTC_EV_BITRATE_ESTIMATE;
-                        uint32_t cur_bps = rtc->bwe.estimated_bitrate;
-                        bwe_evt.bitrate_estimate.bitrate_bps = cur_bps;
-                        bwe_evt.bitrate_estimate.prev_bitrate_bps = prev_bps;
-                        bwe_evt.bitrate_estimate.direction =
-                            (cur_bps > prev_bps)   ? (uint8_t)NANORTC_BWE_DIR_UP
-                            : (cur_bps < prev_bps) ? (uint8_t)NANORTC_BWE_DIR_DOWN
-                                                   : (uint8_t)NANORTC_BWE_DIR_STABLE;
-                        bwe_evt.bitrate_estimate.source = (uint8_t)NANORTC_BWE_SRC_REMB;
-                        nano_rtc_emit_event_full(rtc, &bwe_evt);
-                    }
-                } else
-#endif
-                    if (psfb_fmt == 1) {
-                    /* PLI — find video track by SSRC and emit keyframe request event */
+        /* RTCP datagrams from browsers are COMPOUND (RFC 3550 §6.1): a
+         * leading SR/RR, then SDES, then the feedback packets (transport-cc /
+         * PLI / NACK). Iterate every sub-packet — parsing only the first
+         * member (the RR) silently drops all congestion and keyframe feedback,
+         * which stalls BWE adaptation and keyframe recovery against Chrome. */
+        size_t rtcp_off = 0;
+        while (rtcp_off + RTCP_HEADER_SIZE <= rtcp_len) {
+            const uint8_t *sub = rtc->stun_buf + rtcp_off;
+            size_t sub_len = ((size_t)nanortc_read_u16be(sub + 2) + 1u) * 4u;
+            if (sub_len < RTCP_HEADER_SIZE || rtcp_off + sub_len > rtcp_len) {
+                break; /* truncated / malformed compound member */
+            }
+            nano_rtcp_info_t info;
+            memset(&info, 0, sizeof(info));
+            int rrc = rtcp_parse(sub, sub_len, &info);
+            if (rrc == NANORTC_OK) {
+                if (info.type == RTCP_SR) {
+                    /* Sender Report — update receiver stats for DLSR (RFC 3550 §6.4.1).
+                     * Compact NTP = middle 32 bits of NTP timestamp. */
                     int mid = ssrc_map_lookup(rtc->ssrc_map, NANORTC_MAX_SSRC_MAP, info.ssrc);
                     if (mid >= 0) {
-                        nanortc_event_t kfevt;
-                        memset(&kfevt, 0, sizeof(kfevt));
-                        kfevt.type = NANORTC_EV_KEYFRAME_REQUEST;
-                        kfevt.keyframe_request.mid = (uint8_t)mid;
-                        nano_rtc_emit_event_full(rtc, &kfevt);
-                    }
-                }
-#if NANORTC_FEATURE_VIDEO
-            } else if (info.type == RTCP_RTPFB) {
-                /* Generic NACK (RFC 4585 §6.2.1) — retransmit lost packets
-                 * from pkt_ring if they are still available. */
-                uint8_t rtpfb_fmt = rtc->stun_buf[0] & 0x1F;
-                if (rtpfb_fmt == 1) {
-                    /* Expand PID + BLP into up to 17 lost seq numbers and
-                     * retransmit each one found in the pkt_ring. */
-                    uint16_t lost[17];
-                    int lost_count = 0;
-                    lost[lost_count++] = info.nack_pid;
-                    for (int bit = 0; bit < 16; bit++) {
-                        if (info.nack_blp & (1u << bit)) {
-                            lost[lost_count++] = (uint16_t)(info.nack_pid + 1 + bit);
-                        }
-                    }
-                    int retx = 0;
-                    for (int i = 0; i < lost_count; i++) {
-                        /* Linear scan over pkt_ring_meta for a matching seq.
-                         * PKT_RING_SIZE is small (4-256) so this is fast. */
-                        for (uint16_t s = 0; s < NANORTC_VIDEO_PKT_RING_SIZE; s++) {
-                            if (rtc->pkt_ring_meta[s].len > 0 &&
-                                rtc->pkt_ring_meta[s].seq == lost[i]) {
-                                nano_rtc_enqueue_transmit(rtc, rtc->pkt_ring[s],
-                                                          rtc->pkt_ring_meta[s].len,
-                                                          &rtc->remote_addr, false);
-                                retx++;
-                                break;
+                        nanortc_track_t *m =
+                            track_find_by_mid(rtc->media, rtc->media_count, (uint8_t)mid);
+                        if (m) {
+                            m->rtcp.last_sr_ntp =
+                                ((info.ntp_sec & 0xFFFFu) << 16) | (info.ntp_frac >> 16);
+                            m->rtcp.last_sr_recv_ms = rtc->now_ms;
+                            if (info.rb_valid) {
+                                m->fraction_lost = info.rb_fraction_lost;
                             }
                         }
                     }
-                    if (retx > 0) {
-                        NANORTC_LOGD("NACK", "retransmitted packet(s)");
+                } else if (info.type == RTCP_RR && info.rb_valid) {
+                    /* Receiver Report addressed at our outbound SSRC. Store
+                     * fraction_lost so nanortc_get_track_stats() can surface it. */
+                    for (uint8_t i = 0; i < rtc->media_count; i++) {
+                        nanortc_track_t *m = &rtc->media[i];
+                        if (m->active && m->rtp.ssrc == info.rb_source_ssrc) {
+                            m->fraction_lost = info.rb_fraction_lost;
+                            break;
+                        }
                     }
-                } else if (rtpfb_fmt == TWCC_FMT) {
-                    /* Transport-wide CC feedback (draft-holmer-rmcat-twcc-01).
-                     * Parse into a summary and drive the loss-based controller
-                     * in BWE. Any delay-based refinement is deferred (see plan). */
-                    nano_twcc_summary_t sum;
-                    int prc = twcc_parse_feedback(rtc->stun_buf, rtcp_len, &sum, NULL, NULL);
-                    if (prc == NANORTC_OK && sum.packet_status_count > 0) {
-                        uint16_t lost = (uint16_t)(sum.packet_status_count - sum.received_count);
-                        uint16_t loss_q8 =
-                            (uint16_t)(((uint32_t)lost * 256u) / sum.packet_status_count);
+                } else if (info.type == RTCP_PSFB) {
+                    /* PSFB — check FMT to distinguish PLI (FMT=1) from REMB (FMT=15) */
+                    uint8_t psfb_fmt = sub[0] & 0x1F;
+#if NANORTC_FEATURE_VIDEO
+                    if (psfb_fmt == BWE_REMB_FMT) {
+                        /* REMB — feed to bandwidth estimator */
                         uint32_t prev_bps = rtc->bwe.estimated_bitrate;
-                        bwe_on_twcc_loss(&rtc->bwe, loss_q8, rtc->now_ms);
+                        bwe_on_rtcp_feedback(&rtc->bwe, sub, sub_len, rtc->now_ms);
+                        /* Emit event if estimate changed significantly */
                         if (bwe_should_emit_event(&rtc->bwe)) {
                             nanortc_event_t bwe_evt;
                             memset(&bwe_evt, 0, sizeof(bwe_evt));
@@ -974,13 +1541,121 @@ int nano_rtc_media_handle_rtp_or_rtcp(nanortc_t *rtc, const uint8_t *data, size_
                                 (cur_bps > prev_bps)   ? (uint8_t)NANORTC_BWE_DIR_UP
                                 : (cur_bps < prev_bps) ? (uint8_t)NANORTC_BWE_DIR_DOWN
                                                        : (uint8_t)NANORTC_BWE_DIR_STABLE;
-                            bwe_evt.bitrate_estimate.source = (uint8_t)NANORTC_BWE_SRC_TWCC_LOSS;
+                            bwe_evt.bitrate_estimate.source = (uint8_t)NANORTC_BWE_SRC_REMB;
                             nano_rtc_emit_event_full(rtc, &bwe_evt);
                         }
+                    } else
+#endif
+                        if (psfb_fmt == 1) {
+                        /* PLI (RFC 4585 §6.3.1) — match the media-source SSRC
+                         * (word 2) to one of our OUTBOUND video tracks, so the
+                         * EV_KEYFRAME_REQUEST names the exact stream the peer can't
+                         * decode. TD-024: the previous ssrc_map_lookup(sender SSRC)
+                         * mapped to a receive track (or nothing for a sendonly
+                         * sender) — wrong mid on multi-track, no event for a camera
+                         * with no reverse video. */
+                        for (uint8_t i = 0; i < rtc->media_count; i++) {
+                            nanortc_track_t *vm = &rtc->media[i];
+                            if (vm->active && vm->kind == NANORTC_TRACK_VIDEO &&
+                                vm->rtp.ssrc == info.psfb_media_ssrc) {
+                                nanortc_event_t kfevt;
+                                memset(&kfevt, 0, sizeof(kfevt));
+                                kfevt.type = NANORTC_EV_KEYFRAME_REQUEST;
+                                kfevt.keyframe_request.mid = vm->mid;
+                                nano_rtc_emit_event_full(rtc, &kfevt);
+                                break;
+                            }
+                        }
                     }
-                }
+#if NANORTC_FEATURE_VIDEO
+                } else if (info.type == RTCP_RTPFB) {
+                    /* Generic NACK (RFC 4585 §6.2.1) — retransmit lost packets
+                     * from pkt_ring if they are still available. */
+                    uint8_t rtpfb_fmt = sub[0] & 0x1F;
+                    if (rtpfb_fmt == 1) {
+                        /* Expand PID + BLP into up to 17 lost seq numbers and
+                         * retransmit each one found in the pkt_ring. */
+                        uint16_t lost[17];
+                        int lost_count = 0;
+                        lost[lost_count++] = info.nack_pid;
+                        for (int bit = 0; bit < 16; bit++) {
+                            if (info.nack_blp & (1u << bit)) {
+                                lost[lost_count++] = (uint16_t)(info.nack_pid + 1 + bit);
+                            }
+                        }
+                        int retx = 0;
+                        for (int i = 0; i < lost_count; i++) {
+                            /* Linear scan over pkt_ring_meta for a matching seq.
+                             * PKT_RING_SIZE is small (4-256) so this is fast. */
+                            for (uint16_t s = 0; s < NANORTC_VIDEO_PKT_RING_SIZE; s++) {
+                                if (rtc->pkt_ring_meta[s].len == 0 ||
+                                    rtc->pkt_ring_meta[s].seq != lost[i]) {
+                                    continue;
+                                }
+                                /* TD-023: copy the packet into a free retransmit
+                                 * scratch slot and enqueue the COPY, so a later
+                                 * send_video that wraps pkt_ring over slot s cannot
+                                 * corrupt this in-flight retransmit. A slot is free
+                                 * once its prior output dequeued (out_head reached
+                                 * its free_at) — same guard as the FEC tx ring. */
+                                int8_t rslot = -1;
+                                for (uint8_t j = 0; j < NANORTC_NACK_RETX_RING; j++) {
+                                    if ((int16_t)(rtc->out_head - rtc->nack_retx_free_at[j]) >= 0) {
+                                        rslot = (int8_t)j;
+                                        break;
+                                    }
+                                }
+                                if (rslot < 0) {
+                                    break; /* all retx buffers in flight — best-effort */
+                                }
+                                uint16_t plen = rtc->pkt_ring_meta[s].len;
+                                memcpy(rtc->nack_retx_buf[rslot], rtc->pkt_ring[s], plen);
+                                if (nano_rtc_enqueue_transmit(rtc, rtc->nack_retx_buf[rslot], plen,
+                                                              &rtc->remote_addr,
+                                                              false) == NANORTC_OK) {
+                                    rtc->nack_retx_free_at[rslot] = rtc->out_tail;
+                                    retx++;
+                                }
+                                break;
+                            }
+                        }
+                        if (retx > 0) {
+                            NANORTC_LOGD("NACK", "retransmitted packet(s)");
+                        }
+                    } else if (rtpfb_fmt == TWCC_FMT) {
+                        /* Transport-wide CC feedback (draft-holmer-rmcat-twcc-01).
+                         * Parse into a summary and drive the loss-based controller
+                         * in BWE. Any delay-based refinement is deferred (see plan). */
+                        nano_twcc_summary_t sum;
+                        int prc = twcc_parse_feedback(sub, sub_len, &sum, NULL, NULL);
+                        if (prc == NANORTC_OK && sum.packet_status_count > 0) {
+                            uint16_t lost =
+                                (uint16_t)(sum.packet_status_count - sum.received_count);
+                            uint16_t loss_q8 =
+                                (uint16_t)(((uint32_t)lost * 256u) / sum.packet_status_count);
+                            uint32_t prev_bps = rtc->bwe.estimated_bitrate;
+                            bwe_on_twcc_loss(&rtc->bwe, loss_q8, rtc->now_ms);
+                            if (bwe_should_emit_event(&rtc->bwe)) {
+                                nanortc_event_t bwe_evt;
+                                memset(&bwe_evt, 0, sizeof(bwe_evt));
+                                bwe_evt.type = NANORTC_EV_BITRATE_ESTIMATE;
+                                uint32_t cur_bps = rtc->bwe.estimated_bitrate;
+                                bwe_evt.bitrate_estimate.bitrate_bps = cur_bps;
+                                bwe_evt.bitrate_estimate.prev_bitrate_bps = prev_bps;
+                                bwe_evt.bitrate_estimate.direction =
+                                    (cur_bps > prev_bps)   ? (uint8_t)NANORTC_BWE_DIR_UP
+                                    : (cur_bps < prev_bps) ? (uint8_t)NANORTC_BWE_DIR_DOWN
+                                                           : (uint8_t)NANORTC_BWE_DIR_STABLE;
+                                bwe_evt.bitrate_estimate.source =
+                                    (uint8_t)NANORTC_BWE_SRC_TWCC_LOSS;
+                                nano_rtc_emit_event_full(rtc, &bwe_evt);
+                            }
+                        }
+                    }
 #endif /* NANORTC_FEATURE_VIDEO */
+                }
             }
+            rtcp_off += sub_len;
         }
         return NANORTC_OK;
     }
@@ -1018,6 +1693,25 @@ int nano_rtc_media_handle_rtp_or_rtcp(nanortc_t *rtc, const uint8_t *data, size_
         return NANORTC_OK; /* Malformed RTP, discard */
     }
 
+#if NANORTC_FEATURE_VIDEO && NANORTC_FEATURE_VIDEO_FEC
+    /* ULPFEC stream (separate SSRC = media+1, dynamic PT). It is not registered
+     * in ssrc_map, so intercept by PT here and recover for the (single) video
+     * track before the SSRC lookup discards it. Scope to UNREGISTERED SSRCs so a
+     * registered media stream that happens to share the PT is never hijacked
+     * (the FEC SSRC is never registered, so genuine FEC still matches). */
+    if (rtp_pt == NANORTC_VIDEO_FEC_PT &&
+        ssrc_map_lookup(rtc->ssrc_map, NANORTC_MAX_SSRC_MAP, rtp_ssrc) < 0) {
+        for (uint8_t ti = 0; ti < rtc->media_count; ti++) {
+            nanortc_track_t *vm = &rtc->media[ti];
+            if (vm->active && vm->kind == NANORTC_TRACK_VIDEO) {
+                rtc_fec_on_recv(rtc, vm, pkt, plain_len);
+                break;
+            }
+        }
+        return NANORTC_OK;
+    }
+#endif
+
     /* SSRC → MID lookup */
     int mid = ssrc_map_lookup(rtc->ssrc_map, NANORTC_MAX_SSRC_MAP, rtp_ssrc);
     if (mid < 0) {
@@ -1028,6 +1722,42 @@ int nano_rtc_media_handle_rtp_or_rtcp(nanortc_t *rtc, const uint8_t *data, size_
                 continue;
             nano_sdp_mline_t *ml = sdp_find_mline(&rtc->sdp, mc->mid);
             if (ml && ml->remote_pt == rtp_pt) {
+#if NANORTC_FEATURE_VIDEO
+                /* RFC 3550 §8.2: a mid-session SSRC change reusing this track (a
+                 * remote sender restart). The reorder buffer / FU depacketizer
+                 * still hold the OLD sequence space; re-seed them so the new
+                 * RFC-3550-random start seq isn't blackholed by the reorder
+                 * buffer's diff<0 late-drop. First discovery (remote_ssrc==0,
+                 * already zero from track init) is left untouched. */
+                if (mc->kind == NANORTC_TRACK_VIDEO && mc->rtcp.remote_ssrc != 0 &&
+                    mc->rtcp.remote_ssrc != rtp_ssrc) {
+#if NANORTC_FEATURE_VIDEO_REORDER
+                    reorder_init(&mc->track.video.reorder);
+#endif
+#if NANORTC_FEATURE_VIDEO_AUTO_PLI
+                    mc->track.video.recv_seq_inited = false;
+#endif
+#if NANORTC_FEATURE_VIDEO_NACK_RX
+                    mc->track.video.recv_nack_inited = false;
+#endif
+#if NANORTC_FEATURE_VIDEO_FEC
+                    /* Drop the old stream's FEC ring + any pending FEC: its
+                     * sequence numbers belong to the previous SSRC and could be
+                     * mismatched into a recovery for the new stream. */
+                    rtc->fec_rx_n = 0;
+                    rtc->fec_rx_pending_len = 0;
+                    rtc->fec_prot_valid = false;
+#endif
+#if NANORTC_FEATURE_H265
+                    if (mc->codec == NANORTC_CODEC_H265) {
+                        h265_depkt_init(&mc->track.video.depkt.h265);
+                    } else
+#endif
+                    {
+                        h264_depkt_init(&mc->track.video.depkt.h264);
+                    }
+                }
+#endif /* NANORTC_FEATURE_VIDEO */
                 ssrc_map_register(rtc->ssrc_map, NANORTC_MAX_SSRC_MAP, rtp_ssrc, mc->mid);
                 mc->rtcp.remote_ssrc = rtp_ssrc;
                 mid = (int)mc->mid;
@@ -1056,62 +1786,106 @@ int nano_rtc_media_handle_rtp_or_rtcp(nanortc_t *rtc, const uint8_t *data, size_
     /* Route to audio or video processing */
     if (m->kind == NANORTC_TRACK_AUDIO) {
 #if NANORTC_FEATURE_AUDIO
-        /* Push into jitter buffer, then try to pop completed frame */
+        /* Only BUFFER here. Due frames are popped one-per-poll_output by
+         * nano_rtc_media_audio_produce() so each event is consumed before the
+         * next reuses m->media_buf — a synchronous drain loop here would queue
+         * multiple EV_MEDIA_DATA all aliasing m->media_buf (TD-025). */
         jitter_push(&m->track.audio.jitter, rtp_seq, rtp_ts, payload, payload_len, rtc->now_ms);
-        size_t pop_len = 0;
-        uint32_t pop_ts = 0;
-        while (jitter_pop(&m->track.audio.jitter, rtc->now_ms, m->media_buf, sizeof(m->media_buf),
-                          &pop_len, &pop_ts) == NANORTC_OK) {
-            nanortc_event_t aevt;
-            memset(&aevt, 0, sizeof(aevt));
-            aevt.type = NANORTC_EV_MEDIA_DATA;
-            aevt.media_data.mid = m->mid;
-            aevt.media_data.pt = m->rtp.payload_type;
-            aevt.media_data.data = m->media_buf;
-            aevt.media_data.len = pop_len;
-            aevt.media_data.timestamp = pop_ts;
-            aevt.media_data.contiguous = true; /* jitter buffer ensures order */
-            nano_rtc_emit_event_full(rtc, &aevt);
-        }
 #endif
     } else {
 #if NANORTC_FEATURE_VIDEO
-        /* Video depacketization — codec-dispatched (RFC 6184 H.264 / RFC 7798 H.265). */
         uint8_t rtp_marker = (pkt[1] >> 7) & 1;
-        const uint8_t *nalu_out = NULL;
-        size_t nalu_len = 0;
-        int drc;
-        bool is_kf = false;
-#if NANORTC_FEATURE_H265
-        if (m->codec == NANORTC_CODEC_H265) {
-            drc = h265_depkt_push(&m->track.video.depkt.h265, payload, payload_len, rtp_marker,
-                                  &nalu_out, &nalu_len);
-            if (drc == NANORTC_OK && nalu_out && nalu_len > 0) {
-                is_kf = h265_is_keyframe(nalu_out, nalu_len) ? true : false;
-            }
-        } else
+#if NANORTC_FEATURE_VIDEO_FEC
+        /* Keep the plaintext packet for FEC recovery; retries any pending FEC
+         * whose group this packet completes. */
+        rtc_fec_buffer_media(rtc, m, pkt, plain_len);
 #endif
-        {
-            drc = h264_depkt_push(&m->track.video.depkt.h264, payload, payload_len, rtp_marker,
-                                  &nalu_out, &nalu_len);
-            if (drc == NANORTC_OK && nalu_out && nalu_len > 0) {
-                is_kf = h264_is_keyframe(nalu_out, nalu_len) ? true : false;
+#if NANORTC_FEATURE_VIDEO_NACK_RX
+        /* Receiver NACK (RFC 4585 §6.2.1): on a forward seq gap, ask the sender
+         * to retransmit the lost packets from its pkt_ring. Independent of the
+         * reorder/auto-PLI seq tracking. The reorder buffer (if enabled) holds
+         * the gap so the retransmit can fill it within the latency cap. */
+        if (!m->track.video.recv_nack_inited) {
+            m->track.video.recv_nack_inited = true;
+            m->track.video.recv_nack_seq = rtp_seq;
+        } else {
+            int16_t nadv = (int16_t)(rtp_seq - m->track.video.recv_nack_seq);
+            if (nadv > 1) {
+                /* Build the NACK over the lost run (recv_nack_seq+1 .. rtp_seq-1),
+                 * but skip any SN a pending FEC will recover so FEC and NACK do
+                 * not both request the same loss (RFC 5109 §10.1 + RFC 4585). */
+                uint16_t first_lost = (uint16_t)(m->track.video.recv_nack_seq + 1);
+                uint16_t n_lost = (uint16_t)(nadv - 1);
+                uint16_t nack_pid = 0;
+                uint16_t nack_blp = 0;
+                bool have_pid = false;
+                bool suppressed = false;
+                for (uint16_t k = 0; k < n_lost && k < 17u; k++) {
+                    uint16_t sn = (uint16_t)(first_lost + k);
+#if NANORTC_FEATURE_VIDEO_FEC
+                    if (rtc_fec_protects(rtc, sn)) {
+                        suppressed = true;
+                        continue;
+                    }
+#endif
+                    if (!have_pid) {
+                        nack_pid = sn;
+                        have_pid = true;
+                    } else {
+                        uint16_t bit = (uint16_t)(sn - nack_pid - 1u);
+                        if (bit < 16u) {
+                            nack_blp |= (uint16_t)(1u << bit);
+                        }
+                    }
+                }
+#if NANORTC_FEATURE_VIDEO_FEC
+                if (suppressed) {
+                    __atomic_fetch_add(&rtc->stats_nack_suppressed_fec, 1, __ATOMIC_RELAXED);
+                }
+#endif
+                if (have_pid) {
+                    rtc_emit_nack(rtc, m, nack_pid, nack_blp);
+                }
+                m->track.video.recv_nack_seq = rtp_seq;
+            } else if (nadv > 0) {
+                m->track.video.recv_nack_seq = rtp_seq;
             }
         }
-        if (drc == NANORTC_OK && nalu_out && nalu_len > 0) {
-            nanortc_event_t vevt;
-            memset(&vevt, 0, sizeof(vevt));
-            vevt.type = NANORTC_EV_MEDIA_DATA;
-            vevt.media_data.mid = m->mid;
-            vevt.media_data.pt = m->rtp.payload_type;
-            vevt.media_data.data = nalu_out;
-            vevt.media_data.len = nalu_len;
-            vevt.media_data.timestamp = rtp_ts;
-            vevt.media_data.is_keyframe = is_kf;
-            vevt.media_data.contiguous = true;
-            nano_rtc_emit_event_full(rtc, &vevt);
+#endif /* NANORTC_FEATURE_VIDEO_NACK_RX */
+#if NANORTC_FEATURE_VIDEO_REORDER
+        /* Reorder buffer: only BUFFER the packet here. Released NALs are drained
+         * one-per-poll_output by nano_rtc_media_reorder_produce() so each event
+         * is consumed before the next reuses the shared depkt buffer, and
+         * nanortc_next_timeout_ms() arms the skip deadline so a held frame
+         * flushes even if no further RTP arrives. The buffer's skip is the
+         * precise loss signal (a genuine gap, not a reorder). */
+        reorder_push(&m->track.video.reorder, rtp_seq, rtp_ts, rtp_marker, payload, payload_len,
+                     rtc->now_ms);
+#else
+        /* No reorder buffer: raw forward-gap detection is the loss signal.
+         * (int16_t)(seq - last) handles the 16-bit RTP wrap (RFC 3550 §5.1):
+         *   > 1 forward gap (lost); == 1 in order; <= 0 late/reordered (ignored
+         *   here but still delivered to the depacketizer in arrival order).
+         * Without the reorder buffer a reorder reads as loss; the auto-PLI
+         * debounce (NANORTC_VIDEO_PLI_MIN_INTERVAL_MS) caps the cost. */
+        bool lost = false;
+#if NANORTC_FEATURE_VIDEO_AUTO_PLI
+        if (!m->track.video.recv_seq_inited) {
+            m->track.video.recv_seq_inited = true;
+            m->track.video.recv_last_seq = rtp_seq;
+        } else {
+            int16_t adv = (int16_t)(rtp_seq - m->track.video.recv_last_seq);
+            if (adv > 1) {
+                m->track.video.recv_last_seq = rtp_seq;
+                lost = true;
+            } else if (adv > 0) {
+                m->track.video.recv_last_seq = rtp_seq;
+            }
         }
 #endif
+        rtc_video_deliver(rtc, m, payload, payload_len, rtp_ts, rtp_marker, lost);
+#endif /* NANORTC_FEATURE_VIDEO_REORDER */
+#endif /* NANORTC_FEATURE_VIDEO */
     }
     return NANORTC_OK;
 }

@@ -155,7 +155,7 @@ int rtcp_generate_rr(nano_rtcp_t *rtcp, uint32_t remote_ssrc, uint8_t *buf, size
  *  FMT=1 for Generic NACK, PT=RTPFB(205), length=3
  * ================================================================ */
 
-int rtcp_generate_nack(uint32_t ssrc, uint32_t media_ssrc, uint16_t seq, uint8_t *buf,
+int rtcp_generate_nack(uint32_t ssrc, uint32_t media_ssrc, uint16_t seq, uint16_t blp, uint8_t *buf,
                        size_t buf_len, size_t *out_len)
 {
     if (!buf || !out_len) {
@@ -171,9 +171,10 @@ int rtcp_generate_nack(uint32_t ssrc, uint32_t media_ssrc, uint16_t seq, uint8_t
     /* SSRC of media source */
     nanortc_write_u32be(buf + 8, media_ssrc);
 
-    /* FCI: PID + BLP (single lost packet, no bitmask) */
+    /* FCI (RFC 4585 §6.2.1): PID (first lost seq) + BLP (bitmask of the next 16
+     * sequence numbers after PID; bit i set = seq PID+1+i also lost). */
     nanortc_write_u16be(buf + 12, seq);
-    nanortc_write_u16be(buf + 14, 0); /* BLP=0: only the single packet */
+    nanortc_write_u16be(buf + 14, blp);
 
     *out_len = RTCP_NACK_SIZE;
     return NANORTC_OK;
@@ -294,7 +295,12 @@ int rtcp_parse(const uint8_t *data, size_t len, nano_rtcp_info_t *info)
     }
 
     case RTCP_PSFB:
-        /* PLI: just record the type, no additional parsing needed */
+        /* PSFB (RFC 4585 §6.3.1 PLI / RFC 5104 §4.3.1 FIR): word 2 is the SSRC
+         * of the media source the request is about. The FMT (low 5 bits of
+         * data[0]) distinguishes PLI(1)/FIR(4)/REMB(15); the caller reads it. */
+        if (pkt_size >= 12) {
+            info->psfb_media_ssrc = nanortc_read_u32be(data + 8);
+        }
         break;
 
     default:

@@ -111,6 +111,49 @@
 #define NANORTC_VIDEO_PKT_RING_SIZE CONFIG_NANORTC_VIDEO_PKT_RING_SIZE
 #endif
 
+/* Send-pacing knobs (mirrored from Kconfig when the symbol exists; the
+ * #ifndef defaults further down apply otherwise — including on ESP-IDF, so
+ * pacing stays on by default without requiring a Kconfig entry). */
+#if defined(CONFIG_NANORTC_FEATURE_VIDEO_PACING) && !defined(NANORTC_FEATURE_VIDEO_PACING)
+#define NANORTC_FEATURE_VIDEO_PACING CONFIG_NANORTC_FEATURE_VIDEO_PACING
+#endif
+#if defined(CONFIG_NANORTC_PACING_FACTOR_PCT) && !defined(NANORTC_PACING_FACTOR_PCT)
+#define NANORTC_PACING_FACTOR_PCT CONFIG_NANORTC_PACING_FACTOR_PCT
+#endif
+#if defined(CONFIG_NANORTC_PACING_MAX_BURST_BYTES) && !defined(NANORTC_PACING_MAX_BURST_BYTES)
+#define NANORTC_PACING_MAX_BURST_BYTES CONFIG_NANORTC_PACING_MAX_BURST_BYTES
+#endif
+#if defined(CONFIG_NANORTC_PACING_MIN_RATE_BPS) && !defined(NANORTC_PACING_MIN_RATE_BPS)
+#define NANORTC_PACING_MIN_RATE_BPS CONFIG_NANORTC_PACING_MIN_RATE_BPS
+#endif
+#if defined(CONFIG_NANORTC_PACING_MAX_QUEUE_MS) && !defined(NANORTC_PACING_MAX_QUEUE_MS)
+#define NANORTC_PACING_MAX_QUEUE_MS CONFIG_NANORTC_PACING_MAX_QUEUE_MS
+#endif
+#if defined(CONFIG_NANORTC_FEATURE_VIDEO_AUTO_PLI) && !defined(NANORTC_FEATURE_VIDEO_AUTO_PLI)
+#define NANORTC_FEATURE_VIDEO_AUTO_PLI CONFIG_NANORTC_FEATURE_VIDEO_AUTO_PLI
+#endif
+#if defined(CONFIG_NANORTC_FEATURE_VIDEO_NACK_RX) && !defined(NANORTC_FEATURE_VIDEO_NACK_RX)
+#define NANORTC_FEATURE_VIDEO_NACK_RX CONFIG_NANORTC_FEATURE_VIDEO_NACK_RX
+#endif
+#if defined(CONFIG_NANORTC_FEATURE_VIDEO_FEC) && !defined(NANORTC_FEATURE_VIDEO_FEC)
+#define NANORTC_FEATURE_VIDEO_FEC CONFIG_NANORTC_FEATURE_VIDEO_FEC
+#endif
+#if defined(CONFIG_NANORTC_FEC_GROUP_SIZE) && !defined(NANORTC_FEC_GROUP_SIZE)
+#define NANORTC_FEC_GROUP_SIZE CONFIG_NANORTC_FEC_GROUP_SIZE
+#endif
+#if defined(CONFIG_NANORTC_VIDEO_PLI_MIN_INTERVAL_MS) && !defined(NANORTC_VIDEO_PLI_MIN_INTERVAL_MS)
+#define NANORTC_VIDEO_PLI_MIN_INTERVAL_MS CONFIG_NANORTC_VIDEO_PLI_MIN_INTERVAL_MS
+#endif
+#if defined(CONFIG_NANORTC_FEATURE_VIDEO_REORDER) && !defined(NANORTC_FEATURE_VIDEO_REORDER)
+#define NANORTC_FEATURE_VIDEO_REORDER CONFIG_NANORTC_FEATURE_VIDEO_REORDER
+#endif
+#if defined(CONFIG_NANORTC_VIDEO_REORDER_SLOTS) && !defined(NANORTC_VIDEO_REORDER_SLOTS)
+#define NANORTC_VIDEO_REORDER_SLOTS CONFIG_NANORTC_VIDEO_REORDER_SLOTS
+#endif
+#if defined(CONFIG_NANORTC_VIDEO_REORDER_MAX_WAIT_MS) && !defined(NANORTC_VIDEO_REORDER_MAX_WAIT_MS)
+#define NANORTC_VIDEO_REORDER_MAX_WAIT_MS CONFIG_NANORTC_VIDEO_REORDER_MAX_WAIT_MS
+#endif
+
 #if defined(CONFIG_NANORTC_JITTER_SLOTS) && !defined(NANORTC_JITTER_SLOTS)
 #define NANORTC_JITTER_SLOTS CONFIG_NANORTC_JITTER_SLOTS
 #endif
@@ -317,9 +360,17 @@
 #define NANORTC_MAX_MEDIA_TRACKS 2
 #endif
 
-/** @brief Maximum SSRC map entries for RTP demuxing. Default: 2 * MAX_MEDIA_TRACKS. */
+/** @brief Maximum SSRC map entries for RTP demuxing. Default: 2 * MAX_MEDIA_TRACKS,
+ *  plus 2 when ULPFEC is enabled: the FEC stream rides its own SSRC (media + 1)
+ *  and so consumes an SRTP per-SSRC state slot (auto-created on protect/unprotect)
+ *  in each direction, on top of the media SSRCs. Sized via a -D flag is seen here;
+ *  a config-file-only FEC enable is caught by the validation #error below. */
 #ifndef NANORTC_MAX_SSRC_MAP
+#if defined(NANORTC_FEATURE_VIDEO_FEC) && NANORTC_FEATURE_VIDEO_FEC
+#define NANORTC_MAX_SSRC_MAP (NANORTC_MAX_MEDIA_TRACKS * 2 + 2)
+#else
 #define NANORTC_MAX_SSRC_MAP (NANORTC_MAX_MEDIA_TRACKS * 2)
+#endif
 #endif
 
 /* ----------------------------------------------------------------
@@ -605,6 +656,18 @@
 #define NANORTC_VIDEO_PKT_RING_SIZE NANORTC_OUT_QUEUE_SIZE
 #endif
 
+/** @brief NACK-answer retransmit scratch buffers (TD-023). When the sender
+ *  answers a generic NACK it copies each matched pkt_ring packet into one of
+ *  these and enqueues the copy, so a concurrent `nanortc_send_video()` cannot
+ *  corrupt the in-flight retransmit by wrapping pkt_ring over the original slot.
+ *  A NACK FCI requests up to 17 SNs; with N slots, up to N are retransmitted
+ *  corruption-safely per un-drained window, the rest fall back to best-effort
+ *  (the receiver re-NACKs). Each slot costs NANORTC_MEDIA_BUF_SIZE; default 4
+ *  (~5 KB) — shrink for tight MCUs, 1 = a single safe retransmit at a time. */
+#ifndef NANORTC_NACK_RETX_RING
+#define NANORTC_NACK_RETX_RING 4
+#endif
+
 /* ----------------------------------------------------------------
  * Media transport configuration
  * ---------------------------------------------------------------- */
@@ -626,6 +689,16 @@
 /* RTCP send interval in milliseconds (RFC 3550 §6.2) */
 #ifndef NANORTC_RTCP_INTERVAL_MS
 #define NANORTC_RTCP_INTERVAL_MS 5000
+#endif
+
+/* Persistent scratch for one outbound RTCP feedback packet (PLI/FIR + SRTCP
+ * tag). Unlike the SR cadence (timer path, may borrow stun_buf), feedback like
+ * auto-PLI is generated *during* receive processing while stun_buf holds the
+ * inbound RTP packet, so it needs its own buffer whose lifetime survives until
+ * nanortc_poll_output(). 64 B covers PLI (12) + SRTP auth tag + SRTCP index
+ * with headroom. */
+#ifndef NANORTC_RTCP_FB_BUF_SIZE
+#define NANORTC_RTCP_FB_BUF_SIZE 64
 #endif
 
 /* ----------------------------------------------------------------
@@ -655,6 +728,58 @@
 #endif
 
 /* ----------------------------------------------------------------
+ * Send pacing configuration (VIDEO feature only)
+ *
+ * A leaky-bucket pacer meters outbound *video* RTP egress so a large IDR
+ * (tens of fragments) is spread across ~one frame interval at the
+ * BWE-derived rate instead of bursting into the network bottleneck buffer
+ * and causing self-inflicted loss → PLI → larger IDR. Control packets,
+ * NACK retransmits and audio bypass the pacer. See src/nano_rtc_media.c
+ * (pacer_enqueue / pacer_pump). The complement to the atomic frame
+ * admission gate: admission decides *whether* a frame fits, pacing decides
+ * *how* to spread it on the wire.
+ * ---------------------------------------------------------------- */
+
+/** @brief Enable the send-side video RTP pacer. Sub-feature of VIDEO; no
+ *  effect on DataChannel / audio-only builds. When 0 the send path enqueues
+ *  every fragment immediately (pre-pacer behavior — a safe fallback).
+ *  Default: 1. */
+#ifndef NANORTC_FEATURE_VIDEO_PACING
+#define NANORTC_FEATURE_VIDEO_PACING 1
+#endif
+
+/** @brief Pacing rate as a percent of the current BWE estimate. 150 = 1.5x,
+ *  giving headroom so a frame's backlog clears within a frame interval while
+ *  still smoothing the burst. Must be >= 100. Default: 150. */
+#ifndef NANORTC_PACING_FACTOR_PCT
+#define NANORTC_PACING_FACTOR_PCT 150
+#endif
+
+/** @brief Token-bucket burst budget (bytes). The pacer may release up to
+ *  this many bytes back-to-back before metering throttles egress. Bounds the
+ *  instantaneous burst; must be >= NANORTC_MEDIA_BUF_SIZE so a single
+ *  max-size packet can always be released. Default: 3000 (~2 MTU). */
+#ifndef NANORTC_PACING_MAX_BURST_BYTES
+#define NANORTC_PACING_MAX_BURST_BYTES 3000
+#endif
+
+/** @brief Pacing-rate floor (bits/sec). The pacer never meters slower than
+ *  this even if the BWE estimate collapses, preventing egress stalls and
+ *  divide-by-zero. Default: 100000 (100 kbps). */
+#ifndef NANORTC_PACING_MIN_RATE_BPS
+#define NANORTC_PACING_MIN_RATE_BPS 100000
+#endif
+
+/** @brief Hard cap on the latency the pacer may add (ms). When the oldest
+ *  queued fragment has waited this long, the whole backlog drains
+ *  immediately (catch-up) — pacing smooths within a frame budget but never
+ *  delays across frames, preserving the real-time guarantee. ~one 25-30 fps
+ *  frame. Default: 40. */
+#ifndef NANORTC_PACING_MAX_QUEUE_MS
+#define NANORTC_PACING_MAX_QUEUE_MS 40
+#endif
+
+/* ----------------------------------------------------------------
  * Video configuration (VIDEO feature only)
  * ---------------------------------------------------------------- */
 
@@ -668,6 +793,134 @@
 /** @brief Default dynamic Payload Type for H.264 (RFC 6184). */
 #ifndef NANORTC_VIDEO_DEFAULT_PT
 #define NANORTC_VIDEO_DEFAULT_PT 96
+#endif
+
+/** @brief Auto-PLI: when the receiver detects a forward RTP sequence gap on a
+ *  video track (a lost packet), automatically emit an RTCP PLI (RFC 4585
+ *  §6.3.1) to request a fresh keyframe so the decoder can resync. Sub-feature
+ *  of VIDEO. Without it, a receiver that loses a reference packet stays
+ *  undecodable (frozen) until the application calls nanortc_request_keyframe()
+ *  itself. Default: 1. */
+#ifndef NANORTC_FEATURE_VIDEO_AUTO_PLI
+#define NANORTC_FEATURE_VIDEO_AUTO_PLI 1
+#endif
+
+/** @brief Minimum interval between auto-PLI requests per video track (ms).
+ *  Debounces keyframe requests so a burst of loss — or packet reordering,
+ *  until a receive-side reorder buffer lands — costs at most one keyframe
+ *  request per interval. Default: 1000. */
+#ifndef NANORTC_VIDEO_PLI_MIN_INTERVAL_MS
+#define NANORTC_VIDEO_PLI_MIN_INTERVAL_MS 1000
+#endif
+
+/** @brief Forward Error Correction codec (ULPFEC, RFC 5109 level-0; sub-feature
+ *  of VIDEO). Proactive zero-RTT loss recovery: an XOR parity packet over a
+ *  group of media packets lets the receiver reconstruct ONE lost packet per
+ *  group without a retransmit. **Opt-in, default 0** — it costs constant
+ *  redundancy bandwidth even with zero loss, so it only earns its place on
+ *  high-RTT / high-loss links where NACK is too late. Phase 13 PR-1 ships the
+ *  codec (`nano_fec.c`); SDP/RED negotiation + send/recv wiring follow. */
+#ifndef NANORTC_FEATURE_VIDEO_FEC
+#define NANORTC_FEATURE_VIDEO_FEC 0
+#endif
+
+/** @brief Media packets protected per FEC group (K). Overhead = 1/K. Must be
+ *  1..16 (the ULPFEC level-0 16-bit mask). Default 8 (~12.5% overhead). With
+ *  adaptive FEC (below) this is the MAX group / MIN overhead used at moderate
+ *  loss; K is only varied downward, so the rings stay sized to this. */
+#ifndef NANORTC_FEC_GROUP_SIZE
+#define NANORTC_FEC_GROUP_SIZE 8
+#endif
+
+/** @brief Adaptive FEC: scale protection to the measured TWCC loss fraction
+ *  (RFC 8888) instead of a fixed group size. The scarce embedded camera uplink
+ *  pays *no* FEC overhead on a clean link and more protection only when it's
+ *  actually lossy. Default 1 (only meaningful with FEC). K is varied in
+ *  [NANORTC_FEC_MIN_GROUP .. NANORTC_FEC_GROUP_SIZE]; below the OFF threshold no
+ *  FEC is sent at all. The receiver is K-agnostic (the mask carries it), so this
+ *  is a sender-only, wire-compatible change. Set 0 for a fixed group size. */
+#ifndef NANORTC_FEC_ADAPTIVE
+#define NANORTC_FEC_ADAPTIVE 1
+#endif
+
+/** @brief Below this smoothed loss (q8, 256 = 100%), send NO FEC — clean links
+ *  pay zero overhead. Default 5 (~2%), matching the BWE controller's grow band. */
+#ifndef NANORTC_FEC_LOSS_OFF_Q8
+#define NANORTC_FEC_LOSS_OFF_Q8 5
+#endif
+
+/** @brief At/above this smoothed loss (q8), use the smallest group (most
+ *  protection). Default 25 (~10%), matching the BWE controller's shrink band. */
+#ifndef NANORTC_FEC_LOSS_HIGH_Q8
+#define NANORTC_FEC_LOSS_HIGH_Q8 25
+#endif
+
+/** @brief Smallest adaptive FEC group (most protection / highest overhead) used
+ *  at high loss. Default = half the max group, floor 2. Must be >= 2. */
+#ifndef NANORTC_FEC_MIN_GROUP
+#define NANORTC_FEC_MIN_GROUP ((NANORTC_FEC_GROUP_SIZE / 2) >= 2 ? (NANORTC_FEC_GROUP_SIZE / 2) : 2)
+#endif
+
+/** @brief Number of in-flight FEC transmit buffers. A bursty frame (a large IDR
+ *  that fragments into many packets) completes several FEC groups within ONE
+ *  send call, before the app polls — each needs its own buffer so their pointers
+ *  in out_queue don't alias. With N slots, up to N groups of an IDR get FEC;
+ *  beyond that the surplus groups fall back to reorder/NACK (TD-026 L1 residual).
+ *  Each slot costs NANORTC_FEC_BUF_SIZE. Default 4 (covers an IDR up to ~4·K
+ *  packets fully). 1 = the original single-buffer behaviour. */
+#ifndef NANORTC_FEC_TX_RING
+#define NANORTC_FEC_TX_RING 4
+#endif
+
+/** @brief Dynamic RTP payload type for the outbound ULPFEC stream (RFC 5109).
+ *  The FEC packets ride a separate SSRC (media SSRC + 1) so they don't pollute
+ *  the media sequence space. Default 116 (dynamic range 96–127). */
+#ifndef NANORTC_VIDEO_FEC_PT
+#define NANORTC_VIDEO_FEC_PT 116
+#endif
+
+/** @brief Scratch size for one assembled FEC RTP packet (its 12-byte RTP header
+ *  + the ULPFEC body, which can slightly exceed the largest media packet, + the
+ *  SRTP tag). +64 over the media buffer covers the worst case. */
+#ifndef NANORTC_FEC_BUF_SIZE
+#define NANORTC_FEC_BUF_SIZE (NANORTC_MEDIA_BUF_SIZE + 64)
+#endif
+
+/** @brief Receiver-side NACK generation (sub-feature of VIDEO). On a detected
+ *  forward RTP sequence gap, send an RTCP Generic NACK (RFC 4585 §6.2.1) asking
+ *  the sender to retransmit the lost packet(s) from its pkt_ring history —
+ *  cheaper than a keyframe for small losses, recovering within ~1 RTT. Most
+ *  effective WITH the reorder buffer (which holds the gap long enough for the
+ *  retransmit to arrive). **Opt-in, default 0**: it costs uplink RTCP and only
+ *  helps a receiver, so a send-only camera leaves it off. */
+#ifndef NANORTC_FEATURE_VIDEO_NACK_RX
+#define NANORTC_FEATURE_VIDEO_NACK_RX 0
+#endif
+
+/** @brief Receive-side video reorder buffer (sub-feature of VIDEO). Holds
+ *  inbound RTP packets by sequence number and releases them in order to the
+ *  depacketizer, healing benign WiFi/cellular reordering before it breaks FU
+ *  reassembly, and making the loss signal (auto-PLI / `contiguous`) precise —
+ *  only genuine gaps, not reorders. **Opt-in, default 0**: it adds
+ *  `NANORTC_VIDEO_REORDER_SLOTS × NANORTC_MEDIA_BUF_SIZE` bytes per video track
+ *  and up to NANORTC_VIDEO_REORDER_MAX_WAIT_MS of receive latency, so a
+ *  send-only camera should leave it off. */
+#ifndef NANORTC_FEATURE_VIDEO_REORDER
+#define NANORTC_FEATURE_VIDEO_REORDER 0
+#endif
+
+/** @brief Reorder window depth in packets (power of 2, >= 2). The buffer
+ *  tolerates reordering up to this span; a packet farther ahead force-advances
+ *  the window (declaring the skipped span lost). Default: 8. */
+#ifndef NANORTC_VIDEO_REORDER_SLOTS
+#define NANORTC_VIDEO_REORDER_SLOTS 8
+#endif
+
+/** @brief Max time a buffered packet waits for a missing predecessor before the
+ *  gap is declared lost and skipped (ms) — the hard cap on reorder latency.
+ *  Enforced on packet arrival. ~one frame at 30 fps. Default: 30. */
+#ifndef NANORTC_VIDEO_REORDER_MAX_WAIT_MS
+#define NANORTC_VIDEO_REORDER_MAX_WAIT_MS 30
 #endif
 
 /* ----------------------------------------------------------------
@@ -871,6 +1124,91 @@ typedef enum {
 #endif
 #if NANORTC_VIDEO_PKT_RING_SIZE < 4
 #error "NANORTC_VIDEO_PKT_RING_SIZE must be >= 4"
+#endif
+#if NANORTC_NACK_RETX_RING < 1 || NANORTC_NACK_RETX_RING > 64
+#error "NANORTC_NACK_RETX_RING must be in 1..64 (slot index fits int8_t; bounded RAM)"
+#endif
+
+#if NANORTC_FEATURE_VIDEO && NANORTC_FEATURE_VIDEO_PACING
+#if NANORTC_PACING_FACTOR_PCT < 100
+#error "NANORTC_PACING_FACTOR_PCT must be >= 100 (pace at least at the BWE estimate)"
+#endif
+#if NANORTC_PACING_MAX_BURST_BYTES < NANORTC_MEDIA_BUF_SIZE
+#error \
+    "NANORTC_PACING_MAX_BURST_BYTES must be >= NANORTC_MEDIA_BUF_SIZE so one max-size packet always fits the burst budget"
+#endif
+#if NANORTC_PACING_MAX_QUEUE_MS < 1
+#error "NANORTC_PACING_MAX_QUEUE_MS must be >= 1"
+#endif
+#if NANORTC_PACING_MIN_RATE_BPS < 1000
+#error "NANORTC_PACING_MIN_RATE_BPS must be >= 1000"
+#endif
+#endif /* video pacing validation */
+
+#if NANORTC_FEATURE_VIDEO && NANORTC_FEATURE_VIDEO_AUTO_PLI
+#if NANORTC_VIDEO_PLI_MIN_INTERVAL_MS < 1
+#error "NANORTC_VIDEO_PLI_MIN_INTERVAL_MS must be >= 1"
+#endif
+#endif
+
+#if NANORTC_HAVE_MEDIA_TRANSPORT && (NANORTC_RTCP_FB_BUF_SIZE < 26)
+#error "NANORTC_RTCP_FB_BUF_SIZE must be >= 26 (RTCP PLI 12 + SRTP tag 10 + SRTCP index 4)"
+#endif
+
+#if NANORTC_FEATURE_VIDEO && NANORTC_FEATURE_VIDEO_FEC
+#if NANORTC_FEC_GROUP_SIZE < 1 || NANORTC_FEC_GROUP_SIZE > 16
+#error "NANORTC_FEC_GROUP_SIZE must be 1..16 (ULPFEC level-0 16-bit mask)"
+#endif
+#if NANORTC_VIDEO_FEC_PT < 96 || NANORTC_VIDEO_FEC_PT > 127
+#error "NANORTC_VIDEO_FEC_PT must be a dynamic payload type (96..127)"
+#endif
+/* The receive path PT-intercepts the FEC stream before the SSRC->MID lookup, so
+ * the FEC PT must be disjoint from every media PT or media would be misrouted. */
+#if NANORTC_VIDEO_FEC_PT == NANORTC_VIDEO_DEFAULT_PT
+#error "NANORTC_VIDEO_FEC_PT collides with NANORTC_VIDEO_DEFAULT_PT (H.264)"
+#endif
+#if NANORTC_FEATURE_H265 && (NANORTC_VIDEO_FEC_PT == NANORTC_VIDEO_H265_DEFAULT_PT)
+#error "NANORTC_VIDEO_FEC_PT collides with NANORTC_VIDEO_H265_DEFAULT_PT"
+#endif
+/* The FEC stream's own SSRC needs an SRTP per-SSRC state slot per direction on
+ * top of the media SSRCs. If FEC was enabled only via a config file (after
+ * NANORTC_MAX_SSRC_MAP was already computed), bump NANORTC_MAX_SSRC_MAP. */
+#if NANORTC_MAX_SSRC_MAP < (NANORTC_MAX_MEDIA_TRACKS * 2 + 2)
+#error "NANORTC_FEATURE_VIDEO_FEC needs NANORTC_MAX_SSRC_MAP >= NANORTC_MAX_MEDIA_TRACKS*2 + 2"
+#endif
+/* FEC requires the reorder buffer. A FEC-recovered packet arrives "late" (after
+ * the FEC, i.e. after later media) and must be slotted back into sequence to be
+ * useful — that is exactly what the reorder buffer does. The reorder buffer is
+ * also the only safe re-injection path: it copies the recovered NAL into its own
+ * slot and releases one-NAL-per-poll, so the recovered + the live packet that
+ * triggered recovery never alias the single per-track depacketizer buffer in one
+ * handle_input (the non-reorder immediate-deliver path would). */
+#if !NANORTC_FEATURE_VIDEO_REORDER
+#error "NANORTC_FEATURE_VIDEO_FEC requires NANORTC_FEATURE_VIDEO_REORDER=1"
+#endif
+#if NANORTC_FEC_ADAPTIVE
+#if NANORTC_FEC_MIN_GROUP < 2 || NANORTC_FEC_MIN_GROUP > NANORTC_FEC_GROUP_SIZE
+#error "NANORTC_FEC_MIN_GROUP must be in 2..NANORTC_FEC_GROUP_SIZE"
+#endif
+#if NANORTC_FEC_LOSS_OFF_Q8 >= NANORTC_FEC_LOSS_HIGH_Q8
+#error "NANORTC_FEC_LOSS_OFF_Q8 must be < NANORTC_FEC_LOSS_HIGH_Q8"
+#endif
+#endif
+#if NANORTC_FEC_TX_RING < 1 || NANORTC_FEC_TX_RING > 64
+#error "NANORTC_FEC_TX_RING must be in 1..64 (slot index fits int8_t; bounded RAM)"
+#endif
+#endif
+
+#if NANORTC_FEATURE_VIDEO && NANORTC_FEATURE_VIDEO_REORDER
+#if (NANORTC_VIDEO_REORDER_SLOTS & (NANORTC_VIDEO_REORDER_SLOTS - 1)) != 0
+#error "NANORTC_VIDEO_REORDER_SLOTS must be a power of 2"
+#endif
+#if NANORTC_VIDEO_REORDER_SLOTS < 2
+#error "NANORTC_VIDEO_REORDER_SLOTS must be >= 2"
+#endif
+#if NANORTC_VIDEO_REORDER_MAX_WAIT_MS < 1
+#error "NANORTC_VIDEO_REORDER_MAX_WAIT_MS must be >= 1"
+#endif
 #endif
 
 #if NANORTC_FEATURE_DATACHANNEL && NANORTC_MAX_DATACHANNELS < 1

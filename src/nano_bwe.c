@@ -191,6 +191,16 @@ int bwe_on_twcc_loss(nano_bwe_t *bwe, uint16_t loss_fraction_q8, uint32_t now_ms
         loss_fraction_q8 = 256; /* saturate */
     }
 
+    /* Smooth the loss fraction (EMA, weight 3/4 old + 1/4 new) so adaptive FEC
+     * reacts to sustained loss, not a single noisy feedback. First sample seeds
+     * directly. */
+    if (bwe->twcc_count == 0) {
+        bwe->smoothed_loss_q8 = loss_fraction_q8;
+    } else {
+        bwe->smoothed_loss_q8 =
+            (uint16_t)(((uint32_t)bwe->smoothed_loss_q8 * 3u + loss_fraction_q8) / 4u);
+    }
+
     uint32_t max_bps = bwe_effective_max(bwe);
     uint32_t min_bps = bwe_effective_min(bwe);
 
@@ -235,6 +245,14 @@ uint32_t bwe_get_bitrate(const nano_bwe_t *bwe)
         return 0;
     }
     return bwe->estimated_bitrate;
+}
+
+uint16_t bwe_get_loss_q8(const nano_bwe_t *bwe)
+{
+    if (!bwe) {
+        return 0;
+    }
+    return bwe->smoothed_loss_q8;
 }
 
 /* ================================================================

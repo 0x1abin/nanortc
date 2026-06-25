@@ -640,6 +640,9 @@ TEST(test_sdp_generate_video_answer)
     ASSERT_TRUE(strstr(buf, "a=rtpmap:96 H264/90000") != NULL);
     ASSERT_TRUE(strstr(buf, "profile-level-id=42e01f") != NULL);
     ASSERT_TRUE(strstr(buf, "a=rtcp-fb:96 nack pli") != NULL);
+    /* transport-cc rtcp-fb must be advertised, else browsers send no
+     * transport-cc congestion feedback and BWE never leaves its seed. */
+    ASSERT_TRUE(strstr(buf, "a=rtcp-fb:96 transport-cc") != NULL);
     ASSERT_TRUE(strstr(buf, "a=rtcp-mux") != NULL);
 }
 

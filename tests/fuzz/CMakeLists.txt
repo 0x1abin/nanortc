@@ -79,6 +79,44 @@ if(NANORTC_FEATURE_VIDEO)
     endforeach()
 endif()
 
+# Reorder buffer fuzz target. The reorder feature is opt-in (default off), so
+# compile nano_reorder.c directly with the flag rather than relying on the
+# library build — this keeps the harness meaningful in any fuzz configuration.
+if(NANORTC_FEATURE_VIDEO)
+    add_executable(fuzz_reorder fuzz_reorder.c ${CMAKE_SOURCE_DIR}/src/nano_reorder.c)
+    target_include_directories(fuzz_reorder PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/src
+        ${CMAKE_SOURCE_DIR}/crypto
+    )
+    target_compile_definitions(fuzz_reorder PRIVATE
+        NANORTC_FEATURE_VIDEO=1
+        NANORTC_FEATURE_VIDEO_REORDER=1
+    )
+    target_compile_options(fuzz_reorder PRIVATE ${FUZZ_FLAGS})
+    target_link_options(fuzz_reorder PRIVATE ${FUZZ_FLAGS})
+endif()
+
+# ULPFEC codec fuzz target (opt-in feature; compiled standalone with the flag).
+if(NANORTC_FEATURE_VIDEO)
+    add_executable(fuzz_fec fuzz_fec.c ${CMAKE_SOURCE_DIR}/src/nano_fec.c)
+    target_include_directories(fuzz_fec PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/src
+        ${CMAKE_SOURCE_DIR}/crypto
+    )
+    target_compile_definitions(fuzz_fec PRIVATE
+        NANORTC_FEATURE_VIDEO=1
+        NANORTC_FEATURE_VIDEO_FEC=1
+        # FEC requires the reorder buffer (re-injection path); config.h enforces
+        # this with a #error. The FEC codec itself does not call into reorder, so
+        # the flag only satisfies the guard — no nano_reorder.c link needed.
+        NANORTC_FEATURE_VIDEO_REORDER=1
+    )
+    target_compile_options(fuzz_fec PRIVATE ${FUZZ_FLAGS})
+    target_link_options(fuzz_fec PRIVATE ${FUZZ_FLAGS})
+endif()
+
 # Build H.265 fuzz targets (requires NANORTC_FEATURE_H265)
 if(NANORTC_FEATURE_H265)
     foreach(target ${FUZZ_H265_TARGETS})

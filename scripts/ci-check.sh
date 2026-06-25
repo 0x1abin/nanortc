@@ -270,6 +270,19 @@ run_check "Build DATA + ICE_SRFLX=OFF" \
 run_check "Test  DATA + ICE_SRFLX=OFF" \
     ctest --test-dir "$srflx_off_dir" --output-on-failure
 
+# Feature-ON: the opt-in receive-robustness features (reorder buffer + receiver
+# NACK, both default off) — the default matrix never compiles nano_reorder.c,
+# the reorder/NACK receive paths, or test_reorder, so exercise them together
+# (the natural pairing: reorder holds the gap, NACK requests the retransmit).
+reorder_dir="$CI_DIR/build-ci-reorder"
+prep_build_dir "$reorder_dir"
+
+run_check "Build MEDIA + REORDER + NACK_RX + FEC" \
+    bash -c "cmake -B '$reorder_dir' -DNANORTC_FEATURE_DATACHANNEL=ON -DNANORTC_FEATURE_AUDIO=ON -DNANORTC_FEATURE_VIDEO=ON $CRYPTO_FLAG $LAUNCHER_FLAGS -DCMAKE_BUILD_TYPE=Debug '-DCMAKE_C_FLAGS=-DNANORTC_FEATURE_VIDEO_REORDER=1 -DNANORTC_FEATURE_VIDEO_NACK_RX=1 -DNANORTC_FEATURE_VIDEO_FEC=1' > /dev/null 2>&1 && cmake --build '$reorder_dir' -j${JOBS} > /dev/null 2>&1"
+
+run_check "Test  MEDIA + REORDER + NACK_RX + FEC" \
+    ctest --test-dir "$reorder_dir" --output-on-failure
+
 # ============================================================
 # 6. Interop tests (requires openssl + C++ compiler)
 # ============================================================

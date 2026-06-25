@@ -334,6 +334,15 @@ static esp_err_t http_get_debug(httpd_req_t *req)
 #else
     uint32_t wrap_drop = 0, via_turn = 0, direct = 0;
 #endif
+#if NANORTC_FEATURE_VIDEO && NANORTC_FEATURE_VIDEO_PACING
+    /* Send-pacer health: `paced` rises with every metered fragment; a rising
+     * `pace_catchup` means the link is slower than the encoder's output (the
+     * pacer hit its latency cap and flushed the backlog — drop encoder bitrate). */
+    uint32_t paced = __atomic_load_n(&s_rtc.stats_paced_packets, __ATOMIC_RELAXED);
+    uint32_t pace_catchup = __atomic_load_n(&s_rtc.stats_pace_catchup, __ATOMIC_RELAXED);
+#else
+    uint32_t paced = 0, pace_catchup = 0;
+#endif
     nanortc_track_stats_t vstats;
     memset(&vstats, 0, sizeof(vstats));
     if (s_connected && s_video_mid >= 0) {
@@ -346,6 +355,7 @@ static esp_err_t http_get_debug(httpd_req_t *req)
                      "lifetime out_q=%u/%u pkt_overrun=%lu wrap_drop=%lu tx_full=%lu "
                      "via_turn=%lu direct=%lu\n"
                      "video send_err=%lu (kf=%lu) frame_drop=%lu kf_max=%lu B\n"
+                     "pacer paced=%lu catchup=%lu\n"
                      "sock send_retry=%lu send_drop=%lu\n"
                      "bwe est=%lu kbps applied=%lu kbps send=%lu kbps lost=%u/255\n",
                      s_loop.running, s_loop.fds[0], (int)s_connected, s_video_mid, s_mic_mid,
@@ -356,6 +366,7 @@ static esp_err_t http_get_debug(httpd_req_t *req)
                      (unsigned long)tx_full, (unsigned long)via_turn, (unsigned long)direct,
                      (unsigned long)s_vid_send_err, (unsigned long)s_vid_send_err_kf,
                      (unsigned long)s_frame_drop, (unsigned long)s_kf_max_bytes,
+                     (unsigned long)paced, (unsigned long)pace_catchup,
                      (unsigned long)s_loop.stats_send_retry, (unsigned long)s_loop.stats_send_drop,
                      (unsigned long)(vstats.estimated_bitrate_bps / 1024),
                      (unsigned long)(s_bwe.applied_bps / 1024),

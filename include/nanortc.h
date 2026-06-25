@@ -576,6 +576,30 @@ typedef struct nanortc_config {
 #include "nano_bwe.h"
 #endif
 
+#if NANORTC_FEATURE_VIDEO && NANORTC_FEATURE_VIDEO_PACING
+/**
+ * @brief Send-side video RTP pacer (leaky token bucket).
+ *
+ * Meters outbound video fragments out of the pkt_ring into the output
+ * queue at the BWE-derived rate so a multi-fragment IDR is spread across
+ * up to one frame interval instead of bursting onto the wire. The FIFO is
+ * a [head, tail) window over the same pkt_ring slots the NACK history
+ * uses; `tail` advances in lock-step with `pkt_ring_tail` (every committed
+ * fragment is pace-enqueued), `head` is the release cursor. Logic lives in
+ * src/nano_rtc_media.c (pacer_enqueue / pacer_pump). @internal
+ */
+typedef struct {
+    uint16_t head;            /**< Release cursor: next pkt_ring slot to pump. */
+    uint16_t tail;            /**< Enqueue cursor: == pkt_ring_tail. depth = tail-head. */
+    uint32_t budget_bytes;    /**< Token-bucket credit available to release now. */
+    uint32_t last_refill_ms;  /**< Timestamp of the last token-bucket refill. */
+    uint32_t next_release_ms; /**< Cached deadline for nanortc_next_timeout_ms(). */
+    /** Per-slot enqueue time, indexed by (cursor & (PKT_RING_SIZE-1)); used to
+     *  cap the latency the pacer may add (NANORTC_PACING_MAX_QUEUE_MS catch-up). */
+    uint32_t enqueue_ms[NANORTC_VIDEO_PKT_RING_SIZE];
+} nano_pacer_t;
+#endif
+
 /* ----------------------------------------------------------------
  * Connection state
  * ---------------------------------------------------------------- */
@@ -639,6 +663,14 @@ struct nanortc {
      *  out_queue stores only a pointer), so this rotates which track sends
      *  next across ticks to keep every sending track's SR interval bounded. */
     uint8_t sr_cursor;
+
+    /** Persistent scratch for one outbound RTCP feedback packet (PLI). Feedback
+     *  is generated during receive processing while stun_buf holds the inbound
+     *  RTP packet, so it cannot share stun_buf; this buffer satisfies the
+     *  nanortc_output_t lifetime contract (valid until the next poll_output).
+     *  One outstanding feedback at a time (one packet → one auto-PLI per
+     *  handle_input). */
+    uint8_t rtcp_fb_buf[NANORTC_RTCP_FB_BUF_SIZE];
 #endif
 
 #if NANORTC_FEATURE_VIDEO
@@ -659,6 +691,16 @@ struct nanortc {
     /** Independent write cursor for pkt_ring (decoupled from out_tail). */
     uint16_t pkt_ring_tail;
 
+    /** NACK-answer retransmit scratch ring (TD-023 fix). A generic-NACK
+     *  retransmit copies the matched pkt_ring packet HERE and enqueues this copy,
+     *  so a concurrent `nanortc_send_video()` that wraps pkt_ring over the
+     *  original slot cannot corrupt the in-flight retransmit. Each slot tracks
+     *  its own `free_at` (out_head value at which its prior output dequeued),
+     *  identical to the FEC tx ring guard. Bursts beyond the ring fall back to
+     *  best-effort (re-NACKable). Bounded RAM: NANORTC_NACK_RETX_RING × MEDIA_BUF. */
+    uint8_t nack_retx_buf[NANORTC_NACK_RETX_RING][NANORTC_MEDIA_BUF_SIZE];
+    uint16_t nack_retx_free_at[NANORTC_NACK_RETX_RING];
+
     /** Count of times video_send_fragment_cb wrapped pkt_ring while a
      *  prior slot was still referenced by an outstanding out_queue entry
      *  (NANORTC_VIDEO_PKT_RING_SIZE under-sized vs the per-frame fragment
@@ -669,6 +711,74 @@ struct nanortc {
 
     /** Shared bandwidth estimator (session-wide, not per-track). */
     nano_bwe_t bwe;
+
+#if NANORTC_FEATURE_VIDEO_PACING
+    /** Send-side video RTP pacer (BWE-driven leaky token bucket). Meters
+     *  video fragments out of pkt_ring into out_queue so an IDR burst does
+     *  not overrun the network bottleneck. See src/nano_rtc_media.c. */
+    nano_pacer_t pacer;
+
+    /** Video fragments released to the output queue by the pacer. */
+    uint32_t stats_paced_packets;
+    /** Pacer catch-up drains: times the oldest queued fragment hit
+     *  NANORTC_PACING_MAX_QUEUE_MS and the backlog was flushed immediately
+     *  to bound added latency. A rising count means the link is slower than
+     *  the encoder's output (encoder should drop bitrate). */
+    uint32_t stats_pace_catchup;
+#endif
+#if NANORTC_FEATURE_VIDEO_AUTO_PLI
+    /** Auto-PLI keyframe requests emitted on detected receive-side loss
+     *  (forward RTP sequence gap). A rising count tracks inbound video loss. */
+    uint32_t stats_auto_pli_sent;
+#endif
+#if NANORTC_FEATURE_VIDEO_NACK_RX
+    /** Persistent scratch for one outbound RTCP NACK (RFC 4585 §6.2.1). Separate
+     *  from rtcp_fb_buf because a gap may emit a NACK and an auto-PLI in the same
+     *  receive pass; sized for PLI/NACK + SRTCP. */
+    uint8_t nack_buf[NANORTC_RTCP_FB_BUF_SIZE];
+    /** Receiver-generated NACKs (Generic NACK feedback for lost packets). */
+    uint32_t stats_nack_sent;
+#endif
+#if NANORTC_FEATURE_VIDEO_FEC
+    /** ULPFEC (Phase 13 PR-3/4). Single-video-track scope: state is rtc-level
+     *  (one media stream). The FEC stream rides media SSRC + 1 on PT
+     *  NANORTC_VIDEO_FEC_PT. */
+    /* Send: rolling group of the last K plaintext media RTP packets → one FEC
+     * packet per completed group. */
+    uint8_t fec_tx_grp[NANORTC_FEC_GROUP_SIZE][NANORTC_MEDIA_BUF_SIZE];
+    uint16_t fec_tx_len[NANORTC_FEC_GROUP_SIZE];
+    uint8_t fec_tx_n;    /**< Members buffered in the current group. */
+    uint16_t fec_tx_seq; /**< FEC stream sequence counter. */
+    /** Ring of FEC RTP packet scratch buffers — one per in-flight FEC. A bursty
+     *  frame (large IDR) completes several FEC groups in one send call; each
+     *  group's FEC needs its own buffer so the pointers handed to out_queue do
+     *  not alias. `fec_tx_free_at[i]` is the out_head value at which slot i's
+     *  prior FEC output has been dequeued and the slot is reusable. */
+    uint8_t fec_tx_buf[NANORTC_FEC_TX_RING][NANORTC_FEC_BUF_SIZE];
+    uint16_t fec_tx_free_at[NANORTC_FEC_TX_RING];
+    /* Receive: ring of recent plaintext media packets for FEC recovery. */
+    uint8_t fec_rx_med[NANORTC_FEC_GROUP_SIZE][NANORTC_MEDIA_BUF_SIZE];
+    uint16_t fec_rx_len[NANORTC_FEC_GROUP_SIZE];
+    uint8_t fec_rx_n;                             /**< Ring write cursor. */
+    uint8_t fec_rx_recov[NANORTC_MEDIA_BUF_SIZE]; /**< Recovered packet scratch. */
+    /** One FEC packet awaiting its group's late media (FEC delivered before
+     *  enough members arrived); retried as each media packet is buffered so
+     *  recovery is independent of FEC-vs-media wire ordering. 0 = none. */
+    uint8_t fec_rx_pending[NANORTC_FEC_BUF_SIZE];
+    uint16_t fec_rx_pending_len;
+    /** The most recent received FEC's protected SN window (RFC 5109 level-0: SN
+     *  base + 16-bit mask). Lets the receiver NACK skip a packet the FEC will
+     *  recover — FEC and NACK are complementary recovery, not duplicate requests
+     *  for the same loss (RFC 5109 §10.1 + RFC 4585 §6.2.1). Set when a FEC
+     *  packet arrives, which (by nanortc's send order) precedes the media gap it
+     *  covers. */
+    uint16_t fec_prot_base;
+    uint16_t fec_prot_mask;
+    bool fec_prot_valid;
+    uint32_t stats_fec_sent;            /**< FEC packets emitted. */
+    uint32_t stats_fec_recovered;       /**< Media packets recovered via FEC. */
+    uint32_t stats_nack_suppressed_fec; /**< NACK events skipped because FEC covers the loss. */
+#endif
 #endif
 
     /* Output queue (simple ring buffer) */

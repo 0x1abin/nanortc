@@ -28,6 +28,10 @@
 #include "nano_h265.h"
 #endif
 
+#if NANORTC_FEATURE_VIDEO && NANORTC_FEATURE_VIDEO_REORDER
+#include "nano_reorder.h"
+#endif
+
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -109,6 +113,22 @@ typedef struct nano_media {
                 nano_h265_depkt_t h265; /**< H.265 FU reassembly (RFC 7798). */
 #endif
             } depkt;
+#if NANORTC_FEATURE_VIDEO_AUTO_PLI
+            /** Receive-side loss detection for auto-PLI keyframe recovery. */
+            uint16_t recv_last_seq;    /**< Highest in-order RTP seq received. */
+            bool recv_seq_inited;      /**< First packet seen (recv_last_seq valid). */
+            bool recv_lost_pending;    /**< Forward gap seen since last delivered frame. */
+            uint32_t recv_last_pli_ms; /**< Last auto-PLI emit time (debounce). */
+#endif
+#if NANORTC_FEATURE_VIDEO_REORDER
+            /** Receive-side reorder buffer (heals reordering before depkt). */
+            nano_reorder_t reorder;
+#endif
+#if NANORTC_FEATURE_VIDEO_NACK_RX
+            /** Receiver NACK gap detection (independent of recv_last_seq). */
+            uint16_t recv_nack_seq; /**< Highest seq seen for NACK gap detection. */
+            bool recv_nack_inited;  /**< recv_nack_seq valid. */
+#endif
         } video;
 #endif
     } track;

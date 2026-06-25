@@ -112,6 +112,62 @@ int nano_rtc_media_handle_rtp_or_rtcp(nanortc_t *rtc, const uint8_t *data, size_
  * is a no-op when `srtp.ready` is false. Defined in nano_rtc_media.c.
  */
 void nano_rtc_media_emit_rtcp_sr_cadence(nanortc_t *rtc, uint32_t now_ms);
+
+#if NANORTC_FEATURE_VIDEO && NANORTC_FEATURE_VIDEO_PACING
+/**
+ * Hand a just-committed video fragment (pkt_ring slot @p pslot) to the send
+ * pacer instead of enqueuing it directly. The pacer releases it into
+ * out_queue at the BWE-derived rate via nano_rtc_pacer_pump(). Records the
+ * enqueue time for the catch-up latency cap. Defined in nano_rtc_media.c.
+ */
+void nano_rtc_pacer_enqueue(nanortc_t *rtc, uint16_t pslot);
+
+/**
+ * Release paced video fragments whose schedule has arrived (relative to
+ * `rtc->now_ms`) from the pacer FIFO into out_queue. Idempotent; called at
+ * the top of nanortc_poll_output(). A backlog older than
+ * NANORTC_PACING_MAX_QUEUE_MS is flushed immediately (catch-up) so the
+ * pacer never adds unbounded latency. Defined in nano_rtc_media.c.
+ */
+void nano_rtc_pacer_pump(nanortc_t *rtc);
+
+/**
+ * Milliseconds until the next paced release given @p now_ms (0 = due now,
+ * UINT32_MAX = pace FIFO empty). Folded into nanortc_next_timeout_ms() so
+ * the caller's event loop wakes to pump the next fragment. Defined in
+ * nano_rtc_media.c.
+ */
+uint32_t nano_rtc_pacer_next_deadline_ms(const nanortc_t *rtc, uint32_t now_ms);
+#endif /* video pacing */
+
+#if NANORTC_FEATURE_VIDEO && NANORTC_FEATURE_VIDEO_REORDER
+/**
+ * Release at most one completed video NAL from the receive reorder buffers into
+ * @p out (NANORTC_OUTPUT_EVENT). Called from nanortc_poll_output() so each
+ * reordered NAL is consumed before the next overwrites the shared depkt buffer.
+ * @return NANORTC_OK with *out filled, or NANORTC_ERR_NO_DATA. Defined in
+ * nano_rtc_media.c.
+ */
+int nano_rtc_media_reorder_produce(nanortc_t *rtc, nanortc_output_t *out);
+
+/**
+ * Earliest reorder release/skip deadline (ms) across video tracks, or
+ * UINT32_MAX if nothing is pending. Folded into nanortc_next_timeout_ms() so a
+ * held frame flushes on schedule. Defined in nano_rtc_media.c.
+ */
+uint32_t nano_rtc_media_reorder_next_timeout(const nanortc_t *rtc, uint32_t now_ms);
+#endif /* video reorder */
+
+#if NANORTC_FEATURE_AUDIO
+/**
+ * Pop one due audio frame from the jitter buffers into @p out
+ * (NANORTC_OUTPUT_EVENT). Called from nanortc_poll_output() so each audio frame
+ * is consumed before the next reuses m->media_buf (TD-025 fix). @return
+ * NANORTC_OK with *out filled, or NANORTC_ERR_NO_DATA. Defined in
+ * nano_rtc_media.c.
+ */
+int nano_rtc_media_audio_produce(nanortc_t *rtc, nanortc_output_t *out);
+#endif /* NANORTC_FEATURE_AUDIO */
 #endif /* NANORTC_HAVE_MEDIA_TRANSPORT */
 
 #ifdef __cplusplus
