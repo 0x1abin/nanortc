@@ -1,0 +1,34 @@
+menu "ESP32 Media Example"
+
+    config EXAMPLE_UDP_PORT
+        int "Local UDP port for WebRTC"
+        default 9999
+        range 1024 65535
+        help
+            UDP port for STUN/DTLS/RTP traffic.
+
+    config EXAMPLE_ENABLE_VIDEO
+        bool "Send video track (pre-encoded H.264 from flash)"
+        default y
+        help
+            Pack the H.264 sample blob into flash and send a video track.
+            Disable for an audio-only build (no video m-line, smaller flash).
+
+    config EXAMPLE_ENABLE_AUDIO
+        bool "Send audio track (pre-encoded Opus from flash)"
+        default y
+        help
+            Pack the Opus sample blob into flash and send an audio track.
+            The browser reads GET /config and offers only the enabled tracks,
+            so video-only / audio-only / both all negotiate cleanly. At least
+            one of video/audio must be enabled.
+
+    config EXAMPLE_VIDEO_FPS
+        int "Video frame rate (fps)"
+        default 25
+        range 1 60
+        help
+            Playback speed for H.264 sample frames from embedded flash blob.
+            Only relevant when EXAMPLE_ENABLE_VIDEO is set.
+
+endmenu

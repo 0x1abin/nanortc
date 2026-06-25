@@ -14,9 +14,11 @@
 int media_queue_init(media_queue_t *q, media_kind_t kind, int capacity)
 {
     memset(q, 0, sizeof(*q));
-    if (capacity <= 0) return -1;
+    if (capacity <= 0)
+        return -1;
     q->slots = (media_frame_t *)calloc((size_t)capacity, sizeof(media_frame_t));
-    if (!q->slots) return -1;
+    if (!q->slots)
+        return -1;
     if (pipe(q->wake_pipe) < 0) {
         free(q->slots);
         q->slots = NULL;
@@ -31,7 +33,8 @@ int media_queue_init(media_queue_t *q, media_kind_t kind, int capacity)
 
 void media_queue_destroy(media_queue_t *q)
 {
-    if (!q->slots) return;
+    if (!q->slots)
+        return;
     pthread_mutex_lock(&q->lock);
     for (int i = 0; i < q->count; i++) {
         int idx = (q->head + i) % q->capacity;
@@ -45,8 +48,8 @@ void media_queue_destroy(media_queue_t *q)
     q->slots = NULL;
 }
 
-void media_queue_push(media_queue_t *q, const uint8_t *data, size_t len,
-                      uint32_t pts_ms, bool is_keyframe)
+void media_queue_push(media_queue_t *q, const uint8_t *data, size_t len, uint32_t pts_ms,
+                      bool is_keyframe)
 {
     pthread_mutex_lock(&q->lock);
     if (q->count == q->capacity) {

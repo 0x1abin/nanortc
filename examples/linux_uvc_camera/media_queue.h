@@ -32,27 +32,27 @@ typedef enum {
 
 typedef struct {
     uint8_t *data;
-    size_t   len;
+    size_t len;
     uint32_t pts_ms;
-    bool     is_keyframe; /**< Video only; always false for audio. */
+    bool is_keyframe; /**< Video only; always false for audio. */
 } media_frame_t;
 
 typedef struct {
-    media_kind_t     kind;
-    int              capacity;   /**< Slot count, fixed at init. */
-    media_frame_t   *slots;      /**< Heap-allocated ring of @c capacity entries. */
-    int              head;
-    int              count;
-    uint32_t         drop_count; /**< Frames overwritten due to overflow. */
-    pthread_mutex_t  lock;
-    int              wake_pipe[2]; /**< pipe[0]=read (select), pipe[1]=write. */
+    media_kind_t kind;
+    int capacity;         /**< Slot count, fixed at init. */
+    media_frame_t *slots; /**< Heap-allocated ring of @c capacity entries. */
+    int head;
+    int count;
+    uint32_t drop_count; /**< Frames overwritten due to overflow. */
+    pthread_mutex_t lock;
+    int wake_pipe[2]; /**< pipe[0]=read (select), pipe[1]=write. */
 } media_queue_t;
 
 /**
  * @brief Initialize a media queue with the given capacity.
  * @return 0 on success, -1 on failure (pipe/alloc error).
  */
-int  media_queue_init(media_queue_t *q, media_kind_t kind, int capacity);
+int media_queue_init(media_queue_t *q, media_kind_t kind, int capacity);
 
 /** @brief Free all pending frames and release OS resources. */
 void media_queue_destroy(media_queue_t *q);
@@ -63,15 +63,15 @@ void media_queue_destroy(media_queue_t *q);
  * If the queue is full, drops the oldest frame and increments
  * @c drop_count. Wakes the consumer via the wake pipe.
  */
-void media_queue_push(media_queue_t *q, const uint8_t *data, size_t len,
-                      uint32_t pts_ms, bool is_keyframe);
+void media_queue_push(media_queue_t *q, const uint8_t *data, size_t len, uint32_t pts_ms,
+                      bool is_keyframe);
 
 /**
  * @brief Pop the oldest frame (consumer thread). Ownership of
  *        @c out->data is transferred to the caller; free it with free().
  * @return 0 on success, -1 if empty.
  */
-int  media_queue_pop(media_queue_t *q, media_frame_t *out);
+int media_queue_pop(media_queue_t *q, media_frame_t *out);
 
 #ifdef __cplusplus
 }

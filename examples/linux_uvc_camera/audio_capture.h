@@ -34,20 +34,19 @@ extern "C" {
  * @param len     Length of @p data in bytes.
  * @param pts_ms  Presentation timestamp in milliseconds (capture-end).
  */
-typedef void (*audio_encoder_cb)(void *ctx, const uint8_t *data, size_t len,
-                                 uint32_t pts_ms);
+typedef void (*audio_encoder_cb)(void *ctx, const uint8_t *data, size_t len, uint32_t pts_ms);
 
 /**
  * @brief Audio capture + encode configuration.
  */
 typedef struct {
-    const char *device;          /**< ALSA PCM name, e.g. "plughw:CARD=U4K,DEV=0". */
-    int sample_rate;             /**< Sample rate in Hz (Opus: 48000). */
-    int channels;                /**< Channel count (1=mono, 2=stereo). */
-    int frame_ms;                /**< Frame duration in ms (typically 20). */
-    int bitrate_bps;             /**< Opus target bitrate in bits/s. */
-    audio_encoder_cb callback;   /**< Encoded-frame callback. */
-    void *userdata;              /**< User pointer passed to @ref callback. */
+    const char *device;        /**< ALSA PCM name, e.g. "plughw:CARD=U4K,DEV=0". */
+    int sample_rate;           /**< Sample rate in Hz (Opus: 48000). */
+    int channels;              /**< Channel count (1=mono, 2=stereo). */
+    int frame_ms;              /**< Frame duration in ms (typically 20). */
+    int bitrate_bps;           /**< Opus target bitrate in bits/s. */
+    audio_encoder_cb callback; /**< Encoded-frame callback. */
+    void *userdata;            /**< User pointer passed to @ref callback. */
 } audio_config_t;
 
 /**

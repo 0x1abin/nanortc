@@ -69,39 +69,12 @@ I (xxx) nanortc_dc: Open http://192.168.1.xxx/ in your browser
 ... ICE connected → DTLS connected → SCTP connected → DataChannel open
 ```
 
-## esp32_audio — Opus over SRTP
-
-**Target:** `esp32s3` (for on-board codec support), `esp32p4`.
-**What it does:** audio-only WebRTC session with Opus encoded frames.
-
-### Notable dependency
-
-```yaml
-# examples/esp32_audio/main/idf_component.yml
-dependencies:
-  protocol_examples_common:
-    path: ${IDF_PATH}/examples/common_components/protocol_examples_common
-  espressif/esp_audio_codec:
-    version: ">=2.4.0"
-```
-
-`esp_audio_codec` handles Opus framing. If you need a different
-codec (G.711, AAC) the same component exposes them — check its
-README before adding a second codec dependency.
-
-### Cold-start build
-
-Same as datachannel. If you bump audio quality:
-
-- `NANORTC_JITTER_SLOTS` from 16 → 32 for high-jitter paths.
-- `NANORTC_JITTER_SLOT_DATA_SIZE` from 160 → 320 for Opus @128kbps.
-
-Both are in the root `Kconfig` under NanoRTC Configuration.
-
-## esp32_video — H.264 video playback
+## esp32_media — H.264 video + Opus audio playback
 
 **Target:** `esp32s3` typically (needs PSRAM for NAL reassembly).
-**What it does:** streams embedded H.264 video blobs over RTP/SRTP.
+**What it does:** streams embedded H.264 video and/or Opus audio blobs over
+RTP/SRTP. Tracks are selected at build time via `EXAMPLE_ENABLE_VIDEO` /
+`EXAMPLE_ENABLE_AUDIO`.
 
 ### Embedded video blobs
 

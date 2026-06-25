@@ -17,5 +17,9 @@ if(APPLE)
 endif()
 
 if(UNIX AND NOT APPLE)
-    add_subdirectory(rk3588_uvc_camera)
+    # One host camera example covering every encoder backend (libx264 /
+    # NVENC / RK3588 mpp), selected at runtime with -e. It injects its own
+    # NANORTC_CONFIG_FILE onto the shared nanortc target, so build it in its
+    # own build dir if you combine it with another config-injecting example.
+    add_subdirectory(linux_uvc_camera)
 endif()

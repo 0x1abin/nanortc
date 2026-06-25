@@ -24,18 +24,17 @@ jobs:
           - { path: esp32_datachannel, target: esp32 }
           - { path: esp32_datachannel, target: esp32s3 }
           - { path: esp32_datachannel, target: esp32p4 }
-          # esp32_audio / esp32_video: representative target only
+          # esp32_media: representative target only
           # (the codec stacks are target-agnostic; if datachannel builds on all
           # three, the additional codec components only need one verification)
-          - { path: esp32_audio,       target: esp32s3 }
-          - { path: esp32_video,       target: esp32s3 }
+          - { path: esp32_media,       target: esp32s3 }
           # esp32_camera (P4 only) is intentionally excluded — its
           # board_manager.defaults autogen + camera-sensor selection is
           # board-specific and will be added in a follow-up workflow.
     steps:
       - uses: actions/checkout@v4
         with:
-          # esp32_video bakes sample_data submodule frames into video.blob /
+          # esp32_media bakes sample_data submodule frames into video.blob /
           # audio.blob at build time; without this, those targets fail with
           # "sample_data/h264SampleFrames is not a directory".
           submodules: recursive

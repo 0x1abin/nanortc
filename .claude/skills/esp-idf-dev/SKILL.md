@@ -13,7 +13,7 @@ description: >
   hand-written RFC code that we don't want to multiply it with
   reinvented driver wheels".
   Use this skill whenever the user works on examples/esp32_datachannel,
-  examples/esp32_audio, examples/esp32_video, examples/esp32_camera,
+  examples/esp32_media, examples/esp32_camera,
   edits the root Kconfig / idf_component.yml, runs idf.py
   build/flash/monitor, tunes memory profiles, or asks anything about
   ESP-IDF, ESP32 (all variants S2/S3/C2/C3/C5/C6/H2/P4), FreeRTOS,

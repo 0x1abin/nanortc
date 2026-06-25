@@ -118,9 +118,15 @@ async function connect() {
       }
     };
 
-    /* Add audio + video transceivers (recvonly — we receive from ESP32) */
-    pc.addTransceiver('audio', { direction: 'recvonly' });
-    pc.addTransceiver('video', { direction: 'recvonly' });
+    /* Ask the device which tracks it sends (GET /config) and offer exactly
+     * those, recvonly, in the same order the firmware registers them — audio
+     * first, then video — so the answer's m-lines line up by position. */
+    let cfg = { video: 1, audio: 1 };
+    try { cfg = await (await fetch('/config')).json(); }
+    catch (e) { log('info', '/config unavailable — offering audio+video'); }
+    if (cfg.audio) pc.addTransceiver('audio', { direction: 'recvonly' });
+    if (cfg.video) pc.addTransceiver('video', { direction: 'recvonly' });
+    if (!cfg.video) document.getElementById('video').style.display = 'none';
 
     pc.ontrack = (e) => {
       const video = document.getElementById('video');

@@ -1,9 +1,9 @@
 /*
  * capture_gstreamer — GStreamer backend for capture.h
  *
- * Compile with RK3588_CAPTURE_GSTREAMER defined.
- * Default encoder: mpph264enc (RK3588 hardware H.264).
- * Also supported: mpph265enc (RK3588 hardware H.265/HEVC).
+ * Compile with LINUX_UVC_CAPTURE_GSTREAMER defined.
+ * Default encoder: mpph264enc (Rockchip MPP hardware H.264).
+ * Also supported: mpph265enc (Rockchip MPP hardware H.265/HEVC).
  * Fallback: openh264enc (software H.264).
  *
  * SPDX-License-Identifier: MIT
@@ -63,7 +63,7 @@ static GstFlowReturn on_new_sample(GstAppSink *sink, gpointer user_data)
     GstClockTime pts_ns = GST_BUFFER_PTS(buffer);
     uint32_t pts_ms = (pts_ns != GST_CLOCK_TIME_NONE) ? (uint32_t)(pts_ns / GST_MSECOND) : 0;
 
-    bool is_keyframe = capture_annex_b_is_keyframe(map.data, map.size);
+    bool is_keyframe = capture_annex_b_is_keyframe_h264(map.data, map.size);
 
     if (g_state.callback) {
         g_state.callback(g_state.userdata, map.data, map.size, pts_ms, is_keyframe);
@@ -98,7 +98,7 @@ int capture_start(const capture_config_t *cfg)
 
     int gop = cfg->fps * (cfg->keyframe_interval_s > 0 ? cfg->keyframe_interval_s : 2);
 
-    /* Encoder selection: mpph264enc / mpph265enc (RK3588 hardware) or
+    /* Encoder selection: mpph264enc / mpph265enc (Rockchip MPP hardware) or
      * openh264enc (software H.264 fallback). The hardware branch shares
      * property names (`header-mode`, `rc-mode`, `bps`, `gop`) between
      * mpph264enc and mpph265enc, so only the element name and output caps
@@ -277,4 +277,20 @@ void capture_force_keyframe(void)
         gst_pad_send_event(src_pad, evt);
     }
     gst_object_unref(src_pad);
+}
+
+/* H.265 SDP parameter-set extraction is not implemented for the GStreamer
+ * backend; use the FFmpeg backend (hevc_nvenc) for H.265. The primary
+ * GStreamer path is mpph264enc (H.264), which carries its parameter sets
+ * in-band. Stub keeps the binary linkable when built with H265=ON. */
+int capture_get_h265_parameter_sets(const uint8_t **vps, size_t *vps_len, const uint8_t **sps,
+                                    size_t *sps_len, const uint8_t **pps, size_t *pps_len)
+{
+    (void)vps;
+    (void)vps_len;
+    (void)sps;
+    (void)sps_len;
+    (void)pps;
+    (void)pps_len;
+    return -1;
 }

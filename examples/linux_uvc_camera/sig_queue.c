@@ -39,7 +39,8 @@ void sq_push(sig_queue_t *q, int msg_type, int from, const char *payload)
     q->msgs[idx].msg_type = msg_type;
     q->msgs[idx].from = from;
     size_t len = strlen(payload);
-    if (len >= HTTP_SIG_BUF_SIZE) len = HTTP_SIG_BUF_SIZE - 1;
+    if (len >= HTTP_SIG_BUF_SIZE)
+        len = HTTP_SIG_BUF_SIZE - 1;
     memcpy(q->msgs[idx].payload, payload, len);
     q->msgs[idx].payload[len] = '\0';
     q->count++;

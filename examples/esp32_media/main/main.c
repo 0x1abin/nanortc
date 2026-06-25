@@ -1,12 +1,16 @@
 /*
- * nanortc ESP32 Audio/Video example — embedded media sender
+ * nanortc ESP32 Media example — embedded A/V sender
  *
  * The ESP32 hosts a web page at http://<ip>/. The browser connects,
  * sends an SDP offer via POST /offer, and receives an answer.
- * ESP32 reads pre-encoded H.264 video and Opus audio from flash
+ * ESP32 reads pre-encoded H.264 video and/or Opus audio from flash
  * (embedded blobs) and streams them to the browser via WebRTC.
  *
- * Build: cd examples/esp32_video && idf.py build
+ * Which tracks are sent is chosen at build time via menuconfig
+ * (EXAMPLE_ENABLE_VIDEO / EXAMPLE_ENABLE_AUDIO). The media is pre-encoded
+ * and played back from flash (no live encoding on-device).
+ *
+ * Build: cd examples/esp32_media && idf.py build
  * Flash: idf.py flash monitor
  *
  * SPDX-License-Identifier: MIT
@@ -31,6 +35,10 @@
 #include "webserver.h"
 #include "media_source.h"
 #include "media_pacer.h"
+
+#if !CONFIG_EXAMPLE_ENABLE_VIDEO && !CONFIG_EXAMPLE_ENABLE_AUDIO
+#error "Enable at least one track: EXAMPLE_ENABLE_VIDEO and/or EXAMPLE_ENABLE_AUDIO"
+#endif
 
 static const char *TAG = "nanortc_av";
 
@@ -66,10 +74,14 @@ static nano_media_pacer_t s_audio_pacer = {.interval_ms = AUDIO_INTERVAL};
 /* Embedded files */
 extern const uint8_t index_html_start[] asm("_binary_index_html_start");
 extern const uint8_t index_html_end[] asm("_binary_index_html_end");
+#if CONFIG_EXAMPLE_ENABLE_VIDEO
 extern const uint8_t video_blob_start[] asm("_binary_video_blob_start");
 extern const uint8_t video_blob_end[] asm("_binary_video_blob_end");
+#endif
+#if CONFIG_EXAMPLE_ENABLE_AUDIO
 extern const uint8_t audio_blob_start[] asm("_binary_audio_blob_start");
 extern const uint8_t audio_blob_end[] asm("_binary_audio_blob_end");
+#endif
 
 /* Debug counters */
 static volatile uint32_t s_step_count;
@@ -131,16 +143,24 @@ static void on_event(nanortc_t *rtc, const nanortc_event_t *evt, void *userdata)
     case NANORTC_EV_CONNECTED:
         ESP_LOGI(TAG, "Connected — starting media");
         s_connected = 1;
+#if CONFIG_EXAMPLE_ENABLE_VIDEO
         nano_media_pacer_reset(&s_video_pacer);
+#endif
+#if CONFIG_EXAMPLE_ENABLE_AUDIO
         nano_media_pacer_reset(&s_audio_pacer);
+#endif
         break;
 
+#if CONFIG_EXAMPLE_ENABLE_VIDEO
+    /* PLI/FIR only target video tracks (see nano_rtc_media.c), so this case
+     * is compiled only for builds that send video. */
     case NANORTC_EV_KEYFRAME_REQUEST:
         ESP_LOGI(TAG, "Keyframe requested (mid=%d) — resetting to frame 0",
                  evt->keyframe_request.mid);
         nano_media_source_reset(&s_video_src);
         nano_media_pacer_reset(&s_video_pacer);
         break;
+#endif
 
     case NANORTC_EV_DISCONNECTED:
         ESP_LOGI(TAG, "Disconnected");
@@ -154,24 +174,32 @@ static void on_event(nanortc_t *rtc, const nanortc_event_t *evt, void *userdata)
 }
 
 /* ----------------------------------------------------------------
- * Track setup callback — add audio first, video second.
- * Mid order must match the browser's m-line order.
+ * Track setup callback — register the enabled tracks, audio first.
+ *
+ * The browser (index.html) reads GET /config and offers exactly the
+ * tracks this build enables, in the same order. nanortc matches local
+ * tracks to the offer by position, so adding only the enabled tracks
+ * here lines up correctly in every configuration (both / video-only /
+ * audio-only) without any placeholder m-line.
  * ---------------------------------------------------------------- */
 static int setup_av_tracks(nanortc_t *rtc, void *userdata)
 {
     (void)userdata;
 
+#if CONFIG_EXAMPLE_ENABLE_AUDIO
     s_audio_mid = nanortc_add_audio_track(rtc, NANORTC_DIR_SENDONLY, NANORTC_CODEC_OPUS, 48000, 2);
     if (s_audio_mid < 0) {
         ESP_LOGE(TAG, "nanortc_add_audio_track failed: %d", s_audio_mid);
         return s_audio_mid;
     }
-
+#endif
+#if CONFIG_EXAMPLE_ENABLE_VIDEO
     s_video_mid = nanortc_add_video_track(rtc, NANORTC_DIR_SENDONLY, NANORTC_CODEC_H264);
     if (s_video_mid < 0) {
         ESP_LOGE(TAG, "nanortc_add_video_track failed: %d", s_video_mid);
         return s_video_mid;
     }
+#endif
     return 0;
 }
 
@@ -213,16 +241,51 @@ static int handle_offer(const char *offer, char *answer, size_t answer_size, siz
 }
 
 /* ----------------------------------------------------------------
+ * Custom HTTP handler: GET /config — which tracks this build sends.
+ * index.html offers exactly these m-lines so the answer lines up.
+ * ---------------------------------------------------------------- */
+static esp_err_t http_get_config(httpd_req_t *req)
+{
+#if CONFIG_EXAMPLE_ENABLE_VIDEO
+    const int has_video = 1;
+#else
+    const int has_video = 0;
+#endif
+#if CONFIG_EXAMPLE_ENABLE_AUDIO
+    const int has_audio = 1;
+#else
+    const int has_audio = 0;
+#endif
+    char buf[48];
+    int n = snprintf(buf, sizeof(buf), "{\"video\":%d,\"audio\":%d}", has_video, has_audio);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, buf, n);
+    return ESP_OK;
+}
+
+/* ----------------------------------------------------------------
  * Custom HTTP handler: GET /debug
  * ---------------------------------------------------------------- */
 static esp_err_t http_get_debug(httpd_req_t *req)
 {
     char buf[512];
     int n = snprintf(buf, sizeof(buf),
-                     "running=%d fd=%d connected=%d video_ready=%d video_mid=%d\n"
+                     "running=%d fd=%d connected=%d\n"
+#if CONFIG_EXAMPLE_ENABLE_VIDEO
+                     "video_ready=%d video_mid=%d\n"
+#endif
+#if CONFIG_EXAMPLE_ENABLE_AUDIO
+                     "audio_ready=%d audio_mid=%d\n"
+#endif
                      "ice.remote_candidates=%d ice.state=%d\n"
                      "state=%d steps=%lu alive=%lu\n",
-                     s_loop.running, s_loop.fds[0], s_connected, s_video_ready, s_video_mid,
+                     s_loop.running, s_loop.fds[0], s_connected,
+#if CONFIG_EXAMPLE_ENABLE_VIDEO
+                     s_video_ready, s_video_mid,
+#endif
+#if CONFIG_EXAMPLE_ENABLE_AUDIO
+                     s_audio_ready, s_audio_mid,
+#endif
                      s_rtc.ice.remote_candidate_count, s_rtc.ice.state, s_rtc.state,
                      (unsigned long)s_step_count, (unsigned long)s_task_alive);
     httpd_resp_set_type(req, "text/plain");
@@ -303,7 +366,14 @@ void app_main(void)
     if (!server)
         return;
 
-    /* Register custom /debug route */
+    /* Register custom routes: /config (track selection) and /debug */
+    httpd_uri_t uri_config = {
+        .uri = "/config",
+        .method = HTTP_GET,
+        .handler = http_get_config,
+    };
+    httpd_register_uri_handler(server, &uri_config);
+
     httpd_uri_t uri_debug = {
         .uri = "/debug",
         .method = HTTP_GET,
@@ -314,7 +384,8 @@ void app_main(void)
     /* 5. Start WebRTC task */
     xTaskCreate(webrtc_task, "webrtc", 8 * 1024, NULL, 5, NULL);
 
-    /* 6. Init media sources from embedded flash blobs */
+    /* 6. Init media sources from embedded flash blobs (per enabled track) */
+#if CONFIG_EXAMPLE_ENABLE_VIDEO
     memset(&s_video_src, 0, sizeof(s_video_src));
     s_video_src.blob = video_blob_start;
     s_video_src.blob_len = (size_t)(video_blob_end - video_blob_start);
@@ -325,7 +396,9 @@ void app_main(void)
     } else {
         ESP_LOGE(TAG, "Failed to init embedded video source");
     }
+#endif
 
+#if CONFIG_EXAMPLE_ENABLE_AUDIO
     memset(&s_audio_src, 0, sizeof(s_audio_src));
     s_audio_src.blob = audio_blob_start;
     s_audio_src.blob_len = (size_t)(audio_blob_end - audio_blob_start);
@@ -336,6 +409,7 @@ void app_main(void)
     } else {
         ESP_LOGE(TAG, "Failed to init embedded audio source");
     }
+#endif
 
     ESP_LOGI(TAG, "Open http://%s/ in your browser", s_local_ip);
 }

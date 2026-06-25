@@ -106,8 +106,8 @@ static snd_pcm_t *alsa_open(const char *device, unsigned int rate, unsigned int 
     int dir = 0;
     err = snd_pcm_hw_params_set_period_size_near(pcm, hw, &period, &dir);
     if (err < 0) {
-        fprintf(stderr, "[audio] set_period_size_near %lu: %s\n",
-                (unsigned long)period_frames, snd_strerror(err));
+        fprintf(stderr, "[audio] set_period_size_near %lu: %s\n", (unsigned long)period_frames,
+                snd_strerror(err));
         goto fail;
     }
 
@@ -158,12 +158,13 @@ static snd_pcm_t *alsa_open(const char *device, unsigned int rate, unsigned int 
         goto fail;
     }
 
-    fprintf(stderr, "[audio] ALSA opened %s (%u Hz, %u ch, period=%lu, buffer=%lu)\n",
-            device, rrate, channels, (unsigned long)got_period, (unsigned long)got_buffer);
+    fprintf(stderr, "[audio] ALSA opened %s (%u Hz, %u ch, period=%lu, buffer=%lu)\n", device,
+            rrate, channels, (unsigned long)got_period, (unsigned long)got_buffer);
     return pcm;
 
 fail:
-    if (pcm) snd_pcm_close(pcm);
+    if (pcm)
+        snd_pcm_close(pcm);
     return NULL;
 }
 
@@ -183,8 +184,8 @@ static void *audio_thread_fn(void *arg)
     unsigned int rate = (unsigned int)g_audio.cfg.sample_rate;
 
     /* 1. Open ALSA from *inside* this thread (not from audio_start). */
-    snd_pcm_t *pcm = alsa_open(g_audio.cfg.device, rate, (unsigned int)ch,
-                                (snd_pcm_uframes_t)nsamples);
+    snd_pcm_t *pcm =
+        alsa_open(g_audio.cfg.device, rate, (unsigned int)ch, (snd_pcm_uframes_t)nsamples);
     if (!pcm) {
         atomic_store(&g_audio.init_state, 2);
         return NULL;
@@ -195,7 +196,8 @@ static void *audio_thread_fn(void *arg)
     OpusEncoder *enc = opus_encoder_create((int)rate, ch, OPUS_APPLICATION_VOIP, &oerr);
     if (!enc || oerr != OPUS_OK) {
         fprintf(stderr, "[audio] opus_encoder_create: %s\n", opus_strerror(oerr));
-        if (enc) opus_encoder_destroy(enc);
+        if (enc)
+            opus_encoder_destroy(enc);
         snd_pcm_close(pcm);
         atomic_store(&g_audio.init_state, 2);
         return NULL;
@@ -229,7 +231,8 @@ static void *audio_thread_fn(void *arg)
     while (!g_audio.quit) {
         snd_pcm_sframes_t n = snd_pcm_readi(pcm, pcm_buf, (snd_pcm_uframes_t)nsamples);
         if (n == -EINTR) {
-            if (g_audio.quit) break;
+            if (g_audio.quit)
+                break;
             continue;
         }
         if (n == -EPIPE) {
@@ -241,7 +244,8 @@ static void *audio_thread_fn(void *arg)
         if (n == -ESTRPIPE) {
             int rc;
             while ((rc = snd_pcm_resume(pcm)) == -EAGAIN) {
-                if (g_audio.quit) break;
+                if (g_audio.quit)
+                    break;
                 usleep(100 * 1000);
             }
             if (rc < 0) {
@@ -260,7 +264,7 @@ static void *audio_thread_fn(void *arg)
                         snd_strerror((int)n));
                 snd_pcm_close(pcm);
                 pcm = alsa_open(g_audio.cfg.device, rate, (unsigned int)ch,
-                                 (snd_pcm_uframes_t)nsamples);
+                                (snd_pcm_uframes_t)nsamples);
                 if (!pcm) {
                     fprintf(stderr, "[audio] reopen failed — exiting thread\n");
                     break;
@@ -269,7 +273,8 @@ static void *audio_thread_fn(void *arg)
             usleep(5 * 1000);
             continue;
         }
-        if (n < nsamples) continue;
+        if (n < nsamples)
+            continue;
 
         uint32_t pts = nano_get_millis();
 
@@ -278,7 +283,8 @@ static void *audio_thread_fn(void *arg)
             fprintf(stderr, "[audio] opus_encode: %s\n", opus_strerror(olen));
             continue;
         }
-        if (olen == 0) continue;
+        if (olen == 0)
+            continue;
 
         if (g_audio.cfg.callback) {
             g_audio.cfg.callback(g_audio.cfg.userdata, opus_buf, (size_t)olen, pts);
@@ -291,8 +297,8 @@ static void *audio_thread_fn(void *arg)
             uint32_t dt = now - stat_last_ms;
             uint32_t avg = stat_frames ? stat_bytes / stat_frames : 0;
             uint32_t kbps = dt ? (uint32_t)(((uint64_t)stat_bytes * 8) / dt) : 0;
-            fprintf(stderr, "[audio] enc %u frames, avg %u B, ~%u kbps, eio=%u\n",
-                    stat_frames, avg, kbps, stat_eio);
+            fprintf(stderr, "[audio] enc %u frames, avg %u B, ~%u kbps, eio=%u\n", stat_frames, avg,
+                    kbps, stat_eio);
             stat_frames = 0;
             stat_bytes = 0;
             stat_eio = 0;
@@ -303,7 +309,8 @@ static void *audio_thread_fn(void *arg)
     free(pcm_buf);
 
 cleanup:
-    if (enc) opus_encoder_destroy(enc);
+    if (enc)
+        opus_encoder_destroy(enc);
     if (pcm) {
         snd_pcm_drop(pcm);
         snd_pcm_close(pcm);
@@ -314,9 +321,10 @@ cleanup:
 
 int audio_start(const audio_config_t *cfg)
 {
-    if (g_audio.running) return 0;
-    if (!cfg || !cfg->device || cfg->sample_rate <= 0 || cfg->channels <= 0 ||
-        cfg->frame_ms <= 0 || !cfg->callback) {
+    if (g_audio.running)
+        return 0;
+    if (!cfg || !cfg->device || cfg->sample_rate <= 0 || cfg->channels <= 0 || cfg->frame_ms <= 0 ||
+        !cfg->callback) {
         fprintf(stderr, "[audio] invalid config\n");
         return -1;
     }
@@ -374,7 +382,8 @@ int audio_start(const audio_config_t *cfg)
 
 void audio_stop(void)
 {
-    if (!g_audio.running) return;
+    if (!g_audio.running)
+        return;
 
     g_audio.quit = 1;
     pthread_kill(g_audio.tid, SIGUSR1);
