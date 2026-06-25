@@ -20,7 +20,7 @@
 
 #include "capture.h"
 #include "media_queue.h"
-#if RK3588_HAS_AUDIO
+#if LINUX_UVC_HAS_AUDIO
 #include "audio_capture.h"
 #endif
 #include "multi_session.h"
@@ -35,7 +35,7 @@ extern "C" {
 
 typedef struct {
     media_queue_t video_q;
-#if RK3588_HAS_AUDIO
+#if LINUX_UVC_HAS_AUDIO
     media_queue_t audio_q;
 #endif
     bool audio_enabled;
@@ -53,18 +53,16 @@ typedef struct {
  * @param cap_cfg  Required video capture configuration.
  * @param aud_cfg  Audio configuration, or NULL for video-only builds.
  *                 Only meaningful when the binary was built with
- *                 @c RK3588_HAS_AUDIO.
+ *                 @c LINUX_UVC_HAS_AUDIO.
  * @return 0 on success (video capture running; audio either running,
  *         disabled, or failed-but-non-fatal), -1 if video capture
  *         failed to start.
  */
-#if RK3588_HAS_AUDIO
-int  media_pipeline_init(media_pipeline_t *mp,
-                         const capture_config_t *cap_cfg,
-                         const audio_config_t *aud_cfg);
+#if LINUX_UVC_HAS_AUDIO
+int media_pipeline_init(media_pipeline_t *mp, const capture_config_t *cap_cfg,
+                        const audio_config_t *aud_cfg);
 #else
-int  media_pipeline_init(media_pipeline_t *mp,
-                         const capture_config_t *cap_cfg);
+int media_pipeline_init(media_pipeline_t *mp, const capture_config_t *cap_cfg);
 #endif
 
 /** @brief Stop all capture threads and release queues. */
@@ -84,8 +82,7 @@ void media_pipeline_add_fds(media_pipeline_t *mp, fd_set *rset, int *maxfd);
  *        connected session. Fires nanortc_send_video /
  *        nanortc_send_audio and triggers per-session output dispatch.
  */
-void media_pipeline_drain_to_sessions(media_pipeline_t *mp,
-                                      const fd_set *rset,
+void media_pipeline_drain_to_sessions(media_pipeline_t *mp, const fd_set *rset,
                                       nano_session_t *sessions, int n_sessions,
                                       uint32_t *timeout_ms);
 

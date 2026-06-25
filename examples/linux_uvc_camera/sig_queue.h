@@ -34,10 +34,10 @@ typedef struct {
     int wake_pipe[2]; /**< pipe[0]=read (for select), pipe[1]=write */
 } sig_queue_t;
 
-int  sq_init(sig_queue_t *q);
+int sq_init(sig_queue_t *q);
 void sq_destroy(sig_queue_t *q);
 void sq_push(sig_queue_t *q, int msg_type, int from, const char *payload);
-int  sq_pop(sig_queue_t *q, sig_msg_t *out);
+int sq_pop(sig_queue_t *q, sig_msg_t *out);
 
 #ifdef __cplusplus
 }
