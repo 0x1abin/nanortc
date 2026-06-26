@@ -457,6 +457,15 @@ static int open_encoder(const capture_config_t *cfg, int width, int height)
         av_opt_set_int(g_ff.enc_ctx->priv_data, "zerolatency", 1, 0);
         av_opt_set_int(g_ff.enc_ctx->priv_data, "forced-idr", 1, 0); /* PLI → true IDR */
         av_opt_set_int(g_ff.enc_ctx->priv_data, "gpu", 0, 0);        /* pin to GPU 0 */
+        /* Real-time anti-stutter: replace the periodic full IDR with a rolling
+         * intra-refresh wave spread over the GOP. A 4K IDR is ~230KB (~190 RTP
+         * fragments); on a constrained uplink the send pacer cannot drain it
+         * within its latency cap and burst-flushes the tail every GOP (~2s) →
+         * periodic stutter. Intra-refresh keeps every frame ~uniform in size so
+         * there is no big keyframe to burst. forced-idr above still emits a true
+         * IDR on join / PLI so a new viewer or loss recovery starts clean. */
+        int ir_rc = av_opt_set_int(g_ff.enc_ctx->priv_data, "intra-refresh", 1, 0);
+        fprintf(stderr, "[ffcap] intra-refresh %s\n", ir_rc == 0 ? "enabled" : "unavailable");
     } else {
         /* Software / non-nvenc: inline Annex-B headers, prepend cached SPS/PPS. */
         g_ff.enc_ctx->flags &= ~AV_CODEC_FLAG_GLOBAL_HEADER;

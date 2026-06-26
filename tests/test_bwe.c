@@ -621,6 +621,76 @@ TEST(test_bwe_runtime_event_threshold_looser)
     ASSERT_FALSE(bwe_should_emit_event(&bwe));
 }
 
+/* ================================================================
+ * REMB upward-recovery limitation (issue #71)
+ *
+ * Characterization tests that LOCK the current (limited) behavior: after a
+ * congestion episode the estimate does not recover on a clean link, because
+ * REMB — a receiver-side estimate bounded by the throughput actually received
+ * (<= the current send rate) — re-anchors the shared EMA estimate and so
+ * neutralizes the loss-based TWCC upward probe. When the BWE gains a
+ * delay-based estimator / active probing (the deferred work referenced at
+ * src/nano_rtc_media.c "delay-based refinement is deferred"), these tests are
+ * expected to FLIP and must be updated.
+ * ================================================================ */
+
+TEST(test_bwe_remb_has_no_upward_probe)
+{
+    /* REMB can only TRACK the reported receive rate, never probe above it. */
+    nano_bwe_t bwe;
+    ASSERT_OK(bwe_init(&bwe));
+
+    uint8_t buf[32];
+    const uint32_t rx = 500000; /* steady received rate the peer reports (in bounds) */
+    size_t plen = build_remb(buf, sizeof(buf), 0, rx, 0);
+
+    for (int i = 0; i < 30; i++) {
+        ASSERT_OK(bwe_on_rtcp_feedback(&bwe, buf, plen, (uint32_t)(1000 + i * 100)));
+        /* No matter how many REMB samples arrive, the estimate never climbs
+         * above the reported value — there is no upward probe in the REMB path. */
+        ASSERT_TRUE(bwe_get_bitrate(&bwe) <= rx);
+    }
+    ASSERT_EQ(bwe_get_bitrate(&bwe), rx); /* converges exactly to the reported rate */
+}
+
+TEST(test_bwe_remb_clamps_twcc_upward_recovery)
+{
+    /* Headline limitation: on a clean link the loss-based TWCC controller grows
+     * the estimate (+8 %/feedback), but a co-arriving REMB reporting the still-low
+     * received rate re-anchors the EMA each round, so the estimate cannot recover.
+     * Contrast TWCC-only recovery against the interleaved TWCC+REMB case from the
+     * same low seed. */
+    const uint32_t seed = 500000;
+    const int N = 20;
+    uint8_t buf[32];
+    size_t plen = build_remb(buf, sizeof(buf), 0, seed, 0);
+
+    /* Control: clean TWCC only -> climbs strongly toward the cap. */
+    nano_bwe_t twcc_only;
+    ASSERT_OK(bwe_init(&twcc_only));
+    bwe_on_rtcp_feedback(&twcc_only, buf, plen, 1000);
+    for (int i = 0; i < N; i++) {
+        bwe_on_twcc_loss(&twcc_only, 0, (uint32_t)(2000 + i * 100));
+    }
+    uint32_t twcc_only_bps = bwe_get_bitrate(&twcc_only);
+
+    /* Experiment: the same clean TWCC probe, but each round a REMB reports the
+     * unchanged low receive rate -> the estimate stays anchored near the seed. */
+    nano_bwe_t mixed;
+    ASSERT_OK(bwe_init(&mixed));
+    bwe_on_rtcp_feedback(&mixed, buf, plen, 1000);
+    for (int i = 0; i < N; i++) {
+        bwe_on_twcc_loss(&mixed, 0, (uint32_t)(2000 + i * 200));
+        bwe_on_rtcp_feedback(&mixed, buf, plen, (uint32_t)(2100 + i * 200));
+    }
+    uint32_t mixed_bps = bwe_get_bitrate(&mixed);
+
+    /* TWCC alone recovers; REMB-anchored does not. */
+    ASSERT_TRUE(twcc_only_bps > 1500000);
+    ASSERT_TRUE(mixed_bps < 600000);
+    ASSERT_TRUE(mixed_bps < twcc_only_bps / 2);
+}
+
 TEST_MAIN_BEGIN("BWE bandwidth estimation tests")
 RUN(test_bwe_init);
 RUN(test_bwe_init_null);
@@ -660,4 +730,7 @@ RUN(test_bwe_twcc_saturates_over_256);
 RUN(test_bwe_runtime_bounds_clamp_on_feedback);
 RUN(test_bwe_runtime_event_threshold_tighter);
 RUN(test_bwe_runtime_event_threshold_looser);
+/* REMB upward-recovery limitation (issue #71) */
+RUN(test_bwe_remb_has_no_upward_probe);
+RUN(test_bwe_remb_clamps_twcc_upward_recovery);
 TEST_MAIN_END

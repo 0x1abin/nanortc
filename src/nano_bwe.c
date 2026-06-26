@@ -182,6 +182,10 @@ int bwe_on_rtcp_feedback(nano_bwe_t *bwe, const uint8_t *data, size_t len, uint3
     return NANORTC_OK;
 }
 
+/* Loss-based upward probe (+8 % at low loss). NOTE: this shares one EMA estimate
+ * with the REMB path (bwe_apply), so when the peer also sends REMB the receiver's
+ * measured-throughput estimate re-anchors this probe and stalls upward recovery
+ * after congestion — limitation tracked as issue #71. */
 int bwe_on_twcc_loss(nano_bwe_t *bwe, uint16_t loss_fraction_q8, uint32_t now_ms)
 {
     if (!bwe) {

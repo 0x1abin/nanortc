@@ -1625,7 +1625,10 @@ int nano_rtc_media_handle_rtp_or_rtcp(nanortc_t *rtc, const uint8_t *data, size_
                     } else if (rtpfb_fmt == TWCC_FMT) {
                         /* Transport-wide CC feedback (draft-holmer-rmcat-twcc-01).
                          * Parse into a summary and drive the loss-based controller
-                         * in BWE. Any delay-based refinement is deferred (see plan). */
+                         * in BWE. Any delay-based refinement is deferred (see plan):
+                         * the per-packet arrival-delay data is discarded here (cb=NULL),
+                         * and with REMB also active the loss-based upward probe cannot
+                         * recover after congestion — tracked as issue #71. */
                         nano_twcc_summary_t sum;
                         int prc = twcc_parse_feedback(sub, sub_len, &sum, NULL, NULL);
                         if (prc == NANORTC_OK && sum.packet_status_count > 0) {

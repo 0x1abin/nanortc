@@ -372,6 +372,12 @@ static void run_event_loop(http_sig_t *sig, const nanortc_config_t *cfg)
                 if (nanortc_get_track_stats(&s->rtc, (uint8_t)s->video_mid, &ts) == NANORTC_OK)
                     fprintf(stderr, " | rtp_sent=%u rtt=%ums bwe=%ukbps", ts.packets_sent,
                             ts.rtt_ms, ts.bitrate_bps / 1000);
+                /* Pacer diagnostics (cumulative): pace_catchup rising ~every keyframe
+                 * means big IDRs are burst-flushed past the latency cap — the 4K
+                 * stutter signature. overrun/txfull should stay 0. */
+                fprintf(stderr, " | pace_catchup=%u overrun=%u txfull=%u paced=%u",
+                        s->rtc.stats_pace_catchup, s->rtc.stats_pkt_ring_overrun,
+                        s->rtc.stats_tx_queue_full, s->rtc.stats_paced_packets);
                 break;
             }
 #endif
