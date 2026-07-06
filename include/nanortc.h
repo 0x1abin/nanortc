@@ -266,6 +266,9 @@ typedef enum {
     NANORTC_EV_BITRATE_ESTIMATE = 11, /**< BWE: estimated bitrate changed significantly. */
 #endif
     NANORTC_EV_ICE_CANDIDATE = 12, /**< New local ICE candidate discovered (trickle). */
+#if NANORTC_FEATURE_VIDEO && NANORTC_FEATURE_VIDEO_RATE_CONTROL
+    NANORTC_EV_SPEC_RECOMMENDATION = 13, /**< Adaptive controller recommends a new video spec. */
+#endif
 } nanortc_event_type_t;
 
 /* Forward declarations needed by event data structures */
@@ -344,6 +347,34 @@ typedef struct {
 } nanortc_ev_bitrate_estimate_t;
 #endif
 
+#if NANORTC_FEATURE_VIDEO && NANORTC_FEATURE_VIDEO_RATE_CONTROL
+/** @brief One rung of an adaptive-video capability ladder (Phase 14).
+ *
+ *  The application supplies an array of these — the encoder/camera geometries
+ *  it can actually produce — and the SDK's rate controller recommends which
+ *  rung to use for the current bottleneck bandwidth. The array MUST be ordered
+ *  ascending by @c bitrate_bps (rung 0 = lowest spec). The library treats the
+ *  ladder as caller-owned and read-only; it stores no copy. */
+typedef struct {
+    uint16_t width;       /**< Frame width in pixels. */
+    uint16_t height;      /**< Frame height in pixels. */
+    uint8_t fps;          /**< Frame rate (frames/sec). */
+    uint32_t bitrate_bps; /**< Target encoder bitrate at this rung (bps). */
+} nanortc_spec_rung_t;
+
+/** @brief Data for NANORTC_EV_SPEC_RECOMMENDATION: the adaptive rate controller
+ *  recommends switching the video spec to this rung. The library DECIDES; the
+ *  application APPLIES it to its encoder (resolution / fps / bitrate). The rung
+ *  fields are copied from the application's own ladder for convenience. */
+typedef struct {
+    uint8_t rung;         /**< Index into the application's capability ladder. */
+    uint16_t width;       /**< Recommended frame width (pixels). */
+    uint16_t height;      /**< Recommended frame height (pixels). */
+    uint8_t fps;          /**< Recommended frame rate (frames/sec). */
+    uint32_t bitrate_bps; /**< Recommended encoder bitrate (bps). */
+} nanortc_ev_spec_recommendation_t;
+#endif
+
 /** @brief Data for NANORTC_EV_ICE_CANDIDATE (trickle ICE). */
 typedef struct {
     const char *candidate_str; /**< SDP candidate line (valid until next poll). */
@@ -389,6 +420,9 @@ typedef struct nanortc_event {
         nanortc_ev_keyframe_request_t keyframe_request; /**< EV_KEYFRAME_REQUEST */
 #if NANORTC_FEATURE_VIDEO
         nanortc_ev_bitrate_estimate_t bitrate_estimate; /**< EV_BITRATE_ESTIMATE */
+#endif
+#if NANORTC_FEATURE_VIDEO && NANORTC_FEATURE_VIDEO_RATE_CONTROL
+        nanortc_ev_spec_recommendation_t spec_recommendation; /**< EV_SPEC_RECOMMENDATION */
 #endif
         nanortc_ev_datachannel_open_t datachannel_open; /**< EV_DATACHANNEL_OPEN */
         nanortc_ev_datachannel_data_t datachannel_data; /**< EV_DATACHANNEL_DATA */
@@ -574,6 +608,7 @@ typedef struct nanortc_config {
 
 #if NANORTC_FEATURE_VIDEO
 #include "nano_bwe.h"
+#include "nano_rate_control.h"
 #endif
 
 #if NANORTC_FEATURE_VIDEO && NANORTC_FEATURE_VIDEO_PACING
@@ -711,6 +746,18 @@ struct nanortc {
 
     /** Shared bandwidth estimator (session-wide, not per-track). */
     nano_bwe_t bwe;
+
+#if NANORTC_FEATURE_VIDEO_RATE_CONTROL
+    /** Adaptive media spec controller (session-wide). Pure-compute: maps the
+     *  BWE estimate + smoothed loss to a recommended capability-ladder rung. */
+    nano_rate_control_t rc;
+    /** Caller-owned capability ladder set via nanortc_set_capability_ladder().
+     *  Stored by reference only (zero-copy); the caller must keep the array
+     *  alive for the session. NULL / rc_ladder_n == 0 means the controller is
+     *  idle and emits no NANORTC_EV_SPEC_RECOMMENDATION. */
+    const nanortc_spec_rung_t *rc_ladder;
+    uint8_t rc_ladder_n;
+#endif
 
 #if NANORTC_FEATURE_VIDEO_PACING
     /** Send-side video RTP pacer (BWE-driven leaky token bucket). Meters
@@ -1337,6 +1384,31 @@ NANORTC_API int nanortc_set_initial_bitrate(nanortc_t *rtc, uint32_t bps);
  *         NULL or @p pct > 100.
  */
 NANORTC_API int nanortc_set_bwe_event_threshold(nanortc_t *rtc, uint8_t pct);
+
+#if NANORTC_FEATURE_VIDEO_RATE_CONTROL
+/**
+ * @brief Install the adaptive capability ladder for video spec control.
+ *
+ * Once a ladder is set, the SDK's pure-compute rate controller runs on every
+ * bandwidth-estimate update and emits NANORTC_EV_SPEC_RECOMMENDATION whenever
+ * the recommended rung changes (and on the first selection). The application
+ * applies the recommended {resolution, fps, bitrate} to its encoder — the SDK
+ * decides, the caller acts (core belief #10).
+ *
+ * The array MUST be ordered ascending by @c bitrate_bps (rung 0 = lowest spec)
+ * and is treated as caller-owned and read-only: the library stores only the
+ * pointer + count (no copy), so the array MUST outlive the session. Pass
+ * @p rungs == NULL or @p count == 0 to clear the ladder (controller idle).
+ *
+ * @param rtc    Initialized RTC state.
+ * @param rungs  Caller-owned ladder array, or NULL to clear.
+ * @param count  Number of rungs (0 to clear).
+ * @return NANORTC_OK on success, NANORTC_ERR_INVALID_PARAM if @p rtc is NULL
+ *         or the ladder is not ascending by bitrate.
+ */
+NANORTC_API int nanortc_set_capability_ladder(nanortc_t *rtc, const nanortc_spec_rung_t *rungs,
+                                              uint8_t count);
+#endif /* NANORTC_FEATURE_VIDEO_RATE_CONTROL */
 #endif /* NANORTC_FEATURE_VIDEO */
 
 #endif /* NANORTC_HAVE_MEDIA_TRANSPORT */

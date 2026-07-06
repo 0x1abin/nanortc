@@ -155,6 +155,7 @@ if(NANORTC_FEATURE_VIDEO)
         src/nano_h264.c
         src/nano_reorder.c
         src/nano_fec.c
+        src/nano_rate_control.c
     )
     if(NANORTC_FEATURE_H265)
         list(APPEND NANORTC_SOURCES

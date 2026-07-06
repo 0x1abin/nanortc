@@ -1898,6 +1898,135 @@ TEST(test_e2e_h265_loopback)
     nanortc_destroy(&offerer);
     nanortc_destroy(&answerer);
 }
+
+/*
+ * E2E: a mid-stream parameter-set refresh + IDR is consumed without
+ * renegotiation. This is the receiver-side contract for Phase-14 adaptive spec
+ * switching: when the sender changes the video geometry it re-sets the
+ * parameter sets and forces a fresh IDR mid-session; the transport is
+ * geometry-agnostic so the stream must keep flowing without an SDP roundtrip.
+ * Sends an IDR (set A), then calls nanortc_video_set_h265_parameter_sets() with
+ * a new set B on the live session and sends a second IDR, and asserts the
+ * receiver still surfaces a keyframe. (Multi-NAL AP/FU packetization of the
+ * in-band VPS/SPS/PPS is covered separately in test_h265.c and the interop
+ * suite; here the focus is that a mid-session param-set re-set is safe.)
+ */
+TEST(test_e2e_h265_midstream_param_refresh)
+{
+    nanortc_t offerer, answerer;
+
+    nanortc_config_t off_cfg = e2e_default_config();
+    off_cfg.role = NANORTC_ROLE_CONTROLLING;
+    ASSERT_OK(nanortc_init(&offerer, &off_cfg));
+
+    nanortc_config_t ans_cfg = e2e_default_config();
+    ans_cfg.role = NANORTC_ROLE_CONTROLLED;
+    ASSERT_OK(nanortc_init(&answerer, &ans_cfg));
+
+    ASSERT_OK(nanortc_add_local_candidate(&offerer, "192.168.1.1", 4000));
+    ASSERT_OK(nanortc_add_local_candidate(&answerer, "192.168.1.2", 5000));
+
+    int off_mid = nanortc_add_video_track(&offerer, NANORTC_DIR_SENDONLY, NANORTC_CODEC_H265);
+    ASSERT_TRUE(off_mid >= 0);
+    int ans_mid = nanortc_add_video_track(&answerer, NANORTC_DIR_RECVONLY, NANORTC_CODEC_H265);
+    ASSERT_TRUE(ans_mid >= 0);
+
+    /* Initial parameter sets (set A). */
+    uint8_t vps_a[] = {0x40, 0x01, 0x0C, 0x01, 0xFF};
+    uint8_t sps_a[] = {0x42, 0x01, 0x01, 0x01, 0x60};
+    uint8_t pps_a[] = {0x44, 0x01, 0xC1, 0x72};
+    ASSERT_OK(nanortc_video_set_h265_parameter_sets(&offerer, (uint8_t)off_mid, vps_a,
+                                                    sizeof(vps_a), sps_a, sizeof(sps_a), pps_a,
+                                                    sizeof(pps_a)));
+
+    char offer[4096];
+    size_t offer_len = 0;
+    ASSERT_OK(nanortc_create_offer(&offerer, offer, sizeof(offer), &offer_len));
+    offer[offer_len] = '\0';
+    char answer[4096];
+    size_t answer_len = 0;
+    ASSERT_OK(nanortc_accept_offer(&answerer, offer, answer, sizeof(answer), &answer_len));
+    answer[answer_len] = '\0';
+    ASSERT_OK(nanortc_accept_answer(&offerer, answer));
+
+    answerer.ice.remote_candidates[0].family = 4;
+    answerer.ice.remote_candidates[0].addr[0] = 192;
+    answerer.ice.remote_candidates[0].addr[1] = 168;
+    answerer.ice.remote_candidates[0].addr[2] = 1;
+    answerer.ice.remote_candidates[0].addr[3] = 1;
+    answerer.ice.remote_candidates[0].port = 9999;
+    answerer.ice.remote_candidate_count = 1;
+
+    uint32_t now_ms = 100;
+    ASSERT_OK(nanortc_handle_input(&offerer, &(nanortc_input_t){.now_ms = now_ms}));
+    int connected = 0;
+    for (int round = 0; round < 30; round++) {
+        e2e_pump(&offerer, &answerer, now_ms, 5);
+        if (offerer.srtp.ready && answerer.srtp.ready) {
+            connected = 1;
+            break;
+        }
+    }
+    ASSERT_TRUE(connected);
+    /* Drain any handshake events parked on the answerer. */
+    {
+        nanortc_output_t d;
+        while (nanortc_poll_output(&answerer, &d) == NANORTC_OK) {
+        }
+    }
+
+    /* IDR #1 (single NAL, set A in SDP). */
+    uint8_t idr1[] = {0x00, 0x00, 0x00, 0x01, 0x26, 0x01, 0xAA, 0xBB};
+    ASSERT_OK(nanortc_send_video(&offerer, (uint8_t)off_mid, 0, idr1, sizeof(idr1)));
+    nanortc_output_t out;
+    int got_kf1 = 0;
+    for (int r = 0; r < 6 && !got_kf1; r++) {
+        now_ms += 20;
+        ASSERT_OK(nanortc_handle_input(&offerer, &(nanortc_input_t){.now_ms = now_ms}));
+        e2e_relay(&offerer, &answerer, now_ms);
+        while (nanortc_poll_output(&answerer, &out) == NANORTC_OK) {
+            if (out.type == NANORTC_OUTPUT_EVENT && out.event.type == NANORTC_EV_MEDIA_DATA &&
+                out.event.media_data.is_keyframe)
+                got_kf1 = 1;
+        }
+    }
+    ASSERT_TRUE(got_kf1);
+
+    /* Mid-stream spec switch: re-set the parameter sets (set B) — must be safe
+     * to call on a live session — then send a fresh IDR, as an adaptive geometry
+     * change does (the example re-emits the in-band VPS/SPS/PPS and forces an
+     * IDR). */
+    uint8_t vps_b[] = {0x40, 0x01, 0x0C, 0x02, 0xEE};
+    uint8_t sps_b[] = {0x42, 0x01, 0x02, 0x02, 0x55};
+    uint8_t pps_b[] = {0x44, 0x01, 0xC2, 0x33};
+    ASSERT_OK(nanortc_video_set_h265_parameter_sets(&offerer, (uint8_t)off_mid, vps_b,
+                                                    sizeof(vps_b), sps_b, sizeof(sps_b), pps_b,
+                                                    sizeof(pps_b)));
+
+    uint8_t idr2[] = {0x00, 0x00, 0x00, 0x01, 0x26, 0x01, 0x11, 0x22, 0x33, 0x44}; /* IDR, set B */
+    ASSERT_OK(nanortc_send_video(&offerer, (uint8_t)off_mid, 100, idr2, sizeof(idr2)));
+
+    int got_media2 = 0; /* the post-refresh access unit was delivered */
+    int got_kf2 = 0;    /* and a keyframe was flagged within it */
+    for (int r = 0; r < 8 && !got_media2; r++) {
+        now_ms += 20;
+        ASSERT_OK(nanortc_handle_input(&offerer, &(nanortc_input_t){.now_ms = now_ms}));
+        e2e_relay(&offerer, &answerer, now_ms);
+        while (nanortc_poll_output(&answerer, &out) == NANORTC_OK) {
+            if (out.type == NANORTC_OUTPUT_EVENT && out.event.type == NANORTC_EV_MEDIA_DATA) {
+                got_media2 = 1;
+                if (out.event.media_data.is_keyframe)
+                    got_kf2 = 1;
+            }
+        }
+    }
+    /* The mid-stream refresh + IDR must be consumed without renegotiation. */
+    ASSERT_TRUE(got_media2);
+    ASSERT_TRUE(got_kf2);
+
+    nanortc_destroy(&offerer);
+    nanortc_destroy(&answerer);
+}
 #endif /* NANORTC_FEATURE_H265 */
 
 /*
@@ -4116,6 +4245,7 @@ RUN(test_e2e_send_video_bad_params);
 RUN(test_e2e_send_video_before_connected);
 #if NANORTC_FEATURE_H265
 RUN(test_e2e_h265_loopback);
+RUN(test_e2e_h265_midstream_param_refresh);
 #endif
 RUN(test_e2e_video_send_admission);
 #if NANORTC_FEATURE_VIDEO_AUTO_PLI && !NANORTC_FEATURE_VIDEO_REORDER

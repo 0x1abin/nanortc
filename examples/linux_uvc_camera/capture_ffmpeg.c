@@ -82,10 +82,34 @@ static struct {
     pthread_t thread;
     volatile int running;
     volatile int force_idr;
-    volatile int pending_bps; /* staged BWE target, applied on encode thread */
+    volatile int pending_bps; /* staged BWE bitrate, applied on encode thread */
 
-    int enc_w, enc_h, fps;
+    /* Current encoder geometry + the fixed capture ceiling it downscales from. */
+    int enc_w, enc_h;          /* current encoder output resolution */
+    int cap_w, cap_h, cap_fps; /* capture source resolution + rate (ladder ceiling) */
+    int target_fps;            /* current encoder output rate (<= cap_fps) */
+    int fps_acc;               /* frame-skip accumulator (target vs capture rate) */
+    int cur_bps;               /* current encoder bitrate (carried into reopen) */
+    int keyframe_s;            /* keyframe interval seconds (for reopen GOP) */
+    char enc_name[64];         /* encoder name (for reopen) */
+
+    /* Staged layout change (Phase 14 adaptive spec). Guarded by g_ff.lock so the
+     * encode thread never acts on a half-written {w,h,fps} (and so the staging is
+     * correct on weak-memory platforms, not just x86). */
+    int pending_w, pending_h, pending_fps;
+
+    /* Serializes the parameter-set storage (vps/sps/pps + sps_pps/psets_buf/
+     * psets_ready) and the staged layout between the capture thread (reopen +
+     * param-set cache writers) and the main thread (capture_get_h265_parameter_sets
+     * reader + capture_set_layout). reopen_encoder frees the param-set buffers
+     * mid-session, so the single-alloc-for-session lifetime no longer holds. */
+    pthread_mutex_t lock;
+    bool lock_inited;
+    uint8_t psets_snap[512]; /* stable VPS+SPS+PPS copy returned to capture_get callers */
 } g_ff;
+
+/* Forward declaration: defined after open_encoder, called from capture_thread. */
+static void apply_pending_layout(void);
 
 /* ----------------------------------------------------------------
  * H.265 parameter-set parsing
@@ -136,12 +160,21 @@ static void cache_h265_param_sets_from_extradata(void)
         fprintf(stderr, "[ffcap] H265 extradata is hvcC; deferring to keyframe parse\n");
         return;
     }
-    if (h265_split_param_sets(g_ff.sps_pps, (size_t)g_ff.sps_pps_size, &g_ff.vps, &g_ff.vps_len,
-                              &g_ff.sps, &g_ff.sps_len, &g_ff.pps, &g_ff.pps_len)) {
-        g_ff.psets_ready = 1;
-        fprintf(stderr, "[ffcap] H265 parameter sets: VPS=%zu SPS=%zu PPS=%zu (from extradata)\n",
-                g_ff.vps_len, g_ff.sps_len, g_ff.pps_len);
-    }
+    const uint8_t *v, *s, *p;
+    size_t vl, sl, pl;
+    if (!h265_split_param_sets(g_ff.sps_pps, (size_t)g_ff.sps_pps_size, &v, &vl, &s, &sl, &p, &pl))
+        return;
+    pthread_mutex_lock(&g_ff.lock);
+    g_ff.vps = v;
+    g_ff.vps_len = vl;
+    g_ff.sps = s;
+    g_ff.sps_len = sl;
+    g_ff.pps = p;
+    g_ff.pps_len = pl;
+    g_ff.psets_ready = 1;
+    pthread_mutex_unlock(&g_ff.lock);
+    fprintf(stderr, "[ffcap] H265 parameter sets: VPS=%zu SPS=%zu PPS=%zu (from extradata)\n", vl,
+            sl, pl);
 }
 
 /* Fallback path: parse VPS/SPS/PPS from the first keyframe access unit and
@@ -158,6 +191,8 @@ static void cache_h265_param_sets_from_keyframe(const uint8_t *au, size_t len)
     memcpy(buf, v, vl);
     memcpy(buf + vl, s, sl);
     memcpy(buf + vl + sl, p, pl);
+    pthread_mutex_lock(&g_ff.lock);
+    free(g_ff.psets_buf); /* defensive; psets_ready gate normally prevents re-entry */
     g_ff.psets_buf = buf;
     g_ff.vps = buf;
     g_ff.vps_len = vl;
@@ -166,6 +201,7 @@ static void cache_h265_param_sets_from_keyframe(const uint8_t *au, size_t len)
     g_ff.pps = buf + vl + sl;
     g_ff.pps_len = pl;
     g_ff.psets_ready = 1;
+    pthread_mutex_unlock(&g_ff.lock);
     fprintf(stderr, "[ffcap] H265 parameter sets: VPS=%zu SPS=%zu PPS=%zu (from keyframe)\n", vl,
             sl, pl);
 }
@@ -213,19 +249,21 @@ static void emit_packet(AVPacket *opkt, int frame_count)
                 is_key ? " KEY" : "");
 }
 
-static int encode_frame(AVFrame *nv12, int *frame_count, AVPacket *opkt)
+static int encode_frame(AVFrame *nv12, int64_t pts, int *enc_count, AVPacket *opkt)
 {
     /* Apply any BWE-staged bitrate change in-place before encoding. nvenc's
      * reconfig_encoder() picks up changed bit_rate/rc_max_rate on send. */
     int pend = g_ff.pending_bps;
     if (pend > 0) {
         g_ff.pending_bps = 0;
+        g_ff.cur_bps = pend; /* carry the latest bitrate into a later layout reopen */
         g_ff.enc_ctx->bit_rate = pend;
         g_ff.enc_ctx->rc_max_rate = pend; /* CBR: ceiling == average */
         g_ff.enc_ctx->rc_buffer_size = pend;
     }
 
-    nv12->pts = (*frame_count)++;
+    nv12->pts = pts;
+    (*enc_count)++;
     if (g_ff.force_idr) {
         nv12->pict_type = AV_PICTURE_TYPE_I;
         g_ff.force_idr = 0;
@@ -239,7 +277,7 @@ static int encode_frame(AVFrame *nv12, int *frame_count, AVPacket *opkt)
         return ret;
     }
     while ((ret = avcodec_receive_packet(g_ff.enc_ctx, opkt)) == 0) {
-        emit_packet(opkt, *frame_count);
+        emit_packet(opkt, *enc_count);
         av_packet_unref(opkt);
     }
     return 0;
@@ -285,7 +323,8 @@ static void *capture_thread(void *arg)
     AVPacket *ipkt = av_packet_alloc();
     AVPacket *opkt = av_packet_alloc();
     AVFrame *dec_frame = av_frame_alloc();
-    int frame_count = 0;
+    int64_t cap_idx = 0; /* decoded-frame counter → PTS in the capture-rate time_base */
+    int enc_count = 0;   /* encoded-frame counter (logging / emit) */
 
     if (!ipkt || !opkt || !dec_frame) {
         fprintf(stderr, "[ffcap] alloc failed\n");
@@ -320,10 +359,26 @@ static void *capture_thread(void *arg)
             continue;
         }
         while ((ret = avcodec_receive_frame(g_ff.dec_ctx, dec_frame)) == 0) {
+            /* Apply a staged rung switch (encoder reopen) before encoding. */
+            apply_pending_layout();
+            if (!g_ff.running) {
+                av_frame_unref(dec_frame);
+                break;
+            }
+            cap_idx++;
+            /* Frame-skip to hit target_fps: emit ~target_fps of every cap_fps
+             * decoded frames. PTS uses cap_idx in the capture-rate time_base, so
+             * dropped frames still advance wall-clock time correctly. */
+            g_ff.fps_acc += g_ff.target_fps;
+            if (g_ff.fps_acc < g_ff.cap_fps) {
+                av_frame_unref(dec_frame);
+                continue;
+            }
+            g_ff.fps_acc -= g_ff.cap_fps;
             if (ensure_sws(dec_frame) == 0) {
                 sws_scale(g_ff.sws, (const uint8_t *const *)dec_frame->data, dec_frame->linesize, 0,
                           dec_frame->height, g_ff.enc_frame->data, g_ff.enc_frame->linesize);
-                encode_frame(g_ff.enc_frame, &frame_count, opkt);
+                encode_frame(g_ff.enc_frame, cap_idx, &enc_count, opkt);
             }
             av_frame_unref(dec_frame);
         }
@@ -410,9 +465,9 @@ static int open_input(const capture_config_t *cfg)
     return 0;
 }
 
-static int open_encoder(const capture_config_t *cfg, int width, int height)
+static int open_encoder(int width, int height, int fps, int bitrate_bps)
 {
-    const char *enc_name = (cfg->encoder && cfg->encoder[0]) ? cfg->encoder : "hevc_nvenc";
+    const char *enc_name = g_ff.enc_name[0] ? g_ff.enc_name : "hevc_nvenc";
     const AVCodec *encoder = avcodec_find_encoder_by_name(enc_name);
     if (!encoder) {
         fprintf(stderr, "[ffcap] encoder '%s' not found, trying libx264\n", enc_name);
@@ -432,13 +487,15 @@ static int open_encoder(const capture_config_t *cfg, int width, int height)
     g_ff.enc_ctx->width = width;
     g_ff.enc_ctx->height = height;
     g_ff.enc_ctx->pix_fmt = AV_PIX_FMT_NV12; /* nvenc auto-uploads sw NV12 */
-    g_ff.enc_ctx->time_base = (AVRational){1, cfg->fps};
-    g_ff.enc_ctx->framerate = (AVRational){cfg->fps, 1};
-    g_ff.enc_ctx->bit_rate = cfg->bitrate_bps;
-    g_ff.enc_ctx->rc_max_rate = cfg->bitrate_bps; /* CBR */
-    g_ff.enc_ctx->rc_buffer_size = cfg->bitrate_bps;
+    /* time_base is fixed at the capture rate across reopens so frame PTS stays a
+     * continuous real-time value even when target_fps (frame-skip) changes. */
+    g_ff.enc_ctx->time_base = (AVRational){1, g_ff.cap_fps > 0 ? g_ff.cap_fps : fps};
+    g_ff.enc_ctx->framerate = (AVRational){fps, 1};
+    g_ff.enc_ctx->bit_rate = bitrate_bps;
+    g_ff.enc_ctx->rc_max_rate = bitrate_bps; /* CBR */
+    g_ff.enc_ctx->rc_buffer_size = bitrate_bps;
 
-    int gop = cfg->fps * (cfg->keyframe_interval_s > 0 ? cfg->keyframe_interval_s : 2);
+    int gop = fps * (g_ff.keyframe_s > 0 ? g_ff.keyframe_s : 2);
     g_ff.enc_ctx->gop_size = gop;
     g_ff.enc_ctx->max_b_frames = 0; /* low latency: no B-frames */
     g_ff.enc_ctx->thread_count = 1;
@@ -497,8 +554,94 @@ static int open_encoder(const capture_config_t *cfg, int width, int height)
     }
 
     fprintf(stderr, "[ffcap] pipeline: %s %dx%d@%dfps %d bps GOP %d codec=%s\n", encoder->name,
-            width, height, cfg->fps, cfg->bitrate_bps, gop, g_ff.is_h265 ? "H265" : "H264");
+            width, height, fps, bitrate_bps, gop, g_ff.is_h265 ? "H265" : "H264");
     return 0;
+}
+
+/* (Re)allocate the NV12 encoder input frame at @p w x @p h. */
+static int alloc_enc_frame(int w, int h)
+{
+    if (g_ff.enc_frame)
+        av_frame_free(&g_ff.enc_frame);
+    g_ff.enc_frame = av_frame_alloc();
+    if (!g_ff.enc_frame)
+        return -1;
+    g_ff.enc_frame->format = AV_PIX_FMT_NV12;
+    g_ff.enc_frame->width = w;
+    g_ff.enc_frame->height = h;
+    if (av_frame_get_buffer(g_ff.enc_frame, 32) < 0) {
+        fprintf(stderr, "[ffcap] av_frame_get_buffer failed\n");
+        return -1;
+    }
+    return 0;
+}
+
+/* Tear down the current encoder + its parameter-set caches and reopen at a new
+ * geometry/rate. Runs ONLY on the capture thread (from apply_pending_layout),
+ * so it never races avcodec_send_frame. swscale is freed so ensure_sws rebuilds
+ * at the new downscale target; an IDR is forced so the receiver re-syncs on the
+ * fresh in-band parameter sets. */
+static int reopen_encoder(int w, int h, int fps)
+{
+    if (g_ff.enc_ctx)
+        avcodec_free_context(&g_ff.enc_ctx);
+    /* Free the param-set storage under the lock — a new viewer's track setup may
+     * be reading it via capture_get_h265_parameter_sets on the main thread. */
+    pthread_mutex_lock(&g_ff.lock);
+    free(g_ff.sps_pps);
+    g_ff.sps_pps = NULL;
+    g_ff.sps_pps_size = 0;
+    free(g_ff.psets_buf);
+    g_ff.psets_buf = NULL;
+    g_ff.psets_ready = 0;
+    g_ff.vps = g_ff.sps = g_ff.pps = NULL;
+    g_ff.vps_len = g_ff.sps_len = g_ff.pps_len = 0;
+    pthread_mutex_unlock(&g_ff.lock);
+    if (g_ff.sws) {
+        sws_freeContext(g_ff.sws);
+        g_ff.sws = NULL;
+    }
+    g_ff.sws_src_w = g_ff.sws_src_h = g_ff.sws_src_fmt = 0;
+
+    g_ff.enc_w = w;
+    g_ff.enc_h = h;
+    g_ff.target_fps = fps;
+    g_ff.fps_acc = 0;
+    if (alloc_enc_frame(w, h) < 0)
+        return -1;
+    if (open_encoder(w, h, fps, g_ff.cur_bps) < 0)
+        return -1;
+    g_ff.force_idr = 1;
+    fprintf(stderr, "[ffcap] layout -> %dx%d@%dfps\n", w, h, fps);
+    return 0;
+}
+
+/* Apply a staged layout change (set by capture_set_layout) before the next
+ * encode. On failure, fall back to the full capture resolution; if even that
+ * fails, stop the thread cleanly rather than encode through a freed context. */
+static void apply_pending_layout(void)
+{
+    /* Atomically snapshot + clear the staged layout under the lock so a
+     * concurrent capture_set_layout re-stage is never half-read or lost. */
+    pthread_mutex_lock(&g_ff.lock);
+    int pf = g_ff.pending_fps;
+    int pw = g_ff.pending_w;
+    int ph = g_ff.pending_h;
+    g_ff.pending_fps = 0;
+    g_ff.pending_w = 0;
+    g_ff.pending_h = 0;
+    pthread_mutex_unlock(&g_ff.lock);
+    if (pf <= 0 || pw <= 0 || ph <= 0)
+        return;
+    if (pw == g_ff.enc_w && ph == g_ff.enc_h && pf == g_ff.target_fps)
+        return; /* already at this layout */
+    if (reopen_encoder(pw, ph, pf) == 0)
+        return;
+    fprintf(stderr, "[ffcap] layout reopen failed; falling back to capture resolution\n");
+    if (reopen_encoder(g_ff.cap_w, g_ff.cap_h, g_ff.cap_fps) == 0)
+        return;
+    fprintf(stderr, "[ffcap] fallback reopen failed; stopping capture\n");
+    g_ff.running = 0;
 }
 
 int capture_start(const capture_config_t *cfg)
@@ -513,10 +656,19 @@ int capture_start(const capture_config_t *cfg)
     }
 
     memset(&g_ff, 0, sizeof(g_ff));
+    if (pthread_mutex_init(&g_ff.lock, NULL) != 0) {
+        fprintf(stderr, "[ffcap] mutex init failed\n");
+        return -1;
+    }
+    g_ff.lock_inited = true; /* guards param-set storage + staged layout */
     g_ff.callback = cfg->callback;
     g_ff.userdata = cfg->userdata;
     g_ff.video_stream_idx = -1;
-    g_ff.fps = cfg->fps;
+    /* Retain the inputs a runtime encoder reopen needs (capture_set_layout). */
+    snprintf(g_ff.enc_name, sizeof(g_ff.enc_name), "%s",
+             (cfg->encoder && cfg->encoder[0]) ? cfg->encoder : "hevc_nvenc");
+    g_ff.keyframe_s = cfg->keyframe_interval_s;
+    g_ff.cur_bps = cfg->bitrate_bps;
 
     if (open_input(cfg) < 0) {
         capture_stop();
@@ -524,21 +676,21 @@ int capture_start(const capture_config_t *cfg)
     }
 
     AVCodecParameters *par = g_ff.ifmt_ctx->streams[g_ff.video_stream_idx]->codecpar;
-    g_ff.enc_w = par->width;
-    g_ff.enc_h = par->height;
+    /* The encoder starts at the capture resolution/rate (the ladder ceiling);
+     * capture_set_layout() later downscales from here via swscale + frame-skip. */
+    g_ff.cap_w = g_ff.enc_w = par->width;
+    g_ff.cap_h = g_ff.enc_h = par->height;
+    g_ff.cap_fps = cfg->fps > 0 ? cfg->fps : 30;
+    g_ff.target_fps = g_ff.cap_fps;
+    g_ff.fps_acc = 0;
 
-    /* Encoder input frame (NV12) at the capture resolution. */
-    g_ff.enc_frame = av_frame_alloc();
-    g_ff.enc_frame->format = AV_PIX_FMT_NV12;
-    g_ff.enc_frame->width = g_ff.enc_w;
-    g_ff.enc_frame->height = g_ff.enc_h;
-    if (av_frame_get_buffer(g_ff.enc_frame, 32) < 0) {
-        fprintf(stderr, "[ffcap] av_frame_get_buffer failed\n");
+    /* Encoder input frame (NV12) at the (initial) encoder resolution. */
+    if (alloc_enc_frame(g_ff.enc_w, g_ff.enc_h) < 0) {
         capture_stop();
         return -1;
     }
 
-    if (open_encoder(cfg, g_ff.enc_w, g_ff.enc_h) < 0) {
+    if (open_encoder(g_ff.enc_w, g_ff.enc_h, g_ff.target_fps, g_ff.cur_bps) < 0) {
         capture_stop();
         return -1;
     }
@@ -579,6 +731,10 @@ void capture_stop(void)
     g_ff.psets_ready = 0;
     g_ff.callback = NULL;
     g_ff.userdata = NULL;
+    if (g_ff.lock_inited) {
+        pthread_mutex_destroy(&g_ff.lock);
+        g_ff.lock_inited = false;
+    }
 }
 
 void capture_force_keyframe(void)
@@ -597,16 +753,55 @@ int capture_set_bitrate(int bps)
     return 0;
 }
 
+int capture_set_layout(int width, int height, int fps)
+{
+    if (!g_ff.enc_ctx || width <= 0 || height <= 0 || fps <= 0)
+        return -1;
+    if ((width & 1) || (height & 1))
+        return -1; /* encoders require even dimensions */
+    if (width > g_ff.cap_w || height > g_ff.cap_h)
+        return -1; /* swscale only downscales from the fixed capture resolution */
+    if (fps > g_ff.cap_fps)
+        fps = g_ff.cap_fps; /* cannot exceed the capture rate */
+    /* Stage under the lock; the capture thread reopens the encoder before the
+     * next encode (apply_pending_layout snapshots + clears under the same lock). */
+    pthread_mutex_lock(&g_ff.lock);
+    g_ff.pending_w = width;
+    g_ff.pending_h = height;
+    g_ff.pending_fps = fps;
+    pthread_mutex_unlock(&g_ff.lock);
+    return 0;
+}
+
 int capture_get_h265_parameter_sets(const uint8_t **vps, size_t *vps_len, const uint8_t **sps,
                                     size_t *sps_len, const uint8_t **pps, size_t *pps_len)
 {
-    if (!g_ff.is_h265 || !g_ff.psets_ready)
+    /* Copy the param sets into a stable snapshot under the lock so the returned
+     * pointers stay valid even if the capture thread reopens the encoder (and
+     * frees the live vps/sps/pps storage) right after this returns. The caller
+     * (the SDK) copies the bytes immediately, so the snapshot need only survive
+     * the call. The snapshot is written only here (main thread). */
+    if (!g_ff.lock_inited)
         return -1;
-    *vps = g_ff.vps;
+    pthread_mutex_lock(&g_ff.lock);
+    if (!g_ff.is_h265 || !g_ff.psets_ready) {
+        pthread_mutex_unlock(&g_ff.lock);
+        return -1;
+    }
+    size_t total = g_ff.vps_len + g_ff.sps_len + g_ff.pps_len;
+    if (total == 0 || total > sizeof(g_ff.psets_snap)) {
+        pthread_mutex_unlock(&g_ff.lock);
+        return -1;
+    }
+    memcpy(g_ff.psets_snap, g_ff.vps, g_ff.vps_len);
+    memcpy(g_ff.psets_snap + g_ff.vps_len, g_ff.sps, g_ff.sps_len);
+    memcpy(g_ff.psets_snap + g_ff.vps_len + g_ff.sps_len, g_ff.pps, g_ff.pps_len);
+    *vps = g_ff.psets_snap;
     *vps_len = g_ff.vps_len;
-    *sps = g_ff.sps;
+    *sps = g_ff.psets_snap + g_ff.vps_len;
     *sps_len = g_ff.sps_len;
-    *pps = g_ff.pps;
+    *pps = g_ff.psets_snap + g_ff.vps_len + g_ff.sps_len;
     *pps_len = g_ff.pps_len;
+    pthread_mutex_unlock(&g_ff.lock);
     return 0;
 }

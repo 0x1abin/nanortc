@@ -140,6 +140,18 @@ void nano_rtc_pacer_pump(nanortc_t *rtc);
 uint32_t nano_rtc_pacer_next_deadline_ms(const nanortc_t *rtc, uint32_t now_ms);
 #endif /* video pacing */
 
+#if NANORTC_FEATURE_VIDEO && NANORTC_FEATURE_VIDEO_RATE_CONTROL
+/**
+ * Run the adaptive rate controller off the latest BWE state (estimate + smoothed
+ * loss) against the installed capability ladder, and emit
+ * NANORTC_EV_SPEC_RECOMMENDATION when the recommended rung changes (or on the
+ * first selection). No-op when no ladder is installed. Called after each BWE
+ * update on the RTCP receive path. Defined in nano_rtc_media.c; non-static so
+ * the decide→emit wiring can be unit-tested directly.
+ */
+void nano_rtc_media_rate_control_tick(nanortc_t *rtc);
+#endif /* video rate control */
+
 #if NANORTC_FEATURE_VIDEO && NANORTC_FEATURE_VIDEO_REORDER
 /**
  * Release at most one completed video NAL from the receive reorder buffers into

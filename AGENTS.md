@@ -25,6 +25,7 @@ NanoRTC is a Sans I/O, pure C WebRTC implementation for RTOS/embedded systems.
 | Technical debt tracker | [docs/exec-plans/tech-debt-tracker.md](docs/exec-plans/tech-debt-tracker.md) |
 | Memory profiles + tuning guide | [docs/engineering/memory-profiles.md](docs/engineering/memory-profiles.md) |
 | Deployment profiles (which loss-recovery features to enable per use case) | [docs/engineering/deployment-profiles.md](docs/engineering/deployment-profiles.md) |
+| Adaptive video (resolution/fps/bitrate + send strategy) design & evaluation | [docs/engineering/adaptive-media.md](docs/engineering/adaptive-media.md) |
 | Safe C function guidelines | [docs/engineering/safe-c-guidelines.md](docs/engineering/safe-c-guidelines.md) |
 
 ## Build

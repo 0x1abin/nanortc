@@ -1445,6 +1445,67 @@ int nanortc_set_bwe_event_threshold(nanortc_t *rtc, uint8_t pct)
     rtc->bwe.runtime_event_threshold_pct = pct;
     return NANORTC_OK;
 }
+
+#if NANORTC_FEATURE_VIDEO_RATE_CONTROL
+int nanortc_set_capability_ladder(nanortc_t *rtc, const nanortc_spec_rung_t *rungs, uint8_t count)
+{
+    if (!rtc) {
+        return NANORTC_ERR_INVALID_PARAM;
+    }
+    /* NULL/empty clears the ladder → controller idle (no recommendation events). */
+    if (!rungs || count == 0) {
+        rtc->rc_ladder = NULL;
+        rtc->rc_ladder_n = 0;
+        (void)rate_control_init(&rtc->rc);
+        return NANORTC_OK;
+    }
+    /* Validate at the boundary (belief #3): the controller assumes the ladder is
+     * ordered ascending by bitrate. Reject a misordered ladder rather than
+     * silently mis-selecting rungs. */
+    for (uint8_t i = 1; i < count; i++) {
+        if (rungs[i].bitrate_bps < rungs[i - 1].bitrate_bps) {
+            return NANORTC_ERR_INVALID_PARAM;
+        }
+    }
+    rtc->rc_ladder = rungs;
+    rtc->rc_ladder_n = count;
+    (void)rate_control_init(&rtc->rc);
+    return NANORTC_OK;
+}
+
+/* Run the adaptive controller off the latest BWE state and emit a spec
+ * recommendation when the chosen rung changes (or on the first selection). The
+ * controller is pure; the application applies the recommended rung to its
+ * encoder. Called after each BWE update (REMB / TWCC) on the receive path.
+ * Non-static (declared in nano_rtc_internal.h) so the wiring can be unit-tested. */
+void nano_rtc_media_rate_control_tick(nanortc_t *rtc)
+{
+    if (!rtc->rc_ladder || rtc->rc_ladder_n == 0) {
+        return;
+    }
+    uint8_t prev_rung = rate_control_get_rung(&rtc->rc);
+    uint8_t prev_has = rtc->rc.has_rung;
+    int rung = rate_control_update(&rtc->rc, bwe_get_bitrate(&rtc->bwe), bwe_get_loss_q8(&rtc->bwe),
+                                   rtc->rc_ladder, rtc->rc_ladder_n, rtc->now_ms);
+    if (rung < 0) {
+        return;
+    }
+    /* Emit on a rung change, or on the very first real selection. */
+    if ((uint8_t)rung == prev_rung && prev_has) {
+        return;
+    }
+    const nanortc_spec_rung_t *r = &rtc->rc_ladder[rung];
+    nanortc_event_t evt;
+    memset(&evt, 0, sizeof(evt));
+    evt.type = NANORTC_EV_SPEC_RECOMMENDATION;
+    evt.spec_recommendation.rung = (uint8_t)rung;
+    evt.spec_recommendation.width = r->width;
+    evt.spec_recommendation.height = r->height;
+    evt.spec_recommendation.fps = r->fps;
+    evt.spec_recommendation.bitrate_bps = r->bitrate_bps;
+    nano_rtc_emit_event_full(rtc, &evt);
+}
+#endif /* NANORTC_FEATURE_VIDEO_RATE_CONTROL */
 #endif /* NANORTC_FEATURE_VIDEO */
 
 /* ----------------------------------------------------------------
@@ -1544,6 +1605,9 @@ int nano_rtc_media_handle_rtp_or_rtcp(nanortc_t *rtc, const uint8_t *data, size_
                             bwe_evt.bitrate_estimate.source = (uint8_t)NANORTC_BWE_SRC_REMB;
                             nano_rtc_emit_event_full(rtc, &bwe_evt);
                         }
+#if NANORTC_FEATURE_VIDEO_RATE_CONTROL
+                        nano_rtc_media_rate_control_tick(rtc);
+#endif
                     } else
 #endif
                         if (psfb_fmt == 1) {
@@ -1653,6 +1717,9 @@ int nano_rtc_media_handle_rtp_or_rtcp(nanortc_t *rtc, const uint8_t *data, size_
                                     (uint8_t)NANORTC_BWE_SRC_TWCC_LOSS;
                                 nano_rtc_emit_event_full(rtc, &bwe_evt);
                             }
+#if NANORTC_FEATURE_VIDEO_RATE_CONTROL
+                            nano_rtc_media_rate_control_tick(rtc);
+#endif
                         }
                     }
 #endif /* NANORTC_FEATURE_VIDEO */

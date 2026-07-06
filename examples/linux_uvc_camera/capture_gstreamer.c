@@ -258,6 +258,26 @@ int capture_set_bitrate(int bps)
     return 0;
 }
 
+int capture_set_layout(int width, int height, int fps)
+{
+    (void)width;
+    (void)height;
+    (void)fps;
+    /* The GStreamer pipeline bakes resolution/framerate into the caps at
+     * gst_parse_launch() time; a runtime change would require tearing down and
+     * rebuilding the pipeline (risk of stream interruption on a hardware
+     * encoder). Unsupported here — the adaptive controller still drives the
+     * bitrate via capture_set_bitrate(); resolution/fps stay at the launch
+     * values. Use the FFmpeg/NVENC backend for full resolution+fps adaptation. */
+    static int warned;
+    if (!warned) {
+        fprintf(stderr, "[gst] capture_set_layout unsupported (bitrate-only adaptation); "
+                        "use the FFmpeg backend for resolution/fps switching\n");
+        warned = 1;
+    }
+    return -1;
+}
+
 void capture_force_keyframe(void)
 {
     if (!g_state.encoder) {

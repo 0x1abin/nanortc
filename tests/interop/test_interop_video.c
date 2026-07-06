@@ -68,8 +68,7 @@ static int setup_video_pair_codec(interop_sig_pipe_t *pipe, interop_nanortc_medi
                                   interop_libdatachannel_media_peer_t *ldc,
                                   nanortc_direction_t nano_dir, ldc_direction_t ldc_dir,
                                   nanortc_codec_t nano_codec, ldc_codec_t ldc_codec,
-                                  uint8_t payload_type,
-                                  const video_h265_param_sets_t *h265_sets)
+                                  uint8_t payload_type, const video_h265_param_sets_t *h265_sets)
 {
     uint16_t port = alloc_port();
 
@@ -484,10 +483,9 @@ static const uint8_t kSampleVPS[] = {
     0x90, 0x00, 0x00, 0x03, 0x00, 0x00, 0x03, 0x00, 0x5d, 0xba, 0x02, 0x40,
 };
 static const uint8_t kSampleSPS[] = {
-    0x42, 0x01, 0x01, 0x01, 0x60, 0x00, 0x00, 0x03, 0x00, 0x90, 0x00, 0x00,
-    0x03, 0x00, 0x00, 0x03, 0x00, 0x5d, 0xa0, 0x02, 0x80, 0x80, 0x2d, 0x16,
-    0x5b, 0xa9, 0x24, 0xca, 0xff, 0xf0, 0x00, 0x10, 0x00, 0x16, 0xa0, 0x20,
-    0x20, 0x20, 0x80, 0x00, 0x00, 0x03, 0x00, 0x80, 0x00, 0x00, 0x0c, 0x84,
+    0x42, 0x01, 0x01, 0x01, 0x60, 0x00, 0x00, 0x03, 0x00, 0x90, 0x00, 0x00, 0x03, 0x00, 0x00, 0x03,
+    0x00, 0x5d, 0xa0, 0x02, 0x80, 0x80, 0x2d, 0x16, 0x5b, 0xa9, 0x24, 0xca, 0xff, 0xf0, 0x00, 0x10,
+    0x00, 0x16, 0xa0, 0x20, 0x20, 0x20, 0x80, 0x00, 0x00, 0x03, 0x00, 0x80, 0x00, 0x00, 0x0c, 0x84,
 };
 static const uint8_t kSamplePPS[] = {
     0x44, 0x01, 0xc1, 0x72, 0xb4, 0x62, 0x40,
@@ -625,6 +623,64 @@ TEST(test_interop_video_h265_nano_to_ldc)
 }
 
 /* ----------------------------------------------------------------
+ * Test: H.265 mid-stream parameter-set refresh + IDR (Phase 14)
+ *
+ * An adaptive geometry change re-emits the in-band VPS/SPS/PPS followed by an
+ * IDR as a single multi-NAL access unit. Verify a real receiver (libdatachannel)
+ * consumes that spec-switch wire format mid-session, with no renegotiation: send
+ * an initial IDR, then the multi-NAL [VPS][SPS][PPS][IDR] AU, and confirm both
+ * are received.
+ * ---------------------------------------------------------------- */
+
+TEST(test_interop_video_h265_midstream_refresh)
+{
+    interop_sig_pipe_t pipe;
+    interop_nanortc_media_peer_t nano;
+    interop_libdatachannel_media_peer_t ldc;
+
+    int rc = setup_video_pair_codec(&pipe, &nano, &ldc, NANORTC_DIR_SENDONLY, LDC_DIR_RECVONLY,
+                                    NANORTC_CODEC_H265, LDC_CODEC_H265, 98, &kSampleH265Sets);
+    ASSERT_OK(rc);
+    rc = interop_libdatachannel_media_wait_flag(&ldc.connected, INTEROP_TIMEOUT_MS);
+    ASSERT_OK(rc);
+    rc = interop_libdatachannel_media_wait_flag((atomic_int *)&nano.connected, INTEROP_TIMEOUT_MS);
+    ASSERT_OK(rc);
+    interop_sleep_ms(200);
+    ASSERT_TRUE(nano.track_mids[0] >= 0);
+
+    /* Initial IDR (single NAL). */
+    uint8_t idr1[64];
+    build_h265_frame(idr1, sizeof(idr1), true, 0xC1);
+    int initial = atomic_load(&ldc.frame_count);
+    rc = interop_nanortc_media_send_video(&nano, (uint8_t)nano.track_mids[0], nano_get_millis(),
+                                          idr1, sizeof(idr1));
+    ASSERT_OK(rc);
+    rc = wait_frame_count(&ldc.frame_count, initial + 1, INTEROP_TIMEOUT_MS);
+    ASSERT_OK(rc);
+
+    /* The spec-switch access unit: re-emitted in-band VPS/SPS/PPS + IDR. */
+    static const uint8_t refresh_au[] = {
+        0, 0, 0, 1, 0x40, 0x01, 0x0C, 0x02, 0xEE,                         /* VPS */
+        0, 0, 0, 1, 0x42, 0x01, 0x02, 0x02, 0x55,                         /* SPS */
+        0, 0, 0, 1, 0x44, 0x01, 0xC2, 0x33,                               /* PPS */
+        0, 0, 0, 1, 0x26, 0x01, 0xD2, 0xD2, 0xD2, 0xD2, 0xD2, 0xD2, 0xD2, /* IDR */
+    };
+    initial = atomic_load(&ldc.frame_count);
+    rc = interop_nanortc_media_send_video(&nano, (uint8_t)nano.track_mids[0], nano_get_millis(),
+                                          refresh_au, sizeof(refresh_au));
+    ASSERT_OK(rc);
+    rc = wait_frame_count(&ldc.frame_count, initial + 1, INTEROP_TIMEOUT_MS);
+    ASSERT_OK(rc);
+
+    interop_media_frame_t received;
+    rc = interop_libdatachannel_media_get_last_frame(&ldc, &received);
+    ASSERT_OK(rc);
+    ASSERT_TRUE(received.len > 0);
+
+    teardown_video_pair(&pipe, &nano, &ldc);
+}
+
+/* ----------------------------------------------------------------
  * Test: H.265 FU fragmentation (RFC 7798 §4.4.3)
  *
  * 1800-byte IDR > 1200-byte MTU forces FU fragmentation on the sender
@@ -682,6 +738,7 @@ RUN(test_interop_audio_video_combined);
 #if NANORTC_FEATURE_H265
 RUN(test_interop_video_h265_ldc_to_nano);
 RUN(test_interop_video_h265_nano_to_ldc);
+RUN(test_interop_video_h265_midstream_refresh);
 RUN(test_interop_video_h265_fu_fragmentation);
 #endif
 TEST_MAIN_END

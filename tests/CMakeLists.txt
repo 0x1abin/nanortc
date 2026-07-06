@@ -17,7 +17,7 @@ set(MEDIA_TESTS test_rtp test_srtp test_rtcp test_media)
 set(AUDIO_TESTS test_jitter)
 
 # Tests that require VIDEO specifically
-set(VIDEO_TESTS test_h264 test_bwe test_twcc test_annex_b test_video_pacing test_reorder test_fec)
+set(VIDEO_TESTS test_h264 test_bwe test_twcc test_annex_b test_video_pacing test_reorder test_fec test_rate_control)
 
 # Tests that require the H.265 sub-feature of VIDEO
 set(H265_TESTS test_h265 test_base64)

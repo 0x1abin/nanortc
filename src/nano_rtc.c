@@ -267,6 +267,11 @@ int nanortc_init(nanortc_t *rtc, const nanortc_config_t *cfg)
 
 #if NANORTC_FEATURE_VIDEO
     bwe_init(&rtc->bwe);
+#if NANORTC_FEATURE_VIDEO_RATE_CONTROL
+    rate_control_init(&rtc->rc);
+    /* rc_ladder / rc_ladder_n stay NULL/0 (rtc memset) until the application
+     * calls nanortc_set_capability_ladder() — controller idle until then. */
+#endif
 #if NANORTC_FEATURE_VIDEO_PACING
     /* Token bucket starts full so the first frame keeps a small initial burst
      * (up to NANORTC_PACING_MAX_BURST_BYTES) before metering engages. All

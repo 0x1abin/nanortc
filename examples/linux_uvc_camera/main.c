@@ -110,6 +110,16 @@ static int g_bwe_max_bps = BWE_MAX_BPS;       /* runtime -M: BWE upper bound (ra
 static bwe_coordinator_t g_bwe;               /* BWE -> encoder apply throttle */
 static uint32_t g_pli_count;                  /* diagnostic counter */
 
+#if NANORTC_FEATURE_VIDEO_RATE_CONTROL
+/* Adaptive spec control (Phase 14). The SDK's per-session rate controller emits
+ * NANORTC_EV_SPEC_RECOMMENDATION over this app-supplied capability ladder; the
+ * app applies the geometry to the single shared encoder. */
+static nanortc_spec_rung_t g_ladder[3];
+static uint8_t g_ladder_n;
+static int8_t g_rec_rung[MAX_SESSIONS]; /* latest recommended rung per session (-1 = none) */
+static int g_applied_rung = -1;         /* rung currently applied to the shared encoder */
+#endif
+
 /* ----------------------------------------------------------------
  * BWE -> encoder adaptive loop
  *
@@ -139,8 +149,80 @@ static void recompute_and_apply_bwe(uint32_t now_ms)
             min_bps = est;
         contributors++;
     }
+#if NANORTC_FEATURE_VIDEO_RATE_CONTROL
+    /* Geometry comes from the controller's rung; bitrate keeps tracking BWE but
+     * is clamped to the active rung's bitrate ceiling so the two stay coherent. */
+    if (g_applied_rung >= 0 && min_bps > 0) {
+        uint32_t ceil_bps = g_ladder[g_applied_rung].bitrate_bps;
+        if (min_bps > ceil_bps)
+            min_bps = ceil_bps;
+    }
+#endif
     bwe_coordinator_try_apply(&g_bwe, min_bps, contributors, now_ms);
 }
+
+#if NANORTC_FEATURE_VIDEO_RATE_CONTROL
+/* Build a 3-rung capability ladder from the capture geometry + bitrate envelope.
+ * Ascending by bitrate (the SDK validates this); the top rung is the capture
+ * resolution and lower rungs downscale from it. Dimensions are forced even.
+ * NOTE: built from the requested -W/-H. If the camera negotiates a smaller
+ * resolution, capture_set_layout rejects the oversized top rung and the encoder
+ * stays at the actual capture resolution (graceful degradation) — set -W/-H to
+ * the camera's native resolution for the top rung to be reachable. */
+static void build_ladder(int cap_w, int cap_h, int cap_fps, int floor_bps, int ceil_bps)
+{
+    int low_w = (cap_w / 3) & ~1, low_h = (cap_h / 3) & ~1;         /* ~1/3 linear (~360p@1080p) */
+    int mid_w = (cap_w * 2 / 3) & ~1, mid_h = (cap_h * 2 / 3) & ~1; /* ~2/3 linear (~720p@1080p) */
+    if (low_w < 160)
+        low_w = 160;
+    if (low_h < 90)
+        low_h = 90;
+    int low_fps = cap_fps >= 30 ? cap_fps / 2 : cap_fps; /* halve fps at the lowest rung */
+    if (low_fps < 1)
+        low_fps = 1;
+    int b_low = floor_bps;
+    int b_top = ceil_bps;
+    int b_mid = floor_bps + (ceil_bps - floor_bps) / 3;
+    if (b_mid <= b_low)
+        b_mid = b_low + 1;
+    if (b_top <= b_mid)
+        b_top = b_mid + 1;
+    g_ladder[0] =
+        (nanortc_spec_rung_t){(uint16_t)low_w, (uint16_t)low_h, (uint8_t)low_fps, (uint32_t)b_low};
+    g_ladder[1] =
+        (nanortc_spec_rung_t){(uint16_t)mid_w, (uint16_t)mid_h, (uint8_t)cap_fps, (uint32_t)b_mid};
+    g_ladder[2] =
+        (nanortc_spec_rung_t){(uint16_t)cap_w, (uint16_t)cap_h, (uint8_t)cap_fps, (uint32_t)b_top};
+    g_ladder_n = 3;
+    for (int i = 0; i < MAX_SESSIONS; i++)
+        g_rec_rung[i] = -1;
+    fprintf(stderr, "[rctl] ladder: [0]%dx%d@%d %dk  [1]%dx%d@%d %dk  [2]%dx%d@%d %dk\n", low_w,
+            low_h, low_fps, b_low / 1000, mid_w, mid_h, cap_fps, b_mid / 1000, cap_w, cap_h,
+            cap_fps, b_top / 1000);
+}
+
+/* Aggregate per-session rung recommendations: the slowest viewer (lowest rung)
+ * governs the single shared encoder. Switch geometry only when the global min
+ * rung changes; bitrate keeps tracking BWE (clamped to the rung) elsewhere. */
+static void apply_min_rung(void)
+{
+    int min_rung = -1;
+    for (int i = 0; i < MAX_SESSIONS; i++) {
+        if (!g_sessions[i].active || !g_sessions[i].media_connected || g_rec_rung[i] < 0)
+            continue;
+        if (min_rung < 0 || g_rec_rung[i] < min_rung)
+            min_rung = g_rec_rung[i];
+    }
+    if (min_rung < 0 || min_rung == g_applied_rung)
+        return;
+    g_applied_rung = min_rung;
+    const nanortc_spec_rung_t *r = &g_ladder[min_rung];
+    int rc = capture_set_layout((int)r->width, (int)r->height, (int)r->fps);
+    capture_set_bitrate((int)r->bitrate_bps);
+    fprintf(stderr, "[rctl] apply rung %d -> %ux%u@%u %ukbps (%s)\n", min_rung, r->width, r->height,
+            r->fps, r->bitrate_bps / 1000, rc == 0 ? "layout+bitrate" : "bitrate-only");
+}
+#endif /* NANORTC_FEATURE_VIDEO_RATE_CONTROL */
 
 static int active_viewer_count(void)
 {
@@ -191,6 +273,16 @@ static int uvc_track_setup(nano_session_t *s, void *userdata)
      * immediately override the encoder back up to a hardcoded default. */
     nanortc_set_bitrate_bounds(&s->rtc, (uint32_t)g_bwe_min_bps, (uint32_t)g_bwe_max_bps);
     nanortc_set_initial_bitrate(&s->rtc, (uint32_t)g_start_bitrate);
+
+#if NANORTC_FEATURE_VIDEO_RATE_CONTROL
+    /* Install the capability ladder so the SDK controller recommends a rung
+     * (resolution/fps/bitrate) per session as the path changes. */
+    if (g_ladder_n > 0) {
+        int rc = nanortc_set_capability_ladder(&s->rtc, g_ladder, g_ladder_n);
+        if (rc != NANORTC_OK)
+            fprintf(stderr, "[session] set_capability_ladder rc=%d\n", rc);
+    }
+#endif
 #endif
 
 #if LINUX_UVC_HAS_AUDIO && NANORTC_FEATURE_AUDIO
@@ -237,9 +329,30 @@ static void uvc_on_event(nano_session_t *s, const nanortc_event_t *evt, void *us
                 evt->bitrate_estimate.prev_bitrate_bps / 1000);
         recompute_and_apply_bwe(nano_get_millis());
         break;
+#if NANORTC_FEATURE_VIDEO_RATE_CONTROL
+    case NANORTC_EV_SPEC_RECOMMENDATION: {
+        int idx = (int)(s - g_sessions);
+        if (idx >= 0 && idx < MAX_SESSIONS)
+            g_rec_rung[idx] = (int8_t)evt->spec_recommendation.rung;
+        fprintf(stderr, "[session %d] spec rung %u -> %ux%u@%u %ukbps\n", s->viewer_id,
+                evt->spec_recommendation.rung, evt->spec_recommendation.width,
+                evt->spec_recommendation.height, evt->spec_recommendation.fps,
+                evt->spec_recommendation.bitrate_bps / 1000);
+        apply_min_rung();
+        break;
+    }
+#endif
 #endif
     case NANORTC_EV_DISCONNECTED:
         fprintf(stderr, "[session %d] disconnected\n", s->viewer_id);
+#if NANORTC_FEATURE_VIDEO_RATE_CONTROL
+        {
+            int idx = (int)(s - g_sessions);
+            if (idx >= 0 && idx < MAX_SESSIONS)
+                g_rec_rung[idx] = -1; /* clear so a reused slot can't inherit a stale rung */
+            apply_min_rung();         /* the departed viewer no longer governs the shared encoder */
+        }
+#endif
         break;
     default:
         break;
@@ -378,6 +491,12 @@ static void run_event_loop(http_sig_t *sig, const nanortc_config_t *cfg)
                 fprintf(stderr, " | pace_catchup=%u overrun=%u txfull=%u paced=%u",
                         s->rtc.stats_pace_catchup, s->rtc.stats_pkt_ring_overrun,
                         s->rtc.stats_tx_queue_full, s->rtc.stats_paced_packets);
+#if NANORTC_FEATURE_VIDEO_RATE_CONTROL
+                if (g_applied_rung >= 0)
+                    fprintf(stderr, " | rung=%d %ux%u@%u", g_applied_rung,
+                            g_ladder[g_applied_rung].width, g_ladder[g_applied_rung].height,
+                            g_ladder[g_applied_rung].fps);
+#endif
                 break;
             }
 #endif
@@ -506,6 +625,10 @@ int main(int argc, char *argv[])
     g_pool.on_event = uvc_on_event;
 
     bwe_coordinator_init(&g_bwe, BWE_APPLY_INTERVAL, BWE_APPLY_DAMPEN, uvc_bwe_apply, NULL);
+
+#if NANORTC_FEATURE_VIDEO_RATE_CONTROL
+    build_ladder(width, height, fps, g_bwe_min_bps, g_bwe_max_bps);
+#endif
 
     capture_config_t cap_cfg = {
         .device = device,

@@ -55,3 +55,11 @@ The codebase is optimized for AI agent comprehension. This means: consistent nam
 For embedded targets, code size matters. But correctness always comes before optimization, and completeness (handling all RFC-required cases) comes before adding features.
 
 **Implication:** Don't skip error paths to save code size. Don't add optional features before the core protocol is fully correct.
+
+## 10. Adaptive media is the SDK's decision, the caller's action
+
+Under the real, time-varying bandwidth of *both* endpoints, a real-time video stack must continuously converge the media spec — resolution, framerate, and bitrate — and its send strategy toward what the bottleneck path can actually carry, with **latency and playback smoothness ranked above picture detail**. This convergence is a first-class, reusable SDK capability, not something each application reinvents.
+
+Sans I/O (Belief #1) means the SDK cannot own the encoder or the camera. So the responsibility splits cleanly: **the SDK decides** — a pure-compute controller turns the congestion signal (bottleneck estimate, loss, delay trend) plus a caller-supplied capability ladder and policy into a recommended `{resolution, fps, bitrate}` and send strategy — and **the caller applies** that recommendation to its encoder. Bitrate-only adaptation (squeezing QP at a fixed resolution) is not sufficient: when the path narrows, stepping resolution/framerate down to protect per-pixel quality and avoid encoder frame-drops is what keeps the stream real-time and smooth.
+
+**Implication:** Adaptation decisions live in `src/` as pure functions over caller-provided state and an explicit policy; they never touch an encoder, socket, or clock. The default policy prioritizes realtime + smoothness. The current implementation status against this goal — and the roadmap to close the gap — is tracked in [adaptive-media.md](../engineering/adaptive-media.md).

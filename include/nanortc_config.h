@@ -728,6 +728,49 @@
 #endif
 
 /* ----------------------------------------------------------------
+ * Adaptive media rate control (VIDEO feature, opt-in)
+ * ---------------------------------------------------------------- */
+
+/** @brief Adaptive media rate controller (Phase 14; sub-feature of VIDEO).
+ *  A pure-compute controller that maps the BWE estimate + smoothed loss + a
+ *  caller-supplied capability ladder to a recommended {resolution, fps, bitrate}
+ *  rung, ranking latency + smoothness above picture detail (core belief #10).
+ *  **Opt-in, default 0** — non-adaptive builds pay nothing. The library decides;
+ *  the caller applies the rung to its encoder. See
+ *  docs/exec-plans/active/phase14-adaptive-media-controller.md. */
+#ifndef NANORTC_FEATURE_VIDEO_RATE_CONTROL
+#define NANORTC_FEATURE_VIDEO_RATE_CONTROL 0
+#endif
+
+/** @brief Fraction of the BWE estimate (percent) the controller treats as the
+ *  usable spec budget; the headroom absorbs estimate noise + RTP/SRTP overhead.
+ *  Default 85. Range 1..100. */
+#ifndef NANORTC_RATE_CONTROL_SAFETY_PCT
+#define NANORTC_RATE_CONTROL_SAFETY_PCT 85
+#endif
+
+/** @brief Extra margin (percent) by which the estimate must exceed the next
+ *  rung's bitrate before an up-step is even considered — prevents oscillation
+ *  at a rung boundary. Default 20. Range 0..200. */
+#ifndef NANORTC_RATE_CONTROL_UP_HEADROOM_PCT
+#define NANORTC_RATE_CONTROL_UP_HEADROOM_PCT 20
+#endif
+
+/** @brief How long (ms) the up-step condition must hold continuously before
+ *  stepping up one rung — confirms stable headroom rather than a transient
+ *  spike. Default 3000. (0 = step up as soon as headroom is met.) */
+#ifndef NANORTC_RATE_CONTROL_MIN_HOLD_MS
+#define NANORTC_RATE_CONTROL_MIN_HOLD_MS 3000
+#endif
+
+/** @brief Smoothed loss (q8, 256 = 100%) at/above which the controller forces a
+ *  rung down regardless of the rate estimate (smoothness-first). Default 25
+ *  (~10%), matching the BWE/FEC high-loss band. Range 1..256. */
+#ifndef NANORTC_RATE_CONTROL_LOSS_DOWN_Q8
+#define NANORTC_RATE_CONTROL_LOSS_DOWN_Q8 25
+#endif
+
+/* ----------------------------------------------------------------
  * Send pacing configuration (VIDEO feature only)
  *
  * A leaky-bucket pacer meters outbound *video* RTP egress so a large IDR
@@ -1196,6 +1239,18 @@ typedef enum {
 #endif
 #if NANORTC_FEC_TX_RING < 1 || NANORTC_FEC_TX_RING > 64
 #error "NANORTC_FEC_TX_RING must be in 1..64 (slot index fits int8_t; bounded RAM)"
+#endif
+#endif
+
+#if NANORTC_FEATURE_VIDEO && NANORTC_FEATURE_VIDEO_RATE_CONTROL
+#if NANORTC_RATE_CONTROL_SAFETY_PCT < 1 || NANORTC_RATE_CONTROL_SAFETY_PCT > 100
+#error "NANORTC_RATE_CONTROL_SAFETY_PCT must be 1..100"
+#endif
+#if NANORTC_RATE_CONTROL_UP_HEADROOM_PCT < 0 || NANORTC_RATE_CONTROL_UP_HEADROOM_PCT > 200
+#error "NANORTC_RATE_CONTROL_UP_HEADROOM_PCT must be 0..200"
+#endif
+#if NANORTC_RATE_CONTROL_LOSS_DOWN_Q8 < 1 || NANORTC_RATE_CONTROL_LOSS_DOWN_Q8 > 256
+#error "NANORTC_RATE_CONTROL_LOSS_DOWN_Q8 must be 1..256"
 #endif
 #endif
 

@@ -146,6 +146,29 @@ void capture_force_keyframe(void);
 int capture_set_bitrate(int bps);
 
 /**
+ * @brief Update the encoder output resolution + frame rate at runtime.
+ *
+ * Intended for adaptive spec control (Phase 14): the SDK's rate controller
+ * recommends a capability-ladder rung {width, height, fps, bitrate} and the
+ * application applies the geometry here and the bitrate via
+ * @ref capture_set_bitrate.
+ *
+ * Like @ref capture_set_bitrate, the change is staged and applied by the
+ * capture thread before the next encode (no cross-thread race). The FFmpeg
+ * backend reopens the encoder at the new geometry (downscaling from the fixed
+ * capture resolution via swscale) and drops input frames to hit @p fps, then
+ * forces an IDR so the receiver re-syncs on the new in-band parameter sets.
+ *
+ * @p width / @p height must be even and <= the capture resolution; @p fps must
+ * be in 1..capture-fps. The GStreamer backend bakes caps at launch and returns
+ * -1 (unsupported) — bitrate adaptation still applies.
+ *
+ * Returns 0 on success, -1 if the encoder is not running, the backend does not
+ * support runtime layout changes, or the parameters are out of range.
+ */
+int capture_set_layout(int width, int height, int fps);
+
+/**
  * @brief Fetch the H.265 VPS/SPS/PPS parameter sets parsed from the
  *        encoder, as RAW NAL units (no Annex-B start code).
  *
