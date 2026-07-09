@@ -1,51 +1,68 @@
 cmake_minimum_required(VERSION 3.16)
 
+set(NANORTC_BASE_SRCS
+    src/nano_rtc.c
+    src/nano_rtc_media.c
+    src/nano_rtc_negotiate.c
+    src/nano_log.c
+    src/nano_sdp.c
+    src/nano_ice.c
+    src/nano_stun.c
+    src/nano_addr.c
+    src/nano_dtls.c
+    src/nano_crc32.c
+)
+set(NANORTC_TURN_SRCS src/nano_turn.c)
+set(NANORTC_DATACHANNEL_SRCS
+    src/nano_sctp.c
+    src/nano_datachannel.c
+    src/nano_crc32c.c
+)
+set(NANORTC_MEDIA_SRCS
+    src/nano_rtp.c
+    src/nano_rtcp.c
+    src/nano_srtp.c
+    src/nano_media.c
+)
+set(NANORTC_AUDIO_SRCS src/nano_jitter.c)
+set(NANORTC_VIDEO_SRCS
+    src/nano_bwe.c
+    src/nano_twcc.c
+    src/nano_annex_b.c
+    src/nano_h264.c
+    src/nano_reorder.c
+    src/nano_fec.c
+)
+set(NANORTC_H265_SRCS
+    src/nano_h265.c
+    src/nano_base64.c
+)
+
 # ---- ESP-IDF component mode ----
 if(DEFINED ENV{IDF_PATH})
-    set(NANORTC_CORE_SRCS
-        src/nano_rtc.c
-        src/nano_rtc_media.c
-        src/nano_rtc_negotiate.c
-        src/nano_log.c
-        src/nano_sdp.c
-        src/nano_ice.c
-        src/nano_stun.c
-        src/nano_addr.c
-        src/nano_dtls.c
-        src/nano_crc32.c
-        crypto/nanortc_crypto_mbedtls.c
-    )
+    set(NANORTC_CORE_SRCS ${NANORTC_BASE_SRCS} crypto/nanortc_crypto_mbedtls.c)
 
     # TURN relay client (conditional on Kconfig)
     if(CONFIG_NANORTC_FEATURE_TURN)
-        list(APPEND NANORTC_CORE_SRCS src/nano_turn.c)
+        list(APPEND NANORTC_CORE_SRCS ${NANORTC_TURN_SRCS})
     endif()
 
     # DataChannel sources (conditional on Kconfig)
     if(CONFIG_NANORTC_FEATURE_DATACHANNEL)
-        list(APPEND NANORTC_CORE_SRCS
-            src/nano_sctp.c
-            src/nano_datachannel.c
-            src/nano_crc32c.c
-        )
+        list(APPEND NANORTC_CORE_SRCS ${NANORTC_DATACHANNEL_SRCS})
     endif()
 
     # Media transport (conditional on Kconfig)
     if(CONFIG_NANORTC_FEATURE_AUDIO OR CONFIG_NANORTC_FEATURE_VIDEO)
-        list(APPEND NANORTC_CORE_SRCS
-            src/nano_rtp.c
-            src/nano_rtcp.c
-            src/nano_srtp.c
-            src/nano_media.c
-        )
+        list(APPEND NANORTC_CORE_SRCS ${NANORTC_MEDIA_SRCS})
     endif()
     if(CONFIG_NANORTC_FEATURE_AUDIO)
-        list(APPEND NANORTC_CORE_SRCS src/nano_jitter.c)
+        list(APPEND NANORTC_CORE_SRCS ${NANORTC_AUDIO_SRCS})
     endif()
     if(CONFIG_NANORTC_FEATURE_VIDEO)
-        list(APPEND NANORTC_CORE_SRCS src/nano_bwe.c src/nano_twcc.c src/nano_annex_b.c src/nano_h264.c src/nano_reorder.c src/nano_fec.c)
+        list(APPEND NANORTC_CORE_SRCS ${NANORTC_VIDEO_SRCS})
         if(CONFIG_NANORTC_FEATURE_H265)
-            list(APPEND NANORTC_CORE_SRCS src/nano_h265.c src/nano_base64.c)
+            list(APPEND NANORTC_CORE_SRCS ${NANORTC_H265_SRCS})
         endif()
     endif()
 
@@ -102,66 +119,33 @@ message(STATUS "nanortc crypto: ${NANORTC_CRYPTO}")
 set(NANORTC_CONFIG_FILE "" CACHE STRING "Path to user nanortc config header override")
 
 # ---- Core sources (always compiled) ----
-set(NANORTC_SOURCES
-    src/nano_rtc.c
-    src/nano_rtc_media.c
-    src/nano_rtc_negotiate.c
-    src/nano_log.c
-    src/nano_sdp.c
-    src/nano_ice.c
-    src/nano_stun.c
-    src/nano_dtls.c
-    src/nano_crc32.c
-    src/nano_addr.c
-)
+set(NANORTC_SOURCES ${NANORTC_BASE_SRCS})
 
 # ---- TURN relay client ----
 if(NANORTC_FEATURE_TURN)
-    list(APPEND NANORTC_SOURCES src/nano_turn.c)
+    list(APPEND NANORTC_SOURCES ${NANORTC_TURN_SRCS})
 endif()
 
 # ---- DataChannel sources ----
 if(NANORTC_FEATURE_DATACHANNEL)
-    list(APPEND NANORTC_SOURCES
-        src/nano_sctp.c
-        src/nano_datachannel.c
-        src/nano_crc32c.c
-    )
+    list(APPEND NANORTC_SOURCES ${NANORTC_DATACHANNEL_SRCS})
 endif()
 
 # ---- Media transport sources (shared by audio and video) ----
 if(NANORTC_FEATURE_AUDIO OR NANORTC_FEATURE_VIDEO)
-    list(APPEND NANORTC_SOURCES
-        src/nano_rtp.c
-        src/nano_rtcp.c
-        src/nano_srtp.c
-        src/nano_media.c
-    )
+    list(APPEND NANORTC_SOURCES ${NANORTC_MEDIA_SRCS})
 endif()
 
 # ---- Audio-specific sources ----
 if(NANORTC_FEATURE_AUDIO)
-    list(APPEND NANORTC_SOURCES
-        src/nano_jitter.c
-    )
+    list(APPEND NANORTC_SOURCES ${NANORTC_AUDIO_SRCS})
 endif()
 
 # ---- Video-specific sources ----
 if(NANORTC_FEATURE_VIDEO)
-    list(APPEND NANORTC_SOURCES
-        src/nano_bwe.c
-        src/nano_twcc.c
-        src/nano_annex_b.c
-        src/nano_h264.c
-        src/nano_reorder.c
-        src/nano_fec.c
-        src/nano_rate_control.c
-    )
+    list(APPEND NANORTC_SOURCES ${NANORTC_VIDEO_SRCS} src/nano_rate_control.c)
     if(NANORTC_FEATURE_H265)
-        list(APPEND NANORTC_SOURCES
-            src/nano_h265.c
-            src/nano_base64.c
-        )
+        list(APPEND NANORTC_SOURCES ${NANORTC_H265_SRCS})
     endif()
 endif()
 

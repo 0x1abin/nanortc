@@ -46,9 +46,27 @@ set(INTEROP_INCLUDE_DIRS
     ${libdatachannel_SOURCE_DIR}/include
 )
 
+function(add_interop_test target test_name timeout labels)
+    add_executable(${target} ${ARGN})
+    target_include_directories(${target} PRIVATE ${INTEROP_INCLUDE_DIRS})
+    set_target_properties(${target} PROPERTIES LINKER_LANGUAGE CXX)
+    target_link_libraries(${target} PRIVATE
+        nanortc
+        unity
+        LibDataChannel::LibDataChannelStatic
+        pthread
+    )
+    add_test(NAME ${test_name} COMMAND ${target})
+    if(labels)
+        set_tests_properties(${test_name} PROPERTIES TIMEOUT ${timeout} LABELS "${labels}")
+    else()
+        set_tests_properties(${test_name} PROPERTIES TIMEOUT ${timeout})
+    endif()
+endfunction()
+
 # ---- DataChannel interop test ----
 
-add_executable(test_interop_dc
+add_interop_test(test_interop_dc interop_datachannel 120 ""
     test_interop_dc.c
     interop_common.c
     interop_nanortc_peer.c
@@ -57,25 +75,9 @@ add_executable(test_interop_dc
     ${CMAKE_SOURCE_DIR}/examples/common/ice_server_resolve.c
 )
 
-target_include_directories(test_interop_dc PRIVATE ${INTEROP_INCLUDE_DIRS})
-
-# Enable C++ linker since libdatachannel is a C++ library
-set_target_properties(test_interop_dc PROPERTIES LINKER_LANGUAGE CXX)
-
-target_link_libraries(test_interop_dc PRIVATE
-    nanortc
-    unity
-    LibDataChannel::LibDataChannelStatic
-    pthread
-)
-
-# Register with ctest
-add_test(NAME interop_datachannel COMMAND test_interop_dc)
-set_tests_properties(interop_datachannel PROPERTIES TIMEOUT 120)
-
 # ---- TURN relay interop test (requires network + TURN credentials) ----
 
-add_executable(test_interop_turn
+add_interop_test(test_interop_turn interop_turn 120 "network"
     test_interop_turn.c
     interop_common.c
     interop_nanortc_peer.c
@@ -84,26 +86,12 @@ add_executable(test_interop_turn
     ${CMAKE_SOURCE_DIR}/examples/common/ice_server_resolve.c
 )
 
-target_include_directories(test_interop_turn PRIVATE ${INTEROP_INCLUDE_DIRS})
-
-set_target_properties(test_interop_turn PROPERTIES LINKER_LANGUAGE CXX)
-
-target_link_libraries(test_interop_turn PRIVATE
-    nanortc
-    unity
-    LibDataChannel::LibDataChannelStatic
-    pthread
-)
-
-add_test(NAME interop_turn COMMAND test_interop_turn)
-set_tests_properties(interop_turn PROPERTIES TIMEOUT 120 LABELS "network")
-
 # ---- TURN relay-only interop test ----
 # Forces the libdatachannel side into RTC_TRANSPORT_POLICY_RELAY so all
 # traffic must traverse the TURN server. Skipped at runtime if no TURN
 # server is reachable (default 127.0.0.1:3478, override with NANORTC_TURN_*).
 
-add_executable(test_interop_turn_relay
+add_interop_test(test_interop_turn_relay interop_turn_relay 180 "network;turn-relay"
     test_interop_turn_relay.c
     interop_common.c
     interop_nanortc_peer.c
@@ -112,20 +100,6 @@ add_executable(test_interop_turn_relay
     ${CMAKE_SOURCE_DIR}/examples/common/ice_server_resolve.c
 )
 
-target_include_directories(test_interop_turn_relay PRIVATE ${INTEROP_INCLUDE_DIRS})
-
-set_target_properties(test_interop_turn_relay PROPERTIES LINKER_LANGUAGE CXX)
-
-target_link_libraries(test_interop_turn_relay PRIVATE
-    nanortc
-    unity
-    LibDataChannel::LibDataChannelStatic
-    pthread
-)
-
-add_test(NAME interop_turn_relay COMMAND test_interop_turn_relay)
-set_tests_properties(interop_turn_relay PROPERTIES TIMEOUT 180 LABELS "network;turn-relay")
-
 # ---- TURN relay-only interop test, nanortc side ----
 # Mirror image of test_interop_turn_relay: nanortc is the TURN client this
 # time. nanortc's SDP advertises only the relay candidate (see relay_only
@@ -133,7 +107,7 @@ set_tests_properties(interop_turn_relay PROPERTIES TIMEOUT 180 LABELS "network;t
 # Exercises the Phase 5.2 client-side relay fixes (via_turn signal, lazy
 # wrap, permission fan-out, stats counters). Skipped if no TURN reachable.
 
-add_executable(test_interop_turn_relay_nanortc
+add_interop_test(test_interop_turn_relay_nanortc interop_turn_relay_nanortc 180 "network;turn-relay"
     test_interop_turn_relay_nanortc.c
     interop_common.c
     interop_nanortc_peer.c
@@ -142,27 +116,13 @@ add_executable(test_interop_turn_relay_nanortc
     ${CMAKE_SOURCE_DIR}/examples/common/ice_server_resolve.c
 )
 
-target_include_directories(test_interop_turn_relay_nanortc PRIVATE ${INTEROP_INCLUDE_DIRS})
-
-set_target_properties(test_interop_turn_relay_nanortc PROPERTIES LINKER_LANGUAGE CXX)
-
-target_link_libraries(test_interop_turn_relay_nanortc PRIVATE
-    nanortc
-    unity
-    LibDataChannel::LibDataChannelStatic
-    pthread
-)
-
-add_test(NAME interop_turn_relay_nanortc COMMAND test_interop_turn_relay_nanortc)
-set_tests_properties(interop_turn_relay_nanortc PROPERTIES TIMEOUT 180 LABELS "network;turn-relay")
-
 # ---- srflx interop test ----
 # Local fake STUN responder + libdatachannel host, with nanortc forced into
 # srflx-only mode (no host candidate). Verifies that srflx is actually used
 # for the connectivity check (selected_local_type == SRFLX) and DataChannel
 # data flows over the srflx-selected pair. No external network required.
 
-add_executable(test_interop_srflx
+add_interop_test(test_interop_srflx interop_srflx 60 ""
     test_interop_srflx.c
     interop_common.c
     interop_fake_stun.c
@@ -172,66 +132,26 @@ add_executable(test_interop_srflx
     ${CMAKE_SOURCE_DIR}/examples/common/ice_server_resolve.c
 )
 
-target_include_directories(test_interop_srflx PRIVATE ${INTEROP_INCLUDE_DIRS})
-
-set_target_properties(test_interop_srflx PROPERTIES LINKER_LANGUAGE CXX)
-
-target_link_libraries(test_interop_srflx PRIVATE
-    nanortc
-    unity
-    LibDataChannel::LibDataChannelStatic
-    pthread
-)
-
-add_test(NAME interop_srflx COMMAND test_interop_srflx)
-set_tests_properties(interop_srflx PROPERTIES TIMEOUT 60)
-
 # ---- Audio interop test (requires NANORTC_FEATURE_AUDIO) ----
 
 if(NANORTC_FEATURE_AUDIO)
-    add_executable(test_interop_audio
+    add_interop_test(test_interop_audio interop_audio 120 ""
         test_interop_audio.c
         interop_common.c
         interop_nanortc_media_peer.c
         interop_libdatachannel_media_peer.c
         ${CMAKE_SOURCE_DIR}/examples/common/run_loop_linux.c
     )
-
-    target_include_directories(test_interop_audio PRIVATE ${INTEROP_INCLUDE_DIRS})
-    set_target_properties(test_interop_audio PROPERTIES LINKER_LANGUAGE CXX)
-
-    target_link_libraries(test_interop_audio PRIVATE
-        nanortc
-        unity
-        LibDataChannel::LibDataChannelStatic
-        pthread
-    )
-
-    add_test(NAME interop_audio COMMAND test_interop_audio)
-    set_tests_properties(interop_audio PROPERTIES TIMEOUT 120)
 endif()
 
 # ---- Video interop test (requires NANORTC_FEATURE_VIDEO) ----
 
 if(NANORTC_FEATURE_VIDEO)
-    add_executable(test_interop_video
+    add_interop_test(test_interop_video interop_video 120 ""
         test_interop_video.c
         interop_common.c
         interop_nanortc_media_peer.c
         interop_libdatachannel_media_peer.c
         ${CMAKE_SOURCE_DIR}/examples/common/run_loop_linux.c
     )
-
-    target_include_directories(test_interop_video PRIVATE ${INTEROP_INCLUDE_DIRS})
-    set_target_properties(test_interop_video PROPERTIES LINKER_LANGUAGE CXX)
-
-    target_link_libraries(test_interop_video PRIVATE
-        nanortc
-        unity
-        LibDataChannel::LibDataChannelStatic
-        pthread
-    )
-
-    add_test(NAME interop_video COMMAND test_interop_video)
-    set_tests_properties(interop_video PROPERTIES TIMEOUT 120)
 endif()
