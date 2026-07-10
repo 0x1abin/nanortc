@@ -624,7 +624,17 @@ int main(int argc, char *argv[])
                                                  &frame_len, &ts_ms) != 0) {
                     break;
                 }
-                nanortc_send_audio(&rtc, (uint8_t)app_ctx.audio_mid, ts_ms, frame_buf, frame_len);
+                int send_rc = nanortc_send_audio(&rtc, (uint8_t)app_ctx.audio_mid, ts_ms, frame_buf,
+                                                 frame_len);
+                if (send_rc == NANORTC_ERR_WOULD_BLOCK) {
+                    nano_run_loop_drain(&loop);
+                    send_rc = nanortc_send_audio(&rtc, (uint8_t)app_ctx.audio_mid, ts_ms, frame_buf,
+                                                 frame_len);
+                }
+                if (send_rc != NANORTC_OK) {
+                    fprintf(stderr, "Audio frame dropped: %d (%s)\n", send_rc,
+                            nanortc_err_name(send_rc));
+                }
                 nano_media_pacer_advance(&audio_pacer);
             }
         }

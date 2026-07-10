@@ -190,6 +190,13 @@ static void broadcast_audio(media_pipeline_t *mp, nano_session_t *sessions, int 
 #if NANORTC_FEATURE_AUDIO
             int rc = nanortc_send_audio(&s->rtc, (uint8_t)s->audio_mid, frame.pts_ms, frame.data,
                                         frame.len);
+            if (rc == NANORTC_ERR_WOULD_BLOCK) {
+                /* Dispatch releases the shared TX slot without advancing RTP
+                 * state; retrying the same frame is therefore safe. */
+                nano_session_dispatch(s, timeout_ms);
+                rc = nanortc_send_audio(&s->rtc, (uint8_t)s->audio_mid, frame.pts_ms, frame.data,
+                                        frame.len);
+            }
             if (rc != NANORTC_OK) {
                 err_count++;
                 uint32_t now = nano_get_millis();

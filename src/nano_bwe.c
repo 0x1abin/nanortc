@@ -142,6 +142,40 @@ static uint32_t bwe_clamp(const nano_bwe_t *bwe, uint32_t bps)
     return bps;
 }
 
+int bwe_set_bounds(nano_bwe_t *bwe, uint32_t min_bps, uint32_t max_bps)
+{
+    if (!bwe) {
+        return NANORTC_ERR_INVALID_PARAM;
+    }
+
+    uint32_t effective_min = min_bps ? min_bps : (uint32_t)NANORTC_BWE_MIN_BITRATE;
+    uint32_t effective_max = max_bps ? max_bps : (uint32_t)NANORTC_BWE_MAX_BITRATE;
+    if (effective_min > effective_max) {
+        return NANORTC_ERR_INVALID_PARAM;
+    }
+
+    /* Commit only after validating the fully-expanded envelope. */
+    bwe->runtime_min_bps = min_bps;
+    bwe->runtime_max_bps = max_bps;
+    bwe->estimated_bitrate = bwe_clamp(bwe, bwe->estimated_bitrate);
+    bwe->prev_event_bitrate = bwe_clamp(bwe, bwe->prev_event_bitrate);
+    return NANORTC_OK;
+}
+
+int bwe_set_initial_bitrate(nano_bwe_t *bwe, uint32_t bps)
+{
+    if (!bwe) {
+        return NANORTC_ERR_INVALID_PARAM;
+    }
+
+    if (bwe->remb_count == 0 && bwe->twcc_count == 0) {
+        uint32_t initial = bps ? bps : (uint32_t)NANORTC_BWE_INITIAL_BITRATE;
+        bwe->estimated_bitrate = bwe_clamp(bwe, initial);
+        bwe->prev_event_bitrate = bwe->estimated_bitrate;
+    }
+    return NANORTC_OK;
+}
+
 static void bwe_apply(nano_bwe_t *bwe, uint32_t candidate_bps, uint8_t source, uint32_t now_ms,
                       bool first_sample)
 {

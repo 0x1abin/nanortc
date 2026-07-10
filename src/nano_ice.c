@@ -10,6 +10,7 @@
 #include "nano_ice.h"
 #include "nano_log.h"
 #include "nano_stun.h"
+#include "nano_time.h"
 #include "nanortc_crypto.h"
 #include "nanortc.h"
 #include <string.h>
@@ -470,7 +471,8 @@ int ice_generate_check(nano_ice_t *ice, uint32_t now_ms, const nanortc_crypto_pr
     }
 
     /* Pacing: don't send before next_check_ms */
-    if (ice->state == NANORTC_ICE_STATE_CHECKING && now_ms < ice->next_check_ms) {
+    if (ice->state == NANORTC_ICE_STATE_CHECKING && ice->next_check_ms != 0u &&
+        !nano_time_is_due(now_ms, ice->next_check_ms)) {
         return NANORTC_OK;
     }
 
@@ -508,7 +510,7 @@ int ice_generate_check(nano_ice_t *ice, uint32_t now_ms, const nanortc_crypto_pr
             slot = i;
             break;
         }
-        uint32_t age = now_ms - ice->pending[i].sent_at_ms; /* wrap-safe */
+        uint32_t age = nano_time_elapsed(now_ms, ice->pending[i].sent_at_ms);
         if (age >= NANORTC_ICE_CHECK_TIMEOUT_MS) {
             slot = i; /* reap stale */
             break;
@@ -522,8 +524,10 @@ int ice_generate_check(nano_ice_t *ice, uint32_t now_ms, const nanortc_crypto_pr
         slot = oldest; /* table full of fresh entries — reap oldest */
     }
 
-    /* Generate random transaction ID into the chosen slot */
-    if (crypto->random_bytes(ice->pending[slot].txid, STUN_TXID_SIZE) != 0) {
+    /* Generate into a temporary so a provider that partially fills before
+     * failing cannot corrupt the still-live pending transaction. */
+    uint8_t txid[STUN_TXID_SIZE];
+    if (!crypto->random_bytes || crypto->random_bytes(txid, sizeof(txid)) != 0) {
         return NANORTC_ERR_CRYPTO;
     }
 
@@ -544,20 +548,22 @@ int ice_generate_check(nano_ice_t *ice, uint32_t now_ms, const nanortc_crypto_pr
         username, ulen, ice_compute_local_priority(ice, ice->current_local),
         true, /* use_candidate */
         true, /* is_controlling */
-        ice->tie_breaker, ice->pending[slot].txid, (const uint8_t *)ice->remote_pwd,
-        ice->remote_pwd_len, crypto->hmac_sha1, buf, buf_len, out_len);
+        ice->tie_breaker, txid, (const uint8_t *)ice->remote_pwd, ice->remote_pwd_len,
+        crypto->hmac_sha1, buf, buf_len, out_len);
     if (rc != NANORTC_OK) {
         return rc;
     }
 
     /* Commit the pending slot only after encoding succeeded */
+    memcpy(ice->pending[slot].txid, txid, sizeof(txid));
     ice->pending[slot].sent_at_ms = now_ms;
     ice->pending[slot].local_idx = ice->current_local;
     ice->pending[slot].remote_idx = ice->current_remote;
     ice->pending[slot].in_flight = true;
 
     ice->check_count++;
-    ice->next_check_ms = now_ms + ice->check_interval_ms;
+    ice->next_check_ms =
+        ice->check_interval_ms == 0u ? 0u : nano_time_deadline(now_ms, ice->check_interval_ms);
 
     if (ice->state == NANORTC_ICE_STATE_NEW) {
         ice->state = NANORTC_ICE_STATE_CHECKING;
@@ -630,12 +636,13 @@ int ice_generate_consent(nano_ice_t *ice, uint32_t now_ms, const nanortc_crypto_
     }
 
     /* Pacing */
-    if (now_ms < ice->consent_next_ms) {
+    if (ice->consent_next_ms != 0u && !nano_time_is_due(now_ms, ice->consent_next_ms)) {
         return NANORTC_OK;
     }
 
-    /* Generate random transaction ID for consent check */
-    if (crypto->random_bytes(ice->consent_txid, STUN_TXID_SIZE) != 0) {
+    /* Generate transaction state off-struct and commit only after encoding. */
+    uint8_t txid[STUN_TXID_SIZE];
+    if (!crypto->random_bytes || crypto->random_bytes(txid, sizeof(txid)) != 0) {
         return NANORTC_ERR_CRYPTO;
     }
 
@@ -655,14 +662,15 @@ int ice_generate_consent(nano_ice_t *ice, uint32_t now_ms, const nanortc_crypto_
     int rc = stun_encode_binding_request(
         username, ulen, ice_compute_local_priority(ice, ice->selected_local_idx),
         false, /* no use_candidate */
-        ice->is_controlling, ice->tie_breaker, ice->consent_txid, (const uint8_t *)ice->remote_pwd,
+        ice->is_controlling, ice->tie_breaker, txid, (const uint8_t *)ice->remote_pwd,
         ice->remote_pwd_len, crypto->hmac_sha1, buf, buf_len, out_len);
     if (rc != NANORTC_OK) {
         return rc;
     }
 
+    memcpy(ice->consent_txid, txid, sizeof(txid));
     ice->consent_pending = true;
-    ice->consent_next_ms = now_ms + NANORTC_ICE_CONSENT_INTERVAL_MS;
+    ice->consent_next_ms = nano_time_deadline(now_ms, NANORTC_ICE_CONSENT_INTERVAL_MS);
 
     return NANORTC_OK;
 }
@@ -684,7 +692,7 @@ bool ice_consent_expired(const nano_ice_t *ice, uint32_t now_ms)
     if (ice->consent_expiry_ms == 0) {
         return true;
     }
-    return now_ms >= ice->consent_expiry_ms;
+    return nano_time_is_due(now_ms, ice->consent_expiry_ms);
 }
 
 uint32_t ice_next_timeout_ms(const nano_ice_t *ice, uint32_t now_ms)
@@ -700,13 +708,9 @@ uint32_t ice_next_timeout_ms(const nano_ice_t *ice, uint32_t now_ms)
      * zero value before the first check means "fire immediately". */
     if (ice->is_controlling && ice->state != NANORTC_ICE_STATE_CONNECTED &&
         ice->state != NANORTC_ICE_STATE_FAILED) {
-        if (ice->next_check_ms == 0 || now_ms >= ice->next_check_ms) {
-            best = 0;
-        } else {
-            uint32_t left = ice->next_check_ms - now_ms;
-            if (left < best) {
-                best = left;
-            }
+        uint32_t left = ice->next_check_ms == 0u ? 0u : nano_time_until(now_ms, ice->next_check_ms);
+        if (left < best) {
+            best = left;
         }
     }
 
@@ -716,14 +720,13 @@ uint32_t ice_next_timeout_ms(const nano_ice_t *ice, uint32_t now_ms)
      * matter — whichever is sooner caps the wakeup. */
     if (ice->state == NANORTC_ICE_STATE_CONNECTED) {
         if (ice->consent_next_ms != 0) {
-            uint32_t left = (now_ms >= ice->consent_next_ms) ? 0u : (ice->consent_next_ms - now_ms);
+            uint32_t left = nano_time_until(now_ms, ice->consent_next_ms);
             if (left < best) {
                 best = left;
             }
         }
         if (ice->consent_expiry_ms != 0) {
-            uint32_t left =
-                (now_ms >= ice->consent_expiry_ms) ? 0u : (ice->consent_expiry_ms - now_ms);
+            uint32_t left = nano_time_until(now_ms, ice->consent_expiry_ms);
             if (left < best) {
                 best = left;
             }

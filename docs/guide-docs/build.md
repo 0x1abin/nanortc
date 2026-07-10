@@ -10,7 +10,8 @@ Full reference for building, testing, and verifying NanoRTC locally. For the min
 - OpenSSL — required for `NANORTC_CRYPTO=openssl` and interop tests
 - LLVM `clang` with libFuzzer — required for fuzz harnesses (AppleClang does not ship libFuzzer)
 - `gcov` + `lcov` — required for coverage reports
-- ESP-IDF toolchain — required for the ESP32 target (auto-detected via `IDF_PATH`)
+- ESP-IDF toolchain — required for ESP32 targets. Component mode is selected by
+  ESP-IDF's `ESP_PLATFORM`; merely exporting `IDF_PATH` no longer changes a host build.
 
 ## Host Build
 
@@ -36,6 +37,13 @@ cmake -B build -DNANORTC_FEATURE_DC_ORDERED=OFF     # Disable ordered delivery (
 cmake -B build -DNANORTC_FEATURE_IPV6=OFF           # Disable IPv6 address support (saves ~300 bytes)
 cmake -B build -DNANORTC_FEATURE_TURN=OFF           # Disable TURN relay (saves ~700B RAM + ~13KB code)
 cmake -B build -DNANORTC_FEATURE_ICE_SRFLX=OFF      # Skip srflx local-candidate registration (LAN-only)
+cmake -B build -DNANORTC_FEATURE_VIDEO_RATE_CONTROL=ON # Adaptive encoder-spec recommendations
+cmake -B build -DNANORTC_FEATURE_VIDEO_REORDER=ON   # Receive-side RTP reorder window
+cmake -B build -DNANORTC_FEATURE_VIDEO_NACK_RX=ON   # Receiver-generated RTCP NACK
+cmake -B build -DNANORTC_FEATURE_VIDEO_FEC=ON       # ULPFEC (requires REORDER=ON)
+cmake -B build -DNANORTC_FEATURE_VIDEO_PACING=OFF   # Disable the default send pacer
+cmake -B build -DNANORTC_FEATURE_VIDEO_AUTO_PLI=OFF # Application owns keyframe recovery
+cmake -B build -DNANORTC_FEC_ADAPTIVE=OFF           # Fixed rather than loss-adaptive FEC group
 ```
 
 Common combinations:
@@ -49,6 +57,14 @@ cmake -B build -DNANORTC_FEATURE_DATACHANNEL=ON -DNANORTC_FEATURE_AUDIO=ON -DNAN
 
 # Audio only (no SCTP)
 cmake -B build -DNANORTC_FEATURE_DATACHANNEL=OFF -DNANORTC_FEATURE_AUDIO=ON
+
+# Advanced loss recovery + adaptive control
+cmake -B build \
+  -DNANORTC_FEATURE_AUDIO=ON -DNANORTC_FEATURE_VIDEO=ON \
+  -DNANORTC_FEATURE_VIDEO_RATE_CONTROL=ON \
+  -DNANORTC_FEATURE_VIDEO_REORDER=ON \
+  -DNANORTC_FEATURE_VIDEO_NACK_RX=ON \
+  -DNANORTC_FEATURE_VIDEO_FEC=ON
 ```
 
 For RAM/flash footprint per combination and tuning knobs, see [memory-profiles.md](../engineering/memory-profiles.md).
@@ -56,6 +72,8 @@ For RAM/flash footprint per combination and tuning knobs, see [memory-profiles.m
 ## Crypto Backend
 
 Pick one. `mbedtls` is the default and targets embedded; `openssl` is typical for Linux host development and required for interop tests.
+Any other value is rejected during CMake configure instead of silently falling
+back to mbedTLS.
 
 ```bash
 cmake -B build -DNANORTC_CRYPTO=openssl
@@ -78,13 +96,19 @@ Override compile-time tunables without modifying the repo:
 cmake -B build -DNANORTC_CONFIG_FILE=\"my_nanortc_config.h\"
 ```
 
+The transient control/audio backing ring can also be selected directly from
+CMake with `-DNANORTC_TX_SLOT_COUNT=4`. Valid values are powers of two from 1
+through 32; the value must not exceed `NANORTC_OUT_QUEUE_SIZE`.
+
 ## Interop Tests
 
 Runs end-to-end tests against libdatachannel. Requires OpenSSL and a C++ compiler.
 
 ```bash
-cmake -B build -DNANORTC_CRYPTO=openssl -DNANORTC_BUILD_INTEROP_TESTS=ON
+cmake -B build -DNANORTC_CRYPTO=openssl -DNANORTC_BUILD_INTEROP_TESTS=ON \
+      -DNANORTC_FEATURE_AUDIO=ON -DNANORTC_FEATURE_VIDEO=ON -DNANORTC_FEATURE_H265=ON
 cmake --build build -j$(nproc)
+ctest --test-dir build -N | grep -E 'interop_(audio|video)'
 ctest --test-dir build -R interop --output-on-failure
 ```
 
@@ -104,6 +128,11 @@ Requires LLVM `clang` with libFuzzer (not AppleClang).
 ./scripts/run-fuzz.sh 30 fuzz_stun  # Single harness
 ```
 
+The fuzz build instruments both each harness and `libnanortc.a`, discovers
+`tests/fuzz/fuzz_*.c` targets automatically, and includes a dedicated TWCC
+feedback parser harness. Complete sanitizer output is retained under
+`build-fuzz/fuzz-logs/` and replayed when a harness fails.
+
 ## Code Coverage
 
 Requires `gcov` and `lcov`.
@@ -116,7 +145,9 @@ Requires `gcov` and `lcov`.
 
 ## ESP-IDF
 
-Auto-detected via `IDF_PATH`. The standard way to load the ESP-IDF environment once per shell session (exports `IDF_PATH`, `idf.py`, and the cross-toolchain) is the `get_idf` alias from the ESP-IDF install script:
+ESP-IDF sets `ESP_PLATFORM` while evaluating nanortc as a component; that is
+the build-mode boundary. The standard way to load the toolchain for `idf.py`
+(exports `IDF_PATH`, `idf.py`, and the cross-toolchain) is the `get_idf` alias:
 
 ```bash
 get_idf
@@ -167,3 +198,9 @@ clang-format -i src/*.c src/*.h include/*.h crypto/*.h crypto/*.c
 ./scripts/ci-check.sh --fast      # tier-1 subset for tight pre-push loops (DATA + MEDIA + ASan, ~5s with ccache hit)
 ./scripts/ci-check.sh --clean     # wipe build dirs first
 ```
+
+In addition to the seven canonical profiles, CI compiles the advanced video
+intersection, FEC with receiver NACK and automatic PLI disabled, and fixed-rate
+FEC with video pacing disabled. Each check writes a log under
+`.cache/ci/logs/`; the final 100 lines are replayed on failure instead of being
+discarded.

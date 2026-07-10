@@ -25,6 +25,7 @@
  */
 
 #include "nanortc.h"
+#include "nano_rtc_internal.h"
 #include "nano_test.h"
 #include <string.h>
 
@@ -36,6 +37,165 @@
 /* The library uses a 64 KB+ struct on full media; keep one static instance
  * to avoid stack-overflow on small CI runners. */
 static nanortc_t g_rtc;
+
+/* Stage one output that has no managed backing storage. This is useful for
+ * advancing the public output cursor without coupling cursor-wrap tests to a
+ * particular protocol producer. */
+static void enqueue_unmanaged_event(nanortc_t *rtc)
+{
+    uint16_t slot = rtc->out_tail & (NANORTC_OUT_QUEUE_SIZE - 1);
+    memset(&rtc->out_queue[slot], 0, sizeof(rtc->out_queue[slot]));
+    rtc->out_queue[slot].type = NANORTC_OUTPUT_EVENT;
+    rtc->out_tail++;
+}
+
+/* ================================================================
+ * Shared transient TX slot lifetime
+ * ================================================================ */
+
+TEST(test_tx_slot_burst_has_independent_payloads_and_exact_release)
+{
+    nanortc_t *rtc = &g_rtc;
+    memset(rtc, 0, sizeof(*rtc));
+
+    nanortc_addr_t dest;
+    memset(&dest, 0, sizeof(dest));
+    dest.family = 4;
+    dest.port = 5000;
+
+    uint8_t slots[NANORTC_TX_SLOT_COUNT];
+    for (uint8_t i = 0; i < NANORTC_TX_SLOT_COUNT; i++) {
+        uint8_t *buf = NULL;
+        ASSERT_OK(nano_rtc_tx_slot_acquire(rtc, &buf, &slots[i]));
+        ASSERT_TRUE(buf == rtc->tx_slots[slots[i]]);
+        buf[0] = (uint8_t)(0x30u + i);
+        ASSERT_OK(nano_rtc_tx_slot_commit(rtc, slots[i], 1, &dest, false));
+        ASSERT_TRUE((rtc->tx_slots_in_use & (UINT32_C(1) << slots[i])) != 0u);
+    }
+
+    /* The owned ring, rather than the larger generic output queue, applies
+     * backpressure once all transient producers have an in-flight packet. */
+    uint8_t *blocked_buf = NULL;
+    uint8_t blocked_slot = 0;
+    ASSERT_EQ(nano_rtc_tx_slot_acquire(rtc, &blocked_buf, &blocked_slot), NANORTC_ERR_WOULD_BLOCK);
+
+    for (uint8_t i = 0; i < NANORTC_TX_SLOT_COUNT; i++) {
+        nanortc_output_t out;
+        ASSERT_OK(nanortc_poll_output(rtc, &out));
+        ASSERT_EQ(out.type, NANORTC_OUTPUT_TRANSMIT);
+        ASSERT_EQ(out.transmit.len, 1u);
+        ASSERT_EQ(out.transmit.data[0], (uint8_t)(0x30u + i));
+
+        /* poll_output has advanced out_head to this slot's exact free_at.
+         * Earlier slots are released; later slots remain protected. */
+        ASSERT_TRUE((rtc->tx_slots_in_use & (UINT32_C(1) << slots[i])) == 0u);
+        for (uint8_t j = (uint8_t)(i + 1u); j < NANORTC_TX_SLOT_COUNT; j++) {
+            ASSERT_TRUE((rtc->tx_slots_in_use & (UINT32_C(1) << slots[j])) != 0u);
+        }
+    }
+    ASSERT_EQ(rtc->tx_slots_in_use, 0u);
+}
+
+TEST(test_managed_backing_release_matches_cursor_across_u16_wrap)
+{
+    nanortc_t *rtc = &g_rtc;
+    memset(rtc, 0, sizeof(*rtc));
+
+    /* Two queue entries straddle 0xffff -> 0. Each managed ring has one slot
+     * due at each cursor. The first dequeue must not release the later slot. */
+    rtc->out_head = UINT16_MAX;
+    rtc->out_tail = UINT16_MAX;
+    enqueue_unmanaged_event(rtc); /* free_at == 0 */
+    enqueue_unmanaged_event(rtc); /* free_at == 1 */
+
+    rtc->tx_slots_in_use = UINT32_C(1);
+    rtc->tx_slot_free_at[0] = 0;
+#if NANORTC_TX_SLOT_COUNT > 1
+    rtc->tx_slots_in_use |= UINT32_C(2);
+    rtc->tx_slot_free_at[1] = 1;
+#endif
+
+#if NANORTC_FEATURE_VIDEO
+    rtc->nack_retx_in_use = UINT64_C(1);
+    rtc->nack_retx_free_at[0] = 0;
+#if NANORTC_NACK_RETX_RING > 1
+    rtc->nack_retx_in_use |= UINT64_C(2);
+    rtc->nack_retx_free_at[1] = 1;
+#endif
+#if NANORTC_FEATURE_VIDEO_FEC
+    rtc->fec_tx_in_use = UINT64_C(1);
+    rtc->fec_tx_free_at[0] = 0;
+#if NANORTC_FEC_TX_RING > 1
+    rtc->fec_tx_in_use |= UINT64_C(2);
+    rtc->fec_tx_free_at[1] = 1;
+#endif
+#endif
+#endif
+
+    nanortc_output_t out;
+    ASSERT_OK(nanortc_poll_output(rtc, &out));
+    ASSERT_EQ(rtc->out_head, 0u);
+    ASSERT_TRUE((rtc->tx_slots_in_use & UINT32_C(1)) == 0u);
+#if NANORTC_TX_SLOT_COUNT > 1
+    ASSERT_TRUE((rtc->tx_slots_in_use & UINT32_C(2)) != 0u);
+#endif
+#if NANORTC_FEATURE_VIDEO
+    ASSERT_TRUE((rtc->nack_retx_in_use & UINT64_C(1)) == 0u);
+#if NANORTC_NACK_RETX_RING > 1
+    ASSERT_TRUE((rtc->nack_retx_in_use & UINT64_C(2)) != 0u);
+#endif
+#if NANORTC_FEATURE_VIDEO_FEC
+    ASSERT_TRUE((rtc->fec_tx_in_use & UINT64_C(1)) == 0u);
+#if NANORTC_FEC_TX_RING > 1
+    ASSERT_TRUE((rtc->fec_tx_in_use & UINT64_C(2)) != 0u);
+#endif
+#endif
+#endif
+
+    ASSERT_OK(nanortc_poll_output(rtc, &out));
+    ASSERT_EQ(rtc->out_head, 1u);
+    ASSERT_EQ(rtc->tx_slots_in_use, 0u);
+#if NANORTC_FEATURE_VIDEO
+    ASSERT_EQ(rtc->nack_retx_in_use, 0u);
+#if NANORTC_FEATURE_VIDEO_FEC
+    ASSERT_EQ(rtc->fec_tx_in_use, 0u);
+#endif
+#endif
+}
+
+TEST(test_tx_slot_reusable_after_more_than_32768_outputs)
+{
+    nanortc_t *rtc = &g_rtc;
+    memset(rtc, 0, sizeof(*rtc));
+
+    nanortc_addr_t dest;
+    memset(&dest, 0, sizeof(dest));
+    dest.family = 4;
+
+    uint8_t *buf = NULL;
+    uint8_t original_slot = 0;
+    ASSERT_OK(nano_rtc_tx_slot_acquire(rtc, &buf, &original_slot));
+    buf[0] = 0xA5;
+    ASSERT_OK(nano_rtc_tx_slot_commit(rtc, original_slot, 1, &dest, false));
+
+    nanortc_output_t out;
+    ASSERT_OK(nanortc_poll_output(rtc, &out));
+    ASSERT_TRUE((rtc->tx_slots_in_use & (UINT32_C(1) << original_slot)) == 0u);
+
+    /* The former signed-cursor reuse test turns negative at this distance and
+     * permanently strands an idle slot. Busy bits make stale free_at values
+     * irrelevant after the matching dequeue has cleared the bit. */
+    for (uint32_t i = 0; i < UINT32_C(32769); i++) {
+        enqueue_unmanaged_event(rtc);
+        ASSERT_OK(nanortc_poll_output(rtc, &out));
+    }
+    ASSERT_TRUE((uint16_t)(rtc->out_head - rtc->tx_slot_free_at[original_slot]) > UINT16_C(32768));
+
+    rtc->tx_slot_cursor = original_slot;
+    uint8_t reacquired_slot = UINT8_MAX;
+    ASSERT_OK(nano_rtc_tx_slot_acquire(rtc, &buf, &reacquired_slot));
+    ASSERT_EQ(reacquired_slot, original_slot);
+}
 
 /* ================================================================
  * Video pkt_ring lifetime (NANORTC_FEATURE_VIDEO)
@@ -248,6 +408,35 @@ TEST(test_turn_lazy_wrap_oversized_payload_drops_silently)
     ASSERT_FAIL(nanortc_poll_output(rtc, &empty));
 }
 
+TEST(test_turn_lazy_wrap_drop_releases_backing_tx_slot)
+{
+    nanortc_t *rtc = &g_rtc;
+    prime_turn_state(rtc);
+
+    static const uint8_t peer[4] = {203, 0, 113, 8};
+    const size_t oversized_len = sizeof(rtc->turn_buf) + 1u;
+    ASSERT_TRUE(oversized_len <= sizeof(rtc->tx_slots[0]));
+    memset(rtc->tx_slots[0], 0xDD, oversized_len);
+
+    enqueue_turn_wrapped(rtc, rtc->tx_slots[0], oversized_len, peer, 5004);
+    rtc->tx_slots_in_use = UINT32_C(1);
+    rtc->tx_slot_free_at[0] = rtc->out_tail;
+
+    /* The only queued entry is dropped internally, so poll returns NO_DATA.
+     * Its backing slot must nevertheless be released at the skipped cursor. */
+    nanortc_output_t out;
+    ASSERT_EQ(nanortc_poll_output(rtc, &out), NANORTC_ERR_NO_DATA);
+    ASSERT_EQ(rtc->stats_wrap_dropped, 1u);
+    ASSERT_TRUE((rtc->tx_slots_in_use & UINT32_C(1)) == 0u);
+
+    rtc->tx_slot_cursor = 0;
+    uint8_t *buf = NULL;
+    uint8_t slot = UINT8_MAX;
+    ASSERT_OK(nano_rtc_tx_slot_acquire(rtc, &buf, &slot));
+    ASSERT_EQ(slot, 0u);
+    ASSERT_TRUE(buf == rtc->tx_slots[0]);
+}
+
 #endif /* NANORTC_FEATURE_TURN */
 
 /* ================================================================
@@ -255,6 +444,9 @@ TEST(test_turn_lazy_wrap_oversized_payload_drops_silently)
  * ================================================================ */
 
 TEST_MAIN_BEGIN("test_output_lifetime")
+RUN(test_tx_slot_burst_has_independent_payloads_and_exact_release);
+RUN(test_managed_backing_release_matches_cursor_across_u16_wrap);
+RUN(test_tx_slot_reusable_after_more_than_32768_outputs);
 #if NANORTC_FEATURE_VIDEO
 RUN(test_pkt_ring_drain_before_wrap_keeps_pointers_valid);
 RUN(test_pkt_ring_overrun_aliases_pre_drain_pointers);
@@ -262,5 +454,6 @@ RUN(test_pkt_ring_overrun_aliases_pre_drain_pointers);
 #if NANORTC_FEATURE_TURN
 RUN(test_turn_lazy_wrap_rewrites_turn_buf_between_polls);
 RUN(test_turn_lazy_wrap_oversized_payload_drops_silently);
+RUN(test_turn_lazy_wrap_drop_releases_backing_tx_slot);
 #endif
 TEST_MAIN_END

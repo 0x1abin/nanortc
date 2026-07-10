@@ -583,6 +583,81 @@ TEST(test_bwe_runtime_bounds_clamp_on_feedback)
     ASSERT_TRUE(bwe.estimated_bitrate >= 200000);
 }
 
+TEST(test_bwe_set_bounds_null)
+{
+    ASSERT_EQ(bwe_set_bounds(NULL, 0, 0), NANORTC_ERR_INVALID_PARAM);
+}
+
+TEST(test_bwe_set_bounds_expands_defaults_before_validation)
+{
+    nano_bwe_t bwe;
+    ASSERT_OK(bwe_init(&bwe));
+    ASSERT_OK(bwe_set_bounds(&bwe, 100000, 1500000));
+
+    bwe.estimated_bitrate = 900000;
+    bwe.prev_event_bitrate = 800000;
+
+    /* min=3 Mbps with max=0 means max=the 2 Mbps compile-time default. */
+    ASSERT_EQ(bwe_set_bounds(&bwe, 3000000, 0), NANORTC_ERR_INVALID_PARAM);
+    ASSERT_EQ(bwe.runtime_min_bps, 100000u);
+    ASSERT_EQ(bwe.runtime_max_bps, 1500000u);
+    ASSERT_EQ(bwe.estimated_bitrate, 900000u);
+    ASSERT_EQ(bwe.prev_event_bitrate, 800000u);
+
+    /* min=0 similarly expands to the default minimum before comparison. */
+    ASSERT_EQ(bwe_set_bounds(&bwe, 0, NANORTC_BWE_MIN_BITRATE - 1), NANORTC_ERR_INVALID_PARAM);
+    ASSERT_EQ(bwe.runtime_min_bps, 100000u);
+    ASSERT_EQ(bwe.runtime_max_bps, 1500000u);
+}
+
+TEST(test_bwe_set_bounds_clamps_estimate_and_event_baseline)
+{
+    nano_bwe_t bwe;
+    ASSERT_OK(bwe_init(&bwe));
+
+    bwe.estimated_bitrate = 2000000;
+    bwe.prev_event_bitrate = 100000;
+    ASSERT_OK(bwe_set_bounds(&bwe, 400000, 800000));
+    ASSERT_EQ(bwe.estimated_bitrate, 800000u);
+    ASSERT_EQ(bwe.prev_event_bitrate, 400000u);
+}
+
+TEST(test_bwe_set_initial_bitrate_clamps_to_effective_bounds)
+{
+    nano_bwe_t bwe;
+    ASSERT_OK(bwe_init(&bwe));
+    ASSERT_OK(bwe_set_bounds(&bwe, 400000, 800000));
+
+    ASSERT_OK(bwe_set_initial_bitrate(&bwe, 100000));
+    ASSERT_EQ(bwe.estimated_bitrate, 400000u);
+    ASSERT_EQ(bwe.prev_event_bitrate, 400000u);
+
+    ASSERT_OK(bwe_set_initial_bitrate(&bwe, 1200000));
+    ASSERT_EQ(bwe.estimated_bitrate, 800000u);
+    ASSERT_EQ(bwe.prev_event_bitrate, 800000u);
+
+    /* Zero selects the default initial bitrate, then clamps it to 400 kbps. */
+    ASSERT_OK(bwe_set_initial_bitrate(&bwe, 0));
+    ASSERT_EQ(bwe.estimated_bitrate, 400000u);
+    ASSERT_EQ(bwe.prev_event_bitrate, 400000u);
+}
+
+TEST(test_bwe_set_initial_bitrate_is_noop_after_feedback)
+{
+    nano_bwe_t bwe;
+    ASSERT_OK(bwe_init(&bwe));
+
+    uint8_t buf[32];
+    size_t plen = build_remb(buf, sizeof(buf), 0, 700000, 0);
+    ASSERT_OK(bwe_on_rtcp_feedback(&bwe, buf, plen, 1000));
+    uint32_t estimate = bwe.estimated_bitrate;
+    uint32_t event_baseline = bwe.prev_event_bitrate;
+
+    ASSERT_OK(bwe_set_initial_bitrate(&bwe, 100000));
+    ASSERT_EQ(bwe.estimated_bitrate, estimate);
+    ASSERT_EQ(bwe.prev_event_bitrate, event_baseline);
+}
+
 TEST(test_bwe_runtime_event_threshold_tighter)
 {
     nano_bwe_t bwe;
@@ -728,6 +803,11 @@ RUN(test_bwe_twcc_loss_clamps_to_min);
 RUN(test_bwe_twcc_saturates_over_256);
 /* Runtime setters (PR-4) */
 RUN(test_bwe_runtime_bounds_clamp_on_feedback);
+RUN(test_bwe_set_bounds_null);
+RUN(test_bwe_set_bounds_expands_defaults_before_validation);
+RUN(test_bwe_set_bounds_clamps_estimate_and_event_baseline);
+RUN(test_bwe_set_initial_bitrate_clamps_to_effective_bounds);
+RUN(test_bwe_set_initial_bitrate_is_noop_after_feedback);
 RUN(test_bwe_runtime_event_threshold_tighter);
 RUN(test_bwe_runtime_event_threshold_looser);
 /* REMB upward-recovery limitation (issue #71) */

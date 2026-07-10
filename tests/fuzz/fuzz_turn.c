@@ -80,7 +80,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
             memcpy(turn.last_txid, data + 8, STUN_TXID_SIZE);
         }
 
-        turn_handle_response(&turn, data, size, &fuzz_crypto);
+        turn_handle_response(&turn, 0, data, size, &fuzz_crypto);
     }
 
     return 0;

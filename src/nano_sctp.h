@@ -251,6 +251,9 @@ int nsctp_handle_data(nano_sctp_t *sctp, const uint8_t *data, size_t len);
 /** Poll for outgoing SCTP packet (to be DTLS-encrypted). */
 int nsctp_poll_output(nano_sctp_t *sctp, uint8_t *buf, size_t buf_len, size_t *out_len);
 
+/** True when poll_output can produce a queued response or unsent DATA chunk. */
+bool nsctp_has_pending_output(const nano_sctp_t *sctp);
+
 /** Enqueue application data for transmission. */
 int nsctp_send(nano_sctp_t *sctp, uint16_t stream_id, uint32_t ppid, const uint8_t *data,
                size_t len);

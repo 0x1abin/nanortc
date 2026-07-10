@@ -12,11 +12,9 @@
  *   - TURN refresh                 → result tracks turn.refresh_at_ms.
  *   - Multiple subsystems          → result is the min over all sources.
  *
- * SCTP and RTCP cadences are exercised indirectly: the SCTP path needs
- * a fully established association which is too heavy for a unit test.
- * The aggregator's contract for those is identical to the others (read
- * `*_next_timeout_ms()`, take the min) and is covered by the structural
- * tests below — adding plumbing-only test cases would be redundant.
+ * Pending DTLS/SCTP/DCEP output is also covered: retained protocol work wakes
+ * immediately once it can be pumped, while a pre-association DCEP OPEN does
+ * not spin the event loop before SCTP is established.
  *
  * SPDX-License-Identifier: MIT
  */
@@ -66,6 +64,45 @@ TEST(test_next_timeout_dtls_handshake_caps_at_min_poll)
     ASSERT_EQ(out, NANORTC_MIN_POLL_INTERVAL_MS);
 }
 
+#if NANORTC_FEATURE_DATACHANNEL
+TEST(test_next_timeout_pending_dtls_and_sctp_output_are_immediate)
+{
+    nanortc_t *rtc = &g_rtc;
+    memset(rtc, 0, sizeof(*rtc));
+    rtc->ice.state = NANORTC_ICE_STATE_FAILED;
+
+    rtc->dtls.out_len = 1u;
+    uint32_t out = 99u;
+    ASSERT_OK(nanortc_next_timeout_ms(rtc, 1000u, &out));
+    ASSERT_EQ(out, 0u);
+
+    rtc->dtls.out_len = 0u;
+    rtc->sctp.state = NANORTC_SCTP_STATE_COOKIE_WAIT;
+    rtc->sctp.out_tail = 1u;
+    out = 99u;
+    ASSERT_OK(nanortc_next_timeout_ms(rtc, 1000u, &out));
+    ASSERT_EQ(out, 0u);
+}
+
+TEST(test_next_timeout_dcep_waits_for_sctp_established)
+{
+    nanortc_t *rtc = &g_rtc;
+    memset(rtc, 0, sizeof(*rtc));
+    rtc->ice.state = NANORTC_ICE_STATE_FAILED;
+    rtc->datachannel.has_output = true;
+    rtc->datachannel.out_len = 1u;
+
+    uint32_t out = 0u;
+    ASSERT_OK(nanortc_next_timeout_ms(rtc, 1000u, &out));
+    ASSERT_EQ(out, IDLE_CAP_MS);
+
+    rtc->sctp.state = NANORTC_SCTP_STATE_ESTABLISHED;
+    out = 99u;
+    ASSERT_OK(nanortc_next_timeout_ms(rtc, 1000u, &out));
+    ASSERT_EQ(out, 0u);
+}
+#endif
+
 TEST(test_next_timeout_ice_controlling_uses_next_check_ms)
 {
     nanortc_t *rtc = &g_rtc;
@@ -95,6 +132,35 @@ TEST(test_next_timeout_ice_check_already_due_returns_zero)
     ASSERT_EQ(out, 0u);
 }
 
+TEST(test_next_timeout_ice_check_future_across_u32_wrap)
+{
+    nanortc_t *rtc = &g_rtc;
+    memset(rtc, 0, sizeof(*rtc));
+
+    rtc->ice.is_controlling = true;
+    rtc->ice.state = NANORTC_ICE_STATE_CHECKING;
+    rtc->ice.next_check_ms = 50;
+
+    /* From UINT32_MAX-49 to 50 is exactly 100 ms modulo 2^32. */
+    uint32_t out = 0;
+    ASSERT_OK(nanortc_next_timeout_ms(rtc, UINT32_MAX - 49u, &out));
+    ASSERT_EQ(out, 100u);
+}
+
+TEST(test_next_timeout_ice_check_overdue_across_u32_wrap)
+{
+    nanortc_t *rtc = &g_rtc;
+    memset(rtc, 0, sizeof(*rtc));
+
+    rtc->ice.is_controlling = true;
+    rtc->ice.state = NANORTC_ICE_STATE_CHECKING;
+    rtc->ice.next_check_ms = UINT32_MAX - 20u;
+
+    uint32_t out = 99;
+    ASSERT_OK(nanortc_next_timeout_ms(rtc, 10, &out));
+    ASSERT_EQ(out, 0u);
+}
+
 TEST(test_next_timeout_ice_consent_picks_smaller_of_send_and_expiry)
 {
     nanortc_t *rtc = &g_rtc;
@@ -112,6 +178,20 @@ TEST(test_next_timeout_ice_consent_picks_smaller_of_send_and_expiry)
     ASSERT_EQ(out, 500u); /* expiry wins */
 }
 
+TEST(test_next_timeout_ice_consent_future_across_u32_wrap)
+{
+    nanortc_t *rtc = &g_rtc;
+    memset(rtc, 0, sizeof(*rtc));
+
+    rtc->ice.state = NANORTC_ICE_STATE_CONNECTED;
+    rtc->ice.consent_next_ms = 50;    /* 150 ms after now, across wrap */
+    rtc->ice.consent_expiry_ms = 100; /* 200 ms after now */
+
+    uint32_t out = 0;
+    ASSERT_OK(nanortc_next_timeout_ms(rtc, UINT32_MAX - 99u, &out));
+    ASSERT_EQ(out, 150u);
+}
+
 TEST(test_next_timeout_stun_srflx_retry)
 {
     nanortc_t *rtc = &g_rtc;
@@ -125,6 +205,36 @@ TEST(test_next_timeout_stun_srflx_retry)
     uint32_t out = 0;
     ASSERT_OK(nanortc_next_timeout_ms(rtc, 2000, &out));
     ASSERT_EQ(out, 200u);
+}
+
+TEST(test_next_timeout_stun_srflx_future_across_u32_wrap)
+{
+    nanortc_t *rtc = &g_rtc;
+    memset(rtc, 0, sizeof(*rtc));
+
+    rtc->stun_server_configured = true;
+    rtc->srflx_discovered = false;
+    rtc->stun_retries = 1;
+    rtc->stun_retry_at_ms = 25;
+
+    uint32_t out = 0;
+    ASSERT_OK(nanortc_next_timeout_ms(rtc, UINT32_MAX - 24u, &out));
+    ASSERT_EQ(out, 50u);
+}
+
+TEST(test_next_timeout_stun_srflx_overdue_across_u32_wrap)
+{
+    nanortc_t *rtc = &g_rtc;
+    memset(rtc, 0, sizeof(*rtc));
+
+    rtc->stun_server_configured = true;
+    rtc->srflx_discovered = false;
+    rtc->stun_retries = 1;
+    rtc->stun_retry_at_ms = UINT32_MAX - 24u;
+
+    uint32_t out = 99;
+    ASSERT_OK(nanortc_next_timeout_ms(rtc, 25, &out));
+    ASSERT_EQ(out, 0u);
 }
 
 TEST(test_next_timeout_stun_srflx_first_attempt_immediate)
@@ -190,6 +300,34 @@ TEST(test_next_timeout_turn_allocated_picks_min_refresh)
     ASSERT_EQ(out, 30000u);
 }
 
+TEST(test_next_timeout_turn_refresh_future_across_u32_wrap)
+{
+    nanortc_t *rtc = &g_rtc;
+    memset(rtc, 0, sizeof(*rtc));
+
+    rtc->turn.configured = true;
+    rtc->turn.state = NANORTC_TURN_ALLOCATED;
+    rtc->turn.refresh_at_ms = 20;
+
+    uint32_t out = 0;
+    ASSERT_OK(nanortc_next_timeout_ms(rtc, UINT32_MAX - 9u, &out));
+    ASSERT_EQ(out, 30u);
+}
+
+TEST(test_next_timeout_turn_refresh_overdue_across_u32_wrap)
+{
+    nanortc_t *rtc = &g_rtc;
+    memset(rtc, 0, sizeof(*rtc));
+
+    rtc->turn.configured = true;
+    rtc->turn.state = NANORTC_TURN_ALLOCATED;
+    rtc->turn.refresh_at_ms = UINT32_MAX - 9u;
+
+    uint32_t out = 99;
+    ASSERT_OK(nanortc_next_timeout_ms(rtc, 20, &out));
+    ASSERT_EQ(out, 0u);
+}
+
 TEST(test_next_timeout_turn_min_across_subsystems)
 {
     nanortc_t *rtc = &g_rtc;
@@ -221,6 +359,7 @@ TEST(test_next_timeout_rtcp_period_after_srtp_ready)
 
     rtc->srtp.ready = true;
     rtc->last_rtcp_send_ms = 0;
+    rtc->last_rtcp_send_valid = true;
 
     /* now=2000 → since last SR=2000, RTCP period default 5000 →
      * 3000 ms left. */
@@ -236,6 +375,7 @@ TEST(test_next_timeout_rtcp_overdue_returns_zero)
 
     rtc->srtp.ready = true;
     rtc->last_rtcp_send_ms = 0;
+    rtc->last_rtcp_send_valid = true;
 
     /* now=10000 → since=10000 > RTCP period → fire immediately. */
     uint32_t out = 99;
@@ -243,25 +383,103 @@ TEST(test_next_timeout_rtcp_overdue_returns_zero)
     ASSERT_EQ(out, 0u);
 }
 
+TEST(test_next_timeout_rtcp_first_sr_is_immediate_when_timestamp_invalid)
+{
+    nanortc_t *rtc = &g_rtc;
+    memset(rtc, 0, sizeof(*rtc));
+
+    rtc->srtp.ready = true;
+    rtc->last_rtcp_send_ms = 1234; /* stale storage must be ignored */
+    rtc->last_rtcp_send_valid = false;
+
+    uint32_t out = 99;
+    ASSERT_OK(nanortc_next_timeout_ms(rtc, 2000, &out));
+    ASSERT_EQ(out, 0u);
+}
+
+TEST(test_next_timeout_rtcp_period_across_u32_wrap)
+{
+    nanortc_t *rtc = &g_rtc;
+    memset(rtc, 0, sizeof(*rtc));
+
+    rtc->srtp.ready = true;
+    rtc->last_rtcp_send_ms = UINT32_MAX - 1999u;
+    rtc->last_rtcp_send_valid = true;
+
+    /* 3000 ms elapsed modulo 2^32, leaving the rest of the SR period. */
+    uint32_t out = 0;
+    ASSERT_OK(nanortc_next_timeout_ms(rtc, 1000, &out));
+    ASSERT_EQ(out, NANORTC_RTCP_INTERVAL_MS - 3000u);
+}
+
+#if NANORTC_FEATURE_VIDEO && NANORTC_FEATURE_VIDEO_PACING
+
+TEST(test_next_timeout_pacer_future_across_u32_wrap)
+{
+    nanortc_t *rtc = &g_rtc;
+    memset(rtc, 0, sizeof(*rtc));
+
+    rtc->pacer.head = 0;
+    rtc->pacer.tail = 1;
+    rtc->pacer.next_release_ms = 25;
+
+    uint32_t out = 0;
+    ASSERT_OK(nanortc_next_timeout_ms(rtc, UINT32_MAX - 24u, &out));
+    ASSERT_EQ(out, 50u);
+}
+
+TEST(test_next_timeout_pacer_overdue_across_u32_wrap)
+{
+    nanortc_t *rtc = &g_rtc;
+    memset(rtc, 0, sizeof(*rtc));
+
+    rtc->pacer.head = 0;
+    rtc->pacer.tail = 1;
+    rtc->pacer.next_release_ms = UINT32_MAX - 24u;
+
+    uint32_t out = 99;
+    ASSERT_OK(nanortc_next_timeout_ms(rtc, 25, &out));
+    ASSERT_EQ(out, 0u);
+}
+
+#endif /* NANORTC_FEATURE_VIDEO && NANORTC_FEATURE_VIDEO_PACING */
+
 #endif /* NANORTC_HAVE_MEDIA_TRANSPORT */
 
 TEST_MAIN_BEGIN("test_next_timeout")
 RUN(test_next_timeout_idle_returns_cap);
 RUN(test_next_timeout_null_args_reject);
 RUN(test_next_timeout_dtls_handshake_caps_at_min_poll);
+#if NANORTC_FEATURE_DATACHANNEL
+RUN(test_next_timeout_pending_dtls_and_sctp_output_are_immediate);
+RUN(test_next_timeout_dcep_waits_for_sctp_established);
+#endif
 RUN(test_next_timeout_ice_controlling_uses_next_check_ms);
 RUN(test_next_timeout_ice_check_already_due_returns_zero);
+RUN(test_next_timeout_ice_check_future_across_u32_wrap);
+RUN(test_next_timeout_ice_check_overdue_across_u32_wrap);
 RUN(test_next_timeout_ice_consent_picks_smaller_of_send_and_expiry);
+RUN(test_next_timeout_ice_consent_future_across_u32_wrap);
 RUN(test_next_timeout_stun_srflx_retry);
+RUN(test_next_timeout_stun_srflx_future_across_u32_wrap);
+RUN(test_next_timeout_stun_srflx_overdue_across_u32_wrap);
 RUN(test_next_timeout_stun_srflx_first_attempt_immediate);
 RUN(test_next_timeout_stun_srflx_done_no_retry);
 #if NANORTC_FEATURE_TURN
 RUN(test_next_timeout_turn_idle_state_returns_zero);
 RUN(test_next_timeout_turn_allocated_picks_min_refresh);
+RUN(test_next_timeout_turn_refresh_future_across_u32_wrap);
+RUN(test_next_timeout_turn_refresh_overdue_across_u32_wrap);
 RUN(test_next_timeout_turn_min_across_subsystems);
 #endif
 #if NANORTC_HAVE_MEDIA_TRANSPORT
 RUN(test_next_timeout_rtcp_period_after_srtp_ready);
 RUN(test_next_timeout_rtcp_overdue_returns_zero);
+RUN(test_next_timeout_rtcp_first_sr_is_immediate_when_timestamp_invalid);
+RUN(test_next_timeout_rtcp_period_across_u32_wrap);
+#if NANORTC_FEATURE_VIDEO && NANORTC_FEATURE_VIDEO_PACING
+RUN(test_next_timeout_pacer_future_across_u32_wrap);
+RUN(test_next_timeout_pacer_overdue_across_u32_wrap);
+#endif
 #endif
 TEST_MAIN_END

@@ -58,6 +58,7 @@ typedef struct nano_rate_window {
     uint32_t cur_bytes;       /**< Bytes added in the current bucket. */
     uint32_t prev_bps;        /**< Bits-per-second from the last completed second. */
     uint16_t prev_fps_q8;     /**< Frames-per-second as Q8.8 from the last completed second. */
+    bool bucket_valid;        /**< True once bucket_start_ms has been initialized. */
 } nano_rate_window_t;
 
 /** Roll the window forward if at least one second has elapsed. */
@@ -119,6 +120,7 @@ typedef struct nano_media {
             bool recv_seq_inited;      /**< First packet seen (recv_last_seq valid). */
             bool recv_lost_pending;    /**< Forward gap seen since last delivered frame. */
             uint32_t recv_last_pli_ms; /**< Last auto-PLI emit time (debounce). */
+            bool recv_last_pli_valid;  /**< True once recv_last_pli_ms has been set. */
 #endif
 #if NANORTC_FEATURE_VIDEO_REORDER
             /** Receive-side reorder buffer (heals reordering before depkt). */

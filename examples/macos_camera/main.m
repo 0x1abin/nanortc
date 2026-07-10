@@ -464,8 +464,17 @@ static void run_event_loop(app_ctx_t *ctx, http_sig_t *sig,
                         continue;
 
                     if (frame.type == 0 && s->audio_mid >= 0) {
-                        nanortc_send_audio(&s->rtc, (uint8_t)s->audio_mid,
-                                           frame.pts_ms, frame.data, frame.len);
+                        int rc = nanortc_send_audio(&s->rtc, (uint8_t)s->audio_mid, frame.pts_ms,
+                                                    frame.data, frame.len);
+                        if (rc == NANORTC_ERR_WOULD_BLOCK) {
+                            nano_session_dispatch(s, &timeout_ms);
+                            rc = nanortc_send_audio(&s->rtc, (uint8_t)s->audio_mid, frame.pts_ms,
+                                                    frame.data, frame.len);
+                        }
+                        if (rc != NANORTC_OK) {
+                            fprintf(stderr, "[audio] frame dropped rc=%d mid=%d\n", rc,
+                                    s->audio_mid);
+                        }
                     } else if (frame.type == 1 && s->video_mid >= 0) {
                         nanortc_send_video(&s->rtc, (uint8_t)s->video_mid,
                                            frame.pts_ms, frame.data, frame.len);

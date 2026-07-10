@@ -18,6 +18,7 @@ BUILD_DIR="build-fuzz"
 CORPUS_DIR="tests/fuzz/corpus"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+LOG_DIR="$BUILD_DIR/fuzz-logs"
 
 cd "$PROJECT_DIR"
 
@@ -25,7 +26,7 @@ cd "$PROJECT_DIR"
 if [ -x /opt/homebrew/opt/llvm/bin/clang ]; then
     CLANG="/opt/homebrew/opt/llvm/bin/clang"
 elif command -v clang >/dev/null 2>&1; then
-    CLANG="clang"
+    CLANG="$(command -v clang)"
 else
     echo "ERROR: clang not found"
     exit 1
@@ -48,38 +49,70 @@ echo ""
 
 # Build fuzz targets
 echo "--- Building fuzz targets ---"
-CC="$CLANG" cmake -B "$BUILD_DIR" \
+# CMake cannot switch compilers in-place.  Drop only the generated fuzz build
+# tree when a previous invocation used a different clang (for example,
+# AppleClang before Homebrew LLVM was installed); corpora live outside it.
+if [ -f "$BUILD_DIR/CMakeCache.txt" ]; then
+    CACHED_CLANG="$(sed -n 's/^CMAKE_C_COMPILER:[^=]*=//p' "$BUILD_DIR/CMakeCache.txt" | head -1)"
+    if [ -n "$CACHED_CLANG" ] && [ "$CACHED_CLANG" != "$CLANG" ]; then
+        echo "Compiler changed ($CACHED_CLANG -> $CLANG); refreshing $BUILD_DIR"
+        cmake -E remove_directory "$BUILD_DIR"
+    fi
+fi
+mkdir -p "$LOG_DIR"
+if CC="$CLANG" cmake -B "$BUILD_DIR" \
     -DNANORTC_BUILD_FUZZ=ON \
     -DNANORTC_BUILD_TESTS=OFF \
     -DNANORTC_FEATURE_DATACHANNEL=ON \
     -DNANORTC_FEATURE_AUDIO=ON \
     -DNANORTC_FEATURE_VIDEO=ON \
     -DNANORTC_FEATURE_H265=ON \
+    -DNANORTC_FEATURE_VIDEO_RATE_CONTROL=ON \
+    -DNANORTC_FEATURE_VIDEO_REORDER=ON \
+    -DNANORTC_FEATURE_VIDEO_NACK_RX=ON \
+    -DNANORTC_FEATURE_VIDEO_FEC=ON \
     -DNANORTC_FEATURE_IPV6=ON \
     -DNANORTC_FEATURE_TURN=ON \
     -DNANORTC_CRYPTO="$CRYPTO" \
     -DCMAKE_C_COMPILER="$CLANG" \
     -DCMAKE_BUILD_TYPE=Debug \
-    2>&1 | tail -5
+    >"$LOG_DIR/configure.log" 2>&1; then
+    tail -5 "$LOG_DIR/configure.log"
+else
+    cat "$LOG_DIR/configure.log"
+    exit 1
+fi
 
-cmake --build "$BUILD_DIR" -j"$(nproc 2>/dev/null || sysctl -n hw.ncpu)" 2>&1 | tail -5
+if cmake --build "$BUILD_DIR" -j"$(nproc 2>/dev/null || sysctl -n hw.ncpu)" \
+    >"$LOG_DIR/build.log" 2>&1; then
+    tail -5 "$LOG_DIR/build.log"
+else
+    cat "$LOG_DIR/build.log"
+    exit 1
+fi
 echo ""
 
-# Create corpus directories
-mkdir -p "$CORPUS_DIR"/{stun,sctp,sdp,rtp,h264,h265,addr,bwe,turn}
-
-# All fuzz targets — kept in sync with .github/workflows/ci.yml
-ALL_TARGETS="fuzz_stun fuzz_sctp fuzz_sdp fuzz_rtp fuzz_h264 fuzz_h265 fuzz_addr fuzz_bwe fuzz_turn"
-
-if [ "$TARGET" != "all" ]; then
+# Discover what CMake actually built so a newly-added fuzz_*.c harness is run
+# automatically and feature-gated targets do not need duplicate shell lists.
+mkdir -p "$CORPUS_DIR"
+if [ "$TARGET" = "all" ]; then
+    ALL_TARGETS="$(find "$BUILD_DIR/tests/fuzz" -maxdepth 1 -type f -perm -111 -name 'fuzz_*' \
+        -exec basename {} \; | sort)"
+else
     ALL_TARGETS="$TARGET"
+fi
+
+if [ -z "$ALL_TARGETS" ]; then
+    echo "ERROR: no fuzz harnesses were built"
+    exit 1
 fi
 
 FAIL=0
 for t in $ALL_TARGETS; do
     BINARY="$BUILD_DIR/tests/fuzz/$t"
-    if [ ! -f "$BINARY" ]; then
-        echo "SKIP $t (not built — check feature flags)"
+    if [ ! -x "$BINARY" ]; then
+        echo "FAIL $t (not built or not executable — check the target name and feature flags)"
+        FAIL=1
         continue
     fi
 
@@ -87,15 +120,21 @@ for t in $ALL_TARGETS; do
     CORPUS_NAME="${t#fuzz_}"
     TDIR="$CORPUS_DIR/$CORPUS_NAME"
     mkdir -p "$TDIR"
+    LOG_FILE="$LOG_DIR/$t.log"
 
     echo "--- Running $t for ${DURATION}s ---"
     if "$BINARY" "$TDIR" \
         -max_total_time="$DURATION" \
         -max_len=4096 \
         -print_final_stats=1 \
-        2>&1 | tail -15; then
+        -artifact_prefix="$LOG_DIR/$t-" \
+        >"$LOG_FILE" 2>&1; then
+        tail -15 "$LOG_FILE"
         echo "PASS $t"
     else
+        # Replay the complete failure log. The previous tail pipeline hid the
+        # first sanitizer diagnostic and often omitted the reproducer path.
+        cat "$LOG_FILE"
         echo "FAIL $t"
         FAIL=1
     fi

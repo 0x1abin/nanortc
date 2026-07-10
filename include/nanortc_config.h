@@ -9,10 +9,10 @@
  *
  * This follows the same pattern as MBEDTLS_CONFIG_FILE / FreeRTOSConfig.h.
  *
- * Memory profiles (approximate sizeof(nanortc_t)):
- *   Default DC-only:   ~27 KB
- *   Default DC+Audio:  ~38 KB   (per audio track: ~11 KB jitter buffer)
- *   Default full:      ~108 KB  (+ video pkt_ring + H.264 NAL buffer)
+ * Host sizeof(nanortc_t) CI ceilings (actual 32-bit targets are smaller):
+ *   CORE 20 KiB; DATA 36 KiB; AUDIO_ONLY 48 KiB; DATA+AUDIO 64 KiB;
+ *   MEDIA_ONLY 104 KiB; regular MEDIA/H265/NACK 120 KiB;
+ *   REORDER 140 KiB; FEC/all-advanced 164 KiB.
  *
  *   Minimal embedded (DC-only, no TURN):
  *     NANORTC_FEATURE_TURN 0
@@ -103,6 +103,10 @@
 #define NANORTC_OUT_QUEUE_SIZE CONFIG_NANORTC_OUT_QUEUE_SIZE
 #endif
 
+#if defined(CONFIG_NANORTC_TX_SLOT_COUNT) && !defined(NANORTC_TX_SLOT_COUNT)
+#define NANORTC_TX_SLOT_COUNT CONFIG_NANORTC_TX_SLOT_COUNT
+#endif
+
 #if defined(CONFIG_NANORTC_VIDEO_PKT_RING_SIZE) && !defined(NANORTC_VIDEO_PKT_RING_SIZE)
 #define NANORTC_VIDEO_PKT_RING_SIZE CONFIG_NANORTC_VIDEO_PKT_RING_SIZE
 #endif
@@ -123,8 +127,9 @@
 #define NANORTC_VIDEO_NAL_BUF_SIZE CONFIG_NANORTC_VIDEO_NAL_BUF_SIZE
 #endif
 
-/* Feature flag Kconfig mapping (ESP-IDF booleans) */
-#if defined(IDF_VER) && !defined(NANORTC_FEATURE_DATACHANNEL)
+/* Feature flag Kconfig mapping (ESP-IDF booleans). ESP_PLATFORM is defined by
+ * the component build; IDF_VER keeps compatibility with direct header tests. */
+#if (defined(ESP_PLATFORM) || defined(IDF_VER)) && !defined(NANORTC_FEATURE_DATACHANNEL)
 #ifdef CONFIG_NANORTC_FEATURE_DATACHANNEL
 #define NANORTC_FEATURE_DATACHANNEL 1
 #else
@@ -132,7 +137,7 @@
 #endif
 #endif
 
-#if defined(IDF_VER) && !defined(NANORTC_FEATURE_DC_RELIABLE)
+#if (defined(ESP_PLATFORM) || defined(IDF_VER)) && !defined(NANORTC_FEATURE_DC_RELIABLE)
 #ifdef CONFIG_NANORTC_FEATURE_DC_RELIABLE
 #define NANORTC_FEATURE_DC_RELIABLE 1
 #else
@@ -140,7 +145,7 @@
 #endif
 #endif
 
-#if defined(IDF_VER) && !defined(NANORTC_FEATURE_DC_ORDERED)
+#if (defined(ESP_PLATFORM) || defined(IDF_VER)) && !defined(NANORTC_FEATURE_DC_ORDERED)
 #ifdef CONFIG_NANORTC_FEATURE_DC_ORDERED
 #define NANORTC_FEATURE_DC_ORDERED 1
 #else
@@ -148,7 +153,7 @@
 #endif
 #endif
 
-#if defined(IDF_VER) && !defined(NANORTC_FEATURE_AUDIO)
+#if (defined(ESP_PLATFORM) || defined(IDF_VER)) && !defined(NANORTC_FEATURE_AUDIO)
 #ifdef CONFIG_NANORTC_FEATURE_AUDIO
 #define NANORTC_FEATURE_AUDIO 1
 #else
@@ -156,7 +161,7 @@
 #endif
 #endif
 
-#if defined(IDF_VER) && !defined(NANORTC_FEATURE_VIDEO)
+#if (defined(ESP_PLATFORM) || defined(IDF_VER)) && !defined(NANORTC_FEATURE_VIDEO)
 #ifdef CONFIG_NANORTC_FEATURE_VIDEO
 #define NANORTC_FEATURE_VIDEO 1
 #else
@@ -164,7 +169,7 @@
 #endif
 #endif
 
-#if defined(IDF_VER) && !defined(NANORTC_FEATURE_TURN)
+#if (defined(ESP_PLATFORM) || defined(IDF_VER)) && !defined(NANORTC_FEATURE_TURN)
 #ifdef CONFIG_NANORTC_FEATURE_TURN
 #define NANORTC_FEATURE_TURN 1
 #else
@@ -172,7 +177,7 @@
 #endif
 #endif
 
-#if defined(IDF_VER) && !defined(NANORTC_FEATURE_IPV6)
+#if (defined(ESP_PLATFORM) || defined(IDF_VER)) && !defined(NANORTC_FEATURE_IPV6)
 #ifdef CONFIG_NANORTC_FEATURE_IPV6
 #define NANORTC_FEATURE_IPV6 1
 #else
@@ -180,11 +185,75 @@
 #endif
 #endif
 
-#if defined(IDF_VER) && !defined(NANORTC_FEATURE_H265)
+#if (defined(ESP_PLATFORM) || defined(IDF_VER)) && !defined(NANORTC_FEATURE_H265)
 #ifdef CONFIG_NANORTC_FEATURE_H265
 #define NANORTC_FEATURE_H265 1
 #else
 #define NANORTC_FEATURE_H265 0
+#endif
+#endif
+
+#if (defined(ESP_PLATFORM) || defined(IDF_VER)) && !defined(NANORTC_FEATURE_ICE_SRFLX)
+#ifdef CONFIG_NANORTC_FEATURE_ICE_SRFLX
+#define NANORTC_FEATURE_ICE_SRFLX 1
+#else
+#define NANORTC_FEATURE_ICE_SRFLX 0
+#endif
+#endif
+
+#if (defined(ESP_PLATFORM) || defined(IDF_VER)) && !defined(NANORTC_FEATURE_VIDEO_RATE_CONTROL)
+#ifdef CONFIG_NANORTC_FEATURE_VIDEO_RATE_CONTROL
+#define NANORTC_FEATURE_VIDEO_RATE_CONTROL 1
+#else
+#define NANORTC_FEATURE_VIDEO_RATE_CONTROL 0
+#endif
+#endif
+
+#if (defined(ESP_PLATFORM) || defined(IDF_VER)) && !defined(NANORTC_FEATURE_VIDEO_PACING)
+#ifdef CONFIG_NANORTC_FEATURE_VIDEO_PACING
+#define NANORTC_FEATURE_VIDEO_PACING 1
+#else
+#define NANORTC_FEATURE_VIDEO_PACING 0
+#endif
+#endif
+
+#if (defined(ESP_PLATFORM) || defined(IDF_VER)) && !defined(NANORTC_FEATURE_VIDEO_AUTO_PLI)
+#ifdef CONFIG_NANORTC_FEATURE_VIDEO_AUTO_PLI
+#define NANORTC_FEATURE_VIDEO_AUTO_PLI 1
+#else
+#define NANORTC_FEATURE_VIDEO_AUTO_PLI 0
+#endif
+#endif
+
+#if (defined(ESP_PLATFORM) || defined(IDF_VER)) && !defined(NANORTC_FEATURE_VIDEO_REORDER)
+#ifdef CONFIG_NANORTC_FEATURE_VIDEO_REORDER
+#define NANORTC_FEATURE_VIDEO_REORDER 1
+#else
+#define NANORTC_FEATURE_VIDEO_REORDER 0
+#endif
+#endif
+
+#if (defined(ESP_PLATFORM) || defined(IDF_VER)) && !defined(NANORTC_FEATURE_VIDEO_NACK_RX)
+#ifdef CONFIG_NANORTC_FEATURE_VIDEO_NACK_RX
+#define NANORTC_FEATURE_VIDEO_NACK_RX 1
+#else
+#define NANORTC_FEATURE_VIDEO_NACK_RX 0
+#endif
+#endif
+
+#if (defined(ESP_PLATFORM) || defined(IDF_VER)) && !defined(NANORTC_FEATURE_VIDEO_FEC)
+#ifdef CONFIG_NANORTC_FEATURE_VIDEO_FEC
+#define NANORTC_FEATURE_VIDEO_FEC 1
+#else
+#define NANORTC_FEATURE_VIDEO_FEC 0
+#endif
+#endif
+
+#if (defined(ESP_PLATFORM) || defined(IDF_VER)) && !defined(NANORTC_FEC_ADAPTIVE)
+#ifdef CONFIG_NANORTC_FEC_ADAPTIVE
+#define NANORTC_FEC_ADAPTIVE 1
+#else
+#define NANORTC_FEC_ADAPTIVE 0
 #endif
 #endif
 
@@ -542,6 +611,16 @@
 #define NANORTC_OUT_QUEUE_SIZE 32
 #endif
 
+/** @brief Number of owned transient transmit slots per connection.
+ *
+ * STUN/TURN control, DTLS records, SRTCP feedback and audio RTP are generated
+ * into these slots before their pointers enter out_queue. This prevents two
+ * producers in one tick from aliasing the same scratch buffer. Must be a power
+ * of two in 1..32 and no larger than NANORTC_OUT_QUEUE_SIZE. */
+#ifndef NANORTC_TX_SLOT_COUNT
+#define NANORTC_TX_SLOT_COUNT 4
+#endif
+
 /* NACK retransmit ring: one SRTP-protected packet buffer per slot. Sized
  * independently from OUT_QUEUE_SIZE so IoT targets can shrink the NACK
  * window without starving the output dispatch queue. Must be a power of 2
@@ -594,16 +673,6 @@
 /* RTCP send interval in milliseconds (RFC 3550 §6.2) */
 #ifndef NANORTC_RTCP_INTERVAL_MS
 #define NANORTC_RTCP_INTERVAL_MS 5000
-#endif
-
-/* Persistent scratch for one outbound RTCP feedback packet (PLI/FIR + SRTCP
- * tag). Unlike the SR cadence (timer path, may borrow stun_buf), feedback like
- * auto-PLI is generated *during* receive processing while stun_buf holds the
- * inbound RTP packet, so it needs its own buffer whose lifetime survives until
- * nanortc_poll_output(). 64 B covers PLI (12) + SRTP auth tag + SRTCP index
- * with headroom. */
-#ifndef NANORTC_RTCP_FB_BUF_SIZE
-#define NANORTC_RTCP_FB_BUF_SIZE 64
 #endif
 
 /* ----------------------------------------------------------------
@@ -1044,6 +1113,25 @@ typedef enum {
      + NANORTC_STUN_ATTR_WIRE_SIZE(20))                        /* MESSAGE-INTEGRITY    */
 #endif
 
+/* Owned transient TX slots must fit every producer that uses them. TURN's
+ * authenticated request bound also covers ICE/STUN and SRTCP control packets;
+ * media builds additionally need one complete RTP/SRTP packet. DTLS may be
+ * configured larger than either. Keep the size derived so one tuning knob
+ * cannot silently under-size another protocol. */
+#if NANORTC_HAVE_MEDIA_TRANSPORT
+#define NANORTC_TX_PAYLOAD_MAX_SIZE                                                    \
+    ((NANORTC_MEDIA_BUF_SIZE > NANORTC_TURN_MAX_REQUEST_SIZE) ? NANORTC_MEDIA_BUF_SIZE \
+                                                              : NANORTC_TURN_MAX_REQUEST_SIZE)
+#else
+#define NANORTC_TX_PAYLOAD_MAX_SIZE NANORTC_TURN_MAX_REQUEST_SIZE
+#endif
+
+#ifndef NANORTC_TX_SLOT_SIZE
+#define NANORTC_TX_SLOT_SIZE                                                       \
+    ((NANORTC_DTLS_BUF_SIZE > NANORTC_TX_PAYLOAD_MAX_SIZE) ? NANORTC_DTLS_BUF_SIZE \
+                                                           : NANORTC_TX_PAYLOAD_MAX_SIZE)
+#endif
+
 #if NANORTC_FEATURE_TURN && (NANORTC_TURN_BUF_SIZE < NANORTC_TURN_MAX_REQUEST_SIZE)
 #error \
     "NANORTC_TURN_BUF_SIZE must be >= NANORTC_TURN_MAX_REQUEST_SIZE; the largest authenticated TURN request would otherwise overflow turn_buf"
@@ -1065,6 +1153,21 @@ typedef enum {
 
 #if (NANORTC_OUT_QUEUE_SIZE & (NANORTC_OUT_QUEUE_SIZE - 1)) != 0
 #error "NANORTC_OUT_QUEUE_SIZE must be a power of 2"
+#endif
+
+#if NANORTC_TX_SLOT_COUNT < 1 || NANORTC_TX_SLOT_COUNT > 32 || \
+    (NANORTC_TX_SLOT_COUNT & (NANORTC_TX_SLOT_COUNT - 1)) != 0
+#error "NANORTC_TX_SLOT_COUNT must be a power of two in 1..32"
+#endif
+#if NANORTC_TX_SLOT_COUNT > NANORTC_OUT_QUEUE_SIZE
+#error "NANORTC_TX_SLOT_COUNT must not exceed NANORTC_OUT_QUEUE_SIZE"
+#endif
+#if NANORTC_TX_SLOT_SIZE < NANORTC_DTLS_BUF_SIZE || \
+    NANORTC_TX_SLOT_SIZE < NANORTC_TURN_MAX_REQUEST_SIZE
+#error "NANORTC_TX_SLOT_SIZE must fit DTLS and the largest TURN control request"
+#endif
+#if NANORTC_HAVE_MEDIA_TRANSPORT && NANORTC_TX_SLOT_SIZE < NANORTC_MEDIA_BUF_SIZE
+#error "NANORTC_TX_SLOT_SIZE must fit one complete media packet"
 #endif
 
 #if (NANORTC_VIDEO_PKT_RING_SIZE & (NANORTC_VIDEO_PKT_RING_SIZE - 1)) != 0
@@ -1097,10 +1200,6 @@ typedef enum {
 #if NANORTC_VIDEO_PLI_MIN_INTERVAL_MS < 1
 #error "NANORTC_VIDEO_PLI_MIN_INTERVAL_MS must be >= 1"
 #endif
-#endif
-
-#if NANORTC_HAVE_MEDIA_TRANSPORT && (NANORTC_RTCP_FB_BUF_SIZE < 26)
-#error "NANORTC_RTCP_FB_BUF_SIZE must be >= 26 (RTCP PLI 12 + SRTP tag 10 + SRTCP index 4)"
 #endif
 
 #if NANORTC_FEATURE_VIDEO && NANORTC_FEATURE_VIDEO_FEC
@@ -1189,6 +1288,25 @@ typedef enum {
 
 #if NANORTC_STUN_BUF_SIZE < 128
 #error "NANORTC_STUN_BUF_SIZE must be at least 128"
+#endif
+
+/* Modular uint32_t deadline ordering is unambiguous only for intervals
+ * strictly below half the clock range. Keep every configurable timer inside
+ * that invariant; protocol-derived TURN lifetimes are clamped at runtime. */
+#if NANORTC_ICE_CHECK_INTERVAL_MS > 0x7FFFFFFFu || NANORTC_ICE_CHECK_TIMEOUT_MS > 0x7FFFFFFFu ||   \
+    NANORTC_MIN_POLL_INTERVAL_MS > 0x7FFFFFFFu || NANORTC_ICE_CONSENT_INTERVAL_MS > 0x7FFFFFFFu || \
+    NANORTC_ICE_CONSENT_TIMEOUT_MS > 0x7FFFFFFFu || NANORTC_SCTP_RTO_INITIAL_MS > 0x7FFFFFFFu ||   \
+    NANORTC_SCTP_RTO_MIN_MS > 0x7FFFFFFFu || NANORTC_SCTP_RTO_MAX_MS > 0x7FFFFFFFu ||              \
+    NANORTC_SCTP_HEARTBEAT_INTERVAL_MS > 0x7FFFFFFFu || NANORTC_RTCP_INTERVAL_MS > 0x7FFFFFFFu ||  \
+    NANORTC_RATE_CONTROL_MIN_HOLD_MS > 0x7FFFFFFFu || NANORTC_PACING_MAX_QUEUE_MS > 0x7FFFFFFFu || \
+    NANORTC_VIDEO_PLI_MIN_INTERVAL_MS > 0x7FFFFFFFu ||                                             \
+    NANORTC_VIDEO_REORDER_MAX_WAIT_MS > 0x7FFFFFFFu
+#error "NanoRTC timer intervals must be less than 2^31 milliseconds"
+#endif
+
+#if NANORTC_SCTP_RTO_MIN_MS > NANORTC_SCTP_RTO_INITIAL_MS || \
+    NANORTC_SCTP_RTO_INITIAL_MS > NANORTC_SCTP_RTO_MAX_MS
+#error "SCTP RTO must satisfy MIN <= INITIAL <= MAX"
 #endif
 
 /* When media transport is enabled, the shared scratch buffer is also used

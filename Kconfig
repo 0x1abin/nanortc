@@ -48,6 +48,68 @@ menu "NanoRTC Configuration"
             of code on top of NANORTC_FEATURE_VIDEO. Disabled by default;
             only H.264 is offered when off.
 
+    config NANORTC_FEATURE_VIDEO_RATE_CONTROL
+        bool "Enable adaptive video rate control"
+        default n
+        depends on NANORTC_FEATURE_VIDEO
+        help
+            Enable the capability-ladder controller that converts bandwidth
+            and loss estimates into resolution, frame-rate, and bitrate
+            recommendations. The application remains responsible for applying
+            the recommendation to its encoder.
+
+    config NANORTC_FEATURE_VIDEO_REORDER
+        bool "Enable receive-side video packet reordering"
+        default n
+        depends on NANORTC_FEATURE_VIDEO
+        help
+            Buffer a bounded RTP sequence window before depacketization so
+            benign WiFi/cellular reordering is not mistaken for packet loss.
+            Costs NANORTC_VIDEO_REORDER_SLOTS times
+            NANORTC_MEDIA_BUF_SIZE bytes per video track.
+
+    config NANORTC_FEATURE_VIDEO_NACK_RX
+        bool "Enable receiver-generated video NACK"
+        default n
+        depends on NANORTC_FEATURE_VIDEO
+        help
+            Emit RTCP Generic NACK feedback for missing inbound video packets.
+            This is independent of FEC; pairing it with the reorder buffer
+            gives late packets time to arrive before a retransmit is requested.
+
+    config NANORTC_FEATURE_VIDEO_FEC
+        bool "Enable ULPFEC video protection"
+        default n
+        depends on NANORTC_FEATURE_VIDEO && NANORTC_FEATURE_VIDEO_REORDER
+        help
+            Enable RFC 5109 level-0 forward error correction. The receive path
+            requires the reorder buffer for recovered-packet reinjection, but
+            receiver NACK remains optional.
+
+    config NANORTC_FEC_ADAPTIVE
+        bool "Adapt FEC protection to measured loss"
+        default y
+        depends on NANORTC_FEATURE_VIDEO_FEC
+        help
+            Suppress FEC on clean links and reduce the protection group size as
+            measured loss rises. Disable for a fixed group size.
+
+    config NANORTC_FEATURE_VIDEO_PACING
+        bool "Enable send-side video pacing"
+        default y
+        depends on NANORTC_FEATURE_VIDEO
+        help
+            Meter video fragments out of the packet ring at the estimated path
+            rate instead of emitting each access unit as one UDP burst.
+
+    config NANORTC_FEATURE_VIDEO_AUTO_PLI
+        bool "Automatically request a keyframe after video loss"
+        default y
+        depends on NANORTC_FEATURE_VIDEO
+        help
+            Emit a debounced RTCP PLI when receive-side loss breaks the video
+            reference chain. Disable when the application owns recovery policy.
+
     config NANORTC_FEATURE_IPV6
         bool "Enable IPv6 address support"
         default y
@@ -61,6 +123,14 @@ menu "NanoRTC Configuration"
         help
             Enable TURN relay support for NAT traversal. LAN-only
             deployments can disable to save ~700B RAM + ~13KB code.
+
+    config NANORTC_FEATURE_ICE_SRFLX
+        bool "Enable server-reflexive ICE candidates"
+        default y
+        help
+            Register STUN-discovered server-reflexive addresses as local ICE
+            candidates. Disable only for deployments intentionally restricted
+            to host or TURN relay candidates.
 
     config NANORTC_MAX_DATACHANNELS
         int "Maximum number of DataChannels"
@@ -146,6 +216,17 @@ menu "NanoRTC Configuration"
             Depth of the output event ring buffer. Must be a power of 2.
             8 suffices for DataChannel-only or audio-only builds. 16 covers
             ≤480p H.264 FU-A bursts; override to 32 for 720p/1080p cameras.
+
+    config NANORTC_TX_SLOT_COUNT
+        int "Owned transient transmit slot count"
+        default 4
+        range 1 32
+        help
+            Number of fixed backing buffers shared by STUN/TURN control,
+            DTLS, SRTCP feedback, and audio RTP outputs. Must be a power of
+            two and no larger than NANORTC_OUT_QUEUE_SIZE; compile-time guards
+            reject invalid values. Each slot is sized for the largest enabled
+            DTLS, TURN-control, or media packet.
 
     config NANORTC_VIDEO_PKT_RING_SIZE
         int "Video NACK retransmit ring depth"

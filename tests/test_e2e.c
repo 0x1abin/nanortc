@@ -16,6 +16,8 @@
 #include "nano_turn.h"
 #include "nano_stun.h"
 #include "nano_ice.h"
+#include "nano_rtp.h"
+#include "nano_srtp.h"
 #include "nano_test.h"
 #include "nano_test_config.h"
 #include <string.h>
@@ -36,6 +38,113 @@ static nanortc_config_t e2e_default_config(void)
 #endif
     return cfg;
 }
+
+/* Fail-on-Nth CSPRNG wrapper. The callback deliberately writes the caller's
+ * buffer before reporting failure, so transactional callers must stage their
+ * random values and cannot rely on a failed provider leaving memory untouched.
+ * A non-zero match length counts only requests of that size (used to isolate
+ * the six-byte RTP SSRC/sequence seed from ICE transaction IDs). */
+static int e2e_rng_call_count;
+static int e2e_rng_fail_at;
+static size_t e2e_rng_match_len;
+static bool e2e_rng_failed;
+
+static int e2e_fail_nth_random_bytes(uint8_t *buf, size_t len)
+{
+    bool matches = e2e_rng_match_len == 0u || e2e_rng_match_len == len;
+    if (matches) {
+        e2e_rng_call_count++;
+    }
+    if (buf && len > 0u) {
+        memset(buf, (uint8_t)(0x60u + (uint8_t)e2e_rng_call_count), len);
+    }
+    if (matches && e2e_rng_fail_at > 0 && e2e_rng_call_count == e2e_rng_fail_at) {
+        e2e_rng_failed = true;
+        return -1;
+    }
+    return 0;
+}
+
+static nanortc_crypto_provider_t e2e_crypto_with_failing_rng(void)
+{
+    nanortc_crypto_provider_t provider = *nano_test_crypto();
+    provider.random_bytes = e2e_fail_nth_random_bytes;
+    return provider;
+}
+
+static void e2e_rng_arm(int fail_at, size_t match_len)
+{
+    e2e_rng_call_count = 0;
+    e2e_rng_fail_at = fail_at;
+    e2e_rng_match_len = match_len;
+    e2e_rng_failed = false;
+}
+
+#if NANORTC_HAVE_MEDIA_TRANSPORT
+/* Build a deterministic SRTP endpoint without running ICE/DTLS. This keeps
+ * media receive-path tests focused on RTP/SRTP while still entering through
+ * nanortc_handle_input() and leaving through nanortc_poll_output(). */
+static int e2e_init_direct_srtp_endpoint(nanortc_t *rtc, int is_client)
+{
+    nanortc_config_t cfg = e2e_default_config();
+#if NANORTC_FEATURE_AUDIO
+    cfg.jitter_depth_ms = 0;
+#endif
+    cfg.role = is_client ? NANORTC_ROLE_CONTROLLING : NANORTC_ROLE_CONTROLLED;
+    int rc = nanortc_init(rtc, &cfg);
+    if (rc != NANORTC_OK) {
+        return rc;
+    }
+
+    uint8_t keying_material[60];
+    for (size_t i = 0; i < sizeof(keying_material); i++) {
+        keying_material[i] = (uint8_t)(0x31u + i);
+    }
+    rc = nano_srtp_init(&rtc->srtp, cfg.crypto, is_client);
+    if (rc == NANORTC_OK) {
+        rc = nano_srtp_derive_keys(&rtc->srtp, keying_material, sizeof(keying_material));
+    }
+    if (rc != NANORTC_OK) {
+        nanortc_destroy(rtc);
+    }
+    return rc;
+}
+
+static int e2e_pack_padded_srtp(nanortc_t *sender, nano_rtp_t *rtp, uint32_t timestamp,
+                                const uint8_t *payload, size_t payload_len, uint8_t padding_len,
+                                uint8_t *packet, size_t packet_cap, size_t *wire_len)
+{
+    if (!sender || !rtp || !payload || payload_len == 0u || padding_len == 0u || !packet ||
+        !wire_len || packet_cap < (size_t)padding_len + NANORTC_SRTP_AUTH_TAG_SIZE) {
+        return NANORTC_ERR_INVALID_PARAM;
+    }
+
+    size_t plain_len = 0;
+    size_t rtp_cap = packet_cap - (size_t)padding_len - NANORTC_SRTP_AUTH_TAG_SIZE;
+    int rc = rtp_pack(rtp, timestamp, payload, payload_len, packet, rtp_cap, &plain_len);
+    if (rc != NANORTC_OK) {
+        return rc;
+    }
+
+    packet[0] |= 0x20u; /* RFC 3550 P bit. */
+    memset(packet + plain_len, 0xA5, padding_len);
+    packet[plain_len + padding_len - 1u] = padding_len;
+    return nano_srtp_protect(&sender->srtp, packet, plain_len + padding_len, wire_len);
+}
+#endif /* NANORTC_HAVE_MEDIA_TRANSPORT */
+
+#if NANORTC_FEATURE_VIDEO && NANORTC_FEATURE_VIDEO_FEC && !NANORTC_FEATURE_VIDEO_PACING
+static int e2e_fail_aes_128_cm(const uint8_t key[16], const uint8_t iv[16], const uint8_t *in,
+                               size_t len, uint8_t *out)
+{
+    (void)key;
+    (void)iv;
+    (void)in;
+    (void)len;
+    (void)out;
+    return -1;
+}
+#endif
 
 /*
  * Relay all TRANSMIT outputs from `from` into `to` as received data.
@@ -66,6 +175,35 @@ static int e2e_relay(nanortc_t *from, nanortc_t *to, uint32_t now_ms)
         }
     }
     return relayed;
+}
+
+/* Error-preserving relay used by RNG rollback tests. The regular E2E pump is
+ * intentionally permissive because many legacy lifecycle tests only care
+ * about eventual progress; this helper stops on the exact failing input. */
+static int e2e_relay_checked(nanortc_t *from, nanortc_t *to, uint32_t now_ms)
+{
+    nanortc_output_t out;
+    while (nanortc_poll_output(from, &out) == NANORTC_OK) {
+        if (out.type != NANORTC_OUTPUT_TRANSMIT) {
+            continue;
+        }
+        nanortc_addr_t src;
+        memset(&src, 0, sizeof(src));
+        src.family = 4;
+        src.addr[0] = 192;
+        src.addr[1] = 168;
+        src.addr[2] = 1;
+        src.addr[3] = 1;
+        src.port = 9999;
+        int rc = nanortc_handle_input(to, &(nanortc_input_t){.now_ms = now_ms,
+                                                             .data = out.transmit.data,
+                                                             .len = out.transmit.len,
+                                                             .src = src});
+        if (rc != NANORTC_OK) {
+            return rc;
+        }
+    }
+    return NANORTC_OK;
 }
 
 #if NANORTC_FEATURE_VIDEO && NANORTC_FEATURE_VIDEO_AUTO_PLI && !NANORTC_FEATURE_VIDEO_REORDER
@@ -117,6 +255,10 @@ static int e2e_pump(nanortc_t *a, nanortc_t *b, uint32_t now_ms, int max_rounds)
 {
     int total = 0;
     for (int i = 0; i < max_rounds; i++) {
+        /* A one-slot TX ring may retain the next DTLS/SCTP packet until the
+         * caller drains the current output and supplies another timer tick. */
+        (void)nanortc_handle_input(a, &(nanortc_input_t){.now_ms = now_ms});
+        (void)nanortc_handle_input(b, &(nanortc_input_t){.now_ms = now_ms});
         int ra = e2e_relay(a, b, now_ms);
         int rb = e2e_relay(b, a, now_ms);
         if (ra <= 0 && rb <= 0) {
@@ -151,6 +293,315 @@ TEST(test_e2e_init_pair)
 
     nanortc_destroy(&client);
 }
+
+TEST(test_e2e_init_rng_failure_clears_partial_state)
+{
+    nanortc_t rtc;
+    memset(&rtc, 0xA5, sizeof(rtc));
+    nanortc_crypto_provider_t provider = e2e_crypto_with_failing_rng();
+    nanortc_config_t cfg = e2e_default_config();
+    cfg.crypto = &provider;
+
+    e2e_rng_arm(1, 0u);
+    ASSERT_EQ(nanortc_init(&rtc, &cfg), NANORTC_ERR_CRYPTO);
+    ASSERT_TRUE(e2e_rng_failed);
+    ASSERT_EQ(rtc.config.crypto, NULL);
+    ASSERT_EQ(rtc.ice.tie_breaker, 0u);
+    ASSERT_EQ(rtc.out_head, 0u);
+    ASSERT_EQ(rtc.out_tail, 0u);
+    ASSERT_EQ(rtc.tx_slots_in_use, 0u);
+}
+
+TEST(test_e2e_negotiation_rng_failure_is_transactional)
+{
+    nanortc_crypto_provider_t provider = e2e_crypto_with_failing_rng();
+
+    for (int fail_at = 1; fail_at <= 2; fail_at++) {
+        nanortc_t rtc;
+        nanortc_config_t cfg = e2e_default_config();
+        cfg.crypto = &provider;
+        e2e_rng_arm(0, 0u);
+        ASSERT_OK(nanortc_init(&rtc, &cfg));
+
+        memset(rtc.sdp.local_ufrag, 'S', NANORTC_ICE_UFRAG_LEN);
+        rtc.sdp.local_ufrag[NANORTC_ICE_UFRAG_LEN] = '\0';
+        memset(rtc.sdp.local_pwd, 'P', NANORTC_ICE_PWD_LEN);
+        rtc.sdp.local_pwd[NANORTC_ICE_PWD_LEN] = '\0';
+        memset(rtc.ice.local_ufrag, 'I', NANORTC_ICE_UFRAG_LEN);
+        rtc.ice.local_ufrag[NANORTC_ICE_UFRAG_LEN] = '\0';
+        memset(rtc.ice.local_pwd, 'C', NANORTC_ICE_PWD_LEN);
+        rtc.ice.local_pwd[NANORTC_ICE_PWD_LEN] = '\0';
+        rtc.ice.local_ufrag_len = 3u;
+        rtc.ice.local_pwd_len = 7u;
+
+        nano_sdp_t sdp_before = rtc.sdp;
+        nano_ice_t ice_before = rtc.ice;
+        char offer[2048];
+        size_t offer_len = 123u;
+
+        e2e_rng_arm(fail_at, 0u);
+        ASSERT_EQ(nanortc_create_offer(&rtc, offer, sizeof(offer), &offer_len), NANORTC_ERR_CRYPTO);
+        ASSERT_TRUE(e2e_rng_failed);
+        ASSERT_TRUE(memcmp(&rtc.sdp, &sdp_before, sizeof(sdp_before)) == 0);
+        ASSERT_TRUE(memcmp(&rtc.ice, &ice_before, sizeof(ice_before)) == 0);
+        ASSERT_EQ(rtc.state, NANORTC_STATE_NEW);
+        ASSERT_EQ(rtc.dtls.crypto_ctx, NULL);
+        ASSERT_EQ(offer_len, 123u);
+        nanortc_destroy(&rtc);
+    }
+
+    for (int fail_at = 1; fail_at <= 2; fail_at++) {
+        nanortc_t rtc;
+        nanortc_config_t cfg = e2e_default_config();
+        cfg.crypto = &provider;
+        e2e_rng_arm(0, 0u);
+        ASSERT_OK(nanortc_init(&rtc, &cfg));
+
+        memset(rtc.sdp.local_ufrag, 'A', NANORTC_ICE_UFRAG_LEN);
+        rtc.sdp.local_ufrag[NANORTC_ICE_UFRAG_LEN] = '\0';
+        memset(rtc.ice.local_pwd, 'B', NANORTC_ICE_PWD_LEN);
+        rtc.ice.local_pwd[NANORTC_ICE_PWD_LEN] = '\0';
+        rtc.ice.local_pwd_len = 9u;
+        nano_sdp_t sdp_before = rtc.sdp;
+        nano_ice_t ice_before = rtc.ice;
+        char answer[2048];
+        size_t answer_len = 456u;
+
+        e2e_rng_arm(fail_at, 0u);
+        ASSERT_EQ(nanortc_accept_offer(&rtc, "not parsed on RNG failure", answer, sizeof(answer),
+                                       &answer_len),
+                  NANORTC_ERR_CRYPTO);
+        ASSERT_TRUE(e2e_rng_failed);
+        ASSERT_TRUE(memcmp(&rtc.sdp, &sdp_before, sizeof(sdp_before)) == 0);
+        ASSERT_TRUE(memcmp(&rtc.ice, &ice_before, sizeof(ice_before)) == 0);
+        ASSERT_EQ(rtc.state, NANORTC_STATE_NEW);
+        ASSERT_EQ(rtc.dtls.crypto_ctx, NULL);
+        ASSERT_EQ(answer_len, 456u);
+        nanortc_destroy(&rtc);
+    }
+}
+
+TEST(test_e2e_ice_restart_rng_failure_is_transactional)
+{
+    nanortc_crypto_provider_t provider = e2e_crypto_with_failing_rng();
+    for (int fail_at = 1; fail_at <= 2; fail_at++) {
+        nanortc_t rtc;
+        nanortc_config_t cfg = e2e_default_config();
+        cfg.crypto = &provider;
+        e2e_rng_arm(0, 0u);
+        ASSERT_OK(nanortc_init(&rtc, &cfg));
+
+        memcpy(rtc.ice.local_ufrag, "oldUfrag", 9u);
+        rtc.ice.local_ufrag_len = 8u;
+        memcpy(rtc.ice.local_pwd, "old-password-value", 19u);
+        rtc.ice.local_pwd_len = 18u;
+        memcpy(rtc.sdp.local_ufrag, rtc.ice.local_ufrag, sizeof(rtc.sdp.local_ufrag));
+        memcpy(rtc.sdp.local_pwd, rtc.ice.local_pwd, sizeof(rtc.sdp.local_pwd));
+        rtc.state = NANORTC_STATE_CONNECTED;
+        rtc.ice.state = NANORTC_ICE_STATE_CONNECTED;
+        rtc.ice.nominated = true;
+        rtc.ice.generation = 7u;
+        nano_conn_state_t state_before = rtc.state;
+        nano_ice_t ice_before = rtc.ice;
+        nano_sdp_t sdp_before = rtc.sdp;
+
+        e2e_rng_arm(fail_at, 0u);
+        ASSERT_EQ(nanortc_ice_restart(&rtc), NANORTC_ERR_CRYPTO);
+        ASSERT_TRUE(e2e_rng_failed);
+        ASSERT_EQ(rtc.state, state_before);
+        ASSERT_TRUE(memcmp(&rtc.ice, &ice_before, sizeof(ice_before)) == 0);
+        ASSERT_TRUE(memcmp(&rtc.sdp, &sdp_before, sizeof(sdp_before)) == 0);
+        nanortc_destroy(&rtc);
+    }
+}
+
+#if NANORTC_HAVE_MEDIA_TRANSPORT
+TEST(test_e2e_media_seed_rng_failure_rolls_back_all_tracks)
+{
+    nanortc_t offerer, answerer;
+    nanortc_crypto_provider_t provider = e2e_crypto_with_failing_rng();
+    nanortc_config_t off_cfg = e2e_default_config();
+    off_cfg.role = NANORTC_ROLE_CONTROLLING;
+    off_cfg.crypto = &provider;
+    e2e_rng_arm(0, 0u);
+    ASSERT_OK(nanortc_init(&offerer, &off_cfg));
+
+    nanortc_config_t ans_cfg = e2e_default_config();
+    ans_cfg.role = NANORTC_ROLE_CONTROLLED;
+    ASSERT_OK(nanortc_init(&answerer, &ans_cfg));
+    ASSERT_OK(nanortc_add_local_candidate(&offerer, "192.168.1.1", 4000));
+    ASSERT_OK(nanortc_add_local_candidate(&answerer, "192.168.1.2", 5000));
+
+#if NANORTC_FEATURE_AUDIO
+    int mid0 =
+        nanortc_add_audio_track(&offerer, NANORTC_DIR_SENDONLY, NANORTC_CODEC_OPUS, 48000, 2);
+    int mid1 =
+        nanortc_add_audio_track(&offerer, NANORTC_DIR_SENDONLY, NANORTC_CODEC_OPUS, 48000, 2);
+#else
+    int mid0 = nanortc_add_video_track(&offerer, NANORTC_DIR_SENDONLY, NANORTC_CODEC_H264);
+    int mid1 = nanortc_add_video_track(&offerer, NANORTC_DIR_SENDONLY, NANORTC_CODEC_H264);
+#endif
+    ASSERT_TRUE(mid0 >= 0);
+    ASSERT_TRUE(mid1 >= 0);
+
+    char offer[4096];
+    char answer[4096];
+    size_t offer_len = 0u;
+    size_t answer_len = 0u;
+    ASSERT_OK(nanortc_create_offer(&offerer, offer, sizeof(offer), &offer_len));
+    offer[offer_len] = '\0';
+    ASSERT_OK(nanortc_accept_offer(&answerer, offer, answer, sizeof(answer), &answer_len));
+    answer[answer_len] = '\0';
+    ASSERT_OK(nanortc_accept_answer(&offerer, answer));
+
+    /* The test relay reports 192.168.1.1:9999 as the source of every packet;
+     * arm that address as the controlled peer's remote candidate. */
+    answerer.ice.remote_candidates[0].family = 4;
+    answerer.ice.remote_candidates[0].addr[0] = 192;
+    answerer.ice.remote_candidates[0].addr[1] = 168;
+    answerer.ice.remote_candidates[0].addr[2] = 1;
+    answerer.ice.remote_candidates[0].addr[3] = 1;
+    answerer.ice.remote_candidates[0].port = 9999;
+    answerer.ice.remote_candidate_count = 1;
+
+    nano_rtp_t rtp0_before = offerer.media[0].rtp;
+    nano_rtp_t rtp1_before = offerer.media[1].rtp;
+    nano_rtcp_t rtcp0_before = offerer.media[0].rtcp;
+    nano_rtcp_t rtcp1_before = offerer.media[1].rtcp;
+    nanortc_ssrc_entry_t ssrc_map_before[NANORTC_MAX_SSRC_MAP];
+    memcpy(ssrc_map_before, offerer.ssrc_map, sizeof(ssrc_map_before));
+
+    /* Fail the second per-track six-byte SSRC+sequence request. The first
+     * request succeeds, so this catches incremental per-track commits. */
+    e2e_rng_arm(2, sizeof(uint32_t) + sizeof(uint16_t));
+    uint32_t now_ms = 100u;
+    ASSERT_OK(nanortc_handle_input(&offerer, &(nanortc_input_t){.now_ms = now_ms}));
+    int observed_rc = NANORTC_OK;
+    for (int round = 0; round < 50; round++) {
+        observed_rc = e2e_relay_checked(&offerer, &answerer, now_ms);
+        if (observed_rc != NANORTC_OK) {
+            break;
+        }
+        observed_rc = e2e_relay_checked(&answerer, &offerer, now_ms);
+        if (observed_rc != NANORTC_OK) {
+            break;
+        }
+    }
+
+    ASSERT_EQ(observed_rc, NANORTC_ERR_CRYPTO);
+    ASSERT_TRUE(e2e_rng_failed);
+    ASSERT_EQ(e2e_rng_call_count, 2);
+    ASSERT_TRUE(offerer.state < NANORTC_STATE_DTLS_CONNECTED);
+    ASSERT_FALSE(offerer.srtp.ready);
+    ASSERT_TRUE(memcmp(&offerer.media[0].rtp, &rtp0_before, sizeof(rtp0_before)) == 0);
+    ASSERT_TRUE(memcmp(&offerer.media[1].rtp, &rtp1_before, sizeof(rtp1_before)) == 0);
+    ASSERT_TRUE(memcmp(&offerer.media[0].rtcp, &rtcp0_before, sizeof(rtcp0_before)) == 0);
+    ASSERT_TRUE(memcmp(&offerer.media[1].rtcp, &rtcp1_before, sizeof(rtcp1_before)) == 0);
+    ASSERT_TRUE(memcmp(offerer.ssrc_map, ssrc_map_before, sizeof(ssrc_map_before)) == 0);
+
+    nanortc_destroy(&offerer);
+    nanortc_destroy(&answerer);
+}
+
+#if NANORTC_FEATURE_AUDIO
+TEST(test_e2e_padded_audio_excludes_rtp_padding)
+{
+    nanortc_t sender, receiver;
+    ASSERT_OK(e2e_init_direct_srtp_endpoint(&sender, 1));
+    ASSERT_OK(e2e_init_direct_srtp_endpoint(&receiver, 0));
+    int mid =
+        nanortc_add_audio_track(&receiver, NANORTC_DIR_RECVONLY, NANORTC_CODEC_OPUS, 48000, 2);
+    ASSERT_TRUE(mid >= 0);
+    receiver.media[0].rtp.payload_type = 111u;
+    receiver.sdp.mlines[0].remote_pt = 111u;
+
+    nano_rtp_t rtp;
+    ASSERT_OK(rtp_init(&rtp, 0x10203040u, 111u));
+    rtp.seq = 77u;
+    const uint8_t payload[] = {0xF8, 0xAA, 0xBB, 0xCC};
+    uint8_t packet[128];
+    size_t wire_len = 0u;
+    ASSERT_OK(e2e_pack_padded_srtp(&sender, &rtp, 4800u, payload, sizeof(payload), 4u, packet,
+                                   sizeof(packet), &wire_len));
+
+    nanortc_addr_t src;
+    memset(&src, 0, sizeof(src));
+    src.family = 4;
+    src.addr[0] = 192;
+    src.addr[1] = 0;
+    src.addr[2] = 2;
+    src.addr[3] = 10;
+    src.port = 5000;
+    ASSERT_OK(nanortc_handle_input(
+        &receiver,
+        &(nanortc_input_t){.now_ms = 100u, .data = packet, .len = wire_len, .src = src}));
+
+    nanortc_output_t out;
+    bool found = false;
+    while (nanortc_poll_output(&receiver, &out) == NANORTC_OK) {
+        if (out.type == NANORTC_OUTPUT_EVENT && out.event.type == NANORTC_EV_MEDIA_DATA) {
+            ASSERT_EQ(out.event.media_data.mid, (uint8_t)mid);
+            ASSERT_EQ(out.event.media_data.len, sizeof(payload));
+            ASSERT_MEM_EQ(out.event.media_data.data, payload, sizeof(payload));
+            found = true;
+        }
+    }
+    ASSERT_TRUE(found);
+    nanortc_destroy(&sender);
+    nanortc_destroy(&receiver);
+}
+#endif
+
+#if NANORTC_FEATURE_VIDEO
+TEST(test_e2e_padded_video_excludes_rtp_padding)
+{
+    nanortc_t sender, receiver;
+    ASSERT_OK(e2e_init_direct_srtp_endpoint(&sender, 1));
+    ASSERT_OK(e2e_init_direct_srtp_endpoint(&receiver, 0));
+    int mid = nanortc_add_video_track(&receiver, NANORTC_DIR_RECVONLY, NANORTC_CODEC_H264);
+    ASSERT_TRUE(mid >= 0);
+    receiver.media[0].rtp.payload_type = NANORTC_VIDEO_DEFAULT_PT;
+    receiver.sdp.mlines[0].remote_pt = NANORTC_VIDEO_DEFAULT_PT;
+
+    nano_rtp_t rtp;
+    ASSERT_OK(rtp_init(&rtp, 0x50607080u, NANORTC_VIDEO_DEFAULT_PT));
+    rtp.seq = 99u;
+    rtp.marker = 1u;
+    const uint8_t payload[] = {0x65, 0x11, 0x22, 0x33, 0x44};
+    uint8_t packet[128];
+    size_t wire_len = 0u;
+    ASSERT_OK(e2e_pack_padded_srtp(&sender, &rtp, 9000u, payload, sizeof(payload), 8u, packet,
+                                   sizeof(packet), &wire_len));
+
+    nanortc_addr_t src;
+    memset(&src, 0, sizeof(src));
+    src.family = 4;
+    src.addr[0] = 198;
+    src.addr[1] = 51;
+    src.addr[2] = 100;
+    src.addr[3] = 20;
+    src.port = 6000;
+    ASSERT_OK(nanortc_handle_input(
+        &receiver,
+        &(nanortc_input_t){.now_ms = 200u, .data = packet, .len = wire_len, .src = src}));
+
+    nanortc_output_t out;
+    bool found = false;
+    while (nanortc_poll_output(&receiver, &out) == NANORTC_OK) {
+        if (out.type == NANORTC_OUTPUT_EVENT && out.event.type == NANORTC_EV_MEDIA_DATA) {
+            ASSERT_EQ(out.event.media_data.mid, (uint8_t)mid);
+            ASSERT_EQ(out.event.media_data.len, sizeof(payload));
+            ASSERT_MEM_EQ(out.event.media_data.data, payload, sizeof(payload));
+            ASSERT_TRUE(out.event.media_data.is_keyframe);
+            found = true;
+        }
+    }
+    ASSERT_TRUE(found);
+    nanortc_destroy(&sender);
+    nanortc_destroy(&receiver);
+}
+#endif
+#endif
 
 TEST(test_e2e_stubs_not_implemented)
 {
@@ -2154,6 +2605,11 @@ TEST(test_e2e_video_send_admission)
     /* Frame A: fragments into exactly cap*3/4 packets — fits an empty
      * queue, but two back-to-back un-drained sends exceed the capacity. */
     const size_t fit_packets = cap * 3 / 4;
+#if NANORTC_FEATURE_VIDEO_FEC && !NANORTC_FEATURE_VIDEO_PACING && !NANORTC_FEC_ADAPTIVE
+    const size_t fit_fec_packets = fit_packets / NANORTC_FEC_GROUP_SIZE;
+#else
+    const size_t fit_fec_packets = 0u;
+#endif
     const size_t nal_len_a = (fit_packets - 1) * per + 10 + 1; /* +1 NAL header byte */
     const size_t frame_len_a = 4 + nal_len_a;
 
@@ -2171,7 +2627,7 @@ TEST(test_e2e_video_send_admission)
 #else
     /* Immediate: the whole frame is enqueued in out_queue. */
     ASSERT_EQ(nanortc_output_free_slots(&offerer),
-              (uint16_t)(NANORTC_OUT_QUEUE_SIZE - fit_packets));
+              (uint16_t)(NANORTC_OUT_QUEUE_SIZE - fit_packets - fit_fec_packets));
 #endif
 
     /* Second frame without draining: residual capacity is too small. The
@@ -2182,7 +2638,7 @@ TEST(test_e2e_video_send_admission)
     ASSERT_EQ((uint16_t)(offerer.pacer.tail - offerer.pacer.head), (uint16_t)fit_packets);
 #else
     ASSERT_EQ(nanortc_output_free_slots(&offerer),
-              (uint16_t)(NANORTC_OUT_QUEUE_SIZE - fit_packets));
+              (uint16_t)(NANORTC_OUT_QUEUE_SIZE - fit_packets - fit_fec_packets));
 #endif
 
     /* Flush (advancing the clock so the pacer releases its backlog), then the
@@ -2512,9 +2968,11 @@ TEST(test_e2e_video_reorder_heals_swap)
         }
     }
     ASSERT_EQ(got, 2);
-    ASSERT_EQ(first_byte[0], (uint8_t)0xA1);     /* frame A delivered first */
-    ASSERT_EQ(first_byte[1], (uint8_t)0xB2);     /* frame B second — not aliased */
+    ASSERT_EQ(first_byte[0], (uint8_t)0xA1); /* frame A delivered first */
+    ASSERT_EQ(first_byte[1], (uint8_t)0xB2); /* frame B second — not aliased */
+#if NANORTC_FEATURE_VIDEO_AUTO_PLI
     ASSERT_EQ(answerer.stats_auto_pli_sent, 0u); /* reorder healed → no loss */
+#endif
 
     /* --- Mid-stream SSRC change must not be blackholed by a stale next_seq.
      * Move the sender to a new SSRC with a sequence number far BEHIND the
@@ -2698,6 +3156,159 @@ TEST(test_e2e_video_nack_recovers_drop)
 #endif /* NANORTC_FEATURE_VIDEO_REORDER */
 
 #if NANORTC_FEATURE_VIDEO_FEC
+#if NANORTC_FEATURE_H265
+/* The H.265 callback packetizer shares the FEC prepare/commit path with the
+ * direct H.264 iterator. Complete one group under both pacing modes so codec
+ * callback failures cannot silently leave H.265 outside FEC coverage. */
+TEST(test_e2e_h265_fec_group_commits)
+{
+    nanortc_t rtc;
+    ASSERT_OK(e2e_init_direct_srtp_endpoint(&rtc, 1));
+    int mid = nanortc_add_video_track(&rtc, NANORTC_DIR_SENDONLY, NANORTC_CODEC_H265);
+    ASSERT_TRUE(mid >= 0);
+    ASSERT_OK(rtp_init(&rtc.media[0].rtp, 0xFEC26501u, NANORTC_VIDEO_H265_DEFAULT_PT));
+    rtc.state = NANORTC_STATE_CONNECTED;
+    rtc.remote_addr.family = 4;
+    rtc.remote_addr.addr[0] = 192;
+    rtc.remote_addr.addr[1] = 0;
+    rtc.remote_addr.addr[2] = 2;
+    rtc.remote_addr.addr[3] = 65;
+    rtc.remote_addr.port = 5008;
+#if NANORTC_FEC_ADAPTIVE
+    rtc.bwe.smoothed_loss_q8 = (uint16_t)NANORTC_FEC_LOSS_OFF_Q8;
+#endif
+
+    const uint8_t frame[] = {0, 0, 0, 1, 0x02, 0x01, 0xA5, 0x5A};
+    uint32_t sent_before = rtc.stats_fec_sent;
+    nanortc_output_t out;
+    for (uint8_t i = 0; i < (uint8_t)NANORTC_FEC_GROUP_SIZE; i++) {
+        ASSERT_OK(nanortc_send_video(&rtc, (uint8_t)mid, (uint32_t)i * 33u, frame, sizeof(frame)));
+        while (nanortc_poll_output(&rtc, &out) == NANORTC_OK) {
+        }
+    }
+    ASSERT_EQ(rtc.stats_fec_sent, sent_before + 1u);
+    ASSERT_EQ(rtc.fec_tx_n, 0u);
+    nanortc_destroy(&rtc);
+}
+#endif /* NANORTC_FEATURE_H265 */
+
+#if !NANORTC_FEATURE_VIDEO_PACING
+/* Pacing-off FEC admission must never consume the last output slot and leave a
+ * frame half-sent. Start with K-1 protected media packets, then make exactly
+ * one output slot available: the final media packet must be queued, while the
+ * now-complete FEC group is discarded atomically and accounted. */
+TEST(test_e2e_video_fec_resource_drop_is_atomic)
+{
+    nanortc_t rtc;
+    ASSERT_OK(e2e_init_direct_srtp_endpoint(&rtc, 1));
+    int mid = nanortc_add_video_track(&rtc, NANORTC_DIR_SENDONLY, NANORTC_CODEC_H264);
+    ASSERT_TRUE(mid >= 0);
+    ASSERT_OK(rtp_init(&rtc.media[0].rtp, 0xFEC00001u, NANORTC_VIDEO_DEFAULT_PT));
+    rtc.state = NANORTC_STATE_CONNECTED;
+    rtc.remote_addr.family = 4;
+    rtc.remote_addr.addr[0] = 192;
+    rtc.remote_addr.addr[1] = 0;
+    rtc.remote_addr.addr[2] = 2;
+    rtc.remote_addr.addr[3] = 9;
+    rtc.remote_addr.port = 5006;
+#if NANORTC_FEC_ADAPTIVE
+    rtc.bwe.smoothed_loss_q8 = (uint16_t)NANORTC_FEC_LOSS_OFF_Q8;
+#endif
+
+    uint8_t frame[32];
+    memset(frame, 0x5A, sizeof(frame));
+    frame[0] = 0;
+    frame[1] = 0;
+    frame[2] = 0;
+    frame[3] = 1;
+    frame[4] = 0x41; /* one non-IDR H.264 NAL -> one media packet */
+
+    /* A failed media protect must not commit its prepared FEC member. */
+    nanortc_crypto_provider_t failing_crypto = *rtc.srtp.crypto;
+    failing_crypto.aes_128_cm = e2e_fail_aes_128_cm;
+    const nanortc_crypto_provider_t *working_crypto = rtc.srtp.crypto;
+    uint8_t fec_n_before = rtc.fec_tx_n;
+    rtc.srtp.crypto = &failing_crypto;
+    ASSERT_EQ(nanortc_send_video(&rtc, (uint8_t)mid, 0u, frame, sizeof(frame)), NANORTC_ERR_CRYPTO);
+    ASSERT_EQ(rtc.fec_tx_n, fec_n_before);
+    ASSERT_EQ(nanortc_output_free_slots(&rtc), (uint16_t)NANORTC_OUT_QUEUE_SIZE);
+    rtc.srtp.crypto = working_crypto;
+
+    /* Form a K-1 partial group while draining each media output. */
+    nanortc_output_t out;
+    for (uint8_t i = 0; i + 1u < (uint8_t)NANORTC_FEC_GROUP_SIZE; i++) {
+        ASSERT_OK(
+            nanortc_send_video(&rtc, (uint8_t)mid, (uint32_t)(i + 1u) * 33u, frame, sizeof(frame)));
+        while (nanortc_poll_output(&rtc, &out) == NANORTC_OK) {
+        }
+    }
+    ASSERT_EQ(rtc.fec_tx_n, (uint8_t)(NANORTC_FEC_GROUP_SIZE - 1u));
+    ASSERT_EQ(nanortc_output_free_slots(&rtc), (uint16_t)NANORTC_OUT_QUEUE_SIZE);
+
+    /* White-box queue fill: synthetic events own no backing buffers, so they
+     * isolate the media/FEC admission decision without consuming TX slots. */
+    for (uint16_t i = 0; i + 1u < (uint16_t)NANORTC_OUT_QUEUE_SIZE; i++) {
+        uint16_t slot = rtc.out_tail & (NANORTC_OUT_QUEUE_SIZE - 1u);
+        memset(&rtc.out_queue[slot], 0, sizeof(rtc.out_queue[slot]));
+        rtc.out_queue[slot].type = NANORTC_OUTPUT_EVENT;
+        rtc.out_tail++;
+    }
+    ASSERT_EQ(nanortc_output_free_slots(&rtc), 1u);
+
+    uint32_t sent_before = rtc.stats_fec_sent;
+    uint32_t dropped_before = rtc.stats_fec_dropped_resource;
+    ASSERT_OK(nanortc_send_video(&rtc, (uint8_t)mid, 1000u, frame, sizeof(frame)));
+    ASSERT_EQ(nanortc_output_free_slots(&rtc), 0u);
+    ASSERT_EQ(rtc.stats_fec_sent, sent_before);
+    ASSERT_EQ(rtc.stats_fec_dropped_resource, dropped_before + 1u);
+    ASSERT_EQ(rtc.fec_tx_n, 0u);
+
+    int media_packets = 0;
+    int fec_packets = 0;
+    while (nanortc_poll_output(&rtc, &out) == NANORTC_OK) {
+        if (out.type != NANORTC_OUTPUT_TRANSMIT) {
+            continue;
+        }
+        if (out.transmit.len > 1u && (out.transmit.data[1] & 0x7Fu) == NANORTC_VIDEO_FEC_PT) {
+            fec_packets++;
+        } else {
+            media_packets++;
+        }
+    }
+    ASSERT_EQ(media_packets, 1);
+    ASSERT_EQ(fec_packets, 0);
+
+    /* With room for both packets, completing the same partial group emits one
+     * FEC packet plus the media packet (the existing recovery test validates
+     * the receive-side semantics of this resource-rich path). */
+    for (uint8_t i = 0; i + 1u < (uint8_t)NANORTC_FEC_GROUP_SIZE; i++) {
+        ASSERT_OK(nanortc_send_video(&rtc, (uint8_t)mid, 2000u + (uint32_t)i * 33u, frame,
+                                     sizeof(frame)));
+        while (nanortc_poll_output(&rtc, &out) == NANORTC_OK) {
+        }
+    }
+    sent_before = rtc.stats_fec_sent;
+    ASSERT_OK(nanortc_send_video(&rtc, (uint8_t)mid, 3000u, frame, sizeof(frame)));
+    ASSERT_EQ(rtc.stats_fec_sent, sent_before + 1u);
+    media_packets = 0;
+    fec_packets = 0;
+    while (nanortc_poll_output(&rtc, &out) == NANORTC_OK) {
+        if (out.type != NANORTC_OUTPUT_TRANSMIT) {
+            continue;
+        }
+        if (out.transmit.len > 1u && (out.transmit.data[1] & 0x7Fu) == NANORTC_VIDEO_FEC_PT) {
+            fec_packets++;
+        } else {
+            media_packets++;
+        }
+    }
+    ASSERT_EQ(media_packets, 1);
+    ASSERT_EQ(fec_packets, 1);
+
+    nanortc_destroy(&rtc);
+}
+#endif /* !NANORTC_FEATURE_VIDEO_PACING */
+
 /* Relay offerer→answerer, dropping the `drop_media_nth` MEDIA RTP packet (FEC
  * packets — PT NANORTC_VIDEO_FEC_PT — are always delivered, since the whole
  * point is to recover the dropped media from the FEC). */
@@ -2860,8 +3471,15 @@ TEST(test_e2e_video_fec_recovers_drop)
      * FEC packet (sent ahead of the paced media) declared its protected SN
      * window before the gap was observed — so the receiver must NOT NACK it
      * (FEC already recovered it; a NACK would be a duplicate request). */
+#if NANORTC_FEATURE_VIDEO_PACING
     ASSERT_EQ(answerer.stats_nack_sent, 0u);
     ASSERT_TRUE(answerer.stats_nack_suppressed_fec >= 1u);
+#else
+    /* Without pacing, earlier members of a group are already on the wire when
+     * the final member completes and emits FEC. A gap may therefore trigger a
+     * best-effort NACK before the receiver sees the group's FEC window. */
+    ASSERT_TRUE(answerer.stats_nack_sent >= 1u || answerer.stats_nack_suppressed_fec >= 1u);
+#endif
 #endif
 
     nanortc_destroy(&offerer);
@@ -3534,6 +4152,38 @@ TEST(test_e2e_stun_server_config)
     nanortc_destroy(&rtc);
 }
 
+TEST(test_e2e_srflx_rng_failure_does_not_commit_transaction)
+{
+    nanortc_t rtc;
+    nanortc_crypto_provider_t provider = e2e_crypto_with_failing_rng();
+    nanortc_config_t cfg = e2e_default_config();
+    cfg.crypto = &provider;
+    e2e_rng_arm(0, 0u);
+    ASSERT_OK(nanortc_init(&rtc, &cfg));
+
+    const char *stun_url = "stun:8.8.4.4:3478";
+    nanortc_ice_server_t servers[] = {{.urls = &stun_url, .url_count = 1}};
+    ASSERT_OK(nanortc_set_ice_servers(&rtc, servers, 1));
+    memset(rtc.stun_txid, 0xCC, sizeof(rtc.stun_txid));
+    uint8_t txid_before[sizeof(rtc.stun_txid)];
+    memcpy(txid_before, rtc.stun_txid, sizeof(txid_before));
+    uint16_t out_head_before = rtc.out_head;
+    uint16_t out_tail_before = rtc.out_tail;
+
+    e2e_rng_arm(1, sizeof(rtc.stun_txid));
+    ASSERT_EQ(nanortc_handle_input(&rtc, &(nanortc_input_t){.now_ms = 100u}), NANORTC_ERR_CRYPTO);
+    ASSERT_TRUE(e2e_rng_failed);
+    ASSERT_TRUE(memcmp(rtc.stun_txid, txid_before, sizeof(txid_before)) == 0);
+    ASSERT_EQ(rtc.stun_retries, 0u);
+    ASSERT_EQ(rtc.stun_retry_at_ms, 0u);
+    ASSERT_FALSE(rtc.srflx_discovered);
+    ASSERT_EQ(rtc.out_head, out_head_before);
+    ASSERT_EQ(rtc.out_tail, out_tail_before);
+    ASSERT_EQ(rtc.tx_slots_in_use, 0u);
+
+    nanortc_destroy(&rtc);
+}
+
 /* T: SRFLX discovery — timer sends Binding Request, response yields srflx candidate */
 TEST(test_e2e_srflx_discovery)
 {
@@ -4198,6 +4848,18 @@ TEST(test_e2e_simple_binding_request)
 
 TEST_MAIN_BEGIN("nanortc E2E tests")
 RUN(test_e2e_init_pair);
+RUN(test_e2e_init_rng_failure_clears_partial_state);
+RUN(test_e2e_negotiation_rng_failure_is_transactional);
+RUN(test_e2e_ice_restart_rng_failure_is_transactional);
+#if NANORTC_HAVE_MEDIA_TRANSPORT
+RUN(test_e2e_media_seed_rng_failure_rolls_back_all_tracks);
+#if NANORTC_FEATURE_AUDIO
+RUN(test_e2e_padded_audio_excludes_rtp_padding);
+#endif
+#if NANORTC_FEATURE_VIDEO
+RUN(test_e2e_padded_video_excludes_rtp_padding);
+#endif
+#endif
 RUN(test_e2e_stubs_not_implemented);
 RUN(test_e2e_loopback_skeleton);
 RUN(test_e2e_multiple_instances);
@@ -4258,6 +4920,12 @@ RUN(test_e2e_video_nack_recovers_drop);
 #endif
 #endif
 #if NANORTC_FEATURE_VIDEO_FEC
+#if NANORTC_FEATURE_H265
+RUN(test_e2e_h265_fec_group_commits);
+#endif
+#if !NANORTC_FEATURE_VIDEO_PACING
+RUN(test_e2e_video_fec_resource_drop_is_atomic);
+#endif
 RUN(test_e2e_video_fec_recovers_drop);
 #if NANORTC_FEC_ADAPTIVE
 RUN(test_e2e_video_fec_adaptive_k_tracks_loss);
@@ -4294,6 +4962,7 @@ RUN(test_e2e_dc_create_null);
 /* NAT traversal E2E tests */
 RUN(test_e2e_simple_binding_request);
 RUN(test_e2e_stun_server_config);
+RUN(test_e2e_srflx_rng_failure_does_not_commit_transaction);
 RUN(test_e2e_srflx_discovery);
 RUN(test_e2e_srflx_retry);
 RUN(test_e2e_srflx_joins_local_candidates);

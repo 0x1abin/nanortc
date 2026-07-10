@@ -21,6 +21,27 @@ TEST_MAIN_END
 #include "nano_test_config.h"
 #include <string.h>
 
+static int rng_call_count;
+static int rng_fail_at;
+
+static int fail_nth_random_bytes(uint8_t *buf, size_t len)
+{
+    rng_call_count++;
+    if (buf && len > 0u) {
+        memset(buf, (uint8_t)(0x40 + rng_call_count), len);
+    }
+    return rng_call_count == rng_fail_at ? -1 : 0;
+}
+
+static nanortc_crypto_provider_t crypto_failing_at(int call)
+{
+    nanortc_crypto_provider_t provider = *nano_test_crypto();
+    rng_call_count = 0;
+    rng_fail_at = call;
+    provider.random_bytes = fail_nth_random_bytes;
+    return provider;
+}
+
 /* ================================================================
  * Helper: build a valid SCTP packet with correct CRC-32c
  * ================================================================ */
@@ -271,6 +292,7 @@ TEST(test_handle_data_init_packet)
 {
     nano_sctp_t sctp;
     nsctp_init(&sctp);
+    sctp.crypto = nano_test_crypto();
 
     /* Build INIT packet: src=5000, dst=5000, vtag=0 */
     uint8_t pkt[64];
@@ -1413,6 +1435,63 @@ TEST(test_sctp_abort_does_not_set_failure_flag)
     ASSERT_FALSE(sctp.closed_due_to_failure);
 }
 
+TEST(test_sctp_start_rng_failure_is_transactional)
+{
+    for (int fail_at = 1; fail_at <= 3; fail_at++) {
+        nano_sctp_t sctp;
+        ASSERT_OK(nsctp_init(&sctp));
+        nanortc_crypto_provider_t provider = crypto_failing_at(fail_at);
+        sctp.crypto = &provider;
+
+        ASSERT_EQ(nsctp_start(&sctp), NANORTC_ERR_CRYPTO);
+        ASSERT_EQ(sctp.state, NANORTC_SCTP_STATE_CLOSED);
+        ASSERT_EQ(sctp.local_vtag, 0u);
+        ASSERT_EQ(sctp.next_tsn, 0u);
+        ASSERT_EQ(sctp.out_head, sctp.out_tail);
+        for (size_t i = 0; i < sizeof(sctp.cookie_secret); i++) {
+            ASSERT_EQ(sctp.cookie_secret[i], 0u);
+        }
+    }
+}
+
+TEST(test_sctp_server_init_rng_failure_is_transactional)
+{
+    nano_sctp_t sctp;
+    ASSERT_OK(nsctp_init(&sctp));
+    nanortc_crypto_provider_t provider = crypto_failing_at(3);
+    sctp.crypto = &provider;
+
+    uint8_t pkt[64];
+    uint8_t chunk[32];
+    size_t clen = nsctp_encode_init(chunk, SCTP_CHUNK_INIT, 0xAABBCCDD, 0x100000, 0xFFFF, 0xFFFF,
+                                    100, NULL, 0);
+    size_t plen = build_sctp_packet(pkt, 5000, 5000, 0, chunk, clen);
+
+    ASSERT_EQ(nsctp_handle_data(&sctp, pkt, plen), NANORTC_ERR_CRYPTO);
+    ASSERT_EQ(sctp.local_vtag, 0u);
+    ASSERT_EQ(sctp.next_tsn, 0u);
+    ASSERT_EQ(sctp.remote_vtag, 0u);
+    ASSERT_EQ(sctp.peer_initial_tsn, 0u);
+    ASSERT_EQ(sctp.out_head, sctp.out_tail);
+}
+
+TEST(test_sctp_heartbeat_rng_failure_is_transactional)
+{
+    nano_sctp_t sctp;
+    setup_established_sctp(&sctp);
+    nanortc_crypto_provider_t provider = crypto_failing_at(1);
+    sctp.crypto = &provider;
+    memset(sctp.heartbeat_nonce, 0x33, sizeof(sctp.heartbeat_nonce));
+
+    ASSERT_EQ(nsctp_handle_timeout(&sctp, NANORTC_SCTP_HEARTBEAT_INTERVAL_MS), NANORTC_ERR_CRYPTO);
+    ASSERT_FALSE(sctp.heartbeat_pending);
+    ASSERT_EQ(sctp.last_heartbeat_ms, 0u);
+    ASSERT_EQ(sctp.out_head, sctp.out_tail);
+    for (size_t i = 0; i < sizeof(sctp.heartbeat_nonce); i++) {
+        ASSERT_EQ(sctp.heartbeat_nonce[i], 0x33u);
+    }
+}
+
 /* ================================================================
  * Test runner
  * ================================================================ */
@@ -1486,5 +1565,8 @@ RUN(test_sctp_gap_fill_chain);
 RUN(test_sctp_timeout_sets_closed_flag);
 #endif
 RUN(test_sctp_abort_does_not_set_failure_flag);
+RUN(test_sctp_start_rng_failure_is_transactional);
+RUN(test_sctp_server_init_rng_failure_is_transactional);
+RUN(test_sctp_heartbeat_rng_failure_is_transactional);
 TEST_MAIN_END
 #endif /* NANORTC_FEATURE_DATACHANNEL */

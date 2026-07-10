@@ -11,6 +11,7 @@
 #include "nano_turn.h"
 #include "nano_stun.h"
 #include "nano_log.h"
+#include "nano_time.h"
 #include "nanortc_crypto.h"
 #include "nanortc.h"
 #include <string.h>
@@ -24,8 +25,21 @@
 /* Permission refresh: every 4 minutes (RFC 5766 §8: permissions expire at 5 min) */
 #define TURN_PERMISSION_INTERVAL_MS 240000
 
+/* Channel bindings last 10 minutes; refresh at 9 minutes (RFC 5766 §11). */
+#define TURN_CHANNEL_REFRESH_MS 540000
+
 /* REQUESTED-TRANSPORT value for UDP (RFC 5766 §14.7) */
 #define TURN_TRANSPORT_UDP 17
+
+static uint32_t turn_refresh_delay_ms(uint32_t lifetime_s)
+{
+    uint32_t max_lifetime_s = NANO_TIME_MAX_INTERVAL_MS / 1000u;
+    uint32_t bounded_s = lifetime_s > max_lifetime_s ? max_lifetime_s : lifetime_s;
+    uint32_t lifetime_ms = bounded_s * 1000u;
+    uint32_t margin_ms = bounded_s > 60u ? TURN_REFRESH_MARGIN_MS : lifetime_ms / 2u;
+    uint32_t delay_ms = lifetime_ms - margin_ms;
+    return delay_ms == 0u ? 1u : delay_ms;
+}
 
 /* ----------------------------------------------------------------
  * STUN message encoding helpers
@@ -210,18 +224,18 @@ int turn_start_allocate(nano_turn_t *turn, const nanortc_crypto_provider_t *cryp
     if (!turn->configured) {
         return NANORTC_ERR_STATE;
     }
-
-    /* Generate transaction ID */
-    if (crypto->random_bytes(turn->last_txid, STUN_TXID_SIZE) != 0) {
-        return NANORTC_ERR_CRYPTO;
-    }
-
-    /* Build Allocate Request */
     if (buf_len < NANORTC_TURN_MAX_REQUEST_SIZE) {
         return NANORTC_ERR_BUFFER_TOO_SMALL;
     }
 
-    stun_write_header(buf, STUN_ALLOCATE_REQUEST, turn->last_txid);
+    /* Generate transaction ID */
+    uint8_t txid[STUN_TXID_SIZE];
+    if (!crypto->random_bytes || crypto->random_bytes(txid, sizeof(txid)) != 0) {
+        return NANORTC_ERR_CRYPTO;
+    }
+
+    /* Build Allocate Request */
+    stun_write_header(buf, STUN_ALLOCATE_REQUEST, txid);
     size_t pos = STUN_HEADER_SIZE;
 
     /* REQUESTED-TRANSPORT: UDP (RFC 5766 §14.7) */
@@ -242,19 +256,19 @@ int turn_start_allocate(nano_turn_t *turn, const nanortc_crypto_provider_t *cryp
 
         stun_finalize_length(buf, pos);
         pos = stun_append_integrity(buf, pos, turn->hmac_key, crypto->hmac_sha1);
-        turn->state = NANORTC_TURN_ALLOCATING; /* awaiting success/error response */
     } else {
         /* First attempt: unauthenticated */
         stun_finalize_length(buf, pos);
-        turn->state = NANORTC_TURN_ALLOCATING;
     }
 
+    memcpy(turn->last_txid, txid, sizeof(txid));
+    turn->state = NANORTC_TURN_ALLOCATING;
     *out_len = pos;
     NANORTC_LOGD("TURN", "allocate request sent");
     return NANORTC_OK;
 }
 
-int turn_handle_response(nano_turn_t *turn, const uint8_t *data, size_t len,
+int turn_handle_response(nano_turn_t *turn, uint32_t now_ms, const uint8_t *data, size_t len,
                          const nanortc_crypto_provider_t *crypto)
 {
     if (!turn || !data || !crypto) {
@@ -291,6 +305,7 @@ int turn_handle_response(nano_turn_t *turn, const uint8_t *data, size_t len,
         turn->relay_port = msg.relayed_port;
         turn->relay_family = msg.relayed_family;
         turn->lifetime_s = msg.lifetime > 0 ? msg.lifetime : TURN_DEFAULT_LIFETIME;
+        turn->refresh_at_ms = nano_time_deadline(now_ms, turn_refresh_delay_ms(turn->lifetime_s));
         turn->state = NANORTC_TURN_ALLOCATED;
 
         NANORTC_LOGI("TURN", "allocated");
@@ -353,6 +368,7 @@ int turn_handle_response(nano_turn_t *turn, const uint8_t *data, size_t len,
 
     } else if (msg.type == STUN_REFRESH_RESPONSE) {
         turn->lifetime_s = msg.lifetime > 0 ? msg.lifetime : TURN_DEFAULT_LIFETIME;
+        turn->refresh_at_ms = nano_time_deadline(now_ms, turn_refresh_delay_ms(turn->lifetime_s));
         NANORTC_LOGD("TURN", "refreshed");
         return NANORTC_OK;
 
@@ -415,7 +431,8 @@ int turn_handle_response(nano_turn_t *turn, const uint8_t *data, size_t len,
             if (memcmp(turn->channels[i].txid, msg.transaction_id, STUN_TXID_SIZE) == 0) {
                 turn->channels[i].bound = true;
                 /* RFC 5766 §11: bindings last 10 min, refresh at 9 min (540000 ms) */
-                turn->channels[i].refresh_at_ms = 0; /* set by caller with now_ms */
+                turn->channels[i].refresh_at_ms =
+                    nano_time_deadline(now_ms, TURN_CHANNEL_REFRESH_MS);
                 break;
             }
         }
@@ -451,20 +468,21 @@ int turn_generate_refresh(nano_turn_t *turn, uint32_t now_ms,
     if (turn->state != NANORTC_TURN_ALLOCATED) {
         return NANORTC_OK;
     }
-    if (turn->refresh_at_ms != 0 && now_ms < turn->refresh_at_ms) {
+    if (turn->refresh_at_ms != 0u && !nano_time_is_due(now_ms, turn->refresh_at_ms)) {
         return NANORTC_OK;
-    }
-
-    /* Generate txid */
-    if (crypto->random_bytes(turn->last_txid, STUN_TXID_SIZE) != 0) {
-        return NANORTC_ERR_CRYPTO;
     }
 
     if (buf_len < NANORTC_TURN_MAX_REQUEST_SIZE) {
         return NANORTC_ERR_BUFFER_TOO_SMALL;
     }
 
-    stun_write_header(buf, STUN_REFRESH_REQUEST, turn->last_txid);
+    /* Generate txid */
+    uint8_t txid[STUN_TXID_SIZE];
+    if (!crypto->random_bytes || crypto->random_bytes(txid, sizeof(txid)) != 0) {
+        return NANORTC_ERR_CRYPTO;
+    }
+
+    stun_write_header(buf, STUN_REFRESH_REQUEST, txid);
     size_t pos = STUN_HEADER_SIZE;
 
     /* LIFETIME */
@@ -481,11 +499,11 @@ int turn_generate_refresh(nano_turn_t *turn, uint32_t now_ms,
     stun_finalize_length(buf, pos);
     pos = stun_append_integrity(buf, pos, turn->hmac_key, crypto->hmac_sha1);
 
+    memcpy(turn->last_txid, txid, sizeof(txid));
     *out_len = pos;
 
     /* Schedule next refresh */
-    uint32_t margin = turn->lifetime_s > 60 ? TURN_REFRESH_MARGIN_MS : (turn->lifetime_s * 500);
-    turn->refresh_at_ms = now_ms + (turn->lifetime_s * 1000) - margin;
+    turn->refresh_at_ms = nano_time_deadline(now_ms, turn_refresh_delay_ms(turn->lifetime_s));
 
     return NANORTC_OK;
 }
@@ -507,11 +525,12 @@ int turn_deallocate(nano_turn_t *turn, const nanortc_crypto_provider_t *crypto, 
         return NANORTC_ERR_BUFFER_TOO_SMALL;
     }
 
-    if (crypto->random_bytes(turn->last_txid, STUN_TXID_SIZE) != 0) {
+    uint8_t txid[STUN_TXID_SIZE];
+    if (!crypto->random_bytes || crypto->random_bytes(txid, sizeof(txid)) != 0) {
         return NANORTC_ERR_CRYPTO;
     }
 
-    stun_write_header(buf, STUN_REFRESH_REQUEST, turn->last_txid);
+    stun_write_header(buf, STUN_REFRESH_REQUEST, txid);
     size_t pos = STUN_HEADER_SIZE;
 
     /* LIFETIME=0 */
@@ -526,6 +545,7 @@ int turn_deallocate(nano_turn_t *turn, const nanortc_crypto_provider_t *crypto, 
     stun_finalize_length(buf, pos);
     pos = stun_append_integrity(buf, pos, turn->hmac_key, crypto->hmac_sha1);
 
+    memcpy(turn->last_txid, txid, sizeof(txid));
     *out_len = pos;
 
     /* Local state: relay is gone. We do not wait for the response — server
@@ -559,7 +579,8 @@ int turn_create_permission(nano_turn_t *turn, const uint8_t *peer_addr, uint8_t 
         return NANORTC_ERR_BUFFER_TOO_SMALL;
     }
 
-    /* Find existing permission slot for this peer, or allocate a new one. */
+    /* Find an existing permission slot, but do not mutate the table until the
+     * random transaction ID and complete request have been produced. */
     size_t addr_len = (peer_family == 4) ? 4 : 16;
     int pi = -1;
     for (uint8_t i = 0; i < turn->permission_count; i++) {
@@ -569,35 +590,28 @@ int turn_create_permission(nano_turn_t *turn, const uint8_t *peer_addr, uint8_t 
             break;
         }
     }
-    if (pi < 0) {
-        if (turn->permission_count >= NANORTC_TURN_MAX_PERMISSIONS) {
-            return NANORTC_ERR_BUFFER_TOO_SMALL;
-        }
-        pi = turn->permission_count;
-        memcpy(turn->permissions[pi].addr, peer_addr, NANORTC_ADDR_SIZE);
-        turn->permissions[pi].port = peer_port;
-        turn->permissions[pi].family = peer_family;
-        turn->permission_count++;
-    } else {
-        turn->permissions[pi].port = peer_port;
+    bool is_new = pi < 0;
+    if (is_new && turn->permission_count >= NANORTC_TURN_MAX_PERMISSIONS) {
+        return NANORTC_ERR_BUFFER_TOO_SMALL;
     }
-    /* "active" here means "we sent a request"; the response handler keeps it
-     * true on success and clears it on a hard error. */
-    turn->permissions[pi].active = true;
+    if (is_new) {
+        pi = turn->permission_count;
+    }
 
     /* Generate per-permission txid (RFC 5766 §9 / RFC 8489 §6.3.1: response must
      * carry the same transaction ID; we record it here so turn_handle_response()
      * can validate the response and reject spoofed packets — F1). */
-    if (crypto->random_bytes(turn->permissions[pi].txid, STUN_TXID_SIZE) != 0) {
+    uint8_t txid[STUN_TXID_SIZE];
+    if (!crypto->random_bytes || crypto->random_bytes(txid, sizeof(txid)) != 0) {
         return NANORTC_ERR_CRYPTO;
     }
 
-    stun_write_header(buf, STUN_CREATE_PERMISSION_REQUEST, turn->permissions[pi].txid);
+    stun_write_header(buf, STUN_CREATE_PERMISSION_REQUEST, txid);
     size_t pos = STUN_HEADER_SIZE;
 
     /* XOR-PEER-ADDRESS */
     pos += stun_encode_xor_addr(buf + pos, STUN_ATTR_XOR_PEER_ADDRESS, peer_addr, peer_family,
-                                peer_port, turn->permissions[pi].txid);
+                                peer_port, txid);
 
     /* Authentication */
     pos += stun_write_attr(buf + pos, STUN_ATTR_USERNAME, turn->username,
@@ -608,6 +622,14 @@ int turn_create_permission(nano_turn_t *turn, const uint8_t *peer_addr, uint8_t 
     stun_finalize_length(buf, pos);
     pos = stun_append_integrity(buf, pos, turn->hmac_key, crypto->hmac_sha1);
 
+    if (is_new) {
+        memcpy(turn->permissions[pi].addr, peer_addr, NANORTC_ADDR_SIZE);
+        turn->permissions[pi].family = peer_family;
+        turn->permission_count++;
+    }
+    turn->permissions[pi].port = peer_port;
+    turn->permissions[pi].active = true;
+    memcpy(turn->permissions[pi].txid, txid, sizeof(txid));
     *out_len = pos;
 
     NANORTC_LOGD("TURN", "permission request sent");
@@ -695,9 +717,6 @@ bool turn_is_from_server(const nano_turn_t *turn, const uint8_t *src_addr, uint8
  * ChannelBind (RFC 5766 §11)
  * ---------------------------------------------------------------- */
 
-/* ChannelBind refresh interval: 9 minutes (RFC 5766 §11: bindings last 10 min) */
-#define TURN_CHANNEL_REFRESH_MS 540000
-
 int turn_channel_bind(nano_turn_t *turn, const uint8_t *peer_addr, uint8_t peer_family,
                       uint16_t peer_port, const nanortc_crypto_provider_t *crypto, uint8_t *buf,
                       size_t buf_len, size_t *out_len)
@@ -710,8 +729,12 @@ int turn_channel_bind(nano_turn_t *turn, const uint8_t *peer_addr, uint8_t peer_
     if (turn->state != NANORTC_TURN_ALLOCATED || !turn->hmac_key_valid) {
         return NANORTC_ERR_STATE;
     }
+    if (buf_len < NANORTC_TURN_MAX_REQUEST_SIZE) {
+        return NANORTC_ERR_BUFFER_TOO_SMALL;
+    }
 
-    /* Find existing channel for this peer, or allocate new slot */
+    /* Find an existing channel, but do not consume a slot/channel number until
+     * random generation and request encoding have succeeded. */
     size_t addr_len = (peer_family == 4) ? 4 : 16;
     int ci = -1;
     for (uint8_t i = 0; i < turn->channel_count; i++) {
@@ -722,8 +745,8 @@ int turn_channel_bind(nano_turn_t *turn, const uint8_t *peer_addr, uint8_t peer_
         }
     }
 
-    if (ci < 0) {
-        /* Allocate new channel */
+    bool is_new = ci < 0;
+    if (is_new) {
         if (turn->channel_count >= NANORTC_TURN_MAX_CHANNELS) {
             return NANORTC_ERR_BUFFER_TOO_SMALL;
         }
@@ -733,31 +756,20 @@ int turn_channel_bind(nano_turn_t *turn, const uint8_t *peer_addr, uint8_t peer_
             return NANORTC_ERR_BUFFER_TOO_SMALL; /* Channel number space exhausted */
         }
         ci = turn->channel_count;
-        memcpy(turn->channels[ci].addr, peer_addr, NANORTC_ADDR_SIZE);
-        turn->channels[ci].port = peer_port;
-        turn->channels[ci].family = peer_family;
-        turn->channels[ci].channel = turn->next_channel++;
-        turn->channels[ci].bound = false;
-        turn->channel_count++;
     }
+    uint16_t channel = is_new ? turn->next_channel : turn->channels[ci].channel;
 
     /* Generate txid */
     uint8_t txid[STUN_TXID_SIZE];
-    if (crypto->random_bytes(txid, STUN_TXID_SIZE) != 0) {
+    if (!crypto->random_bytes || crypto->random_bytes(txid, sizeof(txid)) != 0) {
         return NANORTC_ERR_CRYPTO;
     }
-    memcpy(turn->channels[ci].txid, txid, STUN_TXID_SIZE);
-
-    if (buf_len < NANORTC_TURN_MAX_REQUEST_SIZE) {
-        return NANORTC_ERR_BUFFER_TOO_SMALL;
-    }
-
     stun_write_header(buf, STUN_CHANNEL_BIND_REQUEST, txid);
     size_t pos = STUN_HEADER_SIZE;
 
     /* CHANNEL-NUMBER (RFC 5766 §14.1): 2B channel + 2B RFFU */
     uint8_t cn[4];
-    nanortc_write_u16be(cn, turn->channels[ci].channel);
+    nanortc_write_u16be(cn, channel);
     cn[2] = 0;
     cn[3] = 0;
     pos += stun_write_attr(buf + pos, STUN_ATTR_CHANNEL_NUMBER, cn, 4);
@@ -775,6 +787,16 @@ int turn_channel_bind(nano_turn_t *turn, const uint8_t *peer_addr, uint8_t peer_
     stun_finalize_length(buf, pos);
     pos = stun_append_integrity(buf, pos, turn->hmac_key, crypto->hmac_sha1);
 
+    if (is_new) {
+        memcpy(turn->channels[ci].addr, peer_addr, NANORTC_ADDR_SIZE);
+        turn->channels[ci].family = peer_family;
+        turn->channels[ci].channel = channel;
+        turn->channels[ci].bound = false;
+        turn->channel_count++;
+        turn->next_channel++;
+    }
+    turn->channels[ci].port = peer_port;
+    memcpy(turn->channels[ci].txid, txid, sizeof(txid));
     *out_len = pos;
     NANORTC_LOGD("TURN", "channel bind request sent");
     return NANORTC_OK;
@@ -895,7 +917,7 @@ int turn_generate_permission_refresh(nano_turn_t *turn, uint32_t now_ms,
     if (turn->state != NANORTC_TURN_ALLOCATED || !turn->hmac_key_valid) {
         return NANORTC_OK;
     }
-    if (turn->permission_at_ms != 0 && now_ms < turn->permission_at_ms) {
+    if (turn->permission_at_ms != 0u && !nano_time_is_due(now_ms, turn->permission_at_ms)) {
         return NANORTC_OK;
     }
     if (turn->permission_count == 0) {
@@ -912,7 +934,7 @@ int turn_generate_permission_refresh(nano_turn_t *turn, uint32_t now_ms,
             turn_create_permission(turn, turn->permissions[i].addr, turn->permissions[i].family,
                                    turn->permissions[i].port, crypto, buf, buf_len, out_len);
         if (rc == NANORTC_OK && *out_len > 0) {
-            turn->permission_at_ms = now_ms + TURN_PERMISSION_INTERVAL_MS;
+            turn->permission_at_ms = nano_time_deadline(now_ms, TURN_PERMISSION_INTERVAL_MS);
             NANORTC_LOGD("TURN", "permission refreshed");
         }
         return rc;
@@ -939,7 +961,8 @@ int turn_generate_channel_refresh(nano_turn_t *turn, uint32_t now_ms,
         if (!turn->channels[i].bound) {
             continue;
         }
-        if (turn->channels[i].refresh_at_ms != 0 && now_ms < turn->channels[i].refresh_at_ms) {
+        if (turn->channels[i].refresh_at_ms != 0u &&
+            !nano_time_is_due(now_ms, turn->channels[i].refresh_at_ms)) {
             continue;
         }
 
@@ -947,7 +970,7 @@ int turn_generate_channel_refresh(nano_turn_t *turn, uint32_t now_ms,
         int rc = turn_channel_bind(turn, turn->channels[i].addr, turn->channels[i].family,
                                    turn->channels[i].port, crypto, buf, buf_len, out_len);
         if (rc == NANORTC_OK && *out_len > 0) {
-            turn->channels[i].refresh_at_ms = now_ms + TURN_CHANNEL_REFRESH_MS;
+            turn->channels[i].refresh_at_ms = nano_time_deadline(now_ms, TURN_CHANNEL_REFRESH_MS);
             NANORTC_LOGD("TURN", "channel refreshed");
         }
         return rc;
@@ -978,7 +1001,7 @@ uint32_t turn_next_timeout_ms(const nano_turn_t *turn, uint32_t now_ms)
 
     /* Allocation Refresh (RFC 5766 §7). */
     if (turn->refresh_at_ms != 0) {
-        uint32_t left = (now_ms >= turn->refresh_at_ms) ? 0u : (turn->refresh_at_ms - now_ms);
+        uint32_t left = nano_time_until(now_ms, turn->refresh_at_ms);
         if (left < best) {
             best = left;
         }
@@ -987,7 +1010,7 @@ uint32_t turn_next_timeout_ms(const nano_turn_t *turn, uint32_t now_ms)
     /* Permission refresh (RFC 5766 §8). Only matters when at least one
      * permission is active; otherwise nothing to refresh. */
     if (turn->permission_count > 0 && turn->permission_at_ms != 0) {
-        uint32_t left = (now_ms >= turn->permission_at_ms) ? 0u : (turn->permission_at_ms - now_ms);
+        uint32_t left = nano_time_until(now_ms, turn->permission_at_ms);
         if (left < best) {
             best = left;
         }
@@ -998,9 +1021,7 @@ uint32_t turn_next_timeout_ms(const nano_turn_t *turn, uint32_t now_ms)
         if (!turn->channels[i].bound || turn->channels[i].refresh_at_ms == 0) {
             continue;
         }
-        uint32_t left = (now_ms >= turn->channels[i].refresh_at_ms)
-                            ? 0u
-                            : (turn->channels[i].refresh_at_ms - now_ms);
+        uint32_t left = nano_time_until(now_ms, turn->channels[i].refresh_at_ms);
         if (left < best) {
             best = left;
         }
