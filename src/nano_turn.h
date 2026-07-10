@@ -119,9 +119,10 @@ int turn_start_allocate(nano_turn_t *turn, const nanortc_crypto_provider_t *cryp
 /**
  * Handle a STUN response from the TURN server.
  * Processes Allocate success/error, Refresh, CreatePermission responses.
+ * @param now_ms Current monotonic time, used to arm allocation/channel refresh.
  * Returns NANORTC_OK on success.
  */
-int turn_handle_response(nano_turn_t *turn, const uint8_t *data, size_t len,
+int turn_handle_response(nano_turn_t *turn, uint32_t now_ms, const uint8_t *data, size_t len,
                          const nanortc_crypto_provider_t *crypto);
 
 /**

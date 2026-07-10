@@ -50,6 +50,7 @@ typedef struct nano_rtcp {
     uint32_t remote_ssrc;     /* SSRC of remote sender */
     uint32_t last_sr_ntp;     /* Middle 32 bits of last SR NTP timestamp (for DLSR) */
     uint32_t last_sr_recv_ms; /* Local time when last SR was received */
+    bool last_sr_recv_valid;  /* True once last_sr_recv_ms has been set */
     uint16_t max_seq;         /* Highest seq received */
     uint32_t jitter;          /* Interarrival jitter (RFC 3550 §6.4.1) */
 } nano_rtcp_t;

@@ -55,9 +55,9 @@ void nano_run_loop_set_event_cb(nano_run_loop_t *loop,
 int nano_run_loop_step(nano_run_loop_t *loop);
 
 /* Drain all pending outputs onto the wire without selecting/receiving.
- * Use before retrying a nanortc_send_video() that returned
- * NANORTC_ERR_WOULD_BLOCK: frees output-queue slots so the whole frame
- * can be admitted atomically. */
+ * Use before retrying a nanortc_send_audio() or nanortc_send_video() that
+ * returned NANORTC_ERR_WOULD_BLOCK: this releases output backing slots so
+ * the same, still-uncommitted frame can be retried safely. */
 void nano_run_loop_drain(nano_run_loop_t *loop);
 
 /* Block until disconnected or error */

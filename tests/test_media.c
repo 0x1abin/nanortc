@@ -10,6 +10,7 @@
 #include "nanortc.h"
 #include "nano_media.h"
 #include "nano_test.h"
+#include "nano_time.h"
 #include <string.h>
 
 /* ================================================================
@@ -144,6 +145,7 @@ TEST(test_rate_window_lazy_init)
 
     /* First touch sets epoch to now_ms but does not emit rates yet. */
     rate_window_on_frame(&w, 5000);
+    ASSERT_TRUE(w.bucket_valid);
     ASSERT_EQ(w.bucket_start_ms, 5000u);
     ASSERT_EQ(w.cur_frames, 1u);
     ASSERT_EQ(w.prev_bps, 0u);
@@ -219,6 +221,38 @@ TEST(test_rate_window_fps_saturates)
     }
     rate_window_on_frame(&w, 1500); /* forces roll */
     ASSERT_EQ(w.prev_fps_q8, 0xFFFFu);
+}
+
+TEST(test_time_helpers_wrap_deadline)
+{
+    uint32_t now_ms = UINT32_MAX - 10u;
+    uint32_t deadline_ms = nano_time_deadline(now_ms, 20u);
+
+    ASSERT_EQ(deadline_ms, 9u);
+    ASSERT_EQ(nano_time_until(now_ms, deadline_ms), 20u);
+    ASSERT_FALSE(nano_time_is_due(8u, deadline_ms));
+    ASSERT_TRUE(nano_time_is_due(9u, deadline_ms));
+    ASSERT_TRUE(nano_time_is_due(10u, deadline_ms));
+
+    /* Zero remains available as the unarmed sentinel. */
+    ASSERT_EQ(nano_time_deadline(UINT32_MAX - 9u, 10u), 1u);
+}
+
+TEST(test_rate_window_rolls_across_wrap)
+{
+    nano_rate_window_t w;
+    memset(&w, 0, sizeof(w));
+    uint32_t start_ms = UINT32_MAX - 500u;
+
+    rate_window_on_frame(&w, start_ms);
+    rate_window_on_bytes(&w, start_ms + 100u, 1000u);
+    rate_window_roll(&w, start_ms + 999u);
+    ASSERT_EQ(w.prev_bps, 0u);
+
+    rate_window_roll(&w, start_ms + 1000u);
+    ASSERT_EQ(w.prev_bps, 8000u);
+    ASSERT_EQ(w.prev_fps_q8, 256u);
+    ASSERT_EQ(w.bucket_start_ms, start_ms + 1000u);
 }
 
 /* ================================================================
@@ -454,6 +488,8 @@ RUN(test_rate_window_holds_within_second);
 RUN(test_rate_window_rolls_at_second);
 RUN(test_rate_window_roll_noop_without_frames_or_bytes);
 RUN(test_rate_window_fps_saturates);
+RUN(test_time_helpers_wrap_deadline);
+RUN(test_rate_window_rolls_across_wrap);
 #if NANORTC_FEATURE_VIDEO
 /* pkt_ring decoupling (Phase 8 PR-3) */
 RUN(test_pkt_ring_in_window_lookup_succeeds);

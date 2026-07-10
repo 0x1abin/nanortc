@@ -11,6 +11,7 @@
 #include "nanortc_crypto.h"
 #include "nano_crc32c.h"
 #include "nano_log.h"
+#include "nano_time.h"
 #include "nanortc.h"
 #include <string.h>
 
@@ -471,6 +472,29 @@ static bool sq_full(const nano_sctp_t *sctp)
  * State machine
  * ================================================================ */
 
+static int nsctp_generate_association_seed(const nanortc_crypto_provider_t *crypto,
+                                           uint32_t *local_vtag, uint32_t *next_tsn,
+                                           uint8_t cookie_secret[NSCTP_SECRET_SIZE])
+{
+    if (!crypto || !crypto->random_bytes || !local_vtag || !next_tsn || !cookie_secret) {
+        return NANORTC_ERR_CRYPTO;
+    }
+
+    uint32_t vtag = 0;
+    uint32_t tsn = 0;
+    uint8_t secret[NSCTP_SECRET_SIZE];
+    if (crypto->random_bytes((uint8_t *)&vtag, sizeof(vtag)) != 0 ||
+        crypto->random_bytes((uint8_t *)&tsn, sizeof(tsn)) != 0 ||
+        crypto->random_bytes(secret, sizeof(secret)) != 0) {
+        return NANORTC_ERR_CRYPTO;
+    }
+
+    *local_vtag = vtag == 0u ? 1u : vtag;
+    *next_tsn = tsn == 0u ? 1u : tsn;
+    memcpy(cookie_secret, secret, sizeof(secret));
+    return NANORTC_OK;
+}
+
 int nsctp_init(nano_sctp_t *sctp)
 {
     if (!sctp) {
@@ -497,16 +521,19 @@ int nsctp_start(nano_sctp_t *sctp)
         return NANORTC_ERR_STATE;
     }
 
-    /* Generate random local vtag and initial TSN */
-    sctp->crypto->random_bytes((uint8_t *)&sctp->local_vtag, 4);
-    sctp->crypto->random_bytes((uint8_t *)&sctp->next_tsn, 4);
-    if (sctp->local_vtag == 0)
-        sctp->local_vtag = 1;
-    if (sctp->next_tsn == 0)
-        sctp->next_tsn = 1;
+    /* Generate the complete association seed off-struct. A provider failure at
+     * any call leaves CLOSED state and the output queue untouched. */
+    uint32_t local_vtag = 0;
+    uint32_t next_tsn = 0;
+    uint8_t cookie_secret[NSCTP_SECRET_SIZE];
+    int rc = nsctp_generate_association_seed(sctp->crypto, &local_vtag, &next_tsn, cookie_secret);
+    if (rc != NANORTC_OK) {
+        return rc;
+    }
 
-    /* Generate cookie secret for future use */
-    sctp->crypto->random_bytes(sctp->cookie_secret, sizeof(sctp->cookie_secret));
+    sctp->local_vtag = local_vtag;
+    sctp->next_tsn = next_tsn;
+    memcpy(sctp->cookie_secret, cookie_secret, sizeof(cookie_secret));
 
     /* Build INIT packet (vtag=0 for INIT per RFC 4960 §8.5.1) */
     size_t pos = nsctp_begin_packet(sctp, 0);
@@ -530,24 +557,29 @@ static int nsctp_handle_init(nano_sctp_t *sctp, const uint8_t *chunk, size_t cle
         return NANORTC_ERR_PARSE;
     }
 
-    /* Save peer parameters */
+    /* Generate our own vtag + TSN before committing peer parameters. */
+    uint32_t local_vtag = sctp->local_vtag;
+    uint32_t next_tsn = sctp->next_tsn;
+    uint8_t cookie_secret[NSCTP_SECRET_SIZE];
+    memcpy(cookie_secret, sctp->cookie_secret, sizeof(cookie_secret));
+    if (local_vtag == 0u) {
+        int rc =
+            nsctp_generate_association_seed(sctp->crypto, &local_vtag, &next_tsn, cookie_secret);
+        if (rc != NANORTC_OK) {
+            return rc;
+        }
+    }
+
+    /* Commit both local randomness and parsed peer state together. */
+    sctp->local_vtag = local_vtag;
+    sctp->next_tsn = next_tsn;
+    memcpy(sctp->cookie_secret, cookie_secret, sizeof(cookie_secret));
     sctp->remote_vtag = init.initiate_tag;
     sctp->peer_initial_tsn = init.initial_tsn;
     sctp->cumulative_tsn = init.initial_tsn - 1;
     sctp->peer_a_rwnd = init.a_rwnd;
     sctp->peer_num_istreams = init.num_istreams;
     sctp->peer_num_ostreams = init.num_ostreams;
-
-    /* Generate our own vtag + TSN if not yet done */
-    if (sctp->local_vtag == 0 && sctp->crypto) {
-        sctp->crypto->random_bytes((uint8_t *)&sctp->local_vtag, 4);
-        sctp->crypto->random_bytes((uint8_t *)&sctp->next_tsn, 4);
-        if (sctp->local_vtag == 0)
-            sctp->local_vtag = 1;
-        if (sctp->next_tsn == 0)
-            sctp->next_tsn = 1;
-        sctp->crypto->random_bytes(sctp->cookie_secret, sizeof(sctp->cookie_secret));
-    }
 
     /* Build INIT-ACK with a simple cookie.
      * Cookie = cookie_secret XOR'd with initiate_tag (simple, DTLS provides auth).
@@ -937,7 +969,10 @@ int nsctp_handle_data(nano_sctp_t *sctp, const uint8_t *data, size_t len)
         switch (ctype) {
         case SCTP_CHUNK_INIT:
             NANORTC_LOGD("SCTP", "INIT received");
-            nsctp_handle_init(sctp, data + pos, clen, &hdr);
+            rc = nsctp_handle_init(sctp, data + pos, clen, &hdr);
+            if (rc != NANORTC_OK) {
+                return rc;
+            }
             break;
 
         case SCTP_CHUNK_INIT_ACK:
@@ -1065,6 +1100,26 @@ int nsctp_poll_output(nano_sctp_t *sctp, uint8_t *buf, size_t buf_len, size_t *o
     return NANORTC_ERR_NO_DATA;
 }
 
+bool nsctp_has_pending_output(const nano_sctp_t *sctp)
+{
+    if (!sctp) {
+        return false;
+    }
+    if (sctp->out_head != sctp->out_tail) {
+        return true;
+    }
+    if (sctp->state != NANORTC_SCTP_STATE_ESTABLISHED) {
+        return false;
+    }
+    for (uint8_t idx = sctp->sq_head; idx != sctp->sq_tail; idx++) {
+        const nsctp_send_entry_t *e = &sctp->send_queue[idx & (NANORTC_SCTP_MAX_SEND_QUEUE - 1)];
+        if (!e->in_flight && !e->acked) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /* ---- nsctp_send: enqueue application data ---- */
 
 int nsctp_send(nano_sctp_t *sctp, uint16_t stream_id, uint32_t ppid, const uint8_t *data,
@@ -1139,7 +1194,7 @@ int nsctp_handle_timeout(nano_sctp_t *sctp, uint32_t now_ms)
     while (idx != sctp->sq_tail) {
         nsctp_send_entry_t *e = &sctp->send_queue[idx & (NANORTC_SCTP_MAX_SEND_QUEUE - 1)];
         if (e->in_flight && !e->acked) {
-            uint32_t elapsed = now_ms - e->sent_at_ms;
+            uint32_t elapsed = nano_time_elapsed(now_ms, e->sent_at_ms);
             if (elapsed >= sctp->rto_ms) {
                 if (e->retransmit_count >= NANORTC_SCTP_MAX_RETRANSMITS) {
                     NANORTC_LOGE("SCTP", "max retransmits exceeded");
@@ -1166,18 +1221,21 @@ int nsctp_handle_timeout(nano_sctp_t *sctp, uint32_t now_ms)
 
     /* Heartbeat */
     if (!sctp->heartbeat_pending && sctp->crypto) {
-        uint32_t hb_elapsed = now_ms - sctp->last_heartbeat_ms;
-        if (hb_elapsed >= NANORTC_SCTP_HEARTBEAT_INTERVAL_MS) {
-            sctp->crypto->random_bytes(sctp->heartbeat_nonce, sizeof(sctp->heartbeat_nonce));
-            if (!nsctp_out_full(sctp)) {
-                size_t pos = nsctp_begin_packet(sctp, sctp->remote_vtag);
-                pos += nsctp_encode_heartbeat(nsctp_out_write_buf(sctp) + pos,
-                                              sctp->heartbeat_nonce, sizeof(sctp->heartbeat_nonce));
-                nsctp_queue_output(sctp, pos);
-                sctp->heartbeat_pending = true;
-                sctp->last_heartbeat_ms = now_ms;
-                NANORTC_LOGT("SCTP", "HEARTBEAT sent");
+        uint32_t hb_elapsed = nano_time_elapsed(now_ms, sctp->last_heartbeat_ms);
+        if (hb_elapsed >= NANORTC_SCTP_HEARTBEAT_INTERVAL_MS && !nsctp_out_full(sctp)) {
+            uint8_t heartbeat_nonce[NSCTP_NONCE_SIZE];
+            if (!sctp->crypto->random_bytes ||
+                sctp->crypto->random_bytes(heartbeat_nonce, sizeof(heartbeat_nonce)) != 0) {
+                return NANORTC_ERR_CRYPTO;
             }
+            size_t pos = nsctp_begin_packet(sctp, sctp->remote_vtag);
+            pos += nsctp_encode_heartbeat(nsctp_out_write_buf(sctp) + pos, heartbeat_nonce,
+                                          sizeof(heartbeat_nonce));
+            nsctp_queue_output(sctp, pos);
+            memcpy(sctp->heartbeat_nonce, heartbeat_nonce, sizeof(heartbeat_nonce));
+            sctp->heartbeat_pending = true;
+            sctp->last_heartbeat_ms = now_ms;
+            NANORTC_LOGT("SCTP", "HEARTBEAT sent");
         }
     }
 
@@ -1199,7 +1257,7 @@ uint32_t nsctp_next_timeout_ms(const nano_sctp_t *sctp, uint32_t now_ms)
         if (!e->in_flight || e->acked) {
             continue;
         }
-        uint32_t elapsed = now_ms - e->sent_at_ms;
+        uint32_t elapsed = nano_time_elapsed(now_ms, e->sent_at_ms);
         uint32_t left = (elapsed >= sctp->rto_ms) ? 0u : (sctp->rto_ms - elapsed);
         if (left < best) {
             best = left;
@@ -1211,7 +1269,7 @@ uint32_t nsctp_next_timeout_ms(const nano_sctp_t *sctp, uint32_t now_ms)
      * timeout block above only re-arms after an ACK clears the pending
      * flag). */
     if (!sctp->heartbeat_pending) {
-        uint32_t hb_elapsed = now_ms - sctp->last_heartbeat_ms;
+        uint32_t hb_elapsed = nano_time_elapsed(now_ms, sctp->last_heartbeat_ms);
         uint32_t left = (hb_elapsed >= NANORTC_SCTP_HEARTBEAT_INTERVAL_MS)
                             ? 0u
                             : (NANORTC_SCTP_HEARTBEAT_INTERVAL_MS - hb_elapsed);

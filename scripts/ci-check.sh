@@ -37,6 +37,8 @@ cd "$ROOT"
 
 CI_DIR="$ROOT/.cache/ci"
 mkdir -p "$CI_DIR"
+LOG_DIR="$CI_DIR/logs"
+mkdir -p "$LOG_DIR"
 
 # ---- Argument parsing --------------------------------------------------
 FAST_MODE=0
@@ -91,13 +93,20 @@ RESULTS=""
 run_check() {
     local name="$1"
     shift
+    local slug
+    local log_file
+    slug=$(printf "%s" "$name" | sed 's/[^A-Za-z0-9._-]/_/g')
+    log_file="$LOG_DIR/$slug.log"
     printf "  %-50s" "$name"
-    if "$@" > /dev/null 2>&1; then
+    if "$@" >"$log_file" 2>&1; then
         printf " OK\n"
         PASS=$((PASS + 1))
         RESULTS="${RESULTS}\n  OK   $name"
     else
         printf " FAIL\n"
+        echo "  --- failure log: $log_file ---"
+        tail -100 "$log_file"
+        echo "  --- end failure log ---"
         FAIL=$((FAIL + 1))
         RESULTS="${RESULTS}\n  FAIL $name"
     fi
@@ -153,6 +162,32 @@ if [ ${#CRYPTO_BACKENDS[@]} -eq 0 ]; then
     exit 1
 fi
 echo "  (crypto backends: ${CRYPTO_BACKENDS[*]})"
+PRIMARY_CRYPTO="${CRYPTO_BACKENDS[0]}"
+PRIMARY_CRYPTO_FLAG="-DNANORTC_CRYPTO=$PRIMARY_CRYPTO"
+JOBS=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+
+invalid_crypto_dir="$CI_DIR/build-ci-invalid-crypto"
+prep_build_dir "$invalid_crypto_dir"
+run_check "Reject invalid crypto backend" \
+    bash -c "! cmake -B '$invalid_crypto_dir' -DNANORTC_CRYPTO=invalid -DNANORTC_BUILD_TESTS=OFF"
+
+invalid_tx_slots_dir="$CI_DIR/build-ci-invalid-tx-slots"
+prep_build_dir "$invalid_tx_slots_dir"
+run_check "Reject invalid TX slot count" \
+    bash -c "! cmake -B '$invalid_tx_slots_dir' -DNANORTC_TX_SLOT_COUNT=3 -DNANORTC_BUILD_TESTS=OFF"
+
+tx_slot_one_dir="$CI_DIR/build-ci-tx-slot-one"
+prep_build_dir "$tx_slot_one_dir"
+run_check "Build DATA + TX_SLOT_COUNT=1" \
+    bash -c "cmake -B '$tx_slot_one_dir' -DNANORTC_TX_SLOT_COUNT=1 $PRIMARY_CRYPTO_FLAG $LAUNCHER_FLAGS -DCMAKE_BUILD_TYPE=Debug && cmake --build '$tx_slot_one_dir' -j${JOBS}"
+run_check "Test  DATA + TX_SLOT_COUNT=1" \
+    ctest --test-dir "$tx_slot_one_dir" --output-on-failure
+
+idf_env_host_dir="$CI_DIR/build-ci-idf-env-host"
+prep_build_dir "$idf_env_host_dir"
+run_check "IDF_PATH alone keeps host CMake mode" \
+    env IDF_PATH=/nonexistent cmake -B "$idf_env_host_dir" \
+        -DNANORTC_BUILD_TESTS=OFF "$PRIMARY_CRYPTO_FLAG" -DCMAKE_BUILD_TYPE=Debug
 
 # 7 feature combinations (indexed arrays for bash 3.2 compat).
 # MEDIA_H265 covers the H.265 sub-feature explicitly since H.265 is opt-in
@@ -173,8 +208,6 @@ COMBO_FLAGS=(
 # that DATA / MEDIA don't already surface.
 FAST_COMBO_FILTER=" DATA MEDIA "
 
-JOBS=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
-
 for crypto in "${CRYPTO_BACKENDS[@]}"; do
     CRYPTO_FLAG="-DNANORTC_CRYPTO=$crypto"
     # In --fast mode, only exercise the first available crypto backend.
@@ -193,7 +226,7 @@ for crypto in "${CRYPTO_BACKENDS[@]}"; do
         prep_build_dir "$build_dir"
 
         run_check "Build $combo / $crypto" \
-            bash -c "cmake -B '$build_dir' $flags $CRYPTO_FLAG $LAUNCHER_FLAGS -DCMAKE_BUILD_TYPE=Debug > /dev/null 2>&1 && cmake --build '$build_dir' -j${JOBS} > /dev/null 2>&1"
+            bash -c "cmake -B '$build_dir' $flags $CRYPTO_FLAG $LAUNCHER_FLAGS -DCMAKE_BUILD_TYPE=Debug && cmake --build '$build_dir' -j${JOBS}"
 
         run_check "Test  $combo / $crypto" \
             ctest --test-dir "$build_dir" --output-on-failure
@@ -247,10 +280,10 @@ echo "=== AddressSanitizer ==="
 asan_dir="$CI_DIR/build-ci-asan"
 prep_build_dir "$asan_dir"
 
-run_check "Build MEDIA + ASan" \
-    bash -c "cmake -B '$asan_dir' -DNANORTC_FEATURE_DATACHANNEL=ON -DNANORTC_FEATURE_AUDIO=ON -DNANORTC_FEATURE_VIDEO=ON -DNANORTC_FEATURE_H265=ON $CRYPTO_FLAG $LAUNCHER_FLAGS -DCMAKE_BUILD_TYPE=Debug -DADDRESS_SANITIZER=ON > /dev/null 2>&1 && cmake --build '$asan_dir' -j${JOBS} > /dev/null 2>&1"
+run_check "Build all advanced media + H265 + ASan" \
+    bash -c "cmake -B '$asan_dir' -DNANORTC_FEATURE_DATACHANNEL=ON -DNANORTC_FEATURE_AUDIO=ON -DNANORTC_FEATURE_VIDEO=ON -DNANORTC_FEATURE_H265=ON -DNANORTC_FEATURE_VIDEO_RATE_CONTROL=ON -DNANORTC_FEATURE_VIDEO_REORDER=ON -DNANORTC_FEATURE_VIDEO_NACK_RX=ON -DNANORTC_FEATURE_VIDEO_FEC=ON -DNANORTC_FEATURE_VIDEO_PACING=ON -DNANORTC_FEATURE_VIDEO_AUTO_PLI=ON -DNANORTC_FEC_ADAPTIVE=ON $PRIMARY_CRYPTO_FLAG $LAUNCHER_FLAGS -DCMAKE_BUILD_TYPE=Debug -DADDRESS_SANITIZER=ON && cmake --build '$asan_dir' -j${JOBS}"
 
-run_check "Test  MEDIA + ASan" \
+run_check "Test  all advanced media + H265 + ASan" \
     ctest --test-dir "$asan_dir" --output-on-failure
 
 # ============================================================
@@ -265,7 +298,7 @@ srflx_off_dir="$CI_DIR/build-ci-srflx-off"
 prep_build_dir "$srflx_off_dir"
 
 run_check "Build DATA + ICE_SRFLX=OFF" \
-    bash -c "cmake -B '$srflx_off_dir' -DNANORTC_FEATURE_DATACHANNEL=ON -DNANORTC_FEATURE_AUDIO=OFF -DNANORTC_FEATURE_VIDEO=OFF -DNANORTC_FEATURE_ICE_SRFLX=OFF $CRYPTO_FLAG $LAUNCHER_FLAGS -DCMAKE_BUILD_TYPE=Debug > /dev/null 2>&1 && cmake --build '$srflx_off_dir' -j${JOBS} > /dev/null 2>&1"
+    bash -c "cmake -B '$srflx_off_dir' -DNANORTC_FEATURE_DATACHANNEL=ON -DNANORTC_FEATURE_AUDIO=OFF -DNANORTC_FEATURE_VIDEO=OFF -DNANORTC_FEATURE_ICE_SRFLX=OFF $PRIMARY_CRYPTO_FLAG $LAUNCHER_FLAGS -DCMAKE_BUILD_TYPE=Debug && cmake --build '$srflx_off_dir' -j${JOBS}"
 
 run_check "Test  DATA + ICE_SRFLX=OFF" \
     ctest --test-dir "$srflx_off_dir" --output-on-failure
@@ -278,10 +311,28 @@ reorder_dir="$CI_DIR/build-ci-reorder"
 prep_build_dir "$reorder_dir"
 
 run_check "Build MEDIA + REORDER + NACK_RX + FEC + RATE_CONTROL" \
-    bash -c "cmake -B '$reorder_dir' -DNANORTC_FEATURE_DATACHANNEL=ON -DNANORTC_FEATURE_AUDIO=ON -DNANORTC_FEATURE_VIDEO=ON $CRYPTO_FLAG $LAUNCHER_FLAGS -DCMAKE_BUILD_TYPE=Debug '-DCMAKE_C_FLAGS=-DNANORTC_FEATURE_VIDEO_REORDER=1 -DNANORTC_FEATURE_VIDEO_NACK_RX=1 -DNANORTC_FEATURE_VIDEO_FEC=1 -DNANORTC_FEATURE_VIDEO_RATE_CONTROL=1' > /dev/null 2>&1 && cmake --build '$reorder_dir' -j${JOBS} > /dev/null 2>&1"
+    bash -c "cmake -B '$reorder_dir' -DNANORTC_FEATURE_DATACHANNEL=ON -DNANORTC_FEATURE_AUDIO=ON -DNANORTC_FEATURE_VIDEO=ON -DNANORTC_FEATURE_VIDEO_REORDER=ON -DNANORTC_FEATURE_VIDEO_NACK_RX=ON -DNANORTC_FEATURE_VIDEO_FEC=ON -DNANORTC_FEATURE_VIDEO_RATE_CONTROL=ON $PRIMARY_CRYPTO_FLAG $LAUNCHER_FLAGS -DCMAKE_BUILD_TYPE=Debug && cmake --build '$reorder_dir' -j${JOBS}"
 
 run_check "Test  MEDIA + REORDER + NACK_RX + FEC + RATE_CONTROL" \
     ctest --test-dir "$reorder_dir" --output-on-failure
+
+fec_no_nack_dir="$CI_DIR/build-ci-fec-no-nack"
+prep_build_dir "$fec_no_nack_dir"
+
+run_check "Build MEDIA + FEC + NACK_RX=OFF + AUTO_PLI=OFF" \
+    bash -c "cmake -B '$fec_no_nack_dir' -DNANORTC_FEATURE_DATACHANNEL=ON -DNANORTC_FEATURE_AUDIO=ON -DNANORTC_FEATURE_VIDEO=ON -DNANORTC_FEATURE_H265=ON -DNANORTC_FEATURE_VIDEO_REORDER=ON -DNANORTC_FEATURE_VIDEO_FEC=ON -DNANORTC_FEATURE_VIDEO_NACK_RX=OFF -DNANORTC_FEC_ADAPTIVE=ON -DNANORTC_FEATURE_VIDEO_PACING=ON -DNANORTC_FEATURE_VIDEO_AUTO_PLI=OFF $PRIMARY_CRYPTO_FLAG $LAUNCHER_FLAGS -DCMAKE_BUILD_TYPE=Debug && cmake --build '$fec_no_nack_dir' -j${JOBS}"
+
+run_check "Test  MEDIA + FEC + NACK_RX=OFF + AUTO_PLI=OFF" \
+    ctest --test-dir "$fec_no_nack_dir" --output-on-failure
+
+pacing_off_dir="$CI_DIR/build-ci-pacing-off"
+prep_build_dir "$pacing_off_dir"
+
+run_check "Build MEDIA + FEC + PACING=OFF + ADAPTIVE=OFF" \
+    bash -c "cmake -B '$pacing_off_dir' -DNANORTC_FEATURE_DATACHANNEL=ON -DNANORTC_FEATURE_AUDIO=ON -DNANORTC_FEATURE_VIDEO=ON -DNANORTC_FEATURE_H265=ON -DNANORTC_FEATURE_VIDEO_REORDER=ON -DNANORTC_FEATURE_VIDEO_NACK_RX=ON -DNANORTC_FEATURE_VIDEO_FEC=ON -DNANORTC_FEATURE_VIDEO_PACING=OFF -DNANORTC_FEATURE_VIDEO_AUTO_PLI=ON -DNANORTC_FEC_ADAPTIVE=OFF $PRIMARY_CRYPTO_FLAG $LAUNCHER_FLAGS -DCMAKE_BUILD_TYPE=Debug && cmake --build '$pacing_off_dir' -j${JOBS}"
+
+run_check "Test  MEDIA + FEC + PACING=OFF + ADAPTIVE=OFF" \
+    ctest --test-dir "$pacing_off_dir" --output-on-failure
 
 # ============================================================
 # 6. Interop tests (requires openssl + C++ compiler)
@@ -301,7 +352,10 @@ elif $HAS_OPENSSL && command -v c++ > /dev/null 2>&1; then
     prep_build_dir "$interop_dir"
 
     run_check "Build interop (libdatachannel)" \
-        bash -c "cmake -B '$interop_dir' -DNANORTC_BUILD_INTEROP_TESTS=ON -DNANORTC_CRYPTO=openssl -DNANORTC_FEATURE_AUDIO=ON -DNANORTC_FEATURE_VIDEO=ON -DNANORTC_FEATURE_H265=ON $LAUNCHER_FLAGS -DCMAKE_BUILD_TYPE=Debug -DCMAKE_POLICY_VERSION_MINIMUM=3.5 > /dev/null 2>&1 && cmake --build '$interop_dir' -j${JOBS} > /dev/null 2>&1"
+        bash -c "cmake -B '$interop_dir' -DNANORTC_BUILD_INTEROP_TESTS=ON -DNANORTC_CRYPTO=openssl -DNANORTC_FEATURE_AUDIO=ON -DNANORTC_FEATURE_VIDEO=ON -DNANORTC_FEATURE_H265=ON $LAUNCHER_FLAGS -DCMAKE_BUILD_TYPE=Debug -DCMAKE_POLICY_VERSION_MINIMUM=3.5 && cmake --build '$interop_dir' -j${JOBS}"
+
+    run_check "Assert A/V interop tests registered" \
+        bash -c "tests=\$(ctest --test-dir '$interop_dir' -N); printf '%s\n' \"\$tests\"; grep -q 'interop_audio' <<<\"\$tests\" && grep -q 'interop_video' <<<\"\$tests\""
 
     run_check "Test  interop (libdatachannel)" \
         ctest --test-dir "$interop_dir" -R interop --output-on-failure

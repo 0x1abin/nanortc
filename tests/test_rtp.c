@@ -300,9 +300,8 @@ TEST(test_rtp_csrc_and_extension)
 
 /*
  * RFC 3550 §5.1: Padding bit (P=1)
- * The last byte of the payload indicates padding length.
- * Note: rtp_unpack does NOT strip padding — the caller must handle it.
- * This test verifies the raw payload includes the padding bytes.
+ * The last byte of the packet indicates padding length. rtp_unpack validates
+ * and strips those bytes from the codec payload length it exposes.
  */
 TEST(test_rtp_padding_bit)
 {
@@ -332,10 +331,39 @@ TEST(test_rtp_padding_bit)
 
     ASSERT_OK(rtp_unpack(pkt, sizeof(pkt), &pt, NULL, NULL, NULL, &payload, &payload_len));
     ASSERT_EQ(pt, 96);
-    /* Raw payload includes padding bytes (caller responsibility to strip) */
-    ASSERT_EQ(payload_len, 4);
+    ASSERT_EQ(payload_len, 2);
+    ASSERT_EQ(payload[0], 0x01);
+    ASSERT_EQ(payload[1], 0x02);
     /* Padding bit was set in header */
     ASSERT_TRUE(pkt[0] & 0x20);
+}
+
+TEST(test_rtp_padding_zero_count_rejected)
+{
+    uint8_t pkt[RTP_HEADER_SIZE + 2] = {0};
+    pkt[0] = 0xA0; /* V=2, P=1 */
+    pkt[RTP_HEADER_SIZE] = 0x42;
+    pkt[RTP_HEADER_SIZE + 1] = 0; /* RFC 3550 padding count cannot be zero */
+
+    ASSERT_EQ(rtp_unpack(pkt, sizeof(pkt), NULL, NULL, NULL, NULL, NULL, NULL), NANORTC_ERR_PARSE);
+}
+
+TEST(test_rtp_padding_count_larger_than_body_rejected)
+{
+    uint8_t pkt[RTP_HEADER_SIZE + 2] = {0};
+    pkt[0] = 0xA0; /* V=2, P=1 */
+    pkt[RTP_HEADER_SIZE] = 0x42;
+    pkt[RTP_HEADER_SIZE + 1] = 3; /* only two body octets are present */
+
+    ASSERT_EQ(rtp_unpack(pkt, sizeof(pkt), NULL, NULL, NULL, NULL, NULL, NULL), NANORTC_ERR_PARSE);
+}
+
+TEST(test_rtp_padding_without_body_rejected)
+{
+    uint8_t pkt[RTP_HEADER_SIZE] = {0};
+    pkt[0] = 0xA0; /* V=2, P=1, but no final padding-count octet */
+
+    ASSERT_EQ(rtp_unpack(pkt, sizeof(pkt), NULL, NULL, NULL, NULL, NULL, NULL), NANORTC_ERR_PARSE);
 }
 
 /*
@@ -476,8 +504,8 @@ TEST(test_rtp_pack_inplace_payload_equals_copy_payload)
     rtp_init(&rtp_a, 0xDEADBEEF, 96);
     rtp_a.seq = 42;
     size_t out_a = 0;
-    ASSERT_OK(rtp_pack(&rtp_a, 0xCAFEBABE, payload, sizeof(payload), buf_copy, sizeof(buf_copy),
-                       &out_a));
+    ASSERT_OK(
+        rtp_pack(&rtp_a, 0xCAFEBABE, payload, sizeof(payload), buf_copy, sizeof(buf_copy), &out_a));
 
     /* In-place path: pre-stage payload at buf + 12 (the RTP body offset
      * without TWCC) and pass that same pointer to rtp_pack. */
@@ -544,6 +572,9 @@ RUN(test_rtp_csrc_list);
 RUN(test_rtp_extension_header);
 RUN(test_rtp_csrc_and_extension);
 RUN(test_rtp_padding_bit);
+RUN(test_rtp_padding_zero_count_rejected);
+RUN(test_rtp_padding_count_larger_than_body_rejected);
+RUN(test_rtp_padding_without_body_rejected);
 /* Transport-wide CC header extension (RFC 8285, draft-holmer-rmcat-twcc-01) */
 RUN(test_rtp_pack_twcc_extension);
 RUN(test_rtp_pack_no_twcc_when_id_zero);

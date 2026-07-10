@@ -120,7 +120,17 @@ static void audio_send_tick(nanortc_t *rtc, uint8_t mid, uint32_t now)
                                          &ts_ms) != 0)
             break;
 
-        nanortc_send_audio(rtc, mid, (uint32_t)(esp_timer_get_time() / 1000), audio_buf, frame_len);
+        uint32_t pts_ms = (uint32_t)(esp_timer_get_time() / 1000);
+        int rc = nanortc_send_audio(rtc, mid, pts_ms, audio_buf, frame_len);
+        if (rc == NANORTC_ERR_WOULD_BLOCK) {
+            /* The frame is still uncommitted: release pending outputs and
+             * retry the same Opus packet before advancing the source. */
+            nano_run_loop_drain(&s_loop);
+            rc = nanortc_send_audio(rtc, mid, pts_ms, audio_buf, frame_len);
+        }
+        if (rc != NANORTC_OK) {
+            ESP_LOGW(TAG, "audio frame dropped: %d (%s)", rc, nanortc_err_name(rc));
+        }
         nano_media_pacer_advance(&s_audio_pacer);
     }
 }
@@ -229,8 +239,8 @@ static int handle_offer(const char *offer, char *answer, size_t answer_size, siz
         .event_cb = on_event,
     };
 
-    int rc = nano_session_accept_offer(&s_rtc, &s_loop, &params, offer, answer, answer_size,
-                                       answer_len);
+    int rc =
+        nano_session_accept_offer(&s_rtc, &s_loop, &params, offer, answer, answer_size, answer_len);
     if (rc != NANORTC_OK) {
         ESP_LOGE(TAG, "nano_session_accept_offer failed: %d (%s)", rc, nanortc_err_name(rc));
         return rc;

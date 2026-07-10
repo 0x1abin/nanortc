@@ -122,28 +122,35 @@ void nano_rtc_emit_ice_candidate(nanortc_t *rtc, const char *candidate_str)
  * verbatim without further escaping. */
 static int rtc_generate_ice_credentials(nanortc_t *rtc)
 {
-    if (!rtc->config.crypto) {
-        return NANORTC_OK;
+    if (!rtc->config.crypto || !rtc->config.crypto->random_bytes) {
+        return NANORTC_ERR_INVALID_PARAM;
     }
 
     uint8_t rnd[NANORTC_ICE_UFRAG_LEN / 2];
-    rtc->config.crypto->random_bytes(rnd, sizeof(rnd));
-    for (int i = 0; i < (int)sizeof(rnd); i++) {
-        rtc->sdp.local_ufrag[i * 2] = hex_chars[(rnd[i] >> 4) & 0xF];
-        rtc->sdp.local_ufrag[i * 2 + 1] = hex_chars[rnd[i] & 0xF];
-    }
-    rtc->sdp.local_ufrag[NANORTC_ICE_UFRAG_LEN] = '\0';
-
     uint8_t rnd2[NANORTC_ICE_PWD_LEN / 2];
-    rtc->config.crypto->random_bytes(rnd2, sizeof(rnd2));
-    for (int i = 0; i < (int)sizeof(rnd2); i++) {
-        rtc->sdp.local_pwd[i * 2] = hex_chars[(rnd2[i] >> 4) & 0xF];
-        rtc->sdp.local_pwd[i * 2 + 1] = hex_chars[rnd2[i] & 0xF];
+    if (rtc->config.crypto->random_bytes(rnd, sizeof(rnd)) != 0 ||
+        rtc->config.crypto->random_bytes(rnd2, sizeof(rnd2)) != 0) {
+        return NANORTC_ERR_CRYPTO;
     }
-    rtc->sdp.local_pwd[NANORTC_ICE_PWD_LEN] = '\0';
 
-    memcpy(rtc->ice.local_ufrag, rtc->sdp.local_ufrag, sizeof(rtc->ice.local_ufrag));
-    memcpy(rtc->ice.local_pwd, rtc->sdp.local_pwd, sizeof(rtc->ice.local_pwd));
+    char ufrag[NANORTC_ICE_UFRAG_SIZE];
+    char pwd[NANORTC_ICE_PWD_SIZE];
+    for (int i = 0; i < (int)sizeof(rnd); i++) {
+        ufrag[i * 2] = hex_chars[(rnd[i] >> 4) & 0xF];
+        ufrag[i * 2 + 1] = hex_chars[rnd[i] & 0xF];
+    }
+    ufrag[NANORTC_ICE_UFRAG_LEN] = '\0';
+
+    for (int i = 0; i < (int)sizeof(rnd2); i++) {
+        pwd[i * 2] = hex_chars[(rnd2[i] >> 4) & 0xF];
+        pwd[i * 2 + 1] = hex_chars[rnd2[i] & 0xF];
+    }
+    pwd[NANORTC_ICE_PWD_LEN] = '\0';
+
+    memcpy(rtc->sdp.local_ufrag, ufrag, sizeof(ufrag));
+    memcpy(rtc->sdp.local_pwd, pwd, sizeof(pwd));
+    memcpy(rtc->ice.local_ufrag, ufrag, sizeof(ufrag));
+    memcpy(rtc->ice.local_pwd, pwd, sizeof(pwd));
     rtc->ice.local_ufrag_len = NANORTC_ICE_UFRAG_LEN;
     rtc->ice.local_pwd_len = NANORTC_ICE_PWD_LEN;
 
@@ -322,15 +329,20 @@ int nanortc_accept_offer(nanortc_t *rtc, const char *offer, char *answer_buf, si
         return NANORTC_ERR_STATE;
     }
 
-    size_t offer_len = strlen(offer); /* NANORTC_SAFE: API boundary */
+    /* Consume RNG before parsing mutates SDP, so a provider failure leaves the
+     * whole negotiation state untouched. */
+    int rc = rtc_generate_ice_credentials(rtc);
+    if (rc != NANORTC_OK) {
+        return rc;
+    }
 
-    int rc = sdp_parse(&rtc->sdp, offer, offer_len);
+    size_t offer_len = strlen(offer); /* NANORTC_SAFE: API boundary */
+    rc = sdp_parse(&rtc->sdp, offer, offer_len);
     if (rc != NANORTC_OK) {
         return rc;
     }
 
     rtc_apply_remote_sdp(rtc);
-    rtc_generate_ice_credentials(rtc);
 
     rtc_apply_negotiated_media(rtc);
 
@@ -379,7 +391,10 @@ int nanortc_create_offer(nanortc_t *rtc, char *offer_buf, size_t offer_buf_len, 
         return NANORTC_ERR_STATE;
     }
 
-    rtc_generate_ice_credentials(rtc);
+    int rc = rtc_generate_ice_credentials(rtc);
+    if (rc != NANORTC_OK) {
+        return rc;
+    }
 
     /* Offerer is DTLS active, setup=actpass in SDP (RFC 8842) */
     rtc->sdp.local_setup = NANORTC_SDP_SETUP_ACTPASS;
@@ -395,7 +410,7 @@ int nanortc_create_offer(nanortc_t *rtc, char *offer_buf, size_t offer_buf_len, 
     }
 
     size_t offer_len = 0;
-    int rc = sdp_generate_answer(&rtc->sdp, offer_buf, offer_buf_len, &offer_len);
+    rc = sdp_generate_answer(&rtc->sdp, offer_buf, offer_buf_len, &offer_len);
     if (rc != NANORTC_OK) {
         return rc;
     }

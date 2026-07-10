@@ -1,10 +1,12 @@
 # Memory Profiles
 
-Current `sizeof(nanortc_t)` and `libnanortc.a` `.text` for each canonical
-feature combination on ESP32-P4 (RISC-V HP, ESP-IDF 5.5 mbedTLS, `-Os` via
-`CONFIG_COMPILER_OPTIMIZATION_SIZE=y`). Host (64-bit) sizes are slightly
-larger due to pointer/size_t widths; 32-bit ARM targets land within ~5 % of
-the ESP32-P4 numbers.
+The ESP32-P4 table below is the last hardware-toolchain measurement
+(RISC-V HP, ESP-IDF 5.5 mbedTLS, `-Os` via
+`CONFIG_COMPILER_OPTIMIZATION_SIZE=y`). It predates the owned transient TX
+slot ring described below. The ring adds four independently owned output
+buffers by default while replacing several single-producer send scratch
+buffers; the expected host net increase is about 4.5 KiB. Re-run the size
+script before treating the ESP32-P4 rows as release measurements.
 
 All numbers below come from `./scripts/measure-sizes.sh --esp32 esp32p4`
 against the ESP-IDF Kconfig defaults in `Kconfig`. Full ICE stack is
@@ -12,6 +14,24 @@ preserved (TURN relay, srflx discovery, IPv6 host candidates, RFC 8445
 hardening); only buffer/queue sizing and logging are trimmed for IoT
 targets. Host Linux/macOS builds use `nanortc_config.h`'s generous
 defaults so interop/fuzz tests keep their timing headroom.
+
+Host CI enforces profile ceilings for the complete `nanortc_t`, including
+the TX ring. They are deliberately ceilings rather than expected footprints:
+
+| Host profile | `sizeof(nanortc_t)` ceiling |
+|---|---:|
+| `CORE_ONLY` | 20 KiB |
+| `DATA` | 36 KiB |
+| `AUDIO_ONLY` | 48 KiB |
+| `DATA + AUDIO` | 64 KiB |
+| `MEDIA_ONLY` | 104 KiB |
+| Regular `MEDIA`, `MEDIA_H265`, or NACK profile | 120 KiB |
+| Reorder profile | 140 KiB |
+| FEC or all-advanced-media profile | 164 KiB |
+
+These guards catch accidental structural growth. They do not replace target
+measurements: pointer width, Kconfig buffer trims, crypto backend, and enabled
+media recovery features all change the actual footprint.
 
 ## Configuration Matrix
 
@@ -44,7 +64,8 @@ generous host defaults:
 | `NANORTC_SCTP_{SEND,RECV,RECV_GAP}_BUF_SIZE` | 4096 each | 2048 each |
 | `NANORTC_SCTP_MAX_SEND_QUEUE` | 16 | 4 |
 | `NANORTC_SCTP_MAX_RECV_GAP` | 8 | 4 |
-| `NANORTC_OUT_QUEUE_SIZE` | 32 | 8 (`esp32_datachannel`), 16 (`esp32_media`), 32 (`esp32_camera` — 1080p HW H.264 needs ≥32 to absorb a single P-frame's worth of FU-A fragments without `tx queue full`; see phase 10 PR-2 follow-up) |
+| `NANORTC_OUT_QUEUE_SIZE` | 32 | 8 (`esp32_datachannel`), 16 (`esp32_media`), 64 (`esp32_camera` — 1080p HW H.264 must admit a complete access unit plus concurrent audio/control output) |
+| `NANORTC_TX_SLOT_COUNT` | 4 | 4 (all shipped examples; power of two, ≤ output queue) |
 | `NANORTC_VIDEO_PKT_RING_SIZE` | inherits `NANORTC_OUT_QUEUE_SIZE` | inherits `NANORTC_OUT_QUEUE_SIZE` |
 | `NANORTC_MEDIA_BUF_SIZE` | 1232 (formula) | 1232 (fixed; `#error` guards `< MTU + 30`) |
 | `NANORTC_VIDEO_NAL_BUF_SIZE` | 16384 | 8192 |
@@ -69,14 +90,21 @@ high-jitter cellular, large SDPs), raise the knob you care about.
 | Video receive reorder buffer (`nano_reorder_t`, per video track) | `NANORTC_VIDEO_REORDER_SLOTS × NANORTC_MEDIA_BUF_SIZE` ≈ 9.6 KB at 8 slots — **0 when disabled** | `NANORTC_FEATURE_VIDEO_REORDER` (opt-in, default off; a send-only camera leaves it off) |
 | SCTP send + recv + gap buffers | ~12 KB host / ~6 KB Kconfig | `NANORTC_SCTP_SEND_BUF_SIZE`, `NANORTC_SCTP_RECV_BUF_SIZE`, `NANORTC_SCTP_RECV_GAP_BUF_SIZE` |
 | DTLS buffers (3 × `NANORTC_DTLS_BUF_SIZE`) | 6 KB host / 4.5 KB Kconfig | `NANORTC_DTLS_BUF_SIZE` |
-| Shared STUN/RTCP/RTP scratch | 256 B (DC-only) / 1232 B (media) | `NANORTC_STUN_BUF_SIZE` (feature-gated — see below) |
+| Owned transient TX ring | `4 × max(DTLS, media, TURN request)` = 8 KB host / 6 KB with the default ESP-IDF DTLS size | `NANORTC_TX_SLOT_COUNT` (1/2/4/8…32, ≤ output queue); `NANORTC_TX_SLOT_SIZE` is derived and normally should not be overridden |
+| Shared receive/TURN scratch union | 344 B (core/data) / 1280 B (media) with TURN; 256 B / 1232 B without TURN | `NANORTC_STUN_BUF_SIZE`, `NANORTC_TURN_BUF_SIZE` (feature-gated — see below) |
 | TURN client | ~668 B | `NANORTC_FEATURE_TURN` (disable only if deployment can always reach peers via host / srflx) |
+
+The TX-ring row is its gross allocation. Its net effect is smaller because the
+session no longer carries a DTLS send scratch or single-slot RTCP feedback
+send buffers. Video packets, FEC packets, and NACK retransmits retain their
+dedicated rings because a whole video access unit can enqueue multiple packets
+before the application regains control.
 
 `NANORTC_MEDIA_BUF_SIZE` has a hard minimum of `NANORTC_VIDEO_MTU + 30 =
 1230 B` (RTP header 12 + TWCC extension 8 + MTU payload + SRTP auth tag
 10). Dropping below that in a media build is caught at compile time by a
 `#error` in `nanortc_config.h`. Default 1232 leaves 2 B headroom;
-`examples/esp32_{video,camera}/sdkconfig.defaults` raise it to 1280 to
+`examples/esp32_{media,camera}/sdkconfig.defaults` raise it to 1280 to
 reserve room for additional RTP header extensions.
 
 The H.265 sprop scratch is only populated when the application calls
@@ -159,17 +187,33 @@ single-NAL 480p stream gives roughly 500 ms with `PKT_RING_SIZE=16`,
 but the same setting on a 720p stream that emits ~26 packets per IDR
 covers under 100 ms across IDR boundaries.
 
-### Shared scratch buffer — feature-gated default
+### Owned transmit slots and receive scratch
 
-`nanortc_t.stun_buf` is a single Sans-I/O scratch region that services, in
-time-disjoint phases, STUN request/response encoding, TURN allocate/refresh/
-channel framing, RTCP generation and SRTCP protect, and — crucially — the
-in-place SRTP unprotect step on the inbound RTP path.
+Transient STUN/ICE/TURN control, DTLS records, encrypted SCTP output, RTCP
+feedback, and audio RTP are built in `nanortc_t.tx_slots`. A busy mask owns each
+slot until `nanortc_poll_output()` advances to that output's exact dequeue
+cursor. This makes two outputs produced by one state-machine call independent,
+and remains correct when the 16-bit output cursor wraps. If no slot is free,
+caller-driven audio/keyframe sends return `NANORTC_ERR_WOULD_BLOCK` without
+advancing RTP sequence, statistics, or protocol state; timer-driven producers
+retain their work for a later tick.
 
-The default size is therefore feature-gated:
+`nanortc_t.stun_buf` is now a receive-only view of a shared scratch union. In a
+media build it still must hold a complete inbound RTP/SRTP packet for in-place
+authentication/decryption; in a non-media build 256 bytes is sufficient for
+STUN input. The `turn_buf` view is used only at dispatch time to lazily wrap one
+polled payload in a TURN ChannelData frame or Send indication. These operations
+cannot overlap under the output-pointer lifetime contract, so the two views
+share storage. The backing TX slot is released even when wrapping fails and the
+output is dropped.
 
-- `NANORTC_HAVE_MEDIA_TRANSPORT=0` → 256 B (STUN / RTCP only)
+The STUN receive capacity is feature-gated:
+
+- `NANORTC_HAVE_MEDIA_TRANSPORT=0` → 256 B (STUN input only)
 - `NANORTC_HAVE_MEDIA_TRANSPORT=1` → `NANORTC_MEDIA_BUF_SIZE` (1232 B today)
+
+With TURN enabled, the union itself is the larger of that receive capacity and
+`NANORTC_TURN_BUF_SIZE` (344 B without media, 1280 B with the host defaults).
 
 `nanortc_config.h` enforces the invariant with a `#error`:
 
@@ -179,17 +223,20 @@ The default size is therefore feature-gated:
 #endif
 ```
 
-Any override that shrinks the scratch buffer below the media packet size in a
+Any override that shrinks the receive scratch below the media packet size in a
 media build becomes an explicit build failure, not a silent runtime packet
-drop. This is the guard for the Phase 7 C0 fix: the previous 256 B default
+drop. This preserves the Phase 7 C0 guard: the previous 256 B media scratch
 caused every inbound RTP packet above 256 B to return
 `NANORTC_ERR_BUFFER_TOO_SMALL`. See the
 [Phase 7 exec plan](../exec-plans/completed/phase7-stability-performance-hardening.md)
 for the full history.
 
-**Impact**: DC-only builds pay nothing for this scratch — the buffer stays at
-256 B. Media builds pay ~976 B more than the pre-Phase-7 default to carry a
-single scratch buffer instead of introducing a new field.
+`NANORTC_TX_SLOT_COUNT` must be a power of two from 1 through 32 and cannot
+exceed `NANORTC_OUT_QUEUE_SIZE`. Lowering it saves one derived slot size per
+step, but increases transient backpressure: integrations must synchronously
+drain outputs and retry the same uncommitted packet. The public
+`nanortc_output_free_slots()` reports general output-queue capacity only; it
+does not promise that a transient TX slot is available.
 
 ## Minimal Embedded Profile
 
@@ -203,6 +250,7 @@ overrides in your `NANORTC_CONFIG_FILE` header:
 #define NANORTC_MAX_ICE_CANDIDATES   4
 #define NANORTC_MAX_LOCAL_CANDIDATES 2
 #define NANORTC_OUT_QUEUE_SIZE       8
+#define NANORTC_TX_SLOT_COUNT        1
 #define NANORTC_SCTP_SEND_BUF_SIZE  2048
 #define NANORTC_SCTP_RECV_BUF_SIZE  2048
 #define NANORTC_SCTP_MAX_SEND_QUEUE 8

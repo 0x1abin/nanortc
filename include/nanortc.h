@@ -377,20 +377,20 @@ typedef struct {
 
 /** @brief Data for NANORTC_EV_ICE_CANDIDATE (trickle ICE). */
 typedef struct {
-    const char *candidate_str; /**< SDP candidate line (valid until next poll). */
+    const char *candidate_str; /**< SDP candidate line (valid until next state mutation). */
     bool end_of_candidates;    /**< True = no more local candidates. */
 } nanortc_ev_ice_candidate_t;
 
 /** @brief Data for NANORTC_EV_DATACHANNEL_OPEN. */
 typedef struct {
     uint16_t id;       /**< SCTP stream ID. */
-    const char *label; /**< Channel label (valid until next poll). */
+    const char *label; /**< Channel label (valid until next state mutation). */
 } nanortc_ev_datachannel_open_t;
 
 /** @brief Data for NANORTC_EV_DATACHANNEL_DATA. */
 typedef struct {
     uint16_t id;         /**< SCTP stream ID. */
-    const uint8_t *data; /**< Payload pointer (valid until next poll). */
+    const uint8_t *data; /**< Payload pointer (valid until next state mutation). */
     size_t len;          /**< Payload length in bytes. */
     bool binary;         /**< true = binary, false = UTF-8 string. */
 } nanortc_ev_datachannel_data_t;
@@ -407,8 +407,9 @@ typedef struct {
 /**
  * @brief Application event delivered through nanortc_poll_output().
  *
- * Pointer fields are valid only until the next call to
- * nanortc_poll_output() or nanortc_handle_input(). Copy if needed.
+ * Pointer fields remain valid until the next state-modifying API call on the
+ * same instance. Copy them before polling, feeding input, sending, or
+ * destroying the instance again.
  */
 typedef struct nanortc_event {
     nanortc_event_type_t type; /**< Event type discriminator. */
@@ -440,13 +441,12 @@ typedef struct nanortc_event {
 /**
  * @brief Output item produced by nanortc_poll_output(). Tagged union on @c type.
  *
- * Pointer fields (@c transmit.data, @c event pointer fields) are valid only
- * until the next call to nanortc_poll_output(), nanortc_handle_input(), or
- * nanortc_destroy() on the same nanortc_t. The library reuses internal
- * scratch buffers (DTLS, STUN, TURN wrap, RTP/SRTP, video pkt_ring), so any
- * payload not transmitted or copied before the next mutating call may be
- * overwritten or aliased. Drain each output synchronously, or memcpy() the
- * payload before continuing the event loop.
+ * Pointer fields (@c transmit.data, @c event pointer fields) remain valid
+ * until the next state-modifying API call on the same @c nanortc_t. This
+ * includes another poll, input/timer handling, media/DataChannel send, track
+ * or negotiation mutation, and destroy; pure const queries do not invalidate
+ * them. Drain each output synchronously, or memcpy() the payload before
+ * continuing the event loop.
  */
 typedef struct nanortc_output {
     nanortc_output_type_t type; /**< Discriminator for the anonymous union. */
@@ -628,6 +628,7 @@ typedef struct {
     uint16_t tail;            /**< Enqueue cursor: == pkt_ring_tail. depth = tail-head. */
     uint32_t budget_bytes;    /**< Token-bucket credit available to release now. */
     uint32_t last_refill_ms;  /**< Timestamp of the last token-bucket refill. */
+    bool refill_inited;       /**< last_refill_ms is valid, including timestamp zero. */
     uint32_t next_release_ms; /**< Cached deadline for nanortc_next_timeout_ms(). */
     /** Per-slot enqueue time, indexed by (cursor & (PKT_RING_SIZE-1)); used to
      *  cap the latency the pacer may add (NANORTC_PACING_MAX_QUEUE_MS catch-up). */
@@ -692,20 +693,10 @@ struct nanortc {
 
     /** Last time RTCP SR was sent (for periodic RTCP, RFC 3550 §6.2). */
     uint32_t last_rtcp_send_ms;
+    bool last_rtcp_send_valid; /**< True once last_rtcp_send_ms has been committed. */
 
-    /** Round-robin cursor for the multi-track SR cadence. Only one SR is
-     *  emitted per cadence tick (they share the single stun_buf scratch and
-     *  out_queue stores only a pointer), so this rotates which track sends
-     *  next across ticks to keep every sending track's SR interval bounded. */
+    /** Round-robin cursor for the multi-track SR cadence. */
     uint8_t sr_cursor;
-
-    /** Persistent scratch for one outbound RTCP feedback packet (PLI). Feedback
-     *  is generated during receive processing while stun_buf holds the inbound
-     *  RTP packet, so it cannot share stun_buf; this buffer satisfies the
-     *  nanortc_output_t lifetime contract (valid until the next poll_output).
-     *  One outstanding feedback at a time (one packet → one auto-PLI per
-     *  handle_input). */
-    uint8_t rtcp_fb_buf[NANORTC_RTCP_FB_BUF_SIZE];
 #endif
 
 #if NANORTC_FEATURE_VIDEO
@@ -735,6 +726,7 @@ struct nanortc {
      *  best-effort (re-NACKable). Bounded RAM: NANORTC_NACK_RETX_RING × MEDIA_BUF. */
     uint8_t nack_retx_buf[NANORTC_NACK_RETX_RING][NANORTC_MEDIA_BUF_SIZE];
     uint16_t nack_retx_free_at[NANORTC_NACK_RETX_RING];
+    uint64_t nack_retx_in_use; /**< Exact lifetime bits, cleared when out_head reaches free_at. */
 
     /** Count of times video_send_fragment_cb wrapped pkt_ring while a
      *  prior slot was still referenced by an outstanding out_queue entry
@@ -779,10 +771,6 @@ struct nanortc {
     uint32_t stats_auto_pli_sent;
 #endif
 #if NANORTC_FEATURE_VIDEO_NACK_RX
-    /** Persistent scratch for one outbound RTCP NACK (RFC 4585 §6.2.1). Separate
-     *  from rtcp_fb_buf because a gap may emit a NACK and an auto-PLI in the same
-     *  receive pass; sized for PLI/NACK + SRTCP. */
-    uint8_t nack_buf[NANORTC_RTCP_FB_BUF_SIZE];
     /** Receiver-generated NACKs (Generic NACK feedback for lost packets). */
     uint32_t stats_nack_sent;
 #endif
@@ -803,6 +791,7 @@ struct nanortc {
      *  prior FEC output has been dequeued and the slot is reusable. */
     uint8_t fec_tx_buf[NANORTC_FEC_TX_RING][NANORTC_FEC_BUF_SIZE];
     uint16_t fec_tx_free_at[NANORTC_FEC_TX_RING];
+    uint64_t fec_tx_in_use; /**< Exact lifetime bits, cleared at the matching dequeue cursor. */
     /* Receive: ring of recent plaintext media packets for FEC recovery. */
     uint8_t fec_rx_med[NANORTC_FEC_GROUP_SIZE][NANORTC_MEDIA_BUF_SIZE];
     uint16_t fec_rx_len[NANORTC_FEC_GROUP_SIZE];
@@ -822,9 +811,10 @@ struct nanortc {
     uint16_t fec_prot_base;
     uint16_t fec_prot_mask;
     bool fec_prot_valid;
-    uint32_t stats_fec_sent;            /**< FEC packets emitted. */
-    uint32_t stats_fec_recovered;       /**< Media packets recovered via FEC. */
-    uint32_t stats_nack_suppressed_fec; /**< NACK events skipped because FEC covers the loss. */
+    uint32_t stats_fec_sent;             /**< FEC packets emitted. */
+    uint32_t stats_fec_dropped_resource; /**< FEC groups skipped to preserve media admission. */
+    uint32_t stats_fec_recovered;        /**< Media packets recovered via FEC. */
+    uint32_t stats_nack_suppressed_fec;  /**< NACK events skipped because FEC covers the loss. */
 #endif
 #endif
 
@@ -832,6 +822,13 @@ struct nanortc {
     nanortc_output_t out_queue[NANORTC_OUT_QUEUE_SIZE];
     uint16_t out_head;
     uint16_t out_tail;
+
+    /** Owned backing storage for transient transmit producers. A slot remains
+     * busy until poll_output advances out_head to its exact free_at cursor. */
+    uint8_t tx_slots[NANORTC_TX_SLOT_COUNT][NANORTC_TX_SLOT_SIZE];
+    uint16_t tx_slot_free_at[NANORTC_TX_SLOT_COUNT];
+    uint32_t tx_slots_in_use;
+    uint8_t tx_slot_cursor;
 
 #if NANORTC_FEATURE_TURN
     /* Per-output side-table for lazy TURN wrap (RFC 5766 §10/§11). When set,
@@ -860,31 +857,29 @@ struct nanortc {
      * on CORE_ONLY/DATA/AUDIO builds too, not just TURN. */
     uint32_t stats_tx_queue_full; /**< rtc_enqueue_transmit out_queue overflow. */
 
-    /* Scratch buffer for STUN encode/decode.
-     * Sans I/O contract: caller must drain outputs before next handle_receive. */
-    uint8_t stun_buf[NANORTC_STUN_BUF_SIZE];
-
-    /* Dedicated scratch for TURN Allocate / Refresh / Permission / ChannelBind
-     * outputs. Separate from stun_buf so TURN packets are not clobbered by
-     * subsequent STUN srflx writes in the same rtc_process_timers tick —
-     * nanortc_output_t carries only a pointer, so both outputs would otherwise
-     * resolve to whichever writer wrote last when the caller drains them. */
+    /* State-mutating calls invalidate prior output pointers, so receive-side
+     * STUN/SRTP scratch and poll-time TURN wrapping can share storage. Their
+     * uses never overlap within one API call; outbound control uses TX slots. */
+    union {
+        uint8_t stun_buf[NANORTC_STUN_BUF_SIZE];
 #if NANORTC_FEATURE_TURN
-    uint8_t turn_buf[NANORTC_TURN_BUF_SIZE];
+        uint8_t turn_buf[NANORTC_TURN_BUF_SIZE];
 #endif
-
-    /* Scratch buffer for DTLS output polling */
-    uint8_t dtls_scratch[NANORTC_DTLS_BUF_SIZE];
+    };
 
     /* Stored remote address for SCTP output routing */
     nanortc_addr_t remote_addr;
 
-    /* Scratch for trickle ICE candidate strings (valid until next poll) */
+    /* Candidate events are emitted by separate state-mutating API calls, so
+     * their strings follow the same pointer-lifetime contract and share one
+     * fixed scratch region. */
+    union {
 #if NANORTC_FEATURE_TURN
-    char relay_cand_str[NANORTC_IPV6_STR_SIZE + 96];
+        char relay_cand_str[NANORTC_IPV6_STR_SIZE + 96];
 #endif
-    char srflx_cand_str[NANORTC_IPV6_STR_SIZE + 96];
-    char host_cand_str[NANORTC_IPV6_STR_SIZE + 96];
+        char srflx_cand_str[NANORTC_IPV6_STR_SIZE + 96];
+        char host_cand_str[NANORTC_IPV6_STR_SIZE + 96];
+    };
 
     /* STUN server for srflx discovery (RFC 8445 §5.1.1.1) */
     uint8_t stun_server_addr[NANORTC_ADDR_SIZE];
@@ -908,6 +903,7 @@ struct nanortc {
  * @param cfg  Configuration (pointer contents copied; need not persist).
  * @return NANORTC_OK on success.
  * @retval NANORTC_ERR_INVALID_PARAM  @p rtc or @p cfg is NULL, or crypto missing.
+ * @retval NANORTC_ERR_CRYPTO         Initial ICE tie-breaker RNG failed.
  */
 NANORTC_API int nanortc_init(nanortc_t *rtc, const nanortc_config_t *cfg);
 
@@ -1117,6 +1113,11 @@ NANORTC_API int nanortc_next_timeout_ms(const nanortc_t *rtc, uint32_t now_ms, u
  * Pure const reader — same single-owner threading discipline as
  * @ref nanortc_next_timeout_ms.
  *
+ * This reports only the universal output queue. It does not include the
+ * shared transient TX-slot ring, video packet/pacer storage, FEC/NACK rings,
+ * or protocol-specific pending capacity; a send may therefore still return
+ * @c NANORTC_ERR_WOULD_BLOCK when this value is non-zero.
+ *
  * @param rtc  Initialized RTC state.
  * @return Free slot count (0..NANORTC_OUT_QUEUE_SIZE); 0 if @p rtc is NULL.
  */
@@ -1229,6 +1230,12 @@ NANORTC_API void nanortc_set_direction(nanortc_t *rtc, uint8_t mid, nanortc_dire
  * @param data    Encoded audio payload (e.g. Opus frame).
  * @param len     Payload length in bytes.
  * @return NANORTC_OK on success.
+ * @retval NANORTC_ERR_WOULD_BLOCK      Output queue or transient TX slots are
+ *                                      full. Drain outputs and retry the same
+ *                                      frame; RTP sequence/statistics do not
+ *                                      advance on this path.
+ * @retval NANORTC_ERR_BUFFER_TOO_SMALL RTP/TWCC/SRTP packet cannot fit one
+ *                                      configured transmit slot.
  */
 NANORTC_API int nanortc_send_audio(nanortc_t *rtc, uint8_t mid, uint32_t pts_ms, const void *data,
                                    size_t len);
@@ -1277,6 +1284,8 @@ NANORTC_API int nanortc_send_video(nanortc_t *rtc, uint8_t mid, uint32_t pts_ms,
  * @return NANORTC_OK on success.
  * @retval NANORTC_ERR_INVALID_PARAM  Not a video track or invalid MID.
  * @retval NANORTC_ERR_STATE          Not connected.
+ * @retval NANORTC_ERR_WOULD_BLOCK    Output queue or transient TX slots are
+ *                                    full; drain outputs and retry.
  */
 NANORTC_API int nanortc_request_keyframe(nanortc_t *rtc, uint8_t mid);
 

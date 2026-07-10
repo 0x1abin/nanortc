@@ -29,9 +29,8 @@ static void test_sizeof_ice(void)
      * struct padding), so allow 24 B/slot of headroom for any extra
      * candidates configured via NANORTC_CONFIG_FILE. */
     const size_t base = 600;
-    const size_t extra = (NANORTC_MAX_ICE_CANDIDATES > 8)
-                             ? ((size_t)(NANORTC_MAX_ICE_CANDIDATES - 8) * 24u)
-                             : 0u;
+    const size_t extra =
+        (NANORTC_MAX_ICE_CANDIDATES > 8) ? ((size_t)(NANORTC_MAX_ICE_CANDIDATES - 8) * 24u) : 0u;
     TEST_ASSERT_LESS_OR_EQUAL_size_t(base + extra, sizeof(nano_ice_t));
 }
 
@@ -90,6 +89,33 @@ static void test_sizeof_stun_msg(void)
     TEST_ASSERT_LESS_OR_EQUAL_size_t(256, sizeof(stun_msg_t));
 }
 
+static void test_sizeof_rtc_profile(void)
+{
+#if NANORTC_FEATURE_VIDEO_FEC
+    const size_t limit = 164u * 1024u;
+#elif NANORTC_FEATURE_VIDEO_REORDER
+    const size_t limit = 140u * 1024u;
+#elif NANORTC_FEATURE_VIDEO
+#if NANORTC_FEATURE_DATACHANNEL
+    const size_t limit = 120u * 1024u;
+#else
+    const size_t limit = 104u * 1024u;
+#endif
+#elif NANORTC_FEATURE_AUDIO
+#if NANORTC_FEATURE_DATACHANNEL
+    const size_t limit = 64u * 1024u;
+#else
+    const size_t limit = 48u * 1024u;
+#endif
+#elif NANORTC_FEATURE_DATACHANNEL
+    const size_t limit = 36u * 1024u;
+#else
+    const size_t limit = 20u * 1024u;
+#endif
+    printf("sizeof(nanortc_t)=%zu, profile ceiling=%zu\n", sizeof(nanortc_t), limit);
+    TEST_ASSERT_LESS_OR_EQUAL_size_t(limit, sizeof(nanortc_t));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -121,6 +147,7 @@ int main(void)
 #endif
     RUN_TEST(test_sizeof_output);
     RUN_TEST(test_sizeof_stun_msg);
+    RUN_TEST(test_sizeof_rtc_profile);
 
     return UNITY_END();
 }

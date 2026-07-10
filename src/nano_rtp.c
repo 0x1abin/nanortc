@@ -124,6 +124,21 @@ int rtp_unpack(const uint8_t *data, size_t len, uint8_t *pt, uint16_t *seq, uint
         header_len += 4u + (size_t)ext_len * 4u;
     }
 
+    size_t body_len = len - header_len;
+    if (data[0] & 0x20) {
+        /* RFC 3550 §5.1: when P is set, the final octet contains the
+         * number of padding octets, including itself.  Padding belongs to
+         * the RTP packet, not the codec payload exposed to callers. */
+        if (body_len == 0) {
+            return NANORTC_ERR_PARSE;
+        }
+        uint8_t padding_len = data[len - 1];
+        if (padding_len == 0 || (size_t)padding_len > body_len) {
+            return NANORTC_ERR_PARSE;
+        }
+        body_len -= padding_len;
+    }
+
     if (pt) {
         *pt = data[1] & 0x7F;
     }
@@ -140,7 +155,7 @@ int rtp_unpack(const uint8_t *data, size_t len, uint8_t *pt, uint16_t *seq, uint
         *payload = data + header_len;
     }
     if (payload_len) {
-        *payload_len = len - header_len;
+        *payload_len = body_len;
     }
 
     return NANORTC_OK;

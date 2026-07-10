@@ -91,6 +91,16 @@ int nano_rtc_apply_ice_servers(nanortc_t *rtc, const nanortc_ice_server_t *serve
 int nano_rtc_enqueue_transmit(nanortc_t *rtc, const uint8_t *data, size_t len,
                               const nanortc_addr_t *peer_dest, bool force_via_turn);
 
+/** Reserve one owned transient TX slot. The slot is not marked busy until
+ * nano_rtc_tx_slot_commit() succeeds, so builders may abandon it on error.
+ * Returns WOULD_BLOCK when either the output queue or slot ring is full. */
+int nano_rtc_tx_slot_acquire(nanortc_t *rtc, uint8_t **buf, uint8_t *slot);
+
+/** Commit a previously acquired transient TX slot through the normal selected
+ * peer route (or force TURN for a symmetric STUN response). */
+int nano_rtc_tx_slot_commit(nanortc_t *rtc, uint8_t slot, size_t len,
+                            const nanortc_addr_t *peer_dest, bool force_via_turn);
+
 #if NANORTC_HAVE_MEDIA_TRANSPORT
 /**
  * Handle an SRTP-protected RTP or RTCP datagram. Mirrors the RFC 7983 §3
@@ -111,7 +121,7 @@ int nano_rtc_media_handle_rtp_or_rtcp(nanortc_t *rtc, const uint8_t *data, size_
  * `rtc->last_rtcp_send_ms` and `NANORTC_RTCP_INTERVAL_MS` internally and
  * is a no-op when `srtp.ready` is false. Defined in nano_rtc_media.c.
  */
-void nano_rtc_media_emit_rtcp_sr_cadence(nanortc_t *rtc, uint32_t now_ms);
+int nano_rtc_media_emit_rtcp_sr_cadence(nanortc_t *rtc, uint32_t now_ms);
 
 #if NANORTC_FEATURE_VIDEO && NANORTC_FEATURE_VIDEO_PACING
 /**

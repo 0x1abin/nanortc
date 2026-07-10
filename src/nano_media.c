@@ -5,6 +5,7 @@
  */
 
 #include "nano_media.h"
+#include "nano_time.h"
 #include "nanortc.h"
 #include <string.h>
 
@@ -119,13 +120,14 @@ void rate_window_roll(nano_rate_window_t *w, uint32_t now_ms)
     if (!w) {
         return;
     }
-    /* First use: initialise the bucket epoch so we don't report a huge
-     * rate on the first call just because bucket_start_ms is zero. */
-    if (w->bucket_start_ms == 0) {
-        w->bucket_start_ms = now_ms ? now_ms : 1;
+    /* First use: initialise the bucket epoch. Keep validity separate from the
+     * timestamp because zero is a valid point on a wrapping uint32_t clock. */
+    if (!w->bucket_valid) {
+        w->bucket_start_ms = now_ms;
+        w->bucket_valid = true;
         return;
     }
-    uint32_t elapsed = now_ms - w->bucket_start_ms;
+    uint32_t elapsed = nano_time_elapsed(now_ms, w->bucket_start_ms);
     if (elapsed >= 1000) {
         /* Bits/s = bytes * 8. At <= 2 Mbps × 1s the product fits in 32 bits. */
         w->prev_bps = w->cur_bytes * 8u;

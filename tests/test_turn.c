@@ -28,6 +28,21 @@ static const nanortc_crypto_provider_t *crypto(void)
     return nano_test_crypto();
 }
 
+static int failing_random_bytes(uint8_t *buf, size_t len)
+{
+    if (buf && len > 0u) {
+        memset(buf, 0xA5, len / 2u + len % 2u);
+    }
+    return -1;
+}
+
+static nanortc_crypto_provider_t crypto_failing_random(void)
+{
+    nanortc_crypto_provider_t provider = *crypto();
+    provider.random_bytes = failing_random_bytes;
+    return provider;
+}
+
 /* Helper: configure a TURN client with test credentials */
 static void setup_turn(nano_turn_t *turn)
 {
@@ -178,7 +193,7 @@ static void test_turn_401_challenge(void)
     uint8_t resp[256];
     size_t resp_len = build_401_response(resp, turn.last_txid);
 
-    int rc = turn_handle_response(&turn, resp, resp_len, crypto());
+    int rc = turn_handle_response(&turn, 1000, resp, resp_len, crypto());
     TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
     TEST_ASSERT_EQUAL_INT(NANORTC_TURN_CHALLENGED, turn.state);
     TEST_ASSERT_TRUE(turn.hmac_key_valid);
@@ -201,7 +216,7 @@ static void test_turn_authenticated_allocate(void)
     /* 401 response */
     uint8_t resp[256];
     size_t resp_len = build_401_response(resp, turn.last_txid);
-    turn_handle_response(&turn, resp, resp_len, crypto());
+    turn_handle_response(&turn, 0, resp, resp_len, crypto());
     TEST_ASSERT_EQUAL_INT(NANORTC_TURN_CHALLENGED, turn.state);
 
     /* Retry allocate (should include USERNAME, REALM, NONCE, MI) */
@@ -236,10 +251,11 @@ static void test_turn_allocate_success(void)
     uint8_t resp[256];
     size_t resp_len = build_allocate_success(resp, turn.last_txid);
 
-    int rc = turn_handle_response(&turn, resp, resp_len, crypto());
+    int rc = turn_handle_response(&turn, 1000, resp, resp_len, crypto());
     TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
     TEST_ASSERT_EQUAL_INT(NANORTC_TURN_ALLOCATED, turn.state);
     TEST_ASSERT_EQUAL_INT(600, turn.lifetime_s);
+    TEST_ASSERT_EQUAL_UINT32(541000u, turn.refresh_at_ms);
     /* Relay address: 203.0.113.5 */
     TEST_ASSERT_EQUAL_INT(203, turn.relay_addr[0]);
     TEST_ASSERT_EQUAL_INT(0, turn.relay_addr[1]);
@@ -521,9 +537,10 @@ static void test_turn_channel_bind_success(void)
     nanortc_write_u32be(resp + 4, STUN_MAGIC_COOKIE);
     memcpy(resp + 8, turn.channels[0].txid, STUN_TXID_SIZE);
 
-    int rc = turn_handle_response(&turn, resp, STUN_HEADER_SIZE, crypto());
+    int rc = turn_handle_response(&turn, 1000, resp, STUN_HEADER_SIZE, crypto());
     TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
     TEST_ASSERT_TRUE(turn.channels[0].bound);
+    TEST_ASSERT_EQUAL_UINT32(541000u, turn.channels[0].refresh_at_ms);
 }
 
 /* T17: ChannelData wrap */
@@ -775,7 +792,7 @@ static void test_turn_allocate_438_stale_nonce(void)
     size_t resp_len =
         build_error_response(resp, STUN_ALLOCATE_ERROR, turn.last_txid, 438, "newnonce99");
 
-    int rc = turn_handle_response(&turn, resp, resp_len, crypto());
+    int rc = turn_handle_response(&turn, 0, resp, resp_len, crypto());
     TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
     TEST_ASSERT_EQUAL_INT(NANORTC_TURN_CHALLENGED, turn.state);
     TEST_ASSERT_EQUAL_STRING("newnonce99", turn.nonce);
@@ -794,7 +811,7 @@ static void test_turn_allocate_438_no_nonce(void)
     uint8_t resp[256];
     size_t resp_len = build_error_response(resp, STUN_ALLOCATE_ERROR, turn.last_txid, 438, NULL);
 
-    int rc = turn_handle_response(&turn, resp, resp_len, crypto());
+    int rc = turn_handle_response(&turn, 0, resp, resp_len, crypto());
     TEST_ASSERT_EQUAL_INT(NANORTC_ERR_PROTOCOL, rc);
     TEST_ASSERT_EQUAL_INT(NANORTC_TURN_FAILED, turn.state);
 }
@@ -812,7 +829,7 @@ static void test_turn_allocate_unknown_error(void)
     uint8_t resp[256];
     size_t resp_len = build_error_response(resp, STUN_ALLOCATE_ERROR, turn.last_txid, 500, NULL);
 
-    int rc = turn_handle_response(&turn, resp, resp_len, crypto());
+    int rc = turn_handle_response(&turn, 0, resp, resp_len, crypto());
     TEST_ASSERT_EQUAL_INT(NANORTC_ERR_PROTOCOL, rc);
     TEST_ASSERT_EQUAL_INT(NANORTC_TURN_FAILED, turn.state);
 }
@@ -844,9 +861,10 @@ static void test_turn_refresh_success_response(void)
     pos += 8;
     nanortc_write_u16be(resp + 2, (uint16_t)(pos - STUN_HEADER_SIZE));
 
-    int rc = turn_handle_response(&turn, resp, pos, crypto());
+    int rc = turn_handle_response(&turn, 2000, resp, pos, crypto());
     TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
     TEST_ASSERT_EQUAL_INT(900, turn.lifetime_s);
+    TEST_ASSERT_EQUAL_UINT32(842000u, turn.refresh_at_ms);
 }
 
 /* T29: Refresh error 438 — stale nonce, retry */
@@ -864,7 +882,7 @@ static void test_turn_refresh_438_stale_nonce(void)
     size_t resp_len =
         build_error_response(resp, STUN_REFRESH_ERROR, turn.last_txid, 438, "fresh_nonce");
 
-    int rc = turn_handle_response(&turn, resp, resp_len, crypto());
+    int rc = turn_handle_response(&turn, 0, resp, resp_len, crypto());
     TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
     TEST_ASSERT_EQUAL_STRING("fresh_nonce", turn.nonce);
     TEST_ASSERT_EQUAL_UINT32(0, turn.refresh_at_ms); /* retry immediately */
@@ -884,7 +902,7 @@ static void test_turn_refresh_error_fails(void)
     uint8_t resp[256];
     size_t resp_len = build_error_response(resp, STUN_REFRESH_ERROR, turn.last_txid, 403, NULL);
 
-    int rc = turn_handle_response(&turn, resp, resp_len, crypto());
+    int rc = turn_handle_response(&turn, 0, resp, resp_len, crypto());
     TEST_ASSERT_EQUAL_INT(NANORTC_ERR_PROTOCOL, rc);
     TEST_ASSERT_EQUAL_INT(NANORTC_TURN_FAILED, turn.state);
 }
@@ -906,7 +924,7 @@ static void test_turn_permission_success_response(void)
     size_t resp_len =
         build_success_response(resp, STUN_CREATE_PERMISSION_RESPONSE, turn.permissions[0].txid);
 
-    int rc = turn_handle_response(&turn, resp, resp_len, crypto());
+    int rc = turn_handle_response(&turn, 0, resp, resp_len, crypto());
     TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
 }
 
@@ -926,7 +944,7 @@ static void test_turn_permission_438_stale_nonce(void)
     size_t resp_len = build_error_response(resp, STUN_CREATE_PERMISSION_ERROR,
                                            turn.permissions[0].txid, 438, "perm_nonce");
 
-    int rc = turn_handle_response(&turn, resp, resp_len, crypto());
+    int rc = turn_handle_response(&turn, 0, resp, resp_len, crypto());
     TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
     TEST_ASSERT_EQUAL_STRING("perm_nonce", turn.nonce);
 }
@@ -947,7 +965,7 @@ static void test_turn_permission_error_fails(void)
     size_t resp_len = build_error_response(resp, STUN_CREATE_PERMISSION_ERROR,
                                            turn.permissions[0].txid, 403, NULL);
 
-    int rc = turn_handle_response(&turn, resp, resp_len, crypto());
+    int rc = turn_handle_response(&turn, 0, resp, resp_len, crypto());
     TEST_ASSERT_EQUAL_INT(NANORTC_ERR_PROTOCOL, rc);
 }
 
@@ -966,7 +984,7 @@ static void test_turn_channel_bind_438_stale_nonce(void)
     size_t resp_len = build_error_response(resp, STUN_CHANNEL_BIND_ERROR, turn.channels[0].txid,
                                            438, "chan_nonce");
 
-    int rc = turn_handle_response(&turn, resp, resp_len, crypto());
+    int rc = turn_handle_response(&turn, 0, resp, resp_len, crypto());
     TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
     TEST_ASSERT_EQUAL_STRING("chan_nonce", turn.nonce);
 }
@@ -986,7 +1004,7 @@ static void test_turn_channel_bind_error_fails(void)
     size_t resp_len =
         build_error_response(resp, STUN_CHANNEL_BIND_ERROR, turn.channels[0].txid, 403, NULL);
 
-    int rc = turn_handle_response(&turn, resp, resp_len, crypto());
+    int rc = turn_handle_response(&turn, 0, resp, resp_len, crypto());
     TEST_ASSERT_EQUAL_INT(NANORTC_ERR_PROTOCOL, rc);
 }
 
@@ -1276,14 +1294,14 @@ static void test_turn_create_permission_txid_validation(void)
     /* Spoofed success response — must be rejected. */
     uint8_t resp[64];
     size_t resp_len = build_success_response(resp, STUN_CREATE_PERMISSION_RESPONSE, spoof_txid);
-    int rc = turn_handle_response(&turn, resp, resp_len, crypto());
+    int rc = turn_handle_response(&turn, 0, resp, resp_len, crypto());
     TEST_ASSERT_EQUAL_INT(NANORTC_ERR_PROTOCOL, rc);
 
     /* Spoofed 438 stale-nonce error — must NOT update our nonce. */
     char stale_marker[] = "evilNonce!";
     size_t err_len =
         build_error_response(resp, STUN_CREATE_PERMISSION_ERROR, spoof_txid, 438, stale_marker);
-    rc = turn_handle_response(&turn, resp, err_len, crypto());
+    rc = turn_handle_response(&turn, 0, resp, err_len, crypto());
     TEST_ASSERT_EQUAL_INT(NANORTC_ERR_PROTOCOL, rc);
     /* Our nonce must remain unchanged ("nonce456" from setup_turn_allocated). */
     TEST_ASSERT_EQUAL_STRING("nonce456", turn.nonce);
@@ -1291,7 +1309,7 @@ static void test_turn_create_permission_txid_validation(void)
     /* The legitimate response (echoing our txid) is still accepted. */
     resp_len =
         build_success_response(resp, STUN_CREATE_PERMISSION_RESPONSE, turn.permissions[0].txid);
-    rc = turn_handle_response(&turn, resp, resp_len, crypto());
+    rc = turn_handle_response(&turn, 0, resp, resp_len, crypto());
     TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
 }
 
@@ -1313,7 +1331,7 @@ static void test_turn_message_integrity_hmac_vector(void)
     /* Step 2: feed a 401 with realm="example.com" nonce="abc123nonce". */
     uint8_t resp[256];
     size_t resp_len = build_401_response(resp, turn.last_txid);
-    rc = turn_handle_response(&turn, resp, resp_len, crypto());
+    rc = turn_handle_response(&turn, 0, resp, resp_len, crypto());
     TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
     TEST_ASSERT_EQUAL_INT(NANORTC_TURN_CHALLENGED, turn.state);
 
@@ -1439,7 +1457,7 @@ static void test_turn_maxlen_credentials_no_overflow(void)
     uint8_t resp[512];
     size_t resp_len = build_401_response_sized(resp, turn.last_txid, NANORTC_TURN_REALM_SIZE,
                                                NANORTC_TURN_NONCE_SIZE);
-    rc = turn_handle_response(&turn, resp, resp_len, crypto());
+    rc = turn_handle_response(&turn, 0, resp, resp_len, crypto());
     TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
     TEST_ASSERT_EQUAL_INT(NANORTC_TURN_CHALLENGED, turn.state);
 
@@ -1480,6 +1498,67 @@ static void test_turn_maxlen_credentials_no_overflow(void)
         turn_create_permission(&turn, peer6, 6, 7001, crypto(), old_buf, sizeof(old_buf), &out_len);
     TEST_ASSERT_EQUAL_INT(NANORTC_ERR_BUFFER_TOO_SMALL, rc);
     TEST_ASSERT_EQUAL_size_t(0, out_len);
+}
+
+static void test_turn_rng_failure_is_transactional(void)
+{
+    nanortc_crypto_provider_t provider = crypto_failing_random();
+    uint8_t buf[512];
+    size_t out_len = 0;
+
+    nano_turn_t turn;
+    setup_turn(&turn);
+    memset(turn.last_txid, 0x11, sizeof(turn.last_txid));
+    TEST_ASSERT_EQUAL_INT(NANORTC_ERR_CRYPTO,
+                          turn_start_allocate(&turn, &provider, buf, sizeof(buf), &out_len));
+    TEST_ASSERT_EQUAL_INT(NANORTC_TURN_IDLE, turn.state);
+    TEST_ASSERT_EQUAL_size_t(0, out_len);
+    for (size_t i = 0; i < sizeof(turn.last_txid); i++) {
+        TEST_ASSERT_EQUAL_HEX8(0x11, turn.last_txid[i]);
+    }
+
+    uint8_t peer[NANORTC_ADDR_SIZE] = {172, 16, 0, 1};
+    setup_turn_allocated(&turn);
+    TEST_ASSERT_EQUAL_INT(
+        NANORTC_ERR_CRYPTO,
+        turn_create_permission(&turn, peer, 4, 7000, &provider, buf, sizeof(buf), &out_len));
+    TEST_ASSERT_EQUAL_INT(0, turn.permission_count);
+    TEST_ASSERT_EQUAL_size_t(0, out_len);
+
+    uint16_t next_channel = turn.next_channel;
+    TEST_ASSERT_EQUAL_INT(NANORTC_ERR_CRYPTO, turn_channel_bind(&turn, peer, 4, 9000, &provider,
+                                                                buf, sizeof(buf), &out_len));
+    TEST_ASSERT_EQUAL_INT(0, turn.channel_count);
+    TEST_ASSERT_EQUAL_HEX16(next_channel, turn.next_channel);
+    TEST_ASSERT_EQUAL_size_t(0, out_len);
+}
+
+static void test_turn_refresh_deadline_wrap(void)
+{
+    nano_turn_t turn;
+    setup_turn(&turn);
+    uint8_t buf[512];
+    size_t out_len = 0;
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK,
+                          turn_start_allocate(&turn, crypto(), buf, sizeof(buf), &out_len));
+
+    uint8_t resp[256];
+    size_t resp_len = build_allocate_success(resp, turn.last_txid);
+    uint32_t now_ms = UINT32_MAX - 100u;
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK,
+                          turn_handle_response(&turn, now_ms, resp, resp_len, crypto()));
+    TEST_ASSERT_EQUAL_UINT32(539899u, turn.refresh_at_ms);
+    TEST_ASSERT_EQUAL_UINT32(540000u, turn_next_timeout_ms(&turn, now_ms));
+    TEST_ASSERT_EQUAL_UINT32(539899u, turn_next_timeout_ms(&turn, 0u));
+    TEST_ASSERT_EQUAL_UINT32(0u, turn_next_timeout_ms(&turn, turn.refresh_at_ms));
+
+    out_len = 123u;
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK,
+                          turn_generate_refresh(&turn, 0u, crypto(), buf, sizeof(buf), &out_len));
+    TEST_ASSERT_EQUAL_size_t(0, out_len);
+    TEST_ASSERT_EQUAL_INT(
+        NANORTC_OK, turn_generate_refresh(&turn, 539899u, crypto(), buf, sizeof(buf), &out_len));
+    TEST_ASSERT_TRUE(out_len > 0u);
 }
 
 /* ----------------------------------------------------------------
@@ -1545,6 +1624,8 @@ int main(void)
     RUN_TEST(test_turn_create_permission_txid_validation);
     RUN_TEST(test_turn_message_integrity_hmac_vector);
     RUN_TEST(test_turn_maxlen_credentials_no_overflow);
+    RUN_TEST(test_turn_rng_failure_is_transactional);
+    RUN_TEST(test_turn_refresh_deadline_wrap);
 
     return UNITY_END();
 }

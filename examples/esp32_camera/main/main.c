@@ -589,8 +589,16 @@ static void webrtc_task(void *arg)
             mic_msg_t mic_msg;
             while (xQueueReceive(s_mic_queue, &mic_msg, 0) == pdTRUE) {
                 if (s_connected && s_mic_mid >= 0) {
-                    nanortc_send_audio(&s_rtc, (uint8_t)s_mic_mid, mic_msg.pts_ms, mic_msg.data,
-                                       mic_msg.len);
+                    int rc = nanortc_send_audio(&s_rtc, (uint8_t)s_mic_mid, mic_msg.pts_ms,
+                                                mic_msg.data, mic_msg.len);
+                    if (rc == NANORTC_ERR_WOULD_BLOCK) {
+                        nano_run_loop_drain(&s_loop);
+                        rc = nanortc_send_audio(&s_rtc, (uint8_t)s_mic_mid, mic_msg.pts_ms,
+                                                mic_msg.data, mic_msg.len);
+                    }
+                    if (rc != NANORTC_OK) {
+                        ESP_LOGW(TAG, "audio frame dropped: %d (%s)", rc, nanortc_err_name(rc));
+                    }
                 }
                 free(mic_msg.data);
             }

@@ -70,6 +70,32 @@ typedef struct nano_bwe {
 int bwe_init(nano_bwe_t *bwe);
 
 /**
+ * @brief Transactionally update runtime bitrate bounds.
+ *
+ * A zero bound selects its compile-time default.  The effective bounds are
+ * validated before state is changed; the current estimate and event baseline
+ * are clamped immediately after a successful update.
+ *
+ * @param bwe      Bandwidth estimator state.
+ * @param min_bps  Runtime minimum, or zero for NANORTC_BWE_MIN_BITRATE.
+ * @param max_bps  Runtime maximum, or zero for NANORTC_BWE_MAX_BITRATE.
+ * @return NANORTC_OK on success, NANORTC_ERR_INVALID_PARAM on invalid input.
+ */
+int bwe_set_bounds(nano_bwe_t *bwe, uint32_t min_bps, uint32_t max_bps);
+
+/**
+ * @brief Set the pre-feedback bitrate estimate within the effective bounds.
+ *
+ * A zero value selects NANORTC_BWE_INITIAL_BITRATE.  Once REMB or TWCC
+ * feedback has been processed this function intentionally becomes a no-op.
+ *
+ * @param bwe  Bandwidth estimator state.
+ * @param bps  Initial bitrate, or zero for the compile-time default.
+ * @return NANORTC_OK on success, NANORTC_ERR_INVALID_PARAM if @p bwe is NULL.
+ */
+int bwe_set_initial_bitrate(nano_bwe_t *bwe, uint32_t bps);
+
+/**
  * @brief Process incoming RTCP feedback for bandwidth estimation.
  *
  * Parses REMB (RTCP PSFB FMT=15) packets and updates the estimated

@@ -26,6 +26,23 @@ static const nanortc_crypto_provider_t *crypto(void)
     return nano_test_crypto();
 }
 
+static int failing_random_bytes(uint8_t *buf, size_t len)
+{
+    /* Simulate a provider that writes a partial result before reporting
+     * failure; callers must not expose those bytes as protocol state. */
+    if (buf && len > 0u) {
+        memset(buf, 0xA5, len / 2u + len % 2u);
+    }
+    return -1;
+}
+
+static nanortc_crypto_provider_t crypto_failing_random(void)
+{
+    nanortc_crypto_provider_t provider = *crypto();
+    provider.random_bytes = failing_random_bytes;
+    return provider;
+}
+
 /* Set up a pair of ICE agents with matching credentials */
 static void setup_ice_pair(nano_ice_t *controlling, nano_ice_t *controlled)
 {
@@ -222,6 +239,87 @@ TEST(test_ice_generate_check_pacing)
     ASSERT_OK(ice_generate_check(&ctrl, 50, crypto(), buf, sizeof(buf), &out_len));
     ASSERT_TRUE(out_len > 0);
     ASSERT_EQ(ctrl.check_count, 2);
+}
+
+TEST(test_ice_generate_check_pacing_wrap)
+{
+    nano_ice_t ctrl, ctld;
+    setup_ice_pair(&ctrl, &ctld);
+    uint8_t buf[256];
+    size_t out_len = 0;
+    uint32_t start_ms = UINT32_MAX - 20u;
+
+    ASSERT_OK(ice_generate_check(&ctrl, start_ms, crypto(), buf, sizeof(buf), &out_len));
+    ASSERT_TRUE(out_len > 0u);
+    ASSERT_EQ(ctrl.next_check_ms, 29u);
+
+    out_len = 0;
+    ASSERT_OK(ice_generate_check(&ctrl, 0u, crypto(), buf, sizeof(buf), &out_len));
+    ASSERT_EQ(out_len, 0u);
+
+    ASSERT_OK(ice_generate_check(&ctrl, 29u, crypto(), buf, sizeof(buf), &out_len));
+    ASSERT_TRUE(out_len > 0u);
+}
+
+TEST(test_ice_rng_failure_does_not_commit_txid)
+{
+    nano_ice_t ctrl, ctld;
+    setup_ice_pair(&ctrl, &ctld);
+    memset(ctrl.pending[0].txid, 0x11, sizeof(ctrl.pending[0].txid));
+    nanortc_crypto_provider_t provider = crypto_failing_random();
+    uint8_t buf[256];
+    size_t out_len = 0;
+
+    ASSERT_EQ(ice_generate_check(&ctrl, 100u, &provider, buf, sizeof(buf), &out_len),
+              NANORTC_ERR_CRYPTO);
+    ASSERT_EQ(out_len, 0u);
+    ASSERT_EQ(ctrl.state, NANORTC_ICE_STATE_NEW);
+    ASSERT_EQ(ctrl.check_count, 0u);
+    ASSERT_FALSE(ctrl.pending[0].in_flight);
+    for (size_t i = 0; i < sizeof(ctrl.pending[0].txid); i++) {
+        ASSERT_EQ(ctrl.pending[0].txid[i], 0x11u);
+    }
+}
+
+TEST(test_ice_consent_deadlines_wrap)
+{
+    nano_ice_t ctrl, ctld;
+    setup_ice_pair(&ctrl, &ctld);
+    ctrl.state = NANORTC_ICE_STATE_CONNECTED;
+    ctrl.consent_next_ms = 20u;
+    ctrl.consent_expiry_ms = 30u;
+    uint8_t buf[256];
+    size_t out_len = 0;
+
+    ASSERT_OK(ice_generate_consent(&ctrl, UINT32_MAX - 10u, crypto(), buf, sizeof(buf), &out_len));
+    ASSERT_EQ(out_len, 0u);
+    ASSERT_FALSE(ice_consent_expired(&ctrl, UINT32_MAX - 10u));
+    ASSERT_EQ(ice_next_timeout_ms(&ctrl, UINT32_MAX - 10u), 31u);
+
+    ASSERT_OK(ice_generate_consent(&ctrl, 20u, crypto(), buf, sizeof(buf), &out_len));
+    ASSERT_TRUE(out_len > 0u);
+    ASSERT_FALSE(ice_consent_expired(&ctrl, 29u));
+    ASSERT_TRUE(ice_consent_expired(&ctrl, 30u));
+}
+
+TEST(test_ice_consent_rng_failure_does_not_commit_txid)
+{
+    nano_ice_t ctrl, ctld;
+    setup_ice_pair(&ctrl, &ctld);
+    ctrl.state = NANORTC_ICE_STATE_CONNECTED;
+    memset(ctrl.consent_txid, 0x22, sizeof(ctrl.consent_txid));
+    nanortc_crypto_provider_t provider = crypto_failing_random();
+    uint8_t buf[256];
+    size_t out_len = 0;
+
+    ASSERT_EQ(ice_generate_consent(&ctrl, 100u, &provider, buf, sizeof(buf), &out_len),
+              NANORTC_ERR_CRYPTO);
+    ASSERT_EQ(out_len, 0u);
+    ASSERT_FALSE(ctrl.consent_pending);
+    ASSERT_EQ(ctrl.consent_next_ms, 0u);
+    for (size_t i = 0; i < sizeof(ctrl.consent_txid); i++) {
+        ASSERT_EQ(ctrl.consent_txid[i], 0x22u);
+    }
 }
 
 TEST(test_ice_controlled_does_not_generate)
@@ -459,8 +557,7 @@ TEST(test_ice_controlled_dual_stack_local_fallback)
     fill_candidate(&ctld.local_candidates[1], 6, 50000);
     ctld.local_candidate_count = 2;
 
-    uint8_t txid[12] = {0xa1, 0xb2, 0xc3, 0xd4, 0xe5, 0xf6, 0x07, 0x18,
-                       0x29, 0x3a, 0x4b, 0x5c};
+    uint8_t txid[12] = {0xa1, 0xb2, 0xc3, 0xd4, 0xe5, 0xf6, 0x07, 0x18, 0x29, 0x3a, 0x4b, 0x5c};
     uint8_t key[] = "peer-password-123456";
     uint8_t req_buf[256];
     size_t req_len = 0;
@@ -542,7 +639,7 @@ TEST(test_ice_controlled_single_v4_local_fallback_keeps_idx_0)
 
     ASSERT_EQ(ctld.state, NANORTC_ICE_STATE_CONNECTED);
     ASSERT_TRUE(ctld.nominated);
-    ASSERT_EQ(ctld.selected_local_idx, 0);   /* legacy fallback */
+    ASSERT_EQ(ctld.selected_local_idx, 0);    /* legacy fallback */
     ASSERT_EQ(ctld.selected_local_family, 4); /* the only candidate */
 }
 
@@ -1373,6 +1470,10 @@ RUN(test_ice_is_stun);
 /* §7.1.1: Controlling generates requests */
 RUN(test_ice_generate_check_basic);
 RUN(test_ice_generate_check_pacing);
+RUN(test_ice_generate_check_pacing_wrap);
+RUN(test_ice_rng_failure_does_not_commit_txid);
+RUN(test_ice_consent_deadlines_wrap);
+RUN(test_ice_consent_rng_failure_does_not_commit_txid);
 RUN(test_ice_controlled_does_not_generate);
 /* §7.2.1: Controlled receives requests */
 RUN(test_ice_controlled_handle_request);

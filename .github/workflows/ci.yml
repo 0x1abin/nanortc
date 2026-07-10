@@ -44,6 +44,59 @@ jobs:
       - name: Test
         run: ctest --test-dir build --output-on-failure
 
+  advanced-features:
+    name: Advanced Features (${{ matrix.profile.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        profile:
+          - name: REORDER_NACK_FEC_RATE_CONTROL
+            cmake_args: >-
+              -DNANORTC_FEATURE_VIDEO_REORDER=ON
+              -DNANORTC_FEATURE_VIDEO_NACK_RX=ON
+              -DNANORTC_FEATURE_VIDEO_FEC=ON
+              -DNANORTC_FEATURE_VIDEO_RATE_CONTROL=ON
+              -DNANORTC_FEC_ADAPTIVE=ON
+          - name: FEC_WITHOUT_NACK
+            cmake_args: >-
+              -DNANORTC_FEATURE_H265=ON
+              -DNANORTC_FEATURE_VIDEO_REORDER=ON
+              -DNANORTC_FEATURE_VIDEO_FEC=ON
+              -DNANORTC_FEATURE_VIDEO_NACK_RX=OFF
+              -DNANORTC_FEC_ADAPTIVE=ON
+              -DNANORTC_FEATURE_VIDEO_PACING=ON
+              -DNANORTC_FEATURE_VIDEO_AUTO_PLI=OFF
+          - name: PACING_OFF
+            cmake_args: >-
+              -DNANORTC_FEATURE_H265=ON
+              -DNANORTC_FEATURE_VIDEO_REORDER=ON
+              -DNANORTC_FEATURE_VIDEO_NACK_RX=ON
+              -DNANORTC_FEATURE_VIDEO_FEC=ON
+              -DNANORTC_FEATURE_VIDEO_PACING=OFF
+              -DNANORTC_FEATURE_VIDEO_AUTO_PLI=ON
+              -DNANORTC_FEC_ADAPTIVE=OFF
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libmbedtls-dev
+
+      - name: Configure
+        run: |
+          cmake -B build \
+            -DNANORTC_FEATURE_DATACHANNEL=ON \
+            -DNANORTC_FEATURE_AUDIO=ON \
+            -DNANORTC_FEATURE_VIDEO=ON \
+            ${{ matrix.profile.cmake_args }} \
+            -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        run: cmake --build build -j$(nproc)
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
   constraints:
     name: Architecture Constraints
     runs-on: ubuntu-latest
@@ -81,12 +134,36 @@ jobs:
           pip install clang-format==22.1.2
           clang-format --dry-run --Werror src/*.c src/*.h include/*.h crypto/*.h crypto/*.c
 
+      - name: "Check: invalid crypto backend is rejected"
+        run: |
+          if cmake -B build-invalid-crypto -DNANORTC_CRYPTO=invalid -DNANORTC_BUILD_TESTS=OFF; then
+            echo "Invalid NANORTC_CRYPTO unexpectedly configured"
+            exit 1
+          fi
+
+      - name: "Check: TX slot count validation and minimum profile"
+        run: |
+          if cmake -B build-invalid-tx-slots -DNANORTC_TX_SLOT_COUNT=3 -DNANORTC_BUILD_TESTS=OFF; then
+            echo "Invalid NANORTC_TX_SLOT_COUNT unexpectedly configured"
+            exit 1
+          fi
+          cmake -B build-tx-slot-one \
+            -DNANORTC_TX_SLOT_COUNT=1 \
+            -DCMAKE_BUILD_TYPE=Debug
+          cmake --build build-tx-slot-one -j$(nproc)
+          ctest --test-dir build-tx-slot-one --output-on-failure
+
+      - name: "Check: IDF_PATH alone remains a host build"
+        run: |
+          IDF_PATH=/nonexistent cmake -B build-host-boundary \
+            -DNANORTC_BUILD_TESTS=OFF -DCMAKE_BUILD_TYPE=Debug
+
       - name: "Check: symbol naming"
         run: |
           cmake -B build -DNANORTC_FEATURE_DATACHANNEL=ON -DNANORTC_FEATURE_AUDIO=ON -DNANORTC_FEATURE_VIDEO=ON -DNANORTC_FEATURE_H265=ON -DCMAKE_BUILD_TYPE=Debug
           cmake --build build -j$(nproc)
           # All symbols must start with nano_/nanortc_ (public API) or a known module prefix (internal)
-          ALLOWED='nano_|nanortc_|stun_|ice_|dtls_|nsctp_|sctp_|dc_|sdp_|rtp_|rtcp_|srtp_|jitter_|bwe_|twcc_|rate_window_|h264_|h265_|media_|ssrc_map_|addr_|track_|turn_'
+          ALLOWED='nano_|nanortc_|stun_|ice_|dtls_|nsctp_|sctp_|dc_|sdp_|rtp_|rtcp_|srtp_|jitter_|bwe_|twcc_|rate_window_|rate_control_|h264_|h265_|media_|ssrc_map_|addr_|track_|turn_'
           violations=$(nm -g build/libnanortc.a 2>/dev/null | grep ' T ' | awk '{print $3}' | grep -v '^_' | grep -vE "^($ALLOWED)" || true)
           if [ -n "$violations" ]; then
             echo "Symbols with unknown prefix (expected nano_ or module prefix):"
@@ -124,8 +201,22 @@ jobs:
       - name: Install dependencies
         run: sudo apt-get update -qq && sudo apt-get install -y -qq libmbedtls-dev
 
-      - name: Configure (MEDIA + ASan)
-        run: cmake -B build -DNANORTC_FEATURE_DATACHANNEL=ON -DNANORTC_FEATURE_AUDIO=ON -DNANORTC_FEATURE_VIDEO=ON -DNANORTC_FEATURE_H265=ON -DCMAKE_BUILD_TYPE=Debug -DADDRESS_SANITIZER=ON
+      - name: Configure (all advanced media + H265 + ASan)
+        run: >-
+          cmake -B build
+          -DNANORTC_FEATURE_DATACHANNEL=ON
+          -DNANORTC_FEATURE_AUDIO=ON
+          -DNANORTC_FEATURE_VIDEO=ON
+          -DNANORTC_FEATURE_H265=ON
+          -DNANORTC_FEATURE_VIDEO_RATE_CONTROL=ON
+          -DNANORTC_FEATURE_VIDEO_REORDER=ON
+          -DNANORTC_FEATURE_VIDEO_NACK_RX=ON
+          -DNANORTC_FEATURE_VIDEO_FEC=ON
+          -DNANORTC_FEATURE_VIDEO_PACING=ON
+          -DNANORTC_FEATURE_VIDEO_AUTO_PLI=ON
+          -DNANORTC_FEC_ADAPTIVE=ON
+          -DCMAKE_BUILD_TYPE=Debug
+          -DADDRESS_SANITIZER=ON
 
       - name: Build
         run: cmake --build build -j$(nproc)
@@ -151,6 +242,10 @@ jobs:
             -DNANORTC_FEATURE_AUDIO=ON \
             -DNANORTC_FEATURE_VIDEO=ON \
             -DNANORTC_FEATURE_H265=ON \
+            -DNANORTC_FEATURE_VIDEO_RATE_CONTROL=ON \
+            -DNANORTC_FEATURE_VIDEO_REORDER=ON \
+            -DNANORTC_FEATURE_VIDEO_NACK_RX=ON \
+            -DNANORTC_FEATURE_VIDEO_FEC=ON \
             -DCMAKE_C_COMPILER=clang \
             -DCMAKE_BUILD_TYPE=Debug
 
@@ -159,13 +254,29 @@ jobs:
 
       - name: Fuzz (30s per harness)
         run: |
-          mkdir -p tests/fuzz/corpus/{stun,sctp,sdp,rtp,h264,h265,addr,bwe,turn,reorder,fec}
-          for t in fuzz_stun fuzz_sctp fuzz_sdp fuzz_rtp fuzz_h264 fuzz_h265 fuzz_addr fuzz_bwe fuzz_turn fuzz_reorder fuzz_fec; do
+          mkdir -p tests/fuzz/corpus build/fuzz-logs
+          mapfile -t fuzzers < <(find build/tests/fuzz -maxdepth 1 -type f -executable -name 'fuzz_*' | sort)
+          if [ "${#fuzzers[@]}" -eq 0 ]; then
+            echo "No fuzz harnesses were built"
+            exit 1
+          fi
+          failed=0
+          for binary in "${fuzzers[@]}"; do
+            t=$(basename "$binary")
+            corpus="tests/fuzz/corpus/${t#fuzz_}"
+            log="build/fuzz-logs/$t.log"
+            mkdir -p "$corpus"
             echo "=== $t ==="
-            CORPUS_DIR="tests/fuzz/corpus/${t#fuzz_}"
-            ./build/tests/fuzz/$t "$CORPUS_DIR" \
-              -max_total_time=30 -max_len=4096 -print_final_stats=1 2>&1 | tail -5
+            if "$binary" "$corpus" \
+              -max_total_time=30 -max_len=4096 -print_final_stats=1 \
+              -artifact_prefix="build/fuzz-logs/$t-" >"$log" 2>&1; then
+              tail -5 "$log"
+            else
+              cat "$log"
+              failed=1
+            fi
           done
+          exit "$failed"
 
   coverage:
     name: Code Coverage
@@ -227,10 +338,20 @@ jobs:
           cmake -B build \
             -DNANORTC_BUILD_INTEROP_TESTS=ON \
             -DNANORTC_CRYPTO=openssl \
+            -DNANORTC_FEATURE_AUDIO=ON \
+            -DNANORTC_FEATURE_VIDEO=ON \
+            -DNANORTC_FEATURE_H265=ON \
             -DCMAKE_BUILD_TYPE=Debug
 
       - name: Build
         run: cmake --build build -j$(nproc)
+
+      - name: Assert A/V interop tests are registered
+        run: |
+          tests=$(ctest --test-dir build -N)
+          echo "$tests"
+          grep -q 'interop_audio' <<<"$tests"
+          grep -q 'interop_video' <<<"$tests"
 
       - name: Test
         run: ctest --test-dir build -R interop -LE network --output-on-failure
@@ -252,6 +373,9 @@ jobs:
           cmake -B build-interop \
             -DNANORTC_BUILD_INTEROP_TESTS=ON \
             -DNANORTC_CRYPTO=openssl \
+            -DNANORTC_FEATURE_AUDIO=ON \
+            -DNANORTC_FEATURE_VIDEO=ON \
+            -DNANORTC_FEATURE_H265=ON \
             -DCMAKE_BUILD_TYPE=Debug
 
       - name: Build
