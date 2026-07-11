@@ -77,7 +77,9 @@ int encoder_init(uint16_t width, uint16_t height, uint8_t fps,
     s_enc.cfg.res.width = width;
     s_enc.cfg.res.height = height;
     s_enc.cfg.rc.bitrate = (uint32_t)bitrate_kbps * 1024;
-    s_enc.cfg.rc.qp_min = 26;
+    s_enc.cfg.rc.qp_min = 20; /* allow the rate controller to actually spend a
+                               * higher bitrate budget on detail (qp_min=26
+                               * caps the effective bitrate on simple scenes) */
     s_enc.cfg.rc.qp_max = 42;
 
     /* Round up to macroblock boundary (16 pixels) */
