@@ -69,4 +69,4 @@ Run `linux_uvc_camera -h` for the full option list (`-W/-H/-f` geometry,
 | `index.html`                      | Browser viewer + live stats                            |
 
 Shared helpers (`run_loop_linux`, `http_signaling`, `sig_discovery`,
-`multi_session`, `bwe_coordinator`) live in [`../common/`](../common/).
+`multi_session`, `bwe_coordinator`, `h265_params`) live in [`../common/`](../common/).
