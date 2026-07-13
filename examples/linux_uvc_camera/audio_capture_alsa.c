@@ -22,7 +22,7 @@
 #include "audio_capture.h"
 
 #include <alsa/asoundlib.h>
-#include <opus/opus.h>
+#include <opus.h>
 
 #include <errno.h>
 #include <pthread.h>
@@ -51,6 +51,58 @@ static struct {
 static void audio_sig_handler(int sig)
 {
     (void)sig;
+}
+
+/* Apply an optional board-specific capture gain without shelling out to
+ * amixer. Failure is deliberately non-fatal: a missing mixer element must not
+ * take down an otherwise usable PCM capture path. */
+static void alsa_apply_capture_gain(const audio_config_t *cfg)
+{
+    if (!cfg->mixer_device || !cfg->mixer_control)
+        return;
+
+    snd_mixer_t *mixer = NULL;
+    int err = snd_mixer_open(&mixer, 0);
+    if (err < 0)
+        goto fail;
+    if ((err = snd_mixer_attach(mixer, cfg->mixer_device)) < 0 ||
+        (err = snd_mixer_selem_register(mixer, NULL, NULL)) < 0 ||
+        (err = snd_mixer_load(mixer)) < 0)
+        goto fail;
+
+    snd_mixer_selem_id_t *sid;
+    snd_mixer_selem_id_alloca(&sid);
+    snd_mixer_selem_id_set_index(sid, 0);
+    snd_mixer_selem_id_set_name(sid, cfg->mixer_control);
+    snd_mixer_elem_t *elem = snd_mixer_find_selem(mixer, sid);
+    if (!elem || !snd_mixer_selem_has_capture_volume(elem)) {
+        fprintf(stderr, "[audio] mixer capture control %s not found on %s\n", cfg->mixer_control,
+                cfg->mixer_device);
+        snd_mixer_close(mixer);
+        return;
+    }
+
+    long min_gain = 0, max_gain = 0;
+    snd_mixer_selem_get_capture_volume_range(elem, &min_gain, &max_gain);
+    long gain = cfg->capture_gain;
+    if (gain < min_gain)
+        gain = min_gain;
+    if (gain > max_gain)
+        gain = max_gain;
+    err = snd_mixer_selem_set_capture_volume_all(elem, gain);
+    if (err < 0)
+        goto fail;
+
+    fprintf(stderr, "[audio] mixer %s/%s capture gain=%ld range=%ld..%ld\n", cfg->mixer_device,
+            cfg->mixer_control, gain, min_gain, max_gain);
+    snd_mixer_close(mixer);
+    return;
+
+fail:
+    fprintf(stderr, "[audio] mixer setup %s/%s: %s (continuing)\n", cfg->mixer_device,
+            cfg->mixer_control, snd_strerror(err));
+    if (mixer)
+        snd_mixer_close(mixer);
 }
 
 /* Open ALSA capture device with explicit hw_params + sw_params. Returns
@@ -184,6 +236,7 @@ static void *audio_thread_fn(void *arg)
     unsigned int rate = (unsigned int)g_audio.cfg.sample_rate;
 
     /* 1. Open ALSA from *inside* this thread (not from audio_start). */
+    alsa_apply_capture_gain(&g_audio.cfg);
     snd_pcm_t *pcm =
         alsa_open(g_audio.cfg.device, rate, (unsigned int)ch, (snd_pcm_uframes_t)nsamples);
     if (!pcm) {
@@ -207,18 +260,25 @@ static void *audio_thread_fn(void *arg)
     opus_encoder_ctl(enc, OPUS_SET_SIGNAL(OPUS_SIGNAL_VOICE));
     opus_encoder_ctl(enc, OPUS_SET_INBAND_FEC(1));
     opus_encoder_ctl(enc, OPUS_SET_PACKET_LOSS_PERC(5));
-    fprintf(stderr, "[audio] opus encoder: %d bps %s voip\n", bitrate, ch == 2 ? "stereo" : "mono");
-
-    /* Signal audio_start that we're ready. */
-    atomic_store(&g_audio.init_state, 1);
+    if (g_audio.cfg.opus_complexity > 0)
+        opus_encoder_ctl(enc, OPUS_SET_COMPLEXITY(g_audio.cfg.opus_complexity));
+    opus_encoder_ctl(enc, OPUS_SET_DTX(g_audio.cfg.enable_dtx ? 1 : 0));
 
     size_t pcm_bytes = (size_t)nsamples * (size_t)ch * sizeof(int16_t);
     int16_t *pcm_buf = (int16_t *)malloc(pcm_bytes);
     if (!pcm_buf) {
         fprintf(stderr, "[audio] pcm_buf alloc failed\n");
+        atomic_store(&g_audio.init_state, 2);
         goto cleanup;
     }
     uint8_t opus_buf[1500]; /* max Opus 20ms frame ≈ 1275 bytes */
+
+    fprintf(stderr, "[audio] opus encoder: %d bps %s voip complexity=%s dtx=%d\n", bitrate,
+            ch == 2 ? "stereo" : "mono", g_audio.cfg.opus_complexity > 0 ? "configured" : "default",
+            g_audio.cfg.enable_dtx ? 1 : 0);
+
+    /* Signal audio_start only after every required allocation is ready. */
+    atomic_store(&g_audio.init_state, 1);
 
     fprintf(stderr, "[audio] capture thread running\n");
 
