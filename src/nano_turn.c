@@ -403,7 +403,9 @@ int turn_handle_response(nano_turn_t *turn, uint32_t now_ms, const uint8_t *data
 
     /* Verify transaction ID — Allocate/Refresh use last_txid; ChannelBind and
      * CreatePermission use per-binding txid (matched in the dedicated branches
-     * below). Reject anything else as a foreign transaction (RFC 8489 §6.3.1). */
+     * below). RFC 8489 §6.3.1 requires responses for unknown or completed
+     * transactions to be silently discarded: UDP retransmission can otherwise
+     * turn a harmless late duplicate into a session-level protocol error. */
     bool txid_match = turn->transaction != NANORTC_TURN_TXN_NONE &&
                       memcmp(msg.transaction_id, turn->last_txid, STUN_TXID_SIZE) == 0;
     bool is_channel_bind_resp =
@@ -443,7 +445,7 @@ int turn_handle_response(nano_turn_t *turn, uint32_t now_ms, const uint8_t *data
     }
 
     if (!txid_match && permission_index < 0 && channel_index < 0) {
-        return NANORTC_ERR_PROTOCOL; /* Not our transaction */
+        return NANORTC_OK; /* Foreign or late duplicate response: ignore. */
     }
 
     /* RFC 8489 §14.7: when a response carries FINGERPRINT it must validate. */

@@ -1290,8 +1290,9 @@ static void test_turn_deallocate_errors(void)
                           turn_deallocate(&turn, crypto(), buf, 64, &out_len));
 }
 
-/* H7 (F1): Spoofed CreatePermission response with foreign txid is rejected */
-static void test_turn_create_permission_txid_validation(void)
+/* H7 (F1): Foreign or completed transaction responses are ignored without
+ * mutating the live CreatePermission transaction (RFC 8489 §6.3.1). */
+static void test_turn_create_permission_foreign_txid_ignored(void)
 {
     nano_turn_t turn;
     setup_turn_allocated(&turn);
@@ -1308,18 +1309,20 @@ static void test_turn_create_permission_txid_validation(void)
     /* Make sure we are not accidentally colliding with the real one. */
     TEST_ASSERT_FALSE(memcmp(spoof_txid, turn.permissions[0].txid, STUN_TXID_SIZE) == 0);
 
-    /* Spoofed success response — must be rejected. */
+    /* Foreign success response is silently discarded. */
     uint8_t resp[64];
     size_t resp_len = build_success_response(resp, STUN_CREATE_PERMISSION_RESPONSE, spoof_txid);
     int rc = turn_handle_response(&turn, 0, resp, resp_len, crypto());
-    TEST_ASSERT_EQUAL_INT(NANORTC_ERR_PROTOCOL, rc);
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
+    TEST_ASSERT_TRUE(turn.permissions[0].pending);
+    TEST_ASSERT_FALSE(turn.permissions[0].active);
 
     /* Spoofed 438 stale-nonce error — must NOT update our nonce. */
     char stale_marker[] = "evilNonce!";
     size_t err_len =
         build_error_response(resp, STUN_CREATE_PERMISSION_ERROR, spoof_txid, 438, stale_marker);
     rc = turn_handle_response(&turn, 0, resp, err_len, crypto());
-    TEST_ASSERT_EQUAL_INT(NANORTC_ERR_PROTOCOL, rc);
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
     /* Our nonce must remain unchanged ("nonce456" from setup_turn_allocated). */
     TEST_ASSERT_EQUAL_STRING("nonce456", turn.nonce);
 
@@ -1329,6 +1332,13 @@ static void test_turn_create_permission_txid_validation(void)
     resp_len = append_response_integrity(resp, resp_len, turn.auth.hmac_key);
     rc = turn_handle_response(&turn, 0, resp, resp_len, crypto());
     TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
+    TEST_ASSERT_FALSE(turn.permissions[0].pending);
+    TEST_ASSERT_TRUE(turn.permissions[0].active);
+
+    /* A UDP duplicate after completion is also ignored. */
+    rc = turn_handle_response(&turn, 1, resp, resp_len, crypto());
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
+    TEST_ASSERT_TRUE(turn.permissions[0].active);
 }
 
 /* H8: MESSAGE-INTEGRITY matches an independent HMAC-SHA1 with key derived per
@@ -1740,7 +1750,7 @@ int main(void)
     RUN_TEST(test_turn_channel_bind_has_integrity);
     RUN_TEST(test_turn_refresh_zero_lifetime_deallocate);
     RUN_TEST(test_turn_deallocate_errors);
-    RUN_TEST(test_turn_create_permission_txid_validation);
+    RUN_TEST(test_turn_create_permission_foreign_txid_ignored);
     RUN_TEST(test_turn_message_integrity_hmac_vector);
     RUN_TEST(test_turn_maxlen_credentials_no_overflow);
     RUN_TEST(test_turn_rng_failure_is_transactional);
