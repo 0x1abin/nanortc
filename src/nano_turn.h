@@ -56,7 +56,6 @@ typedef struct nano_turn_permission {
     bool pending;
     uint8_t transmissions;
     bool terminal; /**< Server rejected this peer for the current ICE generation. */
-    uint8_t rank;  /**< Admission rank assigned by the RTC candidate scheduler. */
 } nano_turn_permission_t;
 
 /** @brief TURN client state. Embedded in nanortc_t. */
@@ -179,12 +178,6 @@ int turn_deallocate(nano_turn_t *turn, const nanortc_crypto_provider_t *crypto, 
 int turn_create_permission(nano_turn_t *turn, const uint8_t *peer_addr, uint8_t peer_family,
                            uint16_t peer_port, const nanortc_crypto_provider_t *crypto,
                            uint8_t *buf, size_t buf_len, size_t *out_len);
-
-/** Create a ranked permission, transactionally replacing one lower-ranked slot if requested. */
-int turn_create_permission_ranked(nano_turn_t *turn, const uint8_t *peer_addr, uint8_t peer_family,
-                                  uint16_t peer_port, uint8_t rank, int replace_index,
-                                  const nanortc_crypto_provider_t *crypto, uint8_t *buf,
-                                  size_t buf_len, size_t *out_len);
 
 /**
  * Wrap outgoing data in a TURN Send indication.

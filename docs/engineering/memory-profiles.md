@@ -20,7 +20,7 @@ the TX ring. They are deliberately ceilings rather than expected footprints:
 
 | Host profile | `sizeof(nanortc_t)` ceiling |
 |---|---:|
-| `CORE_ONLY` | 20 KiB |
+| `CORE_ONLY` | 20 KiB plus configured permission growth above 4 slots (20,640 B at the default 8) |
 | `DATA` | 36 KiB |
 | `AUDIO_ONLY` | 48 KiB |
 | `DATA + AUDIO` | 64 KiB |
@@ -44,9 +44,10 @@ media recovery features all change the actual footprint.
 | `Media only` (no DC) | 45.3 KB | 51.0 KB | Audio + 1 video track + `pkt_ring` + BWE |
 | `DC + Audio + Video` | 55.0 KB | 60.3 KB | Full media stack |
 
-`NANORTC_FEATURE_TURN=0` claws back ~11 KB of flash and ~668 B of RAM from
-every row — only valid for deployments that can always reach peers via
-host / srflx candidates. Building at `-Og` (ESP-IDF's Kconfig default for
+`NANORTC_FEATURE_TURN=0` claws back ~11 KB of flash in the last ESP
+measurement and 1,672 B from the current host DATA profile (34,920 B to
+33,248 B) — only valid for deployments that can always reach peers via host /
+srflx candidates. Building at `-Og` (ESP-IDF's Kconfig default for
 the rest of the firmware) inflates every flash figure by roughly 15 %;
 the measurement pins `-Os` via `scripts/esp32-measure/sdkconfig.defaults`.
 
@@ -59,6 +60,7 @@ generous host defaults:
 |---|---|---|
 | `NANORTC_MAX_DATACHANNELS` | 8 | 2 |
 | `NANORTC_MAX_ICE_CANDIDATES` | 8 | 4 |
+| `NANORTC_TURN_MAX_PERMISSIONS` | 8 (inherits remote candidate limit) | 4 (inherits remote candidate limit) |
 | `NANORTC_DTLS_BUF_SIZE` | 2048 | 1536 |
 | `NANORTC_SDP_BUF_SIZE` | 2048 | 1024 |
 | `NANORTC_SCTP_{SEND,RECV,RECV_GAP}_BUF_SIZE` | 4096 each | 2048 each |
@@ -92,13 +94,21 @@ high-jitter cellular, large SDPs), raise the knob you care about.
 | DTLS buffers (3 × `NANORTC_DTLS_BUF_SIZE`) | 6 KB host / 4.5 KB Kconfig | `NANORTC_DTLS_BUF_SIZE` |
 | Owned transient TX ring | `4 × max(DTLS, media, TURN request)` = 8 KB host / 6 KB with the default ESP-IDF DTLS size | `NANORTC_TX_SLOT_COUNT` (1/2/4/8…32, ≤ output queue); `NANORTC_TX_SLOT_SIZE` is derived and normally should not be overridden |
 | Shared receive/TURN scratch union | 344 B (core/data) / 1280 B (media) with TURN; 256 B / 1232 B without TURN | `NANORTC_STUN_BUF_SIZE`, `NANORTC_TURN_BUF_SIZE` (feature-gated — see below) |
-| TURN client | ~668 B | `NANORTC_FEATURE_TURN` (disable only if deployment can always reach peers via host / srflx) |
+| TURN client | `sizeof(nano_turn_t) = 876 B` on the current 64-bit host ABI with 8 permission slots | `NANORTC_FEATURE_TURN`, `NANORTC_TURN_MAX_PERMISSIONS` (disable TURN only if deployment can always reach peers via host / srflx) |
 
 The TX-ring row is its gross allocation. Its net effect is smaller because the
 session no longer carries a DTLS send scratch or single-slot RTCP feedback
 send buffers. Video packets, FEC packets, and NACK retransmits retain their
 dedicated rings because a whole video access unit can enqueue multiple packets
 before the application regains control.
+
+`NANORTC_TURN_MAX_PERMISSIONS` defaults to `NANORTC_MAX_ICE_CANDIDATES`, so the
+standard profile can represent every deduplicated remote candidate. On the
+current 64-bit host ABI, raising the table from 4 to 8 slots adds exactly 160 B:
+the DATA profile measures 34,920 B with the default 8 slots and 34,760 B with
+an explicit 4-slot override. Memory-constrained users may still set a smaller
+permission limit; overflow remains best-effort and does not freeze the ICE
+checklist.
 
 `NANORTC_MEDIA_BUF_SIZE` has a hard minimum of `NANORTC_VIDEO_MTU + 30 =
 1230 B` (RTP header 12 + TWCC extension 8 + MTU payload + SRTP auth tag

@@ -88,7 +88,4 @@ int addr_parse_auto(const char *str, size_t len, uint8_t out[16], uint8_t *famil
  */
 int addr_format(const uint8_t *addr, uint8_t family, char *buf, size_t buf_len, size_t *out_len);
 
-/** Return true when an address is globally routable on the public Internet. */
-bool addr_is_globally_routable(const uint8_t *addr, uint8_t family);
-
 #endif /* NANORTC_ADDR_H_ */
