@@ -406,9 +406,7 @@ static void test_sdp_end_of_candidates_parsed(void)
                           "a=candidate:1 1 UDP 2130706431 10.0.0.1 5000 typ host\r\n"
                           "a=end-of-candidates\r\n";
 
-    size_t len = 0;
-    while (sdp_str[len])
-        len++;
+    size_t len = strlen(sdp_str);
 
     int rc = sdp_parse(&sdp, sdp_str, len);
     TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
@@ -434,9 +432,7 @@ static void test_sdp_no_end_of_candidates(void)
                           "a=setup:actpass\r\n"
                           "a=sctp-port:5000\r\n";
 
-    size_t len = 0;
-    while (sdp_str[len])
-        len++;
+    size_t len = strlen(sdp_str);
 
     int rc = sdp_parse(&sdp, sdp_str, len);
     TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);

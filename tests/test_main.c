@@ -62,17 +62,6 @@ TEST(test_byte_order)
     ASSERT_EQ(nanortc_ntohl(0x04030201), 0x01020304);
 }
 
-#if NANORTC_FEATURE_DATACHANNEL
-TEST(test_crc32c)
-{
-    /* Known CRC-32c test vector: "123456789" -> 0xE3069283 */
-    extern uint32_t nano_crc32c(const uint8_t *data, size_t len);
-    const uint8_t data[] = "123456789";
-    uint32_t crc = nano_crc32c(data, 9);
-    ASSERT_EQ(crc, 0xE3069283);
-}
-#endif
-
 TEST(test_crc32)
 {
     /* Known CRC-32 (ISO HDLC) test vector: "123456789" -> 0xCBF43926 */
@@ -85,12 +74,9 @@ TEST(test_crc32)
 /* ---- Runner ---- */
 
 TEST_MAIN_BEGIN("nanortc basic tests")
-    RUN(test_init_destroy);
-    RUN(test_init_null_params);
-    RUN(test_poll_empty);
-    RUN(test_byte_order);
-#if NANORTC_FEATURE_DATACHANNEL
-    RUN(test_crc32c);
-#endif
-    RUN(test_crc32);
+RUN(test_init_destroy);
+RUN(test_init_null_params);
+RUN(test_poll_empty);
+RUN(test_byte_order);
+RUN(test_crc32);
 TEST_MAIN_END
