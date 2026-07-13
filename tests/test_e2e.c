@@ -4793,6 +4793,18 @@ TEST(test_e2e_turn_allocation_lifecycle)
     memcpy(resp_ok + pos + 4, turn_hmac, sizeof(turn_hmac));
     pos += 24;
 
+    /* A saturated host table must still reserve a slot for the TURN relay. */
+    rtc.ice.local_candidate_count = NANORTC_MAX_LOCAL_CANDIDATES;
+    for (uint8_t i = 0; i < NANORTC_MAX_LOCAL_CANDIDATES; i++) {
+        rtc.ice.local_candidates[i].family = 4;
+        rtc.ice.local_candidates[i].addr[0] = 192;
+        rtc.ice.local_candidates[i].addr[1] = 168;
+        rtc.ice.local_candidates[i].addr[2] = 1;
+        rtc.ice.local_candidates[i].addr[3] = (uint8_t)(10 + i);
+        rtc.ice.local_candidates[i].port = (uint16_t)(4000 + i);
+        rtc.ice.local_candidates[i].type = NANORTC_ICE_CAND_HOST;
+    }
+
     /* Feed response at same time (don't advance — avoid re-triggering CHALLENGED retry) */
     ASSERT_OK(nanortc_handle_input(
         &rtc, &(nanortc_input_t){.now_ms = now, .data = resp_ok, .len = pos, .src = turn_src}));
@@ -4825,6 +4837,7 @@ TEST(test_e2e_turn_allocation_lifecycle)
         }
     }
     ASSERT_TRUE(relay_registered);
+    ASSERT_EQ(rtc.ice.local_candidate_count, NANORTC_MAX_LOCAL_CANDIDATES);
 
     nanortc_destroy(&rtc);
 }
@@ -4905,6 +4918,87 @@ TEST(test_e2e_relay_check_waits_without_blocking_permission)
         }
     }
     ASSERT_TRUE(found_permission);
+    nanortc_destroy(&rtc);
+}
+
+TEST(test_e2e_turn_permission_admission_prefers_reachable_candidates)
+{
+    nanortc_t rtc;
+    nanortc_config_t cfg = e2e_default_config();
+    cfg.role = NANORTC_ROLE_CONTROLLING;
+    ASSERT_OK(nanortc_init(&rtc, &cfg));
+
+    uint8_t turn_addr[NANORTC_ADDR_SIZE] = {10, 0, 0, 100};
+    ASSERT_OK(turn_configure(&rtc.turn, turn_addr, 4, 3478, "user", 4, "pass", 4));
+    rtc.turn.state = NANORTC_TURN_ALLOCATED;
+    rtc.turn.hmac_key_valid = true;
+    memset(rtc.turn.auth.hmac_key, 0xAA, sizeof(rtc.turn.auth.hmac_key));
+    memcpy(rtc.turn.realm, "realm", 5);
+    rtc.turn.realm_len = 5;
+    memcpy(rtc.turn.nonce, "nonce", 5);
+    rtc.turn.nonce_len = 5;
+    rtc.turn.relay_family = STUN_FAMILY_IPV4;
+    rtc.turn.refresh_at_ms = 600000;
+
+    rtc.ice.local_candidate_count = 1;
+    rtc.ice.local_candidates[0].family = 4;
+    rtc.ice.local_candidates[0].type = NANORTC_ICE_CAND_RELAY;
+    rtc.ice.local_candidates[0].port = 50000;
+
+    rtc.ice.remote_candidate_count = 5;
+    for (uint8_t i = 0; i < 4; i++) {
+        rtc.ice.remote_candidates[i].family = 4;
+        rtc.ice.remote_candidates[i].addr[0] = 10;
+        rtc.ice.remote_candidates[i].addr[3] = (uint8_t)(i + 1);
+        rtc.ice.remote_candidates[i].port = (uint16_t)(40000 + i);
+        rtc.ice.remote_candidates[i].type = NANORTC_ICE_CAND_HOST;
+    }
+    nano_ice_candidate_t *relay = &rtc.ice.remote_candidates[4];
+    relay->family = 4;
+    relay->addr[0] = 198;
+    relay->addr[1] = 51;
+    relay->addr[2] = 100;
+    relay->addr[3] = 20;
+    relay->port = 41000;
+    relay->type = NANORTC_ICE_CAND_RELAY;
+
+    ASSERT_OK(nanortc_handle_input(&rtc, &(nanortc_input_t){.now_ms = 100}));
+    ASSERT_EQ(rtc.turn.permission_count, 1);
+    ASSERT_MEM_EQ(rtc.turn.permissions[0].addr, relay->addr, 4);
+    ASSERT_EQ(rtc.turn.permissions[0].rank, 4);
+
+    nanortc_output_t out;
+    while (nanortc_poll_output(&rtc, &out) == NANORTC_OK) {
+    }
+
+    memset(rtc.turn.permissions, 0, sizeof(rtc.turn.permissions));
+    rtc.turn.permission_count = NANORTC_TURN_MAX_PERMISSIONS;
+    for (uint8_t i = 0; i < NANORTC_TURN_MAX_PERMISSIONS; i++) {
+        nano_turn_permission_t *permission = &rtc.turn.permissions[i];
+        memcpy(permission->addr, rtc.ice.remote_candidates[i].addr, NANORTC_ADDR_SIZE);
+        permission->family = 4;
+        permission->port = rtc.ice.remote_candidates[i].port;
+        permission->rank = 1;
+        permission->active = true;
+        permission->deadline_ms = 600000;
+    }
+    __atomic_store_n(&rtc.ice.selected_local_type, NANORTC_ICE_CAND_RELAY, __ATOMIC_RELAXED);
+    rtc.ice.selected_family = 4;
+    memcpy(rtc.ice.selected_addr, rtc.turn.permissions[0].addr, NANORTC_ADDR_SIZE);
+
+    ASSERT_OK(nanortc_handle_input(&rtc, &(nanortc_input_t){.now_ms = 200}));
+    while (nanortc_poll_output(&rtc, &out) == NANORTC_OK) {
+    }
+    /* With a single transient TX slot, the ICE check above owns the first
+     * tick. Admission must make progress after the caller drains output. */
+    ASSERT_OK(nanortc_handle_input(&rtc, &(nanortc_input_t){.now_ms = 201}));
+    ASSERT_EQ(rtc.turn.permission_count, NANORTC_TURN_MAX_PERMISSIONS);
+    ASSERT_MEM_EQ(rtc.turn.permissions[0].addr, rtc.ice.remote_candidates[0].addr, 4);
+    ASSERT_TRUE(rtc.turn.permissions[0].active);
+    ASSERT_MEM_EQ(rtc.turn.permissions[1].addr, relay->addr, 4);
+    ASSERT_EQ(rtc.turn.permissions[1].rank, 4);
+    ASSERT_TRUE(rtc.turn.permissions[1].pending);
+
     nanortc_destroy(&rtc);
 }
 
@@ -5188,6 +5282,7 @@ RUN(test_e2e_handle_input_dst_null_falls_back);
 RUN(test_e2e_turn_allocation_lifecycle);
 RUN(test_e2e_turn_allocate_backpressure_preserves_state);
 RUN(test_e2e_relay_check_waits_without_blocking_permission);
+RUN(test_e2e_turn_permission_admission_prefers_reachable_candidates);
 RUN(test_e2e_turn_relay_wrapping);
 RUN(test_e2e_channeldata_inbound);
 #endif

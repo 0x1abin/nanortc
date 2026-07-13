@@ -122,6 +122,7 @@ After the F1–F5 hardening landed, [tests/interop/test_interop_turn_relay.c](..
 | F8  | High     | RFC 7675 consent freshness checks were generated via `rtc_enqueue_output()` directly, bypassing the TURN wrap path. On a RELAY-selected pair, these checks went `sendto()` straight to the NAT'd peer address; the consent timer expired after `NANORTC_ICE_CONSENT_TIMEOUT_MS` and the call dropped, ~30 s after handshake. | Route consent-check output through `rtc_enqueue_transmit()` so the lazy wrap fires when `selected_type == RELAY`. |
 | F9  | Medium   | `CreatePermission` was only emitted for `ice.remote_candidates[0]` at the moment TURN reached `ALLOCATED`. With trickle ICE the browser's host candidates usually arrive first and the relay/srflx ones come later, so the working pair often lacked a permission and traffic was silently dropped by the TURN server (RFC 5766 §9). | Move the fan-out into `rtc_process_timers()`: each tick walks `remote_candidates[]`, finds the first peer without an active permission entry, and emits one `CreatePermission` for it. One per tick is required because `turn_buf` is shared scratch; for typical browser candidate counts the fan-out completes in <100 ms. New trickle candidates are picked up on the next tick. |
 | F10 | Doc      | No runtime way to tell whether outbound media was actually traversing the relay vs. silently dropping into a direct-send dead end.                                                                                                  | Add `stats_enqueue_via_turn` / `stats_enqueue_direct` / `stats_wrap_dropped` / `stats_tx_queue_full` (`uint32_t`) on `nanortc_t`, incremented inside `rtc_enqueue_transmit()` and `nanortc_poll_output()`. 16 bytes of overhead; reserved for a future `nanortc_get_stats()` public API. |
+| F11 | High     | The fixed four-entry permission table was filled in candidate arrival order. Browsers with many host candidates could occupy every slot before a later srflx or relay candidate arrived, permanently starving the only reachable peer address. Duplicate and unsupported ICE candidates also consumed the bounded remote table unnecessarily. | Validate component/transport/port, deduplicate candidates by endpoint, and admit same-family permissions by reachability rank: relay, srflx/prflx, globally routable host, then private host. A later higher-ranked peer transactionally replaces a lower-ranked slot, while the selected relay permission is protected. The table remains fixed-size. |
 
 ### F6/F7 verification — what cellular vs LAN buys
 
@@ -150,11 +151,17 @@ Additional correctness changes in this pass:
 
 - A permission becomes active only after an authenticated success response;
   every permission has an independent four-minute refresh deadline.
+- Permission retransmit exhaustion enters a bounded retry delay instead of
+  failing the allocation. Peer-specific 403/443 rejections are terminal only
+  for that peer in the current ICE generation.
+- Unknown or completed response transaction IDs are ignored as late/duplicate
+  datagrams, as required by RFC 8489, without mutating live TURN state.
 - ChannelBind is initiated after a relayed pair is selected and its permission
   succeeds. Channel identity and lookup include peer address, family, and port.
-- Relay allocation success registers an actual local ICE candidate. Controlling
-  connectivity checks and steady-state packets route through TURN when the
-  selected local candidate is relay.
+- Relay allocation success registers an actual local ICE candidate, replacing
+  an unselected host slot if the local candidate table is already full.
+  Controlling connectivity checks and steady-state packets route through TURN
+  when the selected local candidate is relay.
 - A shared `stun:`/`turn:` IP and port is demultiplexed by STUN method and
   transaction ID, preventing the TURN handler from swallowing srflx replies.
 - ICE restart reuses a still-live allocation and local relay candidate, but
@@ -207,7 +214,9 @@ The new [tests/interop/test_interop_turn_relay.c](../../tests/interop/test_inter
 | `test_turn_create_permission_has_integrity`       | 5766 §9, 8656 §9, 8489 §14.5   | Unit        |
 | `test_turn_channel_bind_has_integrity`            | 5766 §11.2, 8656 §11.2         | Unit        |
 | `test_turn_refresh_zero_lifetime_deallocate`      | 5766 §7, 8656 §6               | Unit        |
-| `test_turn_create_permission_txid_validation`     | 5766 §9, 8489 §6.3.1           | Unit        |
+| `test_turn_create_permission_foreign_txid_ignored` | 5766 §9, 8489 §6.3.1          | Unit        |
+| `test_turn_ranked_permission_replacement_is_transactional` | bounded admission policy | Unit |
+| `test_e2e_turn_permission_admission_prefers_reachable_candidates` | dense trickle ICE | End-to-end |
 | `test_turn_message_integrity_hmac_vector`         | 8489 §14.5, §9.2.2             | Unit        |
 | `test_relay_only_handshake`                       | end-to-end relay path          | Interop     |
 | `test_relay_only_dc_string_bidirectional`         | ChannelData, Data Indication   | Interop     |

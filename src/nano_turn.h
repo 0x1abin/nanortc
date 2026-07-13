@@ -45,6 +45,20 @@ enum {
 /** MD5 output size used by the long-term credential mechanism. */
 #define NANORTC_TURN_HMAC_KEY_SIZE 16
 
+typedef struct nano_turn_permission {
+    uint8_t addr[NANORTC_ADDR_SIZE];
+    /** Retry deadline while pending; refresh deadline while active. */
+    uint32_t deadline_ms;
+    uint8_t txid[STUN_TXID_SIZE]; /**< Last CreatePermission transaction ID (RFC 5766 §9). */
+    uint16_t port;
+    uint8_t family;
+    bool active;
+    bool pending;
+    uint8_t transmissions;
+    bool terminal; /**< Server rejected this peer for the current ICE generation. */
+    uint8_t rank;  /**< Admission rank assigned by the RTC candidate scheduler. */
+} nano_turn_permission_t;
+
 /** @brief TURN client state. Embedded in nanortc_t. */
 typedef struct nano_turn {
     nano_turn_state_t state;
@@ -93,17 +107,7 @@ typedef struct nano_turn {
     uint16_t next_channel; /**< Next channel number to allocate (starts 0x4000). */
 
     /* Permissions (peer addresses we've authorized) */
-    struct {
-        uint8_t addr[NANORTC_ADDR_SIZE];
-        /** Retry deadline while pending; refresh deadline while active. */
-        uint32_t deadline_ms;
-        uint8_t txid[STUN_TXID_SIZE]; /**< Last CreatePermission transaction ID (RFC 5766 §9). */
-        uint16_t port;
-        uint8_t family;
-        bool active;
-        bool pending;
-        uint8_t transmissions;
-    } permissions[NANORTC_TURN_MAX_PERMISSIONS];
+    nano_turn_permission_t permissions[NANORTC_TURN_MAX_PERMISSIONS];
 
     /* Channel bindings (RFC 5766 §11) */
     struct {
@@ -175,6 +179,12 @@ int turn_deallocate(nano_turn_t *turn, const nanortc_crypto_provider_t *crypto, 
 int turn_create_permission(nano_turn_t *turn, const uint8_t *peer_addr, uint8_t peer_family,
                            uint16_t peer_port, const nanortc_crypto_provider_t *crypto,
                            uint8_t *buf, size_t buf_len, size_t *out_len);
+
+/** Create a ranked permission, transactionally replacing one lower-ranked slot if requested. */
+int turn_create_permission_ranked(nano_turn_t *turn, const uint8_t *peer_addr, uint8_t peer_family,
+                                  uint16_t peer_port, uint8_t rank, int replace_index,
+                                  const nanortc_crypto_provider_t *crypto, uint8_t *buf,
+                                  size_t buf_len, size_t *out_len);
 
 /**
  * Wrap outgoing data in a TURN Send indication.

@@ -56,6 +56,66 @@ static inline bool rtc_output_has_space(const nanortc_t *rtc)
 }
 
 #if NANORTC_FEATURE_TURN
+enum {
+    RTC_TURN_RANK_PRIVATE_HOST = 1,
+    RTC_TURN_RANK_PUBLIC_HOST = 2,
+    RTC_TURN_RANK_SRFLX = 3,
+    RTC_TURN_RANK_RELAY = 4,
+};
+
+static uint8_t rtc_turn_candidate_rank(const nano_ice_candidate_t *candidate)
+{
+    if (candidate->type == NANORTC_ICE_CAND_RELAY)
+        return RTC_TURN_RANK_RELAY;
+    if (candidate->type == NANORTC_ICE_CAND_SRFLX)
+        return RTC_TURN_RANK_SRFLX;
+    return addr_is_globally_routable(candidate->addr, candidate->family)
+               ? RTC_TURN_RANK_PUBLIC_HOST
+               : RTC_TURN_RANK_PRIVATE_HOST;
+}
+
+static int rtc_turn_find_permission(const nano_turn_t *turn, const nano_ice_candidate_t *candidate)
+{
+    size_t addr_len = candidate->family == 4 ? 4u : 16u;
+    for (uint8_t i = 0; i < turn->permission_count; i++) {
+        if (turn->permissions[i].family == candidate->family &&
+            memcmp(turn->permissions[i].addr, candidate->addr, addr_len) == 0) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+static bool rtc_turn_permission_is_selected(const nanortc_t *rtc,
+                                            const nano_turn_permission_t *permission)
+{
+    if (!permission->active || rtc->ice.selected_family == 0 ||
+        __atomic_load_n(&rtc->ice.selected_local_type, __ATOMIC_RELAXED) !=
+            NANORTC_ICE_CAND_RELAY ||
+        permission->family != rtc->ice.selected_family) {
+        return false;
+    }
+    size_t addr_len = permission->family == 4 ? 4u : 16u;
+    return memcmp(permission->addr, rtc->ice.selected_addr, addr_len) == 0;
+}
+
+static int rtc_turn_find_replacement(const nanortc_t *rtc, uint8_t new_rank)
+{
+    int replacement = -1;
+    for (uint8_t i = 0; i < rtc->turn.permission_count; i++) {
+        const nano_turn_permission_t *permission = &rtc->turn.permissions[i];
+        if (permission->rank >= new_rank || rtc_turn_permission_is_selected(rtc, permission)) {
+            continue;
+        }
+        if (replacement < 0 || permission->rank < rtc->turn.permissions[replacement].rank ||
+            (permission->rank == rtc->turn.permissions[replacement].rank && !permission->active &&
+             rtc->turn.permissions[replacement].active)) {
+            replacement = (int)i;
+        }
+    }
+    return replacement;
+}
+
 static bool rtc_turn_current_pair_is_ready(const nanortc_t *rtc)
 {
     uint8_t local_idx = rtc->ice.current_local;
@@ -67,17 +127,18 @@ static bool rtc_turn_current_pair_is_ready(const nanortc_t *rtc)
     }
 
     const nano_ice_candidate_t *remote = &rtc->ice.remote_candidates[remote_idx];
-    size_t addr_len = remote->family == 4 ? 4u : 16u;
-    for (uint8_t i = 0; i < rtc->turn.permission_count; i++) {
-        if (rtc->turn.permissions[i].active && rtc->turn.permissions[i].family == remote->family &&
-            memcmp(rtc->turn.permissions[i].addr, remote->addr, addr_len) == 0) {
-            return true;
-        }
+    int permission_index = rtc_turn_find_permission(&rtc->turn, remote);
+    if (permission_index >= 0) {
+        const nano_turn_permission_t *permission = &rtc->turn.permissions[permission_index];
+        return permission->active || permission->terminal;
     }
-    /* If the bounded table is full, do not freeze the whole checklist on an
-     * unrepresentable peer. Send this check best-effort so ICE can advance to
-     * another pair that may already have a permission. */
-    return rtc->turn.permission_count >= NANORTC_TURN_MAX_PERMISSIONS;
+    if (rtc->turn.permission_count < NANORTC_TURN_MAX_PERMISSIONS) {
+        return false;
+    }
+    /* A higher-ranked current pair can evict a lower-ranked permission on the
+     * next TURN scheduler pass. Otherwise advance ICE best-effort rather than
+     * freezing the checklist on an unrepresentable peer. */
+    return rtc_turn_find_replacement(rtc, rtc_turn_candidate_rank(remote)) < 0;
 }
 #endif
 
@@ -948,24 +1009,51 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
 
                 /* RFC 8445 §5.1.1.2: the relayed address is a real local
                  * candidate and must participate in the checklist. */
-                if (rtc->ice.local_candidate_count < NANORTC_MAX_LOCAL_CANDIDATES) {
-                    bool dup = false;
-                    for (uint8_t i = 0; i < rtc->ice.local_candidate_count; i++) {
-                        const nano_ice_candidate_t *c = &rtc->ice.local_candidates[i];
-                        if (c->family == relay_fam && c->port == rtc->turn.relay_port &&
-                            memcmp(c->addr, rtc->turn.relay_addr, NANORTC_ADDR_SIZE) == 0) {
-                            dup = true;
-                            break;
+                bool dup = false;
+                for (uint8_t i = 0; i < rtc->ice.local_candidate_count; i++) {
+                    const nano_ice_candidate_t *c = &rtc->ice.local_candidates[i];
+                    if (c->family == relay_fam && c->port == rtc->turn.relay_port &&
+                        memcmp(c->addr, rtc->turn.relay_addr, NANORTC_ADDR_SIZE) == 0) {
+                        dup = true;
+                        break;
+                    }
+                }
+                if (!dup) {
+                    uint8_t idx = rtc->ice.local_candidate_count;
+                    if (idx >= NANORTC_MAX_LOCAL_CANDIDATES) {
+                        /* A relay candidate is the TURN allocation's only usable
+                         * local path. If the bounded local table is already full,
+                         * replace an unselected host candidate instead of silently
+                         * dropping the relay and making TURN impossible. */
+                        idx = NANORTC_ICE_LOCAL_IDX_UNKNOWN;
+                        for (uint8_t i = 0; i < rtc->ice.local_candidate_count; i++) {
+                            if (rtc->ice.local_candidates[i].type == NANORTC_ICE_CAND_HOST &&
+                                (rtc->ice.selected_local_family == 0 ||
+                                 i != rtc->ice.selected_local_idx)) {
+                                idx = i;
+                                break;
+                            }
+                        }
+                        if (idx == NANORTC_ICE_LOCAL_IDX_UNKNOWN) {
+                            for (uint8_t i = 0; i < rtc->ice.local_candidate_count; i++) {
+                                if (rtc->ice.local_candidates[i].type != NANORTC_ICE_CAND_RELAY &&
+                                    (rtc->ice.selected_local_family == 0 ||
+                                     i != rtc->ice.selected_local_idx)) {
+                                    idx = i;
+                                    break;
+                                }
+                            }
                         }
                     }
-                    if (!dup) {
-                        uint8_t idx = rtc->ice.local_candidate_count;
+                    if (idx != NANORTC_ICE_LOCAL_IDX_UNKNOWN) {
                         rtc->ice.local_candidates[idx].family = relay_fam;
                         memcpy(rtc->ice.local_candidates[idx].addr, rtc->turn.relay_addr,
                                NANORTC_ADDR_SIZE);
                         rtc->ice.local_candidates[idx].port = rtc->turn.relay_port;
                         rtc->ice.local_candidates[idx].type = NANORTC_ICE_CAND_RELAY;
-                        rtc->ice.local_candidate_count = (uint8_t)(idx + 1);
+                        if (idx == rtc->ice.local_candidate_count) {
+                            rtc->ice.local_candidate_count = (uint8_t)(idx + 1);
+                        }
                     }
                 }
 
@@ -1507,62 +1595,65 @@ static int rtc_process_timers(nanortc_t *rtc, uint32_t now_ms)
                 }
             }
         } else if (rtc->turn.state == NANORTC_TURN_ALLOCATED) {
-            /* Initial / trickle CreatePermission fan-out. Walk candidates and
-             * emit at most one new permission per tick to bound control bursts
-             * and preserve the existing lifecycle cadence. */
-            for (uint8_t i = 0; i < rtc->ice.remote_candidate_count; i++) {
-                nano_ice_candidate_t *c = &rtc->ice.remote_candidates[i];
-                /* RFC 6157 §4.2 / RFC 5928 §6: CreatePermission's
-                 * XOR-PEER-ADDRESS family must match the allocation family,
-                 * otherwise coturn replies "443 Peer Address Family Mismatch"
-                 * and the permission slot is wasted. With
-                 * NANORTC_TURN_MAX_PERMISSIONS=4 and browsers/libdc routinely
-                 * trickling 4+ v6 host candidates, filling all 4 slots with
-                 * v6 perms against a v4 relay starves the v4 perm install
-                 * that the actual data path needs. Skip mismatched families
-                 * here so the fan-out only requests perms that can succeed.
-                 * relay_family is stored as STUN_FAMILY_IPV4 (0x01) /
-                 * STUN_FAMILY_IPV6 (0x02); candidate family is plain 4/6. */
-                uint8_t relay_fam_46 = (rtc->turn.relay_family == STUN_FAMILY_IPV4) ? 4 : 6;
-                if (c->family != relay_fam_46) {
-                    continue;
-                }
-                size_t addr_len = (c->family == 4) ? 4 : 16;
-                bool has_perm = false;
-                for (uint8_t j = 0; j < rtc->turn.permission_count; j++) {
-                    if (rtc->turn.permissions[j].family == c->family &&
-                        (rtc->turn.permissions[j].active || rtc->turn.permissions[j].pending) &&
-                        memcmp(rtc->turn.permissions[j].addr, c->addr, addr_len) == 0) {
-                        has_perm = true;
-                        break;
+            /* Initial / trickle CreatePermission admission. A browser can
+             * advertise more peers than the bounded TURN table can retain, so
+             * choose by reachability rather than arrival order: relay, srflx,
+             * public host, then private host. Private hosts remain eligible for
+             * deployments where the TURN server shares their private network.
+             * A newly trickled higher-ranked candidate may replace a lower one,
+             * except for the permission used by the selected relay pair. */
+            uint8_t relay_fam_46 = (rtc->turn.relay_family == STUN_FAMILY_IPV4) ? 4 : 6;
+            bool permission_sent = false;
+            for (int rank = RTC_TURN_RANK_RELAY;
+                 rank >= RTC_TURN_RANK_PRIVATE_HOST && !permission_sent; rank--) {
+                for (uint8_t i = 0; i < rtc->ice.remote_candidate_count; i++) {
+                    nano_ice_candidate_t *c = &rtc->ice.remote_candidates[i];
+                    if (c->family != relay_fam_46 || rtc_turn_candidate_rank(c) != rank) {
+                        continue;
                     }
-                }
-                if (has_perm) {
-                    continue;
-                }
-                uint8_t *tx_buf = NULL;
-                uint8_t tx_slot = 0;
-                int prc = nano_rtc_tx_slot_acquire(rtc, &tx_buf, &tx_slot);
-                if (prc == NANORTC_ERR_WOULD_BLOCK) {
-                    return NANORTC_OK;
-                }
-                if (prc != NANORTC_OK) {
-                    return prc;
-                }
-                size_t perm_len = 0;
-                prc = turn_create_permission(&rtc->turn, c->addr, c->family, c->port,
-                                             rtc->config.crypto, tx_buf, NANORTC_TX_SLOT_SIZE,
-                                             &perm_len);
-                if (prc != NANORTC_OK) {
-                    return prc;
-                }
-                if (prc == NANORTC_OK && perm_len > 0) {
-                    prc = rtc_tx_slot_commit_direct(rtc, tx_slot, perm_len, &turn_dest, NULL);
+
+                    int permission_index = rtc_turn_find_permission(&rtc->turn, c);
+                    int replace_index = -1;
+                    if (permission_index >= 0) {
+                        nano_turn_permission_t *permission =
+                            &rtc->turn.permissions[permission_index];
+                        if (permission->active || permission->pending || permission->terminal ||
+                            (permission->deadline_ms != 0u &&
+                             !nano_time_is_due(now_ms, permission->deadline_ms))) {
+                            continue;
+                        }
+                    } else if (rtc->turn.permission_count >= NANORTC_TURN_MAX_PERMISSIONS) {
+                        replace_index = rtc_turn_find_replacement(rtc, (uint8_t)rank);
+                        if (replace_index < 0) {
+                            continue;
+                        }
+                    }
+
+                    uint8_t *tx_buf = NULL;
+                    uint8_t tx_slot = 0;
+                    int prc = nano_rtc_tx_slot_acquire(rtc, &tx_buf, &tx_slot);
+                    if (prc == NANORTC_ERR_WOULD_BLOCK) {
+                        return NANORTC_OK;
+                    }
                     if (prc != NANORTC_OK) {
                         return prc;
                     }
+                    size_t perm_len = 0;
+                    prc = turn_create_permission_ranked(
+                        &rtc->turn, c->addr, c->family, c->port, (uint8_t)rank, replace_index,
+                        rtc->config.crypto, tx_buf, NANORTC_TX_SLOT_SIZE, &perm_len);
+                    if (prc != NANORTC_OK) {
+                        return prc;
+                    }
+                    if (perm_len > 0) {
+                        prc = rtc_tx_slot_commit_direct(rtc, tx_slot, perm_len, &turn_dest, NULL);
+                        if (prc != NANORTC_OK) {
+                            return prc;
+                        }
+                        permission_sent = true;
+                    }
+                    break; /* at most one CreatePermission per timer tick */
                 }
-                break; /* one CreatePermission per tick */
             }
 
             /* Periodic Refresh (RFC 5766 §7). */
