@@ -4908,6 +4908,126 @@ TEST(test_e2e_relay_check_waits_without_blocking_permission)
     nanortc_destroy(&rtc);
 }
 
+TEST(test_e2e_turn_permission_capacity_covers_remote_candidates)
+{
+    nanortc_t rtc;
+    nanortc_config_t cfg = e2e_default_config();
+    cfg.role = NANORTC_ROLE_CONTROLLING;
+    ASSERT_OK(nanortc_init(&rtc, &cfg));
+
+    uint8_t turn_addr[NANORTC_ADDR_SIZE] = {10, 0, 0, 100};
+    ASSERT_OK(turn_configure(&rtc.turn, turn_addr, 4, 3478, "user", 4, "pass", 4));
+    rtc.turn.state = NANORTC_TURN_ALLOCATED;
+    rtc.turn.hmac_key_valid = true;
+    memset(rtc.turn.auth.hmac_key, 0xAA, sizeof(rtc.turn.auth.hmac_key));
+    memcpy(rtc.turn.realm, "realm", 5);
+    rtc.turn.realm_len = 5;
+    memcpy(rtc.turn.nonce, "nonce", 5);
+    rtc.turn.nonce_len = 5;
+    rtc.turn.relay_family = STUN_FAMILY_IPV4;
+    rtc.turn.refresh_at_ms = 600000;
+
+    rtc.ice.local_candidate_count = 1;
+    rtc.ice.local_candidates[0].family = 4;
+    rtc.ice.local_candidates[0].type = NANORTC_ICE_CAND_RELAY;
+    rtc.ice.local_candidates[0].port = 50000;
+
+    rtc.ice.remote_candidate_count = NANORTC_MAX_ICE_CANDIDATES;
+    for (uint8_t i = 0; i < NANORTC_MAX_ICE_CANDIDATES; i++) {
+        rtc.ice.remote_candidates[i].family = 4;
+        rtc.ice.remote_candidates[i].addr[0] = 198;
+        rtc.ice.remote_candidates[i].addr[1] = 51;
+        rtc.ice.remote_candidates[i].addr[2] = 100;
+        rtc.ice.remote_candidates[i].addr[3] = (uint8_t)(i + 1);
+        rtc.ice.remote_candidates[i].port = (uint16_t)(40000 + i);
+        rtc.ice.remote_candidates[i].type = NANORTC_ICE_CAND_HOST;
+    }
+    rtc.ice.remote_candidates[NANORTC_MAX_ICE_CANDIDATES - 1].type = NANORTC_ICE_CAND_RELAY;
+    if (NANORTC_MAX_ICE_CANDIDATES > 1) {
+        rtc.ice.remote_candidates[NANORTC_MAX_ICE_CANDIDATES - 2].type =
+            NANORTC_ICE_CAND_SRFLX;
+    }
+
+    nanortc_output_t out;
+    const uint8_t expected = NANORTC_TURN_MAX_PERMISSIONS < NANORTC_MAX_ICE_CANDIDATES
+                                 ? NANORTC_TURN_MAX_PERMISSIONS
+                                 : NANORTC_MAX_ICE_CANDIDATES;
+    for (uint16_t tick = 0;
+         tick < (uint16_t)(NANORTC_MAX_ICE_CANDIDATES * 3u + 4u) &&
+         rtc.turn.permission_count < expected;
+         tick++) {
+        ASSERT_OK(nanortc_handle_input(
+            &rtc, &(nanortc_input_t){.now_ms = (uint32_t)(100u + tick)}));
+        while (nanortc_poll_output(&rtc, &out) == NANORTC_OK) {
+        }
+    }
+    ASSERT_EQ(rtc.turn.permission_count, expected);
+    for (uint8_t i = 0; i < expected; i++) {
+        ASSERT_MEM_EQ(rtc.turn.permissions[i].addr, rtc.ice.remote_candidates[i].addr, 4);
+    }
+
+#if NANORTC_TURN_MAX_PERMISSIONS >= NANORTC_MAX_ICE_CANDIDATES
+    ASSERT_EQ(NANORTC_TURN_MAX_PERMISSIONS, NANORTC_MAX_ICE_CANDIDATES);
+    ASSERT_MEM_EQ(rtc.turn.permissions[NANORTC_MAX_ICE_CANDIDATES - 1].addr,
+                  rtc.ice.remote_candidates[NANORTC_MAX_ICE_CANDIDATES - 1].addr, 4);
+    ASSERT_TRUE(rtc.turn.permissions[NANORTC_MAX_ICE_CANDIDATES - 1].pending);
+#endif
+
+    nanortc_destroy(&rtc);
+}
+
+TEST(test_e2e_turn_permission_table_full_does_not_freeze_ice)
+{
+    nanortc_t rtc;
+    nanortc_config_t cfg = e2e_default_config();
+    cfg.role = NANORTC_ROLE_CONTROLLING;
+    ASSERT_OK(nanortc_init(&rtc, &cfg));
+
+    memcpy(rtc.ice.local_ufrag, "TEST1234", 8);
+    rtc.ice.local_ufrag_len = 8;
+    memcpy(rtc.ice.local_pwd, "password-for-testing12", 22);
+    rtc.ice.local_pwd_len = 22;
+    memcpy(rtc.ice.remote_ufrag, "REMO1234", 8);
+    rtc.ice.remote_ufrag_len = 8;
+    memcpy(rtc.ice.remote_pwd, "remote-password-abcdef", 22);
+    rtc.ice.remote_pwd_len = 22;
+    rtc.ice.tie_breaker = UINT64_C(0xAABBCCDDEEFF0011);
+
+    uint8_t turn_addr[NANORTC_ADDR_SIZE] = {10, 0, 0, 100};
+    ASSERT_OK(turn_configure(&rtc.turn, turn_addr, 4, 3478, "user", 4, "pass", 4));
+    rtc.turn.state = NANORTC_TURN_ALLOCATED;
+    rtc.turn.hmac_key_valid = true;
+    rtc.turn.relay_family = STUN_FAMILY_IPV4;
+    rtc.turn.refresh_at_ms = 600000;
+
+    rtc.ice.local_candidate_count = 1;
+    rtc.ice.local_candidates[0].family = 4;
+    rtc.ice.local_candidates[0].type = NANORTC_ICE_CAND_RELAY;
+    rtc.ice.local_candidates[0].port = 50000;
+    rtc.ice.remote_candidate_count = 1;
+    rtc.ice.remote_candidates[0].family = 4;
+    rtc.ice.remote_candidates[0].addr[0] = 192;
+    rtc.ice.remote_candidates[0].addr[1] = 0;
+    rtc.ice.remote_candidates[0].addr[2] = 2;
+    rtc.ice.remote_candidates[0].addr[3] = 200;
+    rtc.ice.remote_candidates[0].port = 40000;
+
+    rtc.turn.permission_count = NANORTC_TURN_MAX_PERMISSIONS;
+    for (uint8_t i = 0; i < NANORTC_TURN_MAX_PERMISSIONS; i++) {
+        rtc.turn.permissions[i].family = 4;
+        rtc.turn.permissions[i].addr[0] = 10;
+        rtc.turn.permissions[i].addr[2] = 1;
+        rtc.turn.permissions[i].addr[3] = (uint8_t)(i + 1);
+        rtc.turn.permissions[i].active = true;
+        rtc.turn.permissions[i].deadline_ms = 600000;
+    }
+
+    ASSERT_OK(nanortc_handle_input(&rtc, &(nanortc_input_t){.now_ms = 100}));
+    ASSERT_TRUE(rtc.ice.check_count > 0);
+
+    nanortc_destroy(&rtc);
+}
+
 /* T: TURN relay wrapping — outgoing data wrapped when ICE selects relay */
 TEST(test_e2e_turn_relay_wrapping)
 {
@@ -5188,6 +5308,8 @@ RUN(test_e2e_handle_input_dst_null_falls_back);
 RUN(test_e2e_turn_allocation_lifecycle);
 RUN(test_e2e_turn_allocate_backpressure_preserves_state);
 RUN(test_e2e_relay_check_waits_without_blocking_permission);
+RUN(test_e2e_turn_permission_capacity_covers_remote_candidates);
+RUN(test_e2e_turn_permission_table_full_does_not_freeze_ice);
 RUN(test_e2e_turn_relay_wrapping);
 RUN(test_e2e_channeldata_inbound);
 #endif

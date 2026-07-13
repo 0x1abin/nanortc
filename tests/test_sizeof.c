@@ -56,7 +56,14 @@ static void test_sizeof_sdp(void)
 #if NANORTC_FEATURE_TURN
 static void test_sizeof_turn(void)
 {
-    TEST_ASSERT_LESS_OR_EQUAL_size_t(800, sizeof(nano_turn_t));
+    /* The 800 B baseline covers four permission slots. Scale the guard for
+     * explicit larger tables without weakening the per-slot regression check. */
+    const size_t base = 800u;
+    const size_t extra =
+        NANORTC_TURN_MAX_PERMISSIONS > 4
+            ? (size_t)(NANORTC_TURN_MAX_PERMISSIONS - 4) * sizeof(nano_turn_permission_t)
+            : 0u;
+    TEST_ASSERT_LESS_OR_EQUAL_size_t(base + extra, sizeof(nano_turn_t));
 }
 #endif
 
@@ -110,7 +117,15 @@ static void test_sizeof_rtc_profile(void)
 #elif NANORTC_FEATURE_DATACHANNEL
     const size_t limit = 36u * 1024u;
 #else
-    const size_t limit = 20u * 1024u;
+#if NANORTC_FEATURE_TURN
+    const size_t permission_extra =
+        NANORTC_TURN_MAX_PERMISSIONS > 4
+            ? (size_t)(NANORTC_TURN_MAX_PERMISSIONS - 4) * sizeof(nano_turn_permission_t)
+            : 0u;
+#else
+    const size_t permission_extra = 0u;
+#endif
+    const size_t limit = 20u * 1024u + permission_extra;
 #endif
     printf("sizeof(nanortc_t)=%zu, profile ceiling=%zu\n", sizeof(nanortc_t), limit);
     TEST_ASSERT_LESS_OR_EQUAL_size_t(limit, sizeof(nanortc_t));

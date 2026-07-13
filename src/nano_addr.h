@@ -12,6 +12,7 @@
 
 #include "nanortc_config.h"
 
+#include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>
 

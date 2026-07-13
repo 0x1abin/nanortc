@@ -56,6 +56,18 @@ static inline bool rtc_output_has_space(const nanortc_t *rtc)
 }
 
 #if NANORTC_FEATURE_TURN
+static int rtc_turn_find_permission(const nano_turn_t *turn, const nano_ice_candidate_t *candidate)
+{
+    size_t addr_len = candidate->family == 4 ? 4u : 16u;
+    for (uint8_t i = 0; i < turn->permission_count; i++) {
+        if (turn->permissions[i].family == candidate->family &&
+            memcmp(turn->permissions[i].addr, candidate->addr, addr_len) == 0) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
 static bool rtc_turn_current_pair_is_ready(const nanortc_t *rtc)
 {
     uint8_t local_idx = rtc->ice.current_local;
@@ -67,17 +79,18 @@ static bool rtc_turn_current_pair_is_ready(const nanortc_t *rtc)
     }
 
     const nano_ice_candidate_t *remote = &rtc->ice.remote_candidates[remote_idx];
-    size_t addr_len = remote->family == 4 ? 4u : 16u;
-    for (uint8_t i = 0; i < rtc->turn.permission_count; i++) {
-        if (rtc->turn.permissions[i].active && rtc->turn.permissions[i].family == remote->family &&
-            memcmp(rtc->turn.permissions[i].addr, remote->addr, addr_len) == 0) {
-            return true;
-        }
+    int permission_index = rtc_turn_find_permission(&rtc->turn, remote);
+    if (permission_index >= 0) {
+        const nano_turn_permission_t *permission = &rtc->turn.permissions[permission_index];
+        return permission->active || permission->terminal;
     }
-    /* If the bounded table is full, do not freeze the whole checklist on an
-     * unrepresentable peer. Send this check best-effort so ICE can advance to
-     * another pair that may already have a permission. */
-    return rtc->turn.permission_count >= NANORTC_TURN_MAX_PERMISSIONS;
+    if (rtc->turn.permission_count < NANORTC_TURN_MAX_PERMISSIONS) {
+        return false;
+    }
+    /* If an explicitly smaller permission table is full, do not freeze the
+     * checklist on an unrepresentable peer. Send this check best-effort so ICE
+     * can advance to another pair that may already have a permission. */
+    return true;
 }
 #endif
 
@@ -1507,39 +1520,33 @@ static int rtc_process_timers(nanortc_t *rtc, uint32_t now_ms)
                 }
             }
         } else if (rtc->turn.state == NANORTC_TURN_ALLOCATED) {
-            /* Initial / trickle CreatePermission fan-out. Walk candidates and
-             * emit at most one new permission per tick to bound control bursts
-             * and preserve the existing lifecycle cadence. */
+            /* Initial, trickled, and delayed-retry CreatePermission fan-out.
+             * RFC 8656 §9 keys permissions by peer IP address, so walk the
+             * deduplicated remote candidates in signaling order and emit at
+             * most one request per tick. Explicitly smaller permission tables
+             * remain best-effort: once full, later candidates are skipped. */
+            uint8_t relay_fam_46 = (rtc->turn.relay_family == STUN_FAMILY_IPV4) ? 4 : 6;
+            bool permission_sent = false;
             for (uint8_t i = 0; i < rtc->ice.remote_candidate_count; i++) {
                 nano_ice_candidate_t *c = &rtc->ice.remote_candidates[i];
-                /* RFC 6157 §4.2 / RFC 5928 §6: CreatePermission's
-                 * XOR-PEER-ADDRESS family must match the allocation family,
-                 * otherwise coturn replies "443 Peer Address Family Mismatch"
-                 * and the permission slot is wasted. With
-                 * NANORTC_TURN_MAX_PERMISSIONS=4 and browsers/libdc routinely
-                 * trickling 4+ v6 host candidates, filling all 4 slots with
-                 * v6 perms against a v4 relay starves the v4 perm install
-                 * that the actual data path needs. Skip mismatched families
-                 * here so the fan-out only requests perms that can succeed.
-                 * relay_family is stored as STUN_FAMILY_IPV4 (0x01) /
-                 * STUN_FAMILY_IPV6 (0x02); candidate family is plain 4/6. */
-                uint8_t relay_fam_46 = (rtc->turn.relay_family == STUN_FAMILY_IPV4) ? 4 : 6;
+                /* RFC 6157 §4.2: the XOR-PEER-ADDRESS family must match the
+                 * address family requested for the TURN allocation. */
                 if (c->family != relay_fam_46) {
                     continue;
                 }
-                size_t addr_len = (c->family == 4) ? 4 : 16;
-                bool has_perm = false;
-                for (uint8_t j = 0; j < rtc->turn.permission_count; j++) {
-                    if (rtc->turn.permissions[j].family == c->family &&
-                        (rtc->turn.permissions[j].active || rtc->turn.permissions[j].pending) &&
-                        memcmp(rtc->turn.permissions[j].addr, c->addr, addr_len) == 0) {
-                        has_perm = true;
-                        break;
+
+                int permission_index = rtc_turn_find_permission(&rtc->turn, c);
+                if (permission_index >= 0) {
+                    nano_turn_permission_t *permission = &rtc->turn.permissions[permission_index];
+                    if (permission->active || permission->pending || permission->terminal ||
+                        (permission->deadline_ms != 0u &&
+                         !nano_time_is_due(now_ms, permission->deadline_ms))) {
+                        continue;
                     }
-                }
-                if (has_perm) {
+                } else if (rtc->turn.permission_count >= NANORTC_TURN_MAX_PERMISSIONS) {
                     continue;
                 }
+
                 uint8_t *tx_buf = NULL;
                 uint8_t tx_slot = 0;
                 int prc = nano_rtc_tx_slot_acquire(rtc, &tx_buf, &tx_slot);
@@ -1556,13 +1563,14 @@ static int rtc_process_timers(nanortc_t *rtc, uint32_t now_ms)
                 if (prc != NANORTC_OK) {
                     return prc;
                 }
-                if (prc == NANORTC_OK && perm_len > 0) {
+                if (perm_len > 0) {
                     prc = rtc_tx_slot_commit_direct(rtc, tx_slot, perm_len, &turn_dest, NULL);
                     if (prc != NANORTC_OK) {
                         return prc;
                     }
+                    permission_sent = true;
                 }
-                break; /* one CreatePermission per tick */
+                break;
             }
 
             /* Periodic Refresh (RFC 5766 §7). */
@@ -1601,7 +1609,7 @@ static int rtc_process_timers(nanortc_t *rtc, uint32_t now_ms)
                     break;
                 }
             }
-            if (permission_due) {
+            if (!permission_sent && permission_due) {
                 uint8_t *tx_buf = NULL;
                 uint8_t tx_slot = 0;
                 int prc = nano_rtc_tx_slot_acquire(rtc, &tx_buf, &tx_slot);

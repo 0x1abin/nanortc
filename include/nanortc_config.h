@@ -1148,7 +1148,7 @@ typedef enum {
 
 /** @brief Maximum TURN permissions (peer addresses). */
 #ifndef NANORTC_TURN_MAX_PERMISSIONS
-#define NANORTC_TURN_MAX_PERMISSIONS 4
+#define NANORTC_TURN_MAX_PERMISSIONS NANORTC_MAX_ICE_CANDIDATES
 #endif
 
 /** @brief Maximum TURN channel bindings (RFC 5766 §11). */

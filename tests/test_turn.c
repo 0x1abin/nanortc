@@ -964,26 +964,116 @@ static void test_turn_permission_438_stale_nonce(void)
     int rc = turn_handle_response(&turn, 0, resp, resp_len, crypto());
     TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
     TEST_ASSERT_EQUAL_STRING("perm_nonce", turn.nonce);
+    TEST_ASSERT_EQUAL_INT(NANORTC_TURN_ALLOCATED, turn.state);
+    TEST_ASSERT_FALSE(turn.permissions[0].pending);
+    TEST_ASSERT_FALSE(turn.permissions[0].terminal);
+    TEST_ASSERT_EQUAL_UINT32(0, turn.permissions[0].deadline_ms);
+
+    out_len = 0;
+    rc = turn_create_permission(&turn, peer, 4, 7000, crypto(), buf, sizeof(buf), &out_len);
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
+    TEST_ASSERT_TRUE(out_len > 0);
+    TEST_ASSERT_TRUE(turn.permissions[0].pending);
 }
 
-/* T33: CreatePermission error non-438 — fails (F1: must echo our txid first) */
-static void test_turn_permission_error_fails(void)
+/* T33: Peer-specific rejections must not fail the whole TURN allocation. */
+static void test_turn_permission_rejection_is_terminal(void)
+{
+    static const uint16_t error_codes[] = {403, 443};
+    nano_turn_t turn;
+    uint8_t buf[512];
+    uint8_t resp[256];
+    uint8_t peer[NANORTC_ADDR_SIZE] = {172, 16, 0, 1};
+
+    for (size_t i = 0; i < sizeof(error_codes) / sizeof(error_codes[0]); i++) {
+        setup_turn_allocated(&turn);
+        size_t out_len = 0;
+        turn_create_permission(&turn, peer, 4, 7000, crypto(), buf, sizeof(buf), &out_len);
+        size_t resp_len = build_error_response(resp, STUN_CREATE_PERMISSION_ERROR,
+                                               turn.permissions[0].txid, error_codes[i], NULL);
+
+        int rc = turn_handle_response(&turn, 0, resp, resp_len, crypto());
+        TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
+        TEST_ASSERT_EQUAL_INT(NANORTC_TURN_ALLOCATED, turn.state);
+        TEST_ASSERT_FALSE(turn.permissions[0].pending);
+        TEST_ASSERT_FALSE(turn.permissions[0].active);
+        TEST_ASSERT_TRUE(turn.permissions[0].terminal);
+
+        out_len = 123;
+        rc = turn_create_permission(&turn, peer, 4, 7000, crypto(), buf, sizeof(buf), &out_len);
+        TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
+        TEST_ASSERT_EQUAL_size_t(0, out_len);
+    }
+}
+
+static void test_turn_permission_508_defers_retry(void)
 {
     nano_turn_t turn;
     setup_turn_allocated(&turn);
-
-    /* Send a permission so the txid is in flight. */
-    uint8_t peer[NANORTC_ADDR_SIZE] = {172, 16, 0, 1};
+    uint8_t peer[NANORTC_ADDR_SIZE] = {203, 0, 113, 50};
     uint8_t buf[512];
     size_t out_len = 0;
-    turn_create_permission(&turn, peer, 4, 7000, crypto(), buf, sizeof(buf), &out_len);
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK, turn_create_permission(&turn, peer, 4, 7000, crypto(), buf,
+                                                             sizeof(buf), &out_len));
 
     uint8_t resp[256];
     size_t resp_len = build_error_response(resp, STUN_CREATE_PERMISSION_ERROR,
-                                           turn.permissions[0].txid, 403, NULL);
+                                           turn.permissions[0].txid, 508, NULL);
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK,
+                          turn_handle_response(&turn, 100, resp, resp_len, crypto()));
+    TEST_ASSERT_EQUAL_INT(NANORTC_TURN_ALLOCATED, turn.state);
+    TEST_ASSERT_FALSE(turn.permissions[0].pending);
+    TEST_ASSERT_FALSE(turn.permissions[0].active);
+    TEST_ASSERT_FALSE(turn.permissions[0].terminal);
+    TEST_ASSERT_EQUAL_INT(0, turn.permissions[0].transmissions);
+    TEST_ASSERT_TRUE(turn_next_timeout_ms(&turn, 100) > NANORTC_TURN_RTO_MS);
+}
 
-    int rc = turn_handle_response(&turn, 0, resp, resp_len, crypto());
-    TEST_ASSERT_EQUAL_INT(NANORTC_ERR_PROTOCOL, rc);
+static void test_turn_permission_unrecoverable_error_fails_allocation(void)
+{
+    static const uint16_t error_codes[] = {400, 437, 441, 500};
+    nano_turn_t turn;
+    uint8_t peer[NANORTC_ADDR_SIZE] = {203, 0, 113, 51};
+    uint8_t buf[512];
+    uint8_t resp[256];
+
+    for (size_t i = 0; i < sizeof(error_codes) / sizeof(error_codes[0]); i++) {
+        setup_turn_allocated(&turn);
+        size_t out_len = 0;
+        TEST_ASSERT_EQUAL_INT(NANORTC_OK, turn_create_permission(&turn, peer, 4, 7000, crypto(),
+                                                                 buf, sizeof(buf), &out_len));
+        size_t resp_len = build_error_response(resp, STUN_CREATE_PERMISSION_ERROR,
+                                               turn.permissions[0].txid, error_codes[i], NULL);
+        TEST_ASSERT_EQUAL_INT(NANORTC_ERR_PROTOCOL,
+                              turn_handle_response(&turn, 100, resp, resp_len, crypto()));
+        TEST_ASSERT_EQUAL_INT(NANORTC_TURN_FAILED, turn.state);
+        TEST_ASSERT_FALSE(turn.permissions[0].pending);
+        TEST_ASSERT_FALSE(turn.permissions[0].active);
+        TEST_ASSERT_FALSE(turn.permissions[0].terminal);
+    }
+}
+
+static void test_turn_permission_retransmit_exhaustion_defers_retry(void)
+{
+    nano_turn_t turn;
+    setup_turn_allocated(&turn);
+    uint8_t peer[NANORTC_ADDR_SIZE] = {203, 0, 113, 10};
+    uint8_t buf[512];
+    size_t out_len = 0;
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK, turn_create_permission(&turn, peer, 4, 7000, crypto(), buf,
+                                                             sizeof(buf), &out_len));
+    turn.permissions[0].transmissions = NANORTC_TURN_MAX_TRANSMISSIONS;
+    turn.permissions[0].deadline_ms = 100;
+
+    out_len = 123;
+    TEST_ASSERT_EQUAL_INT(
+        NANORTC_OK, turn_generate_retransmit(&turn, 100, crypto(), buf, sizeof(buf), &out_len));
+    TEST_ASSERT_EQUAL_size_t(0, out_len);
+    TEST_ASSERT_FALSE(turn.permissions[0].pending);
+    TEST_ASSERT_FALSE(turn.permissions[0].active);
+    TEST_ASSERT_FALSE(turn.permissions[0].terminal);
+    TEST_ASSERT_EQUAL_INT(0, turn.permissions[0].transmissions);
+    TEST_ASSERT_TRUE(turn_next_timeout_ms(&turn, 100) > NANORTC_TURN_RTO_MS);
 }
 
 /* T34: ChannelBind error 438 — stale nonce */
@@ -1732,7 +1822,10 @@ int main(void)
     RUN_TEST(test_turn_refresh_error_fails);
     RUN_TEST(test_turn_permission_success_response);
     RUN_TEST(test_turn_permission_438_stale_nonce);
-    RUN_TEST(test_turn_permission_error_fails);
+    RUN_TEST(test_turn_permission_rejection_is_terminal);
+    RUN_TEST(test_turn_permission_508_defers_retry);
+    RUN_TEST(test_turn_permission_unrecoverable_error_fails_allocation);
+    RUN_TEST(test_turn_permission_retransmit_exhaustion_defers_retry);
     RUN_TEST(test_turn_channel_bind_438_stale_nonce);
     RUN_TEST(test_turn_channel_bind_error_fails);
 
