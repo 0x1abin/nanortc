@@ -8,8 +8,8 @@
  * that bypasses the relay) and runs in relay_only mode (see
  * interop_nanortc_ice_config_t.relay_only), which skips the host candidate
  * in the SDP — only the TURN-allocated relay candidate is advertised.
- * libdatachannel stays host-only, so the only reachable address libdc has
- * to talk to is nanortc's relay on coturn.
+ * libdatachannel is also relay-only, so the only candidate pair is
+ * relay-to-relay through coturn.
  *
  * Every byte nanortc sends must be wrapped through the TURN server:
  *   - outbound ICE connectivity checks → Send Indication / ChannelData
@@ -112,24 +112,11 @@ static int parse_turn_host(const char *uri, char *out, size_t out_size)
     return 1;
 }
 
-/* Return 1 if the TURN host resolves to a loopback address. Used to auto-skip
- * the strict relay-path assertions when the test cannot actually force data
- * through the relay.
- *
- * The nanortc-as-TURN-client strict assertions need three *distinct* network
- * endpoints — nanortc, libdatachannel, and the relay — so coturn observes a
- * peer source that matches a CreatePermission target. A single-host setup
- * cannot provide that:
- *   - loopback: libjuice/libdc filter 127.0.0.0/8 host candidates per
- *     RFC 8838, so nanortc never installs a permission for the address coturn
- *     actually sees libdc traffic from;
- *   - same non-loopback host IP (coturn in network_mode=host): coturn's relay
- *     and libdc's socket share one IP, and coturn's relay hairpin back to a
- *     client on that same IP does not complete reliably.
- *
- * So we skip whenever the TURN host is loopback. The strict path is exercised
- * against a real dual-host / cellular TURN deployment (the Phase 5.2 manual
- * verification); point NANORTC_TURN_URL at such a relay to run the assertions.
+/* Return 1 if the TURN host resolves to a loopback address. Used to skip the
+ * strict relay-to-relay path for the deterministic local coturn profile: that
+ * server advertises a loopback relay address, and coturn rejects permissions
+ * targeting loopback peers. The protected external workflow supplies a real
+ * non-loopback relay address and exercises the strict assertions.
  *
  * Uses getaddrinfo(AF_UNSPEC) so bracketed IPv6 URIs and DNS names both work. */
 static int is_loopback_turn(void)
@@ -155,8 +142,7 @@ static int is_loopback_turn(void)
                 loopback = 1;
         } else if (ai->ai_family == AF_INET6) {
             const struct sockaddr_in6 *sa = (const struct sockaddr_in6 *)ai->ai_addr;
-            static const uint8_t loopback6[16] = {0, 0, 0, 0, 0, 0, 0, 0,
-                                                  0, 0, 0, 0, 0, 0, 0, 1};
+            static const uint8_t loopback6[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
             if (memcmp(&sa->sin6_addr, loopback6, 16) == 0)
                 loopback = 1;
         }
@@ -258,7 +244,8 @@ static int probe_turn_server(void)
         if (rs > 0) {
             uint8_t resp[256];
             ssize_t n = recv(fd, resp, sizeof(resp), 0);
-            if (n >= 20 && resp[0] == 0x01 && resp[1] == 0x01 && memcmp(resp + 4, req + 4, 16) == 0) {
+            if (n >= 20 && resp[0] == 0x01 && resp[1] == 0x01 &&
+                memcmp(resp + 4, req + 4, 16) == 0) {
                 reachable = 1;
             }
         }
@@ -295,8 +282,7 @@ static int setup_idx;
  *
  * nanortc: STUN+TURN configured AND relay_only=1 (skips host candidate).
  *          Its SDP advertises only the TURN relay candidate.
- * libdc:   host-only (no ICE servers at all). Uses its loopback/LAN
- *          host candidates.
+ * libdc:   relay-only against the same TURN service.
  *
  * libdc's host candidates can only reach nanortc via the TURN server,
  * because nanortc has no direct-reachable address. coturn unwraps libdc's
@@ -349,20 +335,17 @@ static int setup_relay_pair_nanortc(interop_sig_pipe_t *pipe, interop_nanortc_pe
         return -1;
     }
 
-    /* libdatachannel: host-only (no ICE servers). Pass remote_port=0 to
-     * suppress the direct-host fallback injection at
-     * interop_libdatachannel_peer.c:141 — otherwise libdc gets a
-     * 127.0.0.1:<nanortc_port> typ host candidate handed to it and reaches
-     * nanortc directly, bypassing the TURN relay entirely.
-     *
-     * For the strict relay path to actually complete, coturn must see libdc's
-     * traffic arriving from an IP that nanortc has a CreatePermission for —
-     * which requires libdc, nanortc, and the relay to be three distinct
-     * endpoints. That only holds against a real dual-host / external relay;
-     * on a single-host loopback setup the test skips earlier (see
-     * is_loopback_turn / SKIP_IF_NO_TURN). The TURN server itself runs in
-     * network_mode=host (tests/interop/turn-server/docker-compose.yml). */
-    if (interop_libdatachannel_start(ldc, pipe->fd[1], dc_label, 0) != 0) {
+    /* libdatachannel is also relay-only. This avoids runner-NAT assumptions:
+     * both advertised candidates are allocated by coturn, so a successful
+     * connection proves the complete relay-to-relay path. */
+    interop_libdatachannel_ice_config_t ldc_ice = {
+        .relay_only = 1,
+        .stun_url = NULL,
+        .turn_url = turn_url,
+        .turn_user = turn_user,
+        .turn_pass = turn_pass,
+    };
+    if (interop_libdatachannel_start_ex(ldc, pipe->fd[1], dc_label, 0, &ldc_ice) != 0) {
         fprintf(stderr, "[test] Failed to start libdatachannel peer\n");
         interop_nanortc_stop(nano);
         interop_sig_destroy(pipe);
@@ -420,6 +403,10 @@ static inline uint8_t read_selected_type(const interop_nanortc_peer_t *nano)
 {
     return __atomic_load_n(&nano->rtc.ice.selected_type, __ATOMIC_RELAXED);
 }
+static inline uint8_t read_selected_local_type(const interop_nanortc_peer_t *nano)
+{
+    return __atomic_load_n(&nano->rtc.ice.selected_local_type, __ATOMIC_RELAXED);
+}
 static inline uint32_t read_stat_u32(const uint32_t *p)
 {
     return __atomic_load_n(p, __ATOMIC_RELAXED);
@@ -435,35 +422,37 @@ static void assert_nanortc_relay_path(const interop_nanortc_peer_t *nano)
     TEST_ASSERT_EQUAL_MESSAGE(NANORTC_ICE_CAND_RELAY, selected_type,
                               "nanortc ice.selected_type != RELAY "
                               "(Phase 5.2 F6 via_turn signal not effective?)");
+    TEST_ASSERT_EQUAL_MESSAGE(NANORTC_ICE_CAND_RELAY, read_selected_local_type(nano),
+                              "nanortc selected_local_type != RELAY");
 
     TEST_ASSERT_TRUE_MESSAGE(via_turn > 0, "stats_enqueue_via_turn == 0 "
                                            "(Phase 5.2 F7 lazy wrap never fired?)");
 
-    TEST_ASSERT_EQUAL_MESSAGE(0, wrap_dropped, "stats_wrap_dropped > 0 "
-                                               "(lazy wrap lost packets, check turn_buf sizing)");
+    TEST_ASSERT_EQUAL_MESSAGE(0, wrap_dropped,
+                              "stats_wrap_dropped > 0 "
+                              "(lazy wrap lost packets, check turn_buf sizing)");
 
-    TEST_ASSERT_EQUAL_MESSAGE(0, tx_queue_full, "stats_tx_queue_full > 0 "
-                                                "(out_queue overflowed under test load)");
+    TEST_ASSERT_EQUAL_MESSAGE(0, tx_queue_full,
+                              "stats_tx_queue_full > 0 "
+                              "(out_queue overflowed under test load)");
 }
 
 /* ----------------------------------------------------------------
  * Skip-on-no-server guard
  * ---------------------------------------------------------------- */
 
-#define SKIP_IF_NO_TURN()                                                                          \
-    do {                                                                                           \
-        if (!turn_server_reachable) {                                                              \
-            fprintf(stderr, "[test] SKIP: TURN server unreachable (%s)\n", turn_url);              \
-            return;                                                                                \
-        }                                                                                          \
-        if (turn_host_is_loopback) {                                                               \
-            fprintf(stderr,                                                                        \
-                    "[test] SKIP: loopback/single-host TURN cannot exercise the nanortc "         \
-                    "relay path (libdc filters loopback candidates per RFC 8838; same-host "       \
-                    "coturn hairpin is unreliable). Point NANORTC_TURN_URL at a real "            \
-                    "dual-host / external TURN relay to run the strict assertions.\n");            \
-            return;                                                                                \
-        }                                                                                          \
+#define SKIP_IF_NO_TURN()                                                                      \
+    do {                                                                                       \
+        if (!turn_server_reachable) {                                                          \
+            fprintf(stderr, "[test] SKIP: TURN server unreachable (%s)\n", turn_url);          \
+            return;                                                                            \
+        }                                                                                      \
+        if (turn_host_is_loopback) {                                                           \
+            fprintf(stderr, "[test] SKIP: loopback TURN cannot exercise the strict nanortc "   \
+                            "relay-to-relay path. Point NANORTC_TURN_URL at an external TURN " \
+                            "relay to run the assertions.\n");                                 \
+            return;                                                                            \
+        }                                                                                      \
     } while (0)
 
 /* ----------------------------------------------------------------
@@ -738,17 +727,30 @@ int main(void)
     load_ice_config();
     turn_server_reachable = probe_turn_server();
     turn_host_is_loopback = is_loopback_turn();
+    const char *required_env = getenv("NANORTC_INTEROP_NETWORK_REQUIRED");
+    int network_required = required_env && strcmp(required_env, "1") == 0;
+    const char *env_turn_url = getenv("NANORTC_TURN_URL");
+    const char *env_turn_user = getenv("NANORTC_TURN_USER");
+    const char *env_turn_pass = getenv("NANORTC_TURN_PASS");
+
+    if (network_required && (!env_turn_url || !env_turn_url[0] || !env_turn_user ||
+                             !env_turn_user[0] || !env_turn_pass || !env_turn_pass[0])) {
+        fprintf(stderr, "TURN interop required but NANORTC_TURN_URL/USER/PASS is incomplete\n");
+        return EXIT_FAILURE;
+    }
+    if (!turn_server_reachable || turn_host_is_loopback) {
+        fprintf(stderr, "%s: %s\n",
+                !turn_server_reachable ? "TURN server unreachable"
+                                       : "strict relay topology unavailable",
+                turn_url);
+        return network_required ? EXIT_FAILURE : 77;
+    }
 
     printf("TURN relay-only nanortc-client interop test\n");
     printf("  STUN: %s\n", stun_url);
     printf("  TURN: %s user=%s\n", turn_url, turn_user);
     printf("  TURN reachable: %s\n", turn_server_reachable ? "yes" : "no");
     printf("  TURN loopback: %s\n", turn_host_is_loopback ? "yes (strict tests will SKIP)" : "no");
-    if (!turn_server_reachable) {
-        printf("  → all tests will be SKIPPED. Start a TURN server with:\n");
-        printf("       ./scripts/start-test-turn.sh\n");
-        printf("    or override with NANORTC_TURN_URL/USER/PASS environment.\n");
-    }
 
     UNITY_BEGIN();
     RUN_TEST(test_relay_nanortc_handshake);

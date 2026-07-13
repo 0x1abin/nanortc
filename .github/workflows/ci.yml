@@ -357,7 +357,7 @@ jobs:
         run: ctest --test-dir build -R interop -LE network --output-on-failure
 
   interop-turn-relay:
-    name: Interop TURN Relay (nanortc client)
+    name: Interop TURN Local Smoke
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -381,8 +381,8 @@ jobs:
       - name: Build
         run: cmake --build build-interop -j$(nproc)
 
-      - name: Test (nanortc-as-TURN-client relay path)
-        run: ctest --test-dir build-interop -L turn-relay --output-on-failure
+      - name: Test (libdatachannel relay client against local coturn)
+        run: ctest --test-dir build-interop -R '^interop_turn_relay$' --output-on-failure
 
       - name: Stop coturn
         if: always()

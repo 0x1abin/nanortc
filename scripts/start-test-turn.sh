@@ -10,13 +10,8 @@
 #
 # Note: the libdc-relay-only direction (test_interop_turn_relay) works fully
 # over loopback. The nanortc-as-TURN-client direction
-# (test_interop_turn_relay_nanortc) auto-skips its strict assertions when
-# the configured TURN URL resolves to a loopback address — libjuice/libdc
-# filter loopback host candidates per RFC 8838, so coturn cannot observe a
-# permission-matching peer source for libdc's actual traffic. To exercise
-# the strict relay path locally, point NANORTC_TURN_URL at a non-loopback
-# IP that this host listens on (e.g. its LAN address). CI does this
-# automatically via the workflow's host-IP detection step.
+# (test_interop_turn_relay_nanortc) requires a non-loopback external relay
+# topology and is exercised by the protected external TURN workflow.
 
 set -euo pipefail
 
@@ -52,7 +47,7 @@ for _ in $(seq 1 50); do
         echo " ready."
         echo "[start-test-turn] coturn is up at 127.0.0.1:3478"
         echo "[start-test-turn] credentials: testuser / testpass (realm=nanortc-test)"
-        echo "[start-test-turn] run: ctest --test-dir build-interop -L turn-relay --output-on-failure"
+        echo "[start-test-turn] run: ctest --test-dir build-interop -R '^interop_turn_relay$' --output-on-failure"
         exit 0
     fi
     sleep 0.2

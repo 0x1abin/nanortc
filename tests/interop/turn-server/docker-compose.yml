@@ -4,19 +4,12 @@
 # Stop : ./scripts/stop-test-turn.sh
 #
 # After start, run:
-#   ctest --test-dir build-interop -L turn-relay --output-on-failure
+#   ctest --test-dir build-interop -R '^interop_turn_relay$' --output-on-failure
 #
-# Uses host networking so coturn's relay socket binds on the host's actual
-# interfaces. This is what makes the relay path reachable for the
-# nanortc-as-TURN-client direction: clients route to coturn via a real
-# (non-loopback) host IP, coturn's observed peer source then matches one of
-# libdatachannel's gathered host candidates, and CreatePermission succeeds.
-#
-# Custom-bridge networks were attempted and rejected — OrbStack assigns the
-# network address (host bits = 0) to its host-side bridge interface, which
-# the kernel refuses to use as a source IP. Falling back to host networking
-# matches the original Phase 5.2 setup and works cleanly on both OrbStack
-# and Linux CI runners.
+# Uses host networking so the deterministic loopback relay is reachable from
+# host-side tests. This profile covers the libdatachannel-as-TURN-client smoke
+# direction. The nanortc-as-TURN-client strict relay-to-relay path needs a
+# non-loopback external relay and runs in the protected external workflow.
 
 services:
   coturn:

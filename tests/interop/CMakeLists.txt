@@ -59,6 +59,9 @@ function(add_interop_test target test_name timeout labels)
     add_test(NAME ${test_name} COMMAND ${target})
     if(labels)
         set_tests_properties(${test_name} PROPERTIES TIMEOUT ${timeout} LABELS "${labels}")
+        if(labels MATCHES "(^|;)network($|;)")
+            set_tests_properties(${test_name} PROPERTIES SKIP_RETURN_CODE 77)
+        endif()
     else()
         set_tests_properties(${test_name} PROPERTIES TIMEOUT ${timeout})
     endif()
@@ -102,10 +105,10 @@ add_interop_test(test_interop_turn_relay interop_turn_relay 180 "network;turn-re
 
 # ---- TURN relay-only interop test, nanortc side ----
 # Mirror image of test_interop_turn_relay: nanortc is the TURN client this
-# time. nanortc's SDP advertises only the relay candidate (see relay_only
-# flag in interop_nanortc_ice_config_t); libdatachannel stays host-only.
-# Exercises the Phase 5.2 client-side relay fixes (via_turn signal, lazy
-# wrap, permission fan-out, stats counters). Skipped if no TURN reachable.
+# time. Both peers advertise only relay candidates, avoiding assumptions about
+# the runner's host/NAT topology. Exercises the client-side relay fixes
+# (via_turn signal, lazy wrap, permission fan-out, stats counters). Skipped if
+# no suitable external TURN topology is reachable.
 
 add_interop_test(test_interop_turn_relay_nanortc interop_turn_relay_nanortc 180 "network;turn-relay"
     test_interop_turn_relay_nanortc.c
