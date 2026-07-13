@@ -74,6 +74,9 @@ NanoRTC targets the WebRTC-relevant TURN subset: UDP transport, long-term creden
 | 8489 §9.2.2          | key = MD5(username ":" realm ":" password)             | OK     | [nano_turn.c:125-151](../../src/nano_turn.c) |
 | 8489 §14.5           | MESSAGE-INTEGRITY = HMAC-SHA1(key, message)            | OK     | [nano_turn.c:97-118](../../src/nano_turn.c) |
 | 8489 §14.5           | MESSAGE-INTEGRITY computed over header with adjusted length field | OK | [nano_turn.c:103-116](../../src/nano_turn.c) |
+| 8489 §6.2.1          | UDP request retransmission keeps the transaction ID and backs off exponentially | OK | Allocate, Refresh, CreatePermission, and ChannelBind retain bounded transaction metadata and rebuild the identical request without a packet cache |
+| 8489 §9.2.4          | Authenticate long-term-credential success responses          | OK     | Authenticated success requires valid MESSAGE-INTEGRITY; FINGERPRINT is verified whenever present |
+| 8489 §9.2            | Repeated authentication failure terminates                   | OK     | A second 401 after an authenticated Allocate transitions to `NANORTC_TURN_FAILED`; 438 replaces NONCE and starts a new bounded transaction |
 
 ### Demultiplexing
 
@@ -132,24 +135,57 @@ tx_via_turn=8  tx_direct=0  wrap_drop=0  q_full=0
 
 `type=relay` confirms `via_turn` propagated through to `selected_type`; `tx_via_turn=8 / tx_direct=0` confirms every outbound packet at handshake was routed through the lazy wrap. Steady state with the viewer connected for 30 seconds showed no growth in `stats_enqueue_direct`, proving consent freshness was also wrapped (F8).
 
+## Transaction and real-network hardening (Jul 2026)
+
+The TURN client now treats each UDP request as an RFC 8489 transaction rather
+than as a one-shot datagram. Allocate/Refresh keep one allocation-wide
+transaction, while each permission and channel retains its own transaction ID,
+transmission count, and deadline; its exponential RTO is derived from that
+count. Retransmission reconstructs the request with the same transaction ID, so
+the state cost stays bounded and no maximum-size packet cache is embedded in
+`nanortc_t`. The defaults are configurable through `NANORTC_TURN_RTO_MS` and
+`NANORTC_TURN_MAX_TRANSMISSIONS`.
+
+Additional correctness changes in this pass:
+
+- A permission becomes active only after an authenticated success response;
+  every permission has an independent four-minute refresh deadline.
+- ChannelBind is initiated after a relayed pair is selected and its permission
+  succeeds. Channel identity and lookup include peer address, family, and port.
+- Relay allocation success registers an actual local ICE candidate. Controlling
+  connectivity checks and steady-state packets route through TURN when the
+  selected local candidate is relay.
+- A shared `stun:`/`turn:` IP and port is demultiplexed by STUN method and
+  transaction ID, preventing the TURN handler from swallowing srflx replies.
+- ICE restart reuses a still-live allocation and local relay candidate, but
+  clears peer-specific permissions and channels before the new generation.
+- Consent responses must pass transaction-ID, FINGERPRINT, and
+  MESSAGE-INTEGRITY verification before extending the consent deadline.
+
 ### Coverage status
 
 `tests/interop/test_interop_turn_relay_nanortc.c` (5 cases —
 `test_relay_nanortc_handshake`, `_dc_string_bidirectional`,
 `_channel_data_burst`, `_large_payload`, `_echo_roundtrip`) covers the
-nanortc-as-TURN-client direction end-to-end. nanortc is forced into
-`relay_only` mode (no STUN, no host candidate in the SDP) while
-libdatachannel stays host-only — every byte nanortc sends must traverse
-the relay, exercising F6 (`via_turn` propagation), F7 (lazy wrap), F8
+nanortc-as-TURN-client direction end-to-end. Both nanortc and
+libdatachannel are forced into `relay_only` mode — every byte on the selected
+pair must traverse coturn, without assuming the GitHub runner's public NAT
+mapping. This exercises F6 (`via_turn` propagation), F7 (lazy wrap), F8
 (consent freshness routing), F9 (per-tick `CreatePermission` fan-out),
 and F10 (stats counters).
 
-The dedicated `interop-turn-relay` GitHub Actions job (added 2026-04-26)
-starts coturn via `scripts/start-test-turn.sh` and runs
-`ctest -L turn-relay`, so F6–F10 regressions are now caught in CI.
-Standalone `ctest -R interop` excludes these tests via the `network`
-label (the default `interop` job runs `-LE network`); run
-`ctest -L turn-relay` explicitly when iterating locally.
+The protected `External TURN Interop` GitHub Actions workflow is manual-only,
+uses one repository-wide concurrency slot, and requires environment approval.
+It builds before deriving a 30-minute username/password from the protected
+`COTURN_AUTH_SECRET`; test processes receive only the derived credential. Its
+first stage requires both srflx and relay discovery from the real STUN/TURN
+service before signaling; its second stage forces relay-only
+candidate pairs. `NANORTC_INTEROP_NETWORK_REQUIRED=1` makes missing
+configuration, an unreachable service, and an unusable loopback topology fail.
+Optional local runs return CTest skip code 77. Standalone and pull-request CI
+use `-LE network`. The ordinary local-coturn job remains a complementary
+server/client smoke test, not evidence for the external nanortc relay-client
+topology.
 
 The complementary direction (libdatachannel-as-relay-client, nanortc
 receiving) is covered by `test_interop_turn_relay.c` in the same
