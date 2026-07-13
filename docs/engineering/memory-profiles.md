@@ -266,7 +266,7 @@ costs roughly:
 | Addition | Per-instance | Per-video-track | Stack only |
 |---|---|---|---|
 | `nano_rtp_t.twcc_{ext_id,seq}` | — | +4 B | — |
-| `nano_bwe_t` runtime fields (`twcc_count`, `last_source`, `runtime_min/max`, `runtime_event_threshold_pct`) | +16 B | — | — |
+| `nano_bwe_t` runtime fields (`twcc_count`, `runtime_min/max`, `runtime_event_threshold_pct`) | +16 B | — | — |
 | `nanortc_track_t.rate_window` (1 s bucket, prev-second snapshot) | — | +20 B | — |
 | `nanortc_track_t.fraction_lost` | — | +4 B (incl. pad) | — |
 | TWCC parser per-packet status scratch | — | — | `NANORTC_TWCC_MAX_PACKETS_PER_FB` × 1 B (default 128) |

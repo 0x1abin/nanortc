@@ -40,7 +40,6 @@
 /* ---- mbedtls 4.x headers ---- */
 #include <psa/crypto.h>
 #include <mbedtls/ssl.h>
-#include <mbedtls/ssl_cookie.h>
 #include <mbedtls/x509_crt.h>
 #include <mbedtls/pk.h>
 #include <mbedtls/md.h>
@@ -52,7 +51,6 @@
 #include <mbedtls/entropy.h>
 #include <mbedtls/ctr_drbg.h>
 #include <mbedtls/ssl.h>
-#include <mbedtls/ssl_cookie.h>
 #include <mbedtls/x509_crt.h>
 #include <mbedtls/pk.h>
 #include <mbedtls/ecp.h>
@@ -233,7 +231,6 @@ struct nanortc_crypto_dtls_ctx {
     mbedtls_ctr_drbg_context ctr_drbg;
 #endif
     mbedtls_timing_delay_context timer;
-    mbedtls_ssl_cookie_ctx cookie_ctx;
     int is_server;
     int handshake_done;
 
@@ -641,7 +638,6 @@ fail:
     mbedtls_ctr_drbg_free(&ctx->ctr_drbg);
     mbedtls_entropy_free(&ctx->entropy);
 #endif
-    /* cookie_ctx not used — cookies disabled for WebRTC */
     free(ctx);
     return NULL;
 }
@@ -786,9 +782,6 @@ static void mbed_dtls_free(nanortc_crypto_dtls_ctx_t *ctx)
     mbedtls_ctr_drbg_free(&ctx->ctr_drbg);
     mbedtls_entropy_free(&ctx->entropy);
 #endif
-    if (ctx->is_server) {
-        mbedtls_ssl_cookie_free(&ctx->cookie_ctx);
-    }
     free(ctx);
 }
 

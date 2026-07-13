@@ -82,7 +82,6 @@ TEST(test_bwe_init)
     nano_bwe_t bwe;
     ASSERT_OK(bwe_init(&bwe));
     ASSERT_EQ(bwe.estimated_bitrate, NANORTC_BWE_INITIAL_BITRATE);
-    ASSERT_EQ(bwe.last_remb_bitrate, 0);
     ASSERT_EQ(bwe.last_update_ms, 0);
     ASSERT_EQ(bwe.remb_count, 0);
 }

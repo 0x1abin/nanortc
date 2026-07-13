@@ -36,9 +36,7 @@ TEST(test_sdp_parse_chrome_offer)
     nano_sdp_t sdp;
     sdp_init(&sdp);
 
-    size_t len = 0;
-    while (CHROME_OFFER[len])
-        len++;
+    size_t len = strlen(CHROME_OFFER);
 
     ASSERT_OK(sdp_parse(&sdp, CHROME_OFFER, len));
     ASSERT_TRUE(sdp.parsed);
@@ -59,9 +57,7 @@ TEST(test_sdp_parse_missing_ufrag)
     sdp_init(&sdp);
 
     const char *bad_sdp = "v=0\r\na=ice-pwd:test\r\n";
-    size_t len = 0;
-    while (bad_sdp[len])
-        len++;
+    size_t len = strlen(bad_sdp);
 
     ASSERT_FAIL(sdp_parse(&sdp, bad_sdp, len));
 }
@@ -83,9 +79,7 @@ TEST(test_sdp_parse_setup_active)
                         "a=ice-ufrag:test\r\n"
                         "a=ice-pwd:testpassword\r\n"
                         "a=setup:active\r\n";
-    size_t len = 0;
-    while (offer[len])
-        len++;
+    size_t len = strlen(offer);
 
     ASSERT_OK(sdp_parse(&sdp, offer, len));
     ASSERT_EQ(sdp.remote_setup, NANORTC_SDP_SETUP_ACTIVE);
@@ -132,10 +126,50 @@ TEST(test_sdp_generate_overflow)
     memcpy(sdp.local_ufrag, "a", 1);
     memcpy(sdp.local_pwd, "b", 1);
 
-    char buf[16]; /* Way too small */
+    char too_small[16];
     size_t out_len = 0;
-    ASSERT_FAIL(sdp_generate_answer(&sdp, buf, sizeof(buf), &out_len));
+    ASSERT_EQ(sdp_generate_answer(&sdp, too_small, sizeof(too_small), &out_len),
+              NANORTC_ERR_INVALID_PARAM);
+
+    /* A buffer that passes the API minimum can still fill while appending. */
+    memset(sdp.local_fingerprint, 'F', sizeof(sdp.local_fingerprint) - 1);
+    sdp.local_fingerprint[sizeof(sdp.local_fingerprint) - 1] = '\0';
+    sdp.has_datachannel = true;
+    sdp.dc_mid = 0;
+    sdp.mid_count = 1;
+    char tight[NANORTC_SDP_MIN_BUF_SIZE];
+    ASSERT_EQ(sdp_generate_answer(&sdp, tight, sizeof(tight), &out_len),
+              NANORTC_ERR_BUFFER_TOO_SMALL);
 }
+
+#if NANORTC_HAVE_MEDIA_TRANSPORT
+TEST(test_sdp_generate_numeric_mid_boundaries)
+{
+    static const uint8_t mids[] = {0, 9, 10, 99, 100, 255};
+    static const char *mid_lines[] = {"a=mid:0\r\n",  "a=mid:9\r\n",   "a=mid:10\r\n",
+                                      "a=mid:99\r\n", "a=mid:100\r\n", "a=mid:255\r\n"};
+    static const char *bundle_lines[] = {"a=group:BUNDLE 0\r\n",   "a=group:BUNDLE 9\r\n",
+                                         "a=group:BUNDLE 10\r\n",  "a=group:BUNDLE 99\r\n",
+                                         "a=group:BUNDLE 100\r\n", "a=group:BUNDLE 255\r\n"};
+
+    for (size_t i = 0; i < sizeof(mids) / sizeof(mids[0]); i++) {
+        nano_sdp_t sdp;
+        sdp_init(&sdp);
+        memcpy(sdp.local_ufrag, "midtest", 7);
+        memcpy(sdp.local_pwd, "midpassword123456789", 20);
+        sdp.local_sctp_port = 5000;
+        sdp.has_datachannel = true;
+        sdp.dc_mid = mids[i];
+        sdp.mid_count = 1;
+
+        char buf[1024];
+        size_t out_len = 0;
+        ASSERT_OK(sdp_generate_answer(&sdp, buf, sizeof(buf), &out_len));
+        ASSERT_TRUE(strstr(buf, bundle_lines[i]) != NULL);
+        ASSERT_TRUE(strstr(buf, mid_lines[i]) != NULL);
+    }
+}
+#endif
 
 TEST(test_sdp_roundtrip)
 {
@@ -195,9 +229,7 @@ TEST(test_sdp_parse_firefox_offer)
     nano_sdp_t sdp;
     sdp_init(&sdp);
 
-    size_t len = 0;
-    while (FIREFOX_OFFER[len])
-        len++;
+    size_t len = strlen(FIREFOX_OFFER);
 
     ASSERT_OK(sdp_parse(&sdp, FIREFOX_OFFER, len));
     ASSERT_TRUE(sdp.parsed);
@@ -233,9 +265,7 @@ TEST(test_sdp_parse_safari_offer)
     nano_sdp_t sdp;
     sdp_init(&sdp);
 
-    size_t len = 0;
-    while (SAFARI_OFFER[len])
-        len++;
+    size_t len = strlen(SAFARI_OFFER);
 
     ASSERT_OK(sdp_parse(&sdp, SAFARI_OFFER, len));
     ASSERT_TRUE(sdp.parsed);
@@ -256,9 +286,7 @@ TEST(test_sdp_parse_minimal)
                         "a=ice-ufrag:min\r\n"
                         "a=ice-pwd:minimalpassword\r\n"
                         "a=setup:passive\r\n";
-    size_t len = 0;
-    while (offer[len])
-        len++;
+    size_t len = strlen(offer);
 
     ASSERT_OK(sdp_parse(&sdp, offer, len));
     ASSERT_MEM_EQ(sdp.remote_ufrag, "min", 3);
@@ -299,9 +327,7 @@ TEST(test_sdp_parse_libdatachannel_offer)
     nano_sdp_t sdp;
     sdp_init(&sdp);
 
-    size_t len = 0;
-    while (LIBDATACHANNEL_OFFER[len])
-        len++;
+    size_t len = strlen(LIBDATACHANNEL_OFFER);
 
     ASSERT_OK(sdp_parse(&sdp, LIBDATACHANNEL_OFFER, len));
     ASSERT_TRUE(sdp.parsed);
@@ -330,9 +356,7 @@ TEST(test_sdp_parse_no_candidates)
     nano_sdp_t sdp;
     sdp_init(&sdp);
 
-    size_t len = 0;
-    while (CHROME_OFFER[len])
-        len++;
+    size_t len = strlen(CHROME_OFFER);
 
     ASSERT_OK(sdp_parse(&sdp, CHROME_OFFER, len));
     ASSERT_EQ(sdp.candidate_count, 0);
@@ -409,9 +433,7 @@ TEST(test_sdp_parse_audio_offer)
     nano_sdp_t sdp;
     sdp_init(&sdp);
 
-    size_t len = 0;
-    while (CHROME_AUDIO_OFFER[len])
-        len++;
+    size_t len = strlen(CHROME_AUDIO_OFFER);
 
     ASSERT_OK(sdp_parse(&sdp, CHROME_AUDIO_OFFER, len));
     ASSERT_TRUE(sdp.parsed);
@@ -449,9 +471,7 @@ TEST(test_sdp_parse_audio_only_offer)
     nano_sdp_t sdp;
     sdp_init(&sdp);
 
-    size_t len = 0;
-    while (AUDIO_ONLY_OFFER[len])
-        len++;
+    size_t len = strlen(AUDIO_ONLY_OFFER);
 
     ASSERT_OK(sdp_parse(&sdp, AUDIO_ONLY_OFFER, len));
     ASSERT_TRUE(sdp.mline_count >= 1);
@@ -546,9 +566,7 @@ TEST(test_sdp_parse_video_offer)
     nano_sdp_t sdp;
     sdp_init(&sdp);
 
-    size_t len = 0;
-    while (CHROME_VIDEO_OFFER[len])
-        len++;
+    size_t len = strlen(CHROME_VIDEO_OFFER);
 
     ASSERT_OK(sdp_parse(&sdp, CHROME_VIDEO_OFFER, len));
     ASSERT_TRUE(sdp.parsed);
@@ -596,9 +614,7 @@ TEST(test_sdp_parse_full_media_offer)
     nano_sdp_t sdp;
     sdp_init(&sdp);
 
-    size_t len = 0;
-    while (FULL_MEDIA_OFFER[len])
-        len++;
+    size_t len = strlen(FULL_MEDIA_OFFER);
 
     ASSERT_OK(sdp_parse(&sdp, FULL_MEDIA_OFFER, len));
 
@@ -743,21 +759,22 @@ TEST(test_sdp_h265_rtpmap_without_fmtp_picks_remote_pt)
     ASSERT(vmid >= 0);
 
     /* Safari-style offer: video m-line carries an H.265 rtpmap but no fmtp. */
-    static const char *offer = "v=0\r\n"
-                               "o=- 1 2 IN IP4 127.0.0.1\r\n"
-                               "s=-\r\n"
-                               "t=0 0\r\n"
-                               "m=video 9 UDP/TLS/RTP/SAVPF 35\r\n"
-                               "c=IN IP4 0.0.0.0\r\n"
-                               "a=mid:0\r\n"
-                               "a=ice-ufrag:safuf\r\n"
-                               "a=ice-pwd:safaripassword123456\r\n"
-                               "a=fingerprint:sha-256 AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:"
-                               "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99\r\n"
-                               "a=setup:actpass\r\n"
-                               "a=rtcp-mux\r\n"
-                               "a=recvonly\r\n"
-                               "a=rtpmap:35 H265/90000\r\n";
+    static const char *offer =
+        "v=0\r\n"
+        "o=- 1 2 IN IP4 127.0.0.1\r\n"
+        "s=-\r\n"
+        "t=0 0\r\n"
+        "m=video 9 UDP/TLS/RTP/SAVPF 35\r\n"
+        "c=IN IP4 0.0.0.0\r\n"
+        "a=mid:0\r\n"
+        "a=ice-ufrag:safuf\r\n"
+        "a=ice-pwd:safaripassword123456\r\n"
+        "a=fingerprint:sha-256 AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:"
+        "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99\r\n"
+        "a=setup:actpass\r\n"
+        "a=rtcp-mux\r\n"
+        "a=recvonly\r\n"
+        "a=rtpmap:35 H265/90000\r\n";
     ASSERT_OK(sdp_parse(&sdp, offer, strlen(offer) /* NANORTC_SAFE: API boundary */));
     /* Parser must have adopted the offer's PT (35) for our H.265 track. */
     ASSERT_EQ(sdp.mlines[0].pt, 35);
@@ -776,25 +793,26 @@ TEST(test_sdp_h265_local_track_not_hijacked_by_h264_fmtp)
                              NANORTC_VIDEO_H265_DEFAULT_PT, 0, 0, NANORTC_DIR_SENDONLY);
     ASSERT(vmid >= 0);
 
-    static const char *offer = "v=0\r\n"
-                               "o=- 1 2 IN IP4 127.0.0.1\r\n"
-                               "s=-\r\n"
-                               "t=0 0\r\n"
-                               "m=video 9 UDP/TLS/RTP/SAVPF 109 49\r\n"
-                               "c=IN IP4 0.0.0.0\r\n"
-                               "a=mid:0\r\n"
-                               "a=ice-ufrag:cruf\r\n"
-                               "a=ice-pwd:chromepassword1234567\r\n"
-                               "a=fingerprint:sha-256 AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:"
-                               "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99\r\n"
-                               "a=setup:actpass\r\n"
-                               "a=rtcp-mux\r\n"
-                               "a=recvonly\r\n"
-                               "a=rtpmap:109 H264/90000\r\n"
-                               "a=fmtp:109 level-asymmetry-allowed=1;packetization-mode=1;"
-                               "profile-level-id=42e01f\r\n"
-                               "a=rtpmap:49 H265/90000\r\n"
-                               "a=fmtp:49 profile-id=1;tier-flag=0;level-id=120;tx-mode=SRST\r\n";
+    static const char *offer =
+        "v=0\r\n"
+        "o=- 1 2 IN IP4 127.0.0.1\r\n"
+        "s=-\r\n"
+        "t=0 0\r\n"
+        "m=video 9 UDP/TLS/RTP/SAVPF 109 49\r\n"
+        "c=IN IP4 0.0.0.0\r\n"
+        "a=mid:0\r\n"
+        "a=ice-ufrag:cruf\r\n"
+        "a=ice-pwd:chromepassword1234567\r\n"
+        "a=fingerprint:sha-256 AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:"
+        "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99\r\n"
+        "a=setup:actpass\r\n"
+        "a=rtcp-mux\r\n"
+        "a=recvonly\r\n"
+        "a=rtpmap:109 H264/90000\r\n"
+        "a=fmtp:109 level-asymmetry-allowed=1;packetization-mode=1;"
+        "profile-level-id=42e01f\r\n"
+        "a=rtpmap:49 H265/90000\r\n"
+        "a=fmtp:49 profile-id=1;tier-flag=0;level-id=120;tx-mode=SRST\r\n";
     ASSERT_OK(sdp_parse(&sdp, offer, strlen(offer) /* NANORTC_SAFE: API boundary */));
     ASSERT_EQ(sdp.mlines[0].pt, 49);
     ASSERT_EQ(sdp.mlines[0].codec, NANORTC_CODEC_H265);
@@ -821,24 +839,25 @@ TEST(test_sdp_parse_preserves_local_h265_state)
     memcpy(sdp.mlines[0].h265_sprop_fmtp, frag, frag_len);
     sdp.mlines[0].h265_sprop_fmtp_len = (uint16_t)frag_len;
     sdp.mlines[0].h265_profile_id = 1;
-    sdp.mlines[0].h265_tier_flag  = 0;
-    sdp.mlines[0].h265_level_id   = 120;
+    sdp.mlines[0].h265_tier_flag = 0;
+    sdp.mlines[0].h265_level_id = 120;
 
-    static const char *offer = "v=0\r\n"
-                               "o=- 1 2 IN IP4 127.0.0.1\r\n"
-                               "s=-\r\n"
-                               "t=0 0\r\n"
-                               "m=video 9 UDP/TLS/RTP/SAVPF 35\r\n"
-                               "c=IN IP4 0.0.0.0\r\n"
-                               "a=mid:0\r\n"
-                               "a=ice-ufrag:preuf\r\n"
-                               "a=ice-pwd:preservepassword1234\r\n"
-                               "a=fingerprint:sha-256 AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:"
-                               "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99\r\n"
-                               "a=setup:actpass\r\n"
-                               "a=rtcp-mux\r\n"
-                               "a=recvonly\r\n"
-                               "a=rtpmap:35 H265/90000\r\n";
+    static const char *offer =
+        "v=0\r\n"
+        "o=- 1 2 IN IP4 127.0.0.1\r\n"
+        "s=-\r\n"
+        "t=0 0\r\n"
+        "m=video 9 UDP/TLS/RTP/SAVPF 35\r\n"
+        "c=IN IP4 0.0.0.0\r\n"
+        "a=mid:0\r\n"
+        "a=ice-ufrag:preuf\r\n"
+        "a=ice-pwd:preservepassword1234\r\n"
+        "a=fingerprint:sha-256 AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:"
+        "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99\r\n"
+        "a=setup:actpass\r\n"
+        "a=rtcp-mux\r\n"
+        "a=recvonly\r\n"
+        "a=rtpmap:35 H265/90000\r\n";
     ASSERT_OK(sdp_parse(&sdp, offer, strlen(offer) /* NANORTC_SAFE: API boundary */));
 
     ASSERT_EQ(sdp.mlines[0].codec, NANORTC_CODEC_H265);
@@ -1087,9 +1106,7 @@ TEST(test_sdp_parse_media_directions)
 
     nano_sdp_t sdp;
     sdp_init(&sdp);
-    size_t len = 0;
-    while (sdp_sendonly[len])
-        len++;
+    size_t len = strlen(sdp_sendonly);
     ASSERT_OK(sdp_parse(&sdp, sdp_sendonly, len));
     ASSERT_EQ(sdp.mlines[0].remote_direction, NANORTC_DIR_SENDONLY);
 
@@ -1113,9 +1130,7 @@ TEST(test_sdp_parse_media_directions)
 
     nano_sdp_t sdp2;
     sdp_init(&sdp2);
-    len = 0;
-    while (sdp_recvonly[len])
-        len++;
+    len = strlen(sdp_recvonly);
     ASSERT_OK(sdp_parse(&sdp2, sdp_recvonly, len));
     ASSERT_EQ(sdp2.mlines[0].remote_direction, NANORTC_DIR_RECVONLY);
 
@@ -1139,9 +1154,7 @@ TEST(test_sdp_parse_media_directions)
 
     nano_sdp_t sdp3;
     sdp_init(&sdp3);
-    len = 0;
-    while (sdp_inactive[len])
-        len++;
+    len = strlen(sdp_inactive);
     ASSERT_OK(sdp_parse(&sdp3, sdp_inactive, len));
     ASSERT_EQ(sdp3.mlines[0].remote_direction, NANORTC_DIR_INACTIVE);
 }
@@ -1456,6 +1469,7 @@ RUN(test_sdp_bundle_group);
 RUN(test_sdp_multiple_candidates);
 RUN(test_sdp_wrong_version);
 #if NANORTC_HAVE_MEDIA_TRANSPORT
+RUN(test_sdp_generate_numeric_mid_boundaries);
 RUN(test_sdp_parse_audio_offer);
 RUN(test_sdp_parse_audio_only_offer);
 RUN(test_sdp_generate_audio_answer);
