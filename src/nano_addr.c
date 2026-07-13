@@ -432,3 +432,74 @@ int addr_format(const uint8_t *addr, uint8_t family, char *buf, size_t buf_len, 
 #endif
     return ADDR_ERR_INVALID_PARAM;
 }
+
+bool addr_is_globally_routable(const uint8_t *addr, uint8_t family)
+{
+    if (!addr) {
+        return false;
+    }
+
+    if (family == 4) {
+        uint8_t a = addr[0];
+        uint8_t b = addr[1];
+
+        if (a == 0 || a == 10 || a == 127 || a >= 224) {
+            return false;
+        }
+        if (a == 100 && (b & 0xc0u) == 0x40u) { /* RFC 6598 shared space */
+            return false;
+        }
+        if (a == 169 && b == 254) {
+            return false;
+        }
+        if (a == 172 && (b & 0xf0u) == 16u) {
+            return false;
+        }
+        if (a == 192 && b == 168) {
+            return false;
+        }
+        if (a == 192 && b == 0 && (addr[2] == 0 || addr[2] == 2)) {
+            return false;
+        }
+        if (a == 198 && (b == 18 || b == 19)) {
+            return false;
+        }
+        if (a == 198 && b == 51 && addr[2] == 100) {
+            return false;
+        }
+        if (a == 203 && b == 0 && addr[2] == 113) {
+            return false;
+        }
+        return true;
+    }
+
+#if NANORTC_FEATURE_IPV6
+    if (family == 6) {
+        static const uint8_t zero_prefix[10] = {0};
+        if (memcmp(addr, zero_prefix, sizeof(zero_prefix)) == 0 && addr[10] == 0xff &&
+            addr[11] == 0xff) {
+            return addr_is_globally_routable(addr + 12, 4);
+        }
+        if (memcmp(addr, (const uint8_t[16]){0}, 16) == 0 ||
+            memcmp(addr, (const uint8_t[16]){0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}, 16) ==
+                0) {
+            return false;
+        }
+        if ((addr[0] & 0xfeu) == 0xfcu) { /* RFC 4193 unique-local */
+            return false;
+        }
+        if (addr[0] == 0xfe && (addr[1] & 0xc0u) == 0x80u) { /* link-local */
+            return false;
+        }
+        if (addr[0] == 0xff) { /* multicast */
+            return false;
+        }
+        if (addr[0] == 0x20 && addr[1] == 0x01 && addr[2] == 0x0d && addr[3] == 0xb8) {
+            return false; /* documentation prefix */
+        }
+        return (addr[0] & 0xe0u) == 0x20u; /* RFC 4291 global unicast 2000::/3 */
+    }
+#endif
+
+    return false;
+}

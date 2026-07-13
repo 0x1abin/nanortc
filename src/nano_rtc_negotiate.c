@@ -46,6 +46,69 @@
  * nano_rtc.c carries its own hex[] for the same reason. */
 static const char hex_chars[] = "0123456789abcdef";
 
+typedef struct {
+    const char *ptr;
+    size_t len;
+} candidate_token_t;
+
+static bool candidate_is_space(char c)
+{
+    return c == ' ' || c == '\t' || c == '\r' || c == '\n';
+}
+
+static bool candidate_next_token(const char **cursor, candidate_token_t *token)
+{
+    const char *p = *cursor;
+    while (candidate_is_space(*p))
+        p++;
+    if (*p == '\0')
+        return false;
+    token->ptr = p;
+    while (*p != '\0' && !candidate_is_space(*p))
+        p++;
+    token->len = (size_t)(p - token->ptr);
+    *cursor = p;
+    return token->len > 0;
+}
+
+static bool candidate_token_eq_ci(const candidate_token_t *token, const char *literal)
+{
+    size_t literal_len = 0;
+    while (literal[literal_len] != '\0')
+        literal_len++;
+    if (token->len != literal_len)
+        return false;
+    for (size_t i = 0; i < token->len; i++) {
+        char a = token->ptr[i];
+        char b = literal[i];
+        if (a >= 'A' && a <= 'Z')
+            a = (char)(a - 'A' + 'a');
+        if (b >= 'A' && b <= 'Z')
+            b = (char)(b - 'A' + 'a');
+        if (a != b)
+            return false;
+    }
+    return true;
+}
+
+static bool candidate_token_u32(const candidate_token_t *token, uint32_t *value)
+{
+    if (token->len == 0)
+        return false;
+    uint32_t parsed = 0;
+    for (size_t i = 0; i < token->len; i++) {
+        char c = token->ptr[i];
+        if (c < '0' || c > '9')
+            return false;
+        uint32_t digit = (uint32_t)(c - '0');
+        if (parsed > (UINT32_MAX - digit) / 10u)
+            return false;
+        parsed = parsed * 10u + digit;
+    }
+    *value = parsed;
+    return true;
+}
+
 /* ----------------------------------------------------------------
  * Candidate string builder utilities
  *
@@ -530,12 +593,11 @@ int nanortc_add_remote_candidate(nanortc_t *rtc, const char *candidate_str)
      * Also accept plain "<addr> <port>" for simple use cases.
      */
     const char *p = candidate_str;
-
     const char *prefix = "candidate:";
-    size_t pfx_len = 10;
+    const size_t pfx_len = 10;
     bool has_prefix = true;
     for (size_t i = 0; i < pfx_len; i++) {
-        if (p[i] == '\0' || p[i] != prefix[i]) {
+        if (candidate_str[i] == '\0' || candidate_str[i] != prefix[i]) {
             has_prefix = false;
             break;
         }
@@ -548,70 +610,54 @@ int nanortc_add_remote_candidate(nanortc_t *rtc, const char *candidate_str)
 
     if (has_prefix) {
         p += pfx_len;
-        int field = 1;
-        while (*p && field < 5) {
-            if (*p == ' ') {
-                field++;
-                while (*p == ' ')
-                    p++;
-            } else {
-                p++;
-            }
+        candidate_token_t foundation, component, transport, priority, address, port_token;
+        uint32_t component_value = 0;
+        uint32_t port_value = 0;
+        if (!candidate_next_token(&p, &foundation) || !candidate_next_token(&p, &component) ||
+            !candidate_next_token(&p, &transport) || !candidate_next_token(&p, &priority) ||
+            !candidate_next_token(&p, &address) || !candidate_next_token(&p, &port_token) ||
+            !candidate_token_u32(&component, &component_value) ||
+            !candidate_token_u32(&port_token, &port_value) || port_value == 0u ||
+            port_value > UINT16_MAX) {
+            return NANORTC_ERR_PARSE;
         }
-        addr_str = p;
-        while (*p && *p != ' ')
-            p++;
-        addr_len = (size_t)(p - addr_str);
-
-        while (*p == ' ')
-            p++;
-        while (*p >= '0' && *p <= '9') {
-            port = port * 10 + (uint16_t)(*p - '0');
-            p++;
+        (void)foundation;
+        (void)priority;
+        if (component_value != 1u || !candidate_token_eq_ci(&transport, "udp")) {
+            return NANORTC_ERR_NOT_IMPLEMENTED;
         }
+        addr_str = address.ptr;
+        addr_len = address.len;
+        port = (uint16_t)port_value;
 
-        /* Optional "typ <type>" attribute (RFC 8839 §5.1). The string may
-         * carry "raddr/rport" and other extensions after the type — we
-         * only need the type token itself. F5: previously unparsed, every
-         * remote candidate stayed at type=HOST. */
-        while (*p == ' ')
-            p++;
-        while (*p) {
-            if (p[0] == 't' && p[1] == 'y' && p[2] == 'p' && (p[3] == ' ' || p[3] == '\t')) {
-                p += 4;
-                while (*p == ' ' || *p == '\t')
-                    p++;
-                if (p[0] == 'h' && p[1] == 'o' && p[2] == 's' && p[3] == 't') {
-                    cand_type = NANORTC_ICE_CAND_HOST;
-                } else if (p[0] == 's' && p[1] == 'r' && p[2] == 'f' && p[3] == 'l' &&
-                           p[4] == 'x') {
-                    cand_type = NANORTC_ICE_CAND_SRFLX;
-                } else if (p[0] == 'p' && p[1] == 'r' && p[2] == 'f' && p[3] == 'l' &&
-                           p[4] == 'x') {
-                    cand_type = NANORTC_ICE_CAND_SRFLX; /* peer-reflexive: treat as srflx */
-                } else if (p[0] == 'r' && p[1] == 'e' && p[2] == 'l' && p[3] == 'a' &&
-                           p[4] == 'y') {
-                    cand_type = NANORTC_ICE_CAND_RELAY;
-                }
-                break;
+        candidate_token_t key, value;
+        while (candidate_next_token(&p, &key)) {
+            if (!candidate_token_eq_ci(&key, "typ"))
+                continue;
+            if (!candidate_next_token(&p, &value))
+                return NANORTC_ERR_PARSE;
+            if (candidate_token_eq_ci(&value, "host")) {
+                cand_type = NANORTC_ICE_CAND_HOST;
+            } else if (candidate_token_eq_ci(&value, "srflx") ||
+                       candidate_token_eq_ci(&value, "prflx")) {
+                cand_type = NANORTC_ICE_CAND_SRFLX;
+            } else if (candidate_token_eq_ci(&value, "relay")) {
+                cand_type = NANORTC_ICE_CAND_RELAY;
             }
-            while (*p && *p != ' ' && *p != '\t')
-                p++;
-            while (*p == ' ' || *p == '\t')
-                p++;
+            break;
         }
     } else {
         /* Simple format: "<addr> <port>" */
-        addr_str = candidate_str;
-        while (*p && *p != ' ')
-            p++;
-        addr_len = (size_t)(p - addr_str);
-        while (*p == ' ')
-            p++;
-        while (*p >= '0' && *p <= '9') {
-            port = port * 10 + (uint16_t)(*p - '0');
-            p++;
+        candidate_token_t address, port_token;
+        uint32_t port_value = 0;
+        if (!candidate_next_token(&p, &address) || !candidate_next_token(&p, &port_token) ||
+            !candidate_token_u32(&port_token, &port_value) || port_value == 0u ||
+            port_value > UINT16_MAX) {
+            return NANORTC_ERR_PARSE;
         }
+        addr_str = address.ptr;
+        addr_len = address.len;
+        port = (uint16_t)port_value;
     }
 
     if (addr_len == 0 || addr_len >= NANORTC_IPV6_STR_SIZE || port == 0) {
@@ -625,6 +671,17 @@ int nanortc_add_remote_candidate(nanortc_t *rtc, const char *candidate_str)
         return rc;
     }
 
+    size_t addr_bytes = family == 4 ? 4u : (size_t)NANORTC_ADDR_SIZE;
+    for (uint8_t i = 0; i < rtc->ice.remote_candidate_count; i++) {
+        nano_ice_candidate_t *existing = &rtc->ice.remote_candidates[i];
+        if (existing->family == family && existing->port == port &&
+            memcmp(existing->addr, parsed_addr, addr_bytes) == 0) {
+            if (cand_type > existing->type)
+                existing->type = cand_type;
+            return NANORTC_OK;
+        }
+    }
+
     if (rtc->ice.remote_candidate_count >= NANORTC_MAX_ICE_CANDIDATES) {
         NANORTC_LOGW("RTC", "remote candidate table full");
         return NANORTC_ERR_BUFFER_TOO_SMALL;
@@ -632,8 +689,7 @@ int nanortc_add_remote_candidate(nanortc_t *rtc, const char *candidate_str)
     uint8_t idx = rtc->ice.remote_candidate_count;
     rtc->ice.remote_candidates[idx].family = family;
     memset(rtc->ice.remote_candidates[idx].addr, 0, NANORTC_ADDR_SIZE);
-    memcpy(rtc->ice.remote_candidates[idx].addr, parsed_addr,
-           family == 4 ? 4u : (size_t)NANORTC_ADDR_SIZE);
+    memcpy(rtc->ice.remote_candidates[idx].addr, parsed_addr, addr_bytes);
     rtc->ice.remote_candidates[idx].port = port;
     rtc->ice.remote_candidates[idx].type = cand_type;
     rtc->ice.remote_candidate_count++;

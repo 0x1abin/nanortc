@@ -490,6 +490,29 @@ TEST(test_format_bad_family)
     ASSERT_FAIL(addr_format(addr, 99, buf, sizeof(buf), &len));
 }
 
+TEST(test_globally_routable_classification)
+{
+    const uint8_t public_v4[] = {8, 8, 8, 8};
+    const uint8_t private_v4[] = {192, 168, 1, 1};
+    const uint8_t shared_v4[] = {100, 64, 0, 1};
+    const uint8_t documentation_v4[] = {203, 0, 113, 1};
+    ASSERT_TRUE(addr_is_globally_routable(public_v4, 4));
+    ASSERT_FALSE(addr_is_globally_routable(private_v4, 4));
+    ASSERT_FALSE(addr_is_globally_routable(shared_v4, 4));
+    ASSERT_FALSE(addr_is_globally_routable(documentation_v4, 4));
+    ASSERT_FALSE(addr_is_globally_routable(NULL, 4));
+
+#if NANORTC_FEATURE_IPV6
+    const uint8_t public_v6[] = {0x26, 0x06, 0x47, 0x00, 0x47, 0x00, 0,    0,
+                                 0,    0,    0,    0,    0,    0,    0x11, 0x11};
+    const uint8_t ula_v6[] = {0xfd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
+    const uint8_t link_local_v6[] = {0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
+    ASSERT_TRUE(addr_is_globally_routable(public_v6, 6));
+    ASSERT_FALSE(addr_is_globally_routable(ula_v6, 6));
+    ASSERT_FALSE(addr_is_globally_routable(link_local_v6, 6));
+#endif
+}
+
 /* ================================================================ */
 
 TEST_MAIN_BEGIN("nanortc address tests")
@@ -555,4 +578,5 @@ RUN(test_format_ipv4);
 RUN(test_format_ipv6);
 #endif
 RUN(test_format_bad_family);
+RUN(test_globally_routable_classification);
 TEST_MAIN_END
