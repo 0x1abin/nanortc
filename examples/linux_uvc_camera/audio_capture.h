@@ -17,6 +17,7 @@
 #define AUDIO_CAPTURE_H_
 
 #include <stddef.h>
+#include <stdbool.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -45,6 +46,11 @@ typedef struct {
     int channels;              /**< Channel count (1=mono, 2=stereo). */
     int frame_ms;              /**< Frame duration in ms (typically 20). */
     int bitrate_bps;           /**< Opus target bitrate in bits/s. */
+    int opus_complexity;       /**< Opus complexity 1..10; 0 keeps the library default. */
+    bool enable_dtx;           /**< Enable Opus discontinuous transmission. */
+    const char *mixer_device;  /**< ALSA mixer device, e.g. "hw:0"; NULL leaves it alone. */
+    const char *mixer_control; /**< Capture-volume simple element, e.g. "ADC". */
+    long capture_gain;         /**< Requested mixer value, clamped to its hardware range. */
     audio_encoder_cb callback; /**< Encoded-frame callback. */
     void *userdata;            /**< User pointer passed to @ref callback. */
 } audio_config_t;
