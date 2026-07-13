@@ -57,12 +57,12 @@ typedef struct nanortc_crypto_provider nanortc_crypto_provider_t;
  * Parsed chunk structures (for internal codec use)
  * ---------------------------------------------------------------- */
 
-/** Parsed SCTP common header (12 bytes on wire). */
+/** Parsed SCTP common header (12 bytes on wire). The checksum is validated
+ * directly from the packet by nsctp_verify_checksum() and is not retained. */
 typedef struct {
     uint16_t src_port;
     uint16_t dst_port;
     uint32_t vtag;
-    uint32_t checksum;
 } nsctp_header_t;
 
 /** Parsed INIT / INIT-ACK body. */
@@ -94,11 +94,6 @@ typedef struct {
     uint16_t num_gap_blocks;
     uint16_t num_dup_tsns;
 } nsctp_sack_t;
-
-/** Parsed FORWARD-TSN chunk. */
-typedef struct {
-    uint32_t new_cumulative_tsn;
-} nsctp_forward_tsn_t;
 
 /* ----------------------------------------------------------------
  * Send queue entry
@@ -225,7 +220,6 @@ typedef struct nano_sctp {
     uint16_t out_lens[NANORTC_SCTP_OUT_QUEUE_SIZE];
     uint8_t out_head;
     uint8_t out_tail;
-    bool has_output; /* compat: true when out_head != out_tail */
 
     /* Delivered message (available to caller after handle_data) */
     const uint8_t *delivered_data;

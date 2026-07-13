@@ -127,7 +127,7 @@ The Linux capture layer (`examples/linux_uvc_camera/capture_{gstreamer,ffmpeg}.c
 | Addition | Bytes |
 |---|---|
 | `nano_rtp_t.twcc_{ext_id,seq}` | +4 |
-| `nano_bwe_t.{twcc_count, last_source, runtime_*}` | +16 (shared, not per track) |
+| `nano_bwe_t.{twcc_count, runtime_*}` | +16 (shared, not per track) |
 | `nanortc_track_t.rate_window` | +20 |
 | `nanortc_track_t.fraction_lost` | +1 (padded to +4) |
 | `nano_rtcp_info_t.{rb_*}` | stack only |

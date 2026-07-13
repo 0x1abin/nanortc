@@ -600,6 +600,86 @@ TEST(test_e2e_padded_video_excludes_rtp_padding)
     nanortc_destroy(&sender);
     nanortc_destroy(&receiver);
 }
+
+TEST(test_e2e_bwe_feedback_events_keep_source)
+{
+    nanortc_t sender, receiver;
+    ASSERT_OK(e2e_init_direct_srtp_endpoint(&sender, 1));
+    ASSERT_OK(e2e_init_direct_srtp_endpoint(&receiver, 0));
+    ASSERT_OK(nanortc_set_bwe_event_threshold(&receiver, 1u));
+
+    nanortc_addr_t src;
+    memset(&src, 0, sizeof(src));
+    src.family = 4;
+    src.addr[0] = 192;
+    src.addr[1] = 0;
+    src.addr[2] = 2;
+    src.addr[3] = 30;
+    src.port = 6001;
+
+    /* Hand-built REMB for exactly 524288 bps: mantissa=0x20000, exp=2.
+     * The large first step guarantees a bitrate event. */
+    uint8_t packet[64];
+    memset(packet, 0, sizeof(packet));
+    packet[0] = (uint8_t)((2u << 6) | 15u); /* V=2, FMT=15 */
+    packet[1] = 206u;                       /* PSFB */
+    nanortc_write_u16be(packet + 2, 5u);    /* 24 bytes */
+    nanortc_write_u32be(packet + 4, 0x11223344u);
+    packet[12] = 'R';
+    packet[13] = 'E';
+    packet[14] = 'M';
+    packet[15] = 'B';
+    packet[16] = 1u;
+    packet[17] = (uint8_t)((2u << 2) | 2u);
+    nanortc_write_u32be(packet + 20, 0x55667788u);
+
+    size_t wire_len = 0;
+    ASSERT_OK(nano_srtp_protect_rtcp(&sender.srtp, packet, 24u, &wire_len));
+    ASSERT_OK(nanortc_handle_input(
+        &receiver,
+        &(nanortc_input_t){.now_ms = 100u, .data = packet, .len = wire_len, .src = src}));
+
+    nanortc_output_t out;
+    bool found_remb = false;
+    while (nanortc_poll_output(&receiver, &out) == NANORTC_OK) {
+        if (out.type == NANORTC_OUTPUT_EVENT && out.event.type == NANORTC_EV_BITRATE_ESTIMATE) {
+            ASSERT_EQ(out.event.bitrate_estimate.source, (uint8_t)NANORTC_BWE_SRC_REMB);
+            found_remb = true;
+        }
+    }
+    ASSERT_TRUE(found_remb);
+
+    /* One received TWCC packet (zero loss). Run-length chunk 0x2001 means
+     * one SMALL_DELTA status, followed by its one-byte delta and padding. */
+    memset(packet, 0, sizeof(packet));
+    packet[0] = (uint8_t)((2u << 6) | 15u); /* V=2, FMT=15 */
+    packet[1] = 205u;                       /* RTPFB */
+    nanortc_write_u16be(packet + 2, 5u);    /* 24 bytes */
+    nanortc_write_u32be(packet + 4, 0x11223344u);
+    nanortc_write_u32be(packet + 8, 0x55667788u);
+    nanortc_write_u16be(packet + 12, 100u);
+    nanortc_write_u16be(packet + 14, 1u);
+    nanortc_write_u16be(packet + 20, 0x2001u);
+    packet[22] = 1u;
+
+    wire_len = 0;
+    ASSERT_OK(nano_srtp_protect_rtcp(&sender.srtp, packet, 24u, &wire_len));
+    ASSERT_OK(nanortc_handle_input(
+        &receiver,
+        &(nanortc_input_t){.now_ms = 101u, .data = packet, .len = wire_len, .src = src}));
+
+    bool found_twcc = false;
+    while (nanortc_poll_output(&receiver, &out) == NANORTC_OK) {
+        if (out.type == NANORTC_OUTPUT_EVENT && out.event.type == NANORTC_EV_BITRATE_ESTIMATE) {
+            ASSERT_EQ(out.event.bitrate_estimate.source, (uint8_t)NANORTC_BWE_SRC_TWCC_LOSS);
+            found_twcc = true;
+        }
+    }
+    ASSERT_TRUE(found_twcc);
+
+    nanortc_destroy(&sender);
+    nanortc_destroy(&receiver);
+}
 #endif
 #endif
 
@@ -1218,23 +1298,7 @@ static int str_contains(const char *haystack, const char *needle)
 {
     if (!haystack || !needle)
         return 0;
-    size_t nlen = 0;
-    while (needle[nlen])
-        nlen++;
-    if (nlen == 0)
-        return 1;
-    for (const char *p = haystack; *p; p++) {
-        int match = 1;
-        for (size_t i = 0; i < nlen; i++) {
-            if (p[i] == '\0' || p[i] != needle[i]) {
-                match = 0;
-                break;
-            }
-        }
-        if (match)
-            return 1;
-    }
-    return 0;
+    return strstr(haystack, needle) != NULL;
 }
 
 /* ----------------------------------------------------------------
@@ -2322,6 +2386,9 @@ TEST(test_e2e_h265_loopback)
     uint8_t idr[] = {0x00, 0x00, 0x00, 0x01, 0x26, 0x01, 0xAA, 0xBB, 0xCC, 0xDD};
     const size_t idr_payload_len = sizeof(idr) - 4; /* skip the 4-byte start code */
     ASSERT_OK(nanortc_send_video(&offerer, (uint8_t)off_mid, /*pts_ms=*/0, idr, sizeof(idr)));
+    uint16_t packet_slot =
+        (uint16_t)((offerer.pkt_ring_tail - 1u) & (NANORTC_VIDEO_PKT_RING_SIZE - 1u));
+    ASSERT_TRUE((offerer.pkt_ring[packet_slot][1] & 0x80u) != 0u);
 
     /* Drain offerer → answerer one-way. Note: e2e_relay polls (and thus
      * drains) the source queue, but it does NOT touch the destination
@@ -4696,6 +4763,37 @@ TEST(test_e2e_turn_allocation_lifecycle)
     nanortc_destroy(&rtc);
 }
 
+TEST(test_e2e_turn_allocate_backpressure_preserves_state)
+{
+    static const nano_turn_state_t states[] = {
+        NANORTC_TURN_IDLE,
+        NANORTC_TURN_CHALLENGED,
+    };
+
+    for (size_t state_idx = 0; state_idx < sizeof(states) / sizeof(states[0]); state_idx++) {
+        nanortc_t rtc;
+        nanortc_config_t cfg = e2e_default_config();
+        ASSERT_OK(nanortc_init(&rtc, &cfg));
+
+        const char *turn_url = "turn:10.0.0.100:3478";
+        nanortc_ice_server_t servers[] = {
+            {.urls = &turn_url, .url_count = 1, .username = "testuser", .credential = "testpass"}};
+        ASSERT_OK(nanortc_set_ice_servers(&rtc, servers, 1));
+        rtc.turn.state = states[state_idx];
+
+        for (uint8_t i = 0; i < NANORTC_TX_SLOT_COUNT; i++) {
+            rtc.tx_slots_in_use |= UINT32_C(1) << i;
+        }
+        uint16_t out_tail_before = rtc.out_tail;
+
+        ASSERT_OK(nanortc_handle_input(&rtc, &(nanortc_input_t){.now_ms = 100u}));
+        ASSERT_EQ(rtc.turn.state, states[state_idx]);
+        ASSERT_EQ(rtc.out_tail, out_tail_before);
+
+        nanortc_destroy(&rtc);
+    }
+}
+
 /* T: TURN relay wrapping — outgoing data wrapped when ICE selects relay */
 TEST(test_e2e_turn_relay_wrapping)
 {
@@ -4858,6 +4956,7 @@ RUN(test_e2e_padded_audio_excludes_rtp_padding);
 #endif
 #if NANORTC_FEATURE_VIDEO
 RUN(test_e2e_padded_video_excludes_rtp_padding);
+RUN(test_e2e_bwe_feedback_events_keep_source);
 #endif
 #endif
 RUN(test_e2e_stubs_not_implemented);
@@ -4972,6 +5071,7 @@ RUN(test_e2e_handle_input_dst_exact_beats_wildcard);
 RUN(test_e2e_handle_input_dst_null_falls_back);
 #if NANORTC_FEATURE_TURN
 RUN(test_e2e_turn_allocation_lifecycle);
+RUN(test_e2e_turn_allocate_backpressure_preserves_state);
 RUN(test_e2e_turn_relay_wrapping);
 RUN(test_e2e_channeldata_inbound);
 #endif

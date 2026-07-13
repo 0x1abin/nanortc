@@ -406,7 +406,27 @@ TEST(test_poll_output_empty)
 
     uint8_t buf[256];
     size_t out_len = 0;
+    ASSERT_FALSE(nsctp_has_pending_output(&sctp));
     ASSERT_EQ(nsctp_poll_output(&sctp, buf, sizeof(buf), &out_len), NANORTC_ERR_NO_DATA);
+}
+
+TEST(test_pending_output_tracks_send_queue)
+{
+    nano_sctp_t sctp;
+    ASSERT_OK(nsctp_init(&sctp));
+    sctp.state = NANORTC_SCTP_STATE_ESTABLISHED;
+    sctp.remote_vtag = 0x12345678u;
+
+    const uint8_t payload[] = {0x41, 0x42, 0x43};
+    ASSERT_OK(nsctp_send(&sctp, 0, 51, payload, sizeof(payload)));
+    ASSERT_TRUE(nsctp_has_pending_output(&sctp));
+
+    uint8_t packet[NANORTC_SCTP_MTU];
+    size_t packet_len = 0;
+    ASSERT_OK(nsctp_poll_output(&sctp, packet, sizeof(packet), &packet_len));
+    ASSERT_TRUE(packet_len > 0u);
+    ASSERT_OK(nsctp_verify_checksum(packet, packet_len));
+    ASSERT_FALSE(nsctp_has_pending_output(&sctp));
 }
 
 /* ================================================================
@@ -1526,6 +1546,7 @@ RUN(test_handle_data_abort);
 RUN(test_sctp_init_defaults);
 RUN(test_sctp_init_null);
 RUN(test_poll_output_empty);
+RUN(test_pending_output_tracks_send_queue);
 /* Alignment */
 RUN(test_data_chunk_padding);
 RUN(test_cookie_echo_padding);

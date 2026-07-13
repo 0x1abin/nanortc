@@ -277,16 +277,6 @@ static int rtc_drain_dtls_output(nanortc_t *rtc, const nanortc_addr_t *dest)
     return NANORTC_OK;
 }
 
-/* A4: Emit a simple event (no extra data) */
-static int rtc_emit_event(nanortc_t *rtc, nanortc_event_type_t type)
-{
-    nanortc_output_t evt;
-    memset(&evt, 0, sizeof(evt));
-    evt.type = NANORTC_OUTPUT_EVENT;
-    evt.event.type = type;
-    return rtc_enqueue_output(rtc, &evt);
-}
-
 /* Emit a typed event with full event struct.
  * Non-static so nano_rtc_negotiate.c can call it via nano_rtc_internal.h. */
 int nano_rtc_emit_event_full(nanortc_t *rtc, const nanortc_event_t *event)
@@ -1393,29 +1383,9 @@ static int rtc_process_timers(nanortc_t *rtc, uint32_t now_ms)
         memcpy(turn_dest.addr, rtc->turn.server_addr, NANORTC_ADDR_SIZE);
         turn_dest.port = rtc->turn.server_port;
 
-        if (rtc->turn.state == NANORTC_TURN_IDLE) {
-            uint8_t *tx_buf = NULL;
-            uint8_t tx_slot = 0;
-            int trc = nano_rtc_tx_slot_acquire(rtc, &tx_buf, &tx_slot);
-            if (trc == NANORTC_ERR_WOULD_BLOCK) {
-                return NANORTC_OK;
-            }
-            if (trc != NANORTC_OK) {
-                return trc;
-            }
-            size_t alloc_len = 0;
-            trc = turn_start_allocate(&rtc->turn, rtc->config.crypto, tx_buf, NANORTC_TX_SLOT_SIZE,
-                                      &alloc_len);
-            if (trc != NANORTC_OK) {
-                return trc;
-            }
-            if (trc == NANORTC_OK && alloc_len > 0) {
-                trc = rtc_tx_slot_commit_direct(rtc, tx_slot, alloc_len, &turn_dest, NULL);
-                if (trc != NANORTC_OK) {
-                    return trc;
-                }
-            }
-        } else if (rtc->turn.state == NANORTC_TURN_CHALLENGED) {
+        /* Start the unauthenticated Allocate from IDLE, or retry the same
+         * state-aware builder with credentials after a 401 challenge. */
+        if (rtc->turn.state == NANORTC_TURN_IDLE || rtc->turn.state == NANORTC_TURN_CHALLENGED) {
             uint8_t *tx_buf = NULL;
             uint8_t tx_slot = 0;
             int trc = nano_rtc_tx_slot_acquire(rtc, &tx_buf, &tx_slot);
@@ -2068,7 +2038,10 @@ void nanortc_disconnect(nanortc_t *rtc)
     rtc_drain_dtls_output(rtc, &rtc->remote_addr);
 
     rtc->state = NANORTC_STATE_CLOSED;
-    rtc_emit_event(rtc, NANORTC_EV_DISCONNECTED);
+    nanortc_event_t evt;
+    memset(&evt, 0, sizeof(evt));
+    evt.type = NANORTC_EV_DISCONNECTED;
+    nano_rtc_emit_event_full(rtc, &evt);
 
     NANORTC_LOGI("RTC", "disconnected");
 }

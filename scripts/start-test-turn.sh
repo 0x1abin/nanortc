@@ -41,24 +41,14 @@ fi
 cd "${COMPOSE_DIR}"
 "${COMPOSE[@]}" up -d
 
-# Wait for coturn to actually accept UDP on 3478. coturn runs in
+# Wait for coturn to actually accept TCP connections on 3478. coturn runs in
 # network_mode=host (see docker-compose.yml), so it listens on every host
-# interface including loopback; we probe 127.0.0.1 with a single zero-byte
-# send. coturn drops it but the kernel returns success once it is listening.
+# interface including loopback. A successful /dev/tcp open confirms the coturn
+# process is listening instead of merely confirming that a UDP send was
+# accepted; the relay tests themselves still exercise the UDP listener.
 echo -n "[start-test-turn] waiting for coturn..."
-PROBE_PY=$(cat <<'PY'
-import socket, sys
-s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-s.settimeout(0.5)
-try:
-    s.sendto(b"\x00", ("127.0.0.1", 3478))
-    sys.exit(0)
-except Exception:
-    sys.exit(1)
-PY
-)
 for _ in $(seq 1 50); do
-    if python3 -c "${PROBE_PY}" 2>/dev/null; then
+    if (exec 3<>/dev/tcp/127.0.0.1/3478) 2>/dev/null; then
         echo " ready."
         echo "[start-test-turn] coturn is up at 127.0.0.1:3478"
         echo "[start-test-turn] credentials: testuser / testpass (realm=nanortc-test)"

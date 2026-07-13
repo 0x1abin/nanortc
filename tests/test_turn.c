@@ -750,9 +750,7 @@ static size_t build_error_response(uint8_t *buf, uint16_t msg_type,
 
     /* NONCE (optional) */
     if (nonce) {
-        size_t nlen = 0;
-        while (nonce[nlen])
-            nlen++;
+        size_t nlen = strlen(nonce);
         nanortc_write_u16be(buf + pos, STUN_ATTR_NONCE);
         nanortc_write_u16be(buf + pos + 2, (uint16_t)nlen);
         memcpy(buf + pos + 4, nonce, nlen);
@@ -1460,6 +1458,10 @@ static void test_turn_maxlen_credentials_no_overflow(void)
     rc = turn_handle_response(&turn, 0, resp, resp_len, crypto());
     TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
     TEST_ASSERT_EQUAL_INT(NANORTC_TURN_CHALLENGED, turn.state);
+    TEST_ASSERT_EQUAL_size_t(NANORTC_TURN_REALM_SIZE - 1, turn.realm_len);
+    TEST_ASSERT_EQUAL_size_t(NANORTC_TURN_NONCE_SIZE - 1, turn.nonce_len);
+    TEST_ASSERT_EQUAL_CHAR('\0', turn.realm[turn.realm_len]);
+    TEST_ASSERT_EQUAL_CHAR('\0', turn.nonce[turn.nonce_len]);
 
     /* A buffer of exactly NANORTC_TURN_MAX_REQUEST_SIZE — the builder floor and
      * the non-media turn_buf size — must hold every authenticated request

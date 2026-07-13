@@ -41,7 +41,6 @@ int nsctp_parse_header(const uint8_t *data, size_t len, nsctp_header_t *hdr)
     hdr->src_port = nanortc_read_u16be(data + 0);
     hdr->dst_port = nanortc_read_u16be(data + 2);
     hdr->vtag = nanortc_read_u32be(data + 4);
-    hdr->checksum = nanortc_read_u32be(data + 8);
     return NANORTC_OK;
 }
 
@@ -447,7 +446,6 @@ static void nsctp_queue_output(nano_sctp_t *sctp, size_t len)
     nsctp_finalize_checksum(sctp->out_bufs[idx], padded);
     sctp->out_lens[idx] = (uint16_t)padded;
     sctp->out_tail++;
-    sctp->has_output = (sctp->out_head != sctp->out_tail);
 }
 
 /** Begin building an outbound packet in the next output slot. Returns header size (12). */
@@ -1064,7 +1062,6 @@ int nsctp_poll_output(nano_sctp_t *sctp, uint8_t *buf, size_t buf_len, size_t *o
         memcpy(buf, sctp->out_bufs[ridx], pkt_len);
         *out_len = pkt_len;
         sctp->out_head++;
-        sctp->has_output = (sctp->out_head != sctp->out_tail);
         return NANORTC_OK;
     }
 
@@ -1089,7 +1086,6 @@ int nsctp_poll_output(nano_sctp_t *sctp, uint8_t *buf, size_t buf_len, size_t *o
                 memcpy(buf, sctp->out_bufs[ridx], pkt_len);
                 *out_len = pkt_len;
                 sctp->out_head++;
-                sctp->has_output = (sctp->out_head != sctp->out_tail);
                 return NANORTC_OK;
             }
             idx++;
