@@ -1077,6 +1077,15 @@ typedef enum {
 #define NANORTC_TURN_NONCE_SIZE 128
 #endif
 
+/* TURN stores these bounded text lengths in one byte. Each buffer includes
+ * room for the terminating NUL, so 256 permits a maximum 255-byte value. */
+#if NANORTC_TURN_USERNAME_SIZE < 1 || NANORTC_TURN_USERNAME_SIZE > 256 ||                          \
+    NANORTC_TURN_PASSWORD_SIZE < 1 || NANORTC_TURN_PASSWORD_SIZE > 256 ||                          \
+    NANORTC_TURN_REALM_SIZE < 1 || NANORTC_TURN_REALM_SIZE > 256 || NANORTC_TURN_NONCE_SIZE < 1 || \
+    NANORTC_TURN_NONCE_SIZE > 256
+#error "NANORTC_TURN_{USERNAME,PASSWORD,REALM,NONCE}_SIZE must be in 1..256"
+#endif
+
 /**
  * @brief Worst-case authenticated TURN request size (bytes).
  *
@@ -1145,6 +1154,29 @@ typedef enum {
 /** @brief Maximum TURN channel bindings (RFC 5766 §11). */
 #ifndef NANORTC_TURN_MAX_CHANNELS
 #define NANORTC_TURN_MAX_CHANNELS 4
+#endif
+
+#if NANORTC_TURN_MAX_PERMISSIONS < 1 || NANORTC_TURN_MAX_PERMISSIONS > 255 || \
+    NANORTC_TURN_MAX_CHANNELS < 1 || NANORTC_TURN_MAX_CHANNELS > 255
+#error "NANORTC_TURN_MAX_PERMISSIONS and NANORTC_TURN_MAX_CHANNELS must be in 1..255"
+#endif
+
+/** @brief Initial TURN/STUN request retransmission timeout (RFC 8489 §6.2.1). */
+#ifndef NANORTC_TURN_RTO_MS
+#define NANORTC_TURN_RTO_MS 500
+#endif
+
+/** @brief Maximum transmissions for one TURN/STUN request (RFC 8489 §6.2.1). */
+#ifndef NANORTC_TURN_MAX_TRANSMISSIONS
+#define NANORTC_TURN_MAX_TRANSMISSIONS 7
+#endif
+
+#if NANORTC_TURN_RTO_MS < 1 || NANORTC_TURN_RTO_MS > 0x07FFFFFF
+#error "NANORTC_TURN_RTO_MS must be in 1..0x07FFFFFF"
+#endif
+
+#if NANORTC_TURN_MAX_TRANSMISSIONS < 1 || NANORTC_TURN_MAX_TRANSMISSIONS > 255
+#error "NANORTC_TURN_MAX_TRANSMISSIONS must be in 1..255"
 #endif
 
 /* ----------------------------------------------------------------

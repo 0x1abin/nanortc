@@ -293,7 +293,8 @@ TEST(test_next_timeout_turn_allocated_picks_min_refresh)
     rtc->turn.server_family = STUN_FAMILY_IPV4;
     rtc->turn.refresh_at_ms = 60000; /* 60s out */
     rtc->turn.permission_count = 1;
-    rtc->turn.permission_at_ms = 30000; /* 30s out — wins */
+    rtc->turn.permissions[0].active = true;
+    rtc->turn.permissions[0].deadline_ms = 30000; /* 30s out — wins */
 
     uint32_t out = 0;
     ASSERT_OK(nanortc_next_timeout_ms(rtc, 0, &out));

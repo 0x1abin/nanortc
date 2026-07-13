@@ -1461,6 +1461,43 @@ TEST(test_ice_stun_indication_handling)
     (void)rc;
 }
 
+TEST(test_ice_consent_rejects_corrupt_integrity)
+{
+    nano_ice_t ctrl, ctld;
+    setup_ice_pair(&ctrl, &ctld);
+    ctrl.state = NANORTC_ICE_STATE_CONNECTED;
+
+    uint8_t req[256], resp[256], dummy[256];
+    size_t req_len = 0, resp_len = 0, dummy_len = 0;
+    ASSERT_OK(ice_generate_consent(&ctrl, 100, crypto(), req, sizeof(req), &req_len));
+    ASSERT_TRUE(ctrl.consent_pending);
+
+    nanortc_addr_t ctrl_src;
+    memset(&ctrl_src, 0, sizeof(ctrl_src));
+    ctrl_src.family = 4;
+    ctrl_src.addr[0] = 10;
+    ctrl_src.addr[3] = 1;
+    ctrl_src.port = 4000;
+    ASSERT_OK(ice_handle_stun(&ctld, req, req_len, &ctrl_src, NANORTC_ICE_LOCAL_IDX_UNKNOWN, false,
+                              crypto(), resp, sizeof(resp), &resp_len));
+
+    stun_msg_t parsed;
+    ASSERT_OK(stun_parse(resp, resp_len, &parsed));
+    ASSERT_TRUE(parsed.has_integrity);
+    resp[parsed.integrity_offset + 4] ^= 1u;
+
+    nanortc_addr_t peer_src;
+    memset(&peer_src, 0, sizeof(peer_src));
+    peer_src.family = 4;
+    peer_src.addr[0] = 10;
+    peer_src.addr[3] = 2;
+    peer_src.port = 5000;
+    ASSERT_EQ(ice_handle_stun(&ctrl, resp, resp_len, &peer_src, NANORTC_ICE_LOCAL_IDX_UNKNOWN,
+                              false, crypto(), dummy, sizeof(dummy), &dummy_len),
+              NANORTC_ERR_PROTOCOL);
+    ASSERT_TRUE(ctrl.consent_pending);
+}
+
 /* ---- Runner ---- */
 
 TEST_MAIN_BEGIN("nanortc ICE tests")
@@ -1474,6 +1511,7 @@ RUN(test_ice_generate_check_pacing_wrap);
 RUN(test_ice_rng_failure_does_not_commit_txid);
 RUN(test_ice_consent_deadlines_wrap);
 RUN(test_ice_consent_rng_failure_does_not_commit_txid);
+RUN(test_ice_consent_rejects_corrupt_integrity);
 RUN(test_ice_controlled_does_not_generate);
 /* §7.2.1: Controlled receives requests */
 RUN(test_ice_controlled_handle_request);

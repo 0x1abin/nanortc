@@ -4328,6 +4328,51 @@ TEST(test_e2e_srflx_discovery)
     nanortc_destroy(&rtc);
 }
 
+TEST(test_e2e_shared_stun_turn_endpoint_demux)
+{
+    nanortc_t rtc;
+    nanortc_config_t cfg = e2e_default_config();
+    ASSERT_OK(nanortc_init(&rtc, &cfg));
+
+    const char *urls[] = {"stun:10.0.0.100:3478", "turn:10.0.0.100:3478"};
+    nanortc_ice_server_t servers[] = {
+        {.urls = urls, .url_count = 2, .username = "testuser", .credential = "testpass"}};
+    ASSERT_OK(nanortc_set_ice_servers(&rtc, servers, 1));
+    ASSERT_TRUE(rtc.stun_server_configured);
+    ASSERT_TRUE(rtc.turn.configured);
+
+    nanortc_output_t out;
+    uint8_t stun_txid[STUN_TXID_SIZE];
+    bool found_binding_request = false;
+    uint32_t now_ms = 100;
+    for (uint8_t attempt = 0; attempt < 4 && !found_binding_request; attempt++) {
+        ASSERT_OK(nanortc_handle_input(&rtc, &(nanortc_input_t){.now_ms = now_ms}));
+        while (nanortc_poll_output(&rtc, &out) == NANORTC_OK) {
+            if (out.type == NANORTC_OUTPUT_TRANSMIT && out.transmit.len >= STUN_HEADER_SIZE &&
+                nanortc_read_u16be(out.transmit.data) == STUN_BINDING_REQUEST) {
+                memcpy(stun_txid, out.transmit.data + 8, STUN_TXID_SIZE);
+                found_binding_request = true;
+            }
+        }
+        now_ms += 10;
+    }
+    ASSERT_TRUE(found_binding_request);
+
+    uint8_t response[64];
+    uint8_t mapped_addr[4] = {203, 0, 113, 60};
+    size_t response_len = build_stun_binding_response(response, stun_txid, mapped_addr, 4, 23456);
+    nanortc_addr_t shared_src = {.family = 4, .port = 3478};
+    shared_src.addr[0] = 10;
+    shared_src.addr[3] = 100;
+    ASSERT_OK(nanortc_handle_input(
+        &rtc, &(nanortc_input_t){
+                  .now_ms = now_ms, .data = response, .len = response_len, .src = shared_src}));
+    ASSERT_TRUE(rtc.srflx_discovered);
+    ASSERT_EQ(rtc.sdp.srflx_candidate_port, 23456);
+    ASSERT_EQ(rtc.turn.state, NANORTC_TURN_ALLOCATING);
+    nanortc_destroy(&rtc);
+}
+
 /* T: SRFLX retry — no response triggers retransmission */
 TEST(test_e2e_srflx_retry)
 {
@@ -4737,6 +4782,17 @@ TEST(test_e2e_turn_allocation_lifecycle)
     pos += 8;
     nanortc_write_u16be(resp_ok + 2, (uint16_t)(pos - 20));
 
+    /* Authenticated TURN success responses carry MESSAGE-INTEGRITY
+     * (RFC 8489 §9.2.4). */
+    nanortc_write_u16be(resp_ok + 2, (uint16_t)(pos - STUN_HEADER_SIZE + 24u));
+    uint8_t turn_hmac[20];
+    nano_test_crypto()->hmac_sha1(rtc.turn.auth.hmac_key, NANORTC_TURN_HMAC_KEY_SIZE, resp_ok, pos,
+                                  turn_hmac);
+    nanortc_write_u16be(resp_ok + pos, STUN_ATTR_MESSAGE_INTEGRITY);
+    nanortc_write_u16be(resp_ok + pos + 2, 20);
+    memcpy(resp_ok + pos + 4, turn_hmac, sizeof(turn_hmac));
+    pos += 24;
+
     /* Feed response at same time (don't advance — avoid re-triggering CHALLENGED retry) */
     ASSERT_OK(nanortc_handle_input(
         &rtc, &(nanortc_input_t){.now_ms = now, .data = resp_ok, .len = pos, .src = turn_src}));
@@ -4759,6 +4815,16 @@ TEST(test_e2e_turn_allocation_lifecycle)
         }
     }
     ASSERT_TRUE(found_relay_event);
+
+    bool relay_registered = false;
+    for (uint8_t i = 0; i < rtc.ice.local_candidate_count; i++) {
+        if (rtc.ice.local_candidates[i].type == NANORTC_ICE_CAND_RELAY &&
+            rtc.ice.local_candidates[i].port == 49152) {
+            relay_registered = true;
+            break;
+        }
+    }
+    ASSERT_TRUE(relay_registered);
 
     nanortc_destroy(&rtc);
 }
@@ -4794,6 +4860,54 @@ TEST(test_e2e_turn_allocate_backpressure_preserves_state)
     }
 }
 
+TEST(test_e2e_relay_check_waits_without_blocking_permission)
+{
+    nanortc_t rtc;
+    nanortc_config_t cfg = e2e_default_config();
+    cfg.role = NANORTC_ROLE_CONTROLLING;
+    ASSERT_OK(nanortc_init(&rtc, &cfg));
+
+    uint8_t turn_addr[NANORTC_ADDR_SIZE] = {10, 0, 0, 100};
+    ASSERT_OK(turn_configure(&rtc.turn, turn_addr, 4, 3478, "user", 4, "pass", 4));
+    rtc.turn.state = NANORTC_TURN_ALLOCATED;
+    rtc.turn.hmac_key_valid = true;
+    memset(rtc.turn.auth.hmac_key, 0xAA, sizeof(rtc.turn.auth.hmac_key));
+    memcpy(rtc.turn.realm, "realm", 5);
+    rtc.turn.realm_len = 5;
+    memcpy(rtc.turn.nonce, "nonce", 5);
+    rtc.turn.nonce_len = 5;
+    rtc.turn.relay_family = STUN_FAMILY_IPV4;
+    rtc.turn.refresh_at_ms = 600000;
+
+    rtc.ice.local_candidate_count = 1;
+    rtc.ice.local_candidates[0].family = 4;
+    rtc.ice.local_candidates[0].type = NANORTC_ICE_CAND_RELAY;
+    rtc.ice.local_candidates[0].port = 50000;
+    rtc.ice.remote_candidate_count = 1;
+    rtc.ice.remote_candidates[0].family = 4;
+    rtc.ice.remote_candidates[0].addr[0] = 192;
+    rtc.ice.remote_candidates[0].addr[1] = 0;
+    rtc.ice.remote_candidates[0].addr[2] = 2;
+    rtc.ice.remote_candidates[0].addr[3] = 10;
+    rtc.ice.remote_candidates[0].port = 40000;
+
+    ASSERT_OK(nanortc_handle_input(&rtc, &(nanortc_input_t){.now_ms = 100}));
+    ASSERT_EQ(rtc.ice.check_count, 0);
+    ASSERT_EQ(rtc.turn.permission_count, 1);
+    ASSERT_TRUE(rtc.turn.permissions[0].pending);
+
+    nanortc_output_t out;
+    bool found_permission = false;
+    while (nanortc_poll_output(&rtc, &out) == NANORTC_OK) {
+        if (out.type == NANORTC_OUTPUT_TRANSMIT &&
+            nanortc_read_u16be(out.transmit.data) == STUN_CREATE_PERMISSION_REQUEST) {
+            found_permission = true;
+        }
+    }
+    ASSERT_TRUE(found_permission);
+    nanortc_destroy(&rtc);
+}
+
 /* T: TURN relay wrapping — outgoing data wrapped when ICE selects relay */
 TEST(test_e2e_turn_relay_wrapping)
 {
@@ -4810,7 +4924,7 @@ TEST(test_e2e_turn_relay_wrapping)
     /* Simulate TURN allocated state */
     rtc.turn.state = NANORTC_TURN_ALLOCATED;
     rtc.turn.hmac_key_valid = true;
-    memset(rtc.turn.hmac_key, 0xAA, 16);
+    memset(rtc.turn.auth.hmac_key, 0xAA, 16);
     rtc.turn.relay_addr[0] = 203;
     rtc.turn.relay_addr[1] = 0;
     rtc.turn.relay_addr[2] = 113;
@@ -5063,6 +5177,7 @@ RUN(test_e2e_simple_binding_request);
 RUN(test_e2e_stun_server_config);
 RUN(test_e2e_srflx_rng_failure_does_not_commit_transaction);
 RUN(test_e2e_srflx_discovery);
+RUN(test_e2e_shared_stun_turn_endpoint_demux);
 RUN(test_e2e_srflx_retry);
 RUN(test_e2e_srflx_joins_local_candidates);
 RUN(test_e2e_srflx_priority_macro);
@@ -5072,6 +5187,7 @@ RUN(test_e2e_handle_input_dst_null_falls_back);
 #if NANORTC_FEATURE_TURN
 RUN(test_e2e_turn_allocation_lifecycle);
 RUN(test_e2e_turn_allocate_backpressure_preserves_state);
+RUN(test_e2e_relay_check_waits_without_blocking_permission);
 RUN(test_e2e_turn_relay_wrapping);
 RUN(test_e2e_channeldata_inbound);
 #endif

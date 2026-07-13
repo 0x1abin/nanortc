@@ -73,7 +73,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
         turn_init(&turn);
         turn.state = NANORTC_TURN_ALLOCATED;
         turn.hmac_key_valid = true;
-        memset(turn.hmac_key, 0xAA, NANORTC_TURN_HMAC_KEY_SIZE);
+        memset(turn.auth.hmac_key, 0xAA, NANORTC_TURN_HMAC_KEY_SIZE);
 
         /* Copy transaction ID from fuzzer input so responses may match */
         if (size >= STUN_HEADER_SIZE) {

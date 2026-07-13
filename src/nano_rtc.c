@@ -55,6 +55,32 @@ static inline bool rtc_output_has_space(const nanortc_t *rtc)
     return (uint16_t)(rtc->out_tail - rtc->out_head) < NANORTC_OUT_QUEUE_SIZE;
 }
 
+#if NANORTC_FEATURE_TURN
+static bool rtc_turn_current_pair_is_ready(const nanortc_t *rtc)
+{
+    uint8_t local_idx = rtc->ice.current_local;
+    uint8_t remote_idx = rtc->ice.current_remote;
+    if (local_idx >= rtc->ice.local_candidate_count ||
+        remote_idx >= rtc->ice.remote_candidate_count ||
+        rtc->ice.local_candidates[local_idx].type != NANORTC_ICE_CAND_RELAY) {
+        return true;
+    }
+
+    const nano_ice_candidate_t *remote = &rtc->ice.remote_candidates[remote_idx];
+    size_t addr_len = remote->family == 4 ? 4u : 16u;
+    for (uint8_t i = 0; i < rtc->turn.permission_count; i++) {
+        if (rtc->turn.permissions[i].active && rtc->turn.permissions[i].family == remote->family &&
+            memcmp(rtc->turn.permissions[i].addr, remote->addr, addr_len) == 0) {
+            return true;
+        }
+    }
+    /* If the bounded table is full, do not freeze the whole checklist on an
+     * unrepresentable peer. Send this check best-effort so ICE can advance to
+     * another pair that may already have a permission. */
+    return rtc->turn.permission_count >= NANORTC_TURN_MAX_PERMISSIONS;
+}
+#endif
+
 /* Release every managed backing buffer whose queue entry has just been
  * dequeued. Exact equality plus an explicit busy bit remains correct across
  * uint16 cursor wrap and after arbitrarily long idle periods. */
@@ -125,7 +151,7 @@ typedef enum {
  * wrap operations: each call to poll_output overwrites turn_buf with the
  * next packet, and the user transmits it before calling poll_output again.
  *
- * The wrap decision (selected_type == RELAY) is made here and stamped into
+ * The wrap decision (selected_local_type == RELAY) is made here and stamped into
  * out_wrap_meta; the actual ChannelData / Send-indication encoding happens
  * in nanortc_poll_output().
  *
@@ -178,7 +204,7 @@ static int rtc_enqueue_transmit_ref(nanortc_t *rtc, const uint8_t *data, size_t 
 
 #if NANORTC_FEATURE_TURN
     /* Wrap decision:
-     *   - selected_type == RELAY: steady-state once USE-CANDIDATE nominated
+     *   - selected_local_type == RELAY: steady-state once USE-CANDIDATE nominated
      *     a relay pair (F6 from Phase 5.2).
      *   - force_via_turn: RFC 8445 §7.2.2 symmetric-path override used by
      *     rtc_process_receive when responding to a Binding Request that
@@ -191,11 +217,11 @@ static int rtc_enqueue_transmit_ref(nanortc_t *rtc, const uint8_t *data, size_t 
      * routing same-LAN responses through a remote TURN server makes them
      * appear from the wrong source IP and the controlling browser drops
      * them as ICE pair mismatches. */
-    bool needs_turn =
-        route != RTC_TX_ROUTE_DIRECT && rtc->turn.configured &&
-        rtc->turn.state == NANORTC_TURN_ALLOCATED &&
-        (route == RTC_TX_ROUTE_FORCE_TURN ||
-         __atomic_load_n(&rtc->ice.selected_type, __ATOMIC_RELAXED) == NANORTC_ICE_CAND_RELAY);
+    bool needs_turn = route != RTC_TX_ROUTE_DIRECT && rtc->turn.configured &&
+                      rtc->turn.state == NANORTC_TURN_ALLOCATED &&
+                      (route == RTC_TX_ROUTE_FORCE_TURN ||
+                       __atomic_load_n(&rtc->ice.selected_local_type, __ATOMIC_RELAXED) ==
+                           NANORTC_ICE_CAND_RELAY);
     if (needs_turn) {
         rtc->out_wrap_meta[slot].via_turn = true;
         rtc->out_wrap_meta[slot].peer_dest = *peer_dest;
@@ -451,7 +477,8 @@ int nanortc_poll_output(nanortc_t *rtc, nanortc_output_t *out)
             size_t wrap_len = 0;
             int wrc;
 
-            if (turn_find_channel_for_peer(&rtc->turn, peer->addr, peer->family, &channel)) {
+            if (turn_find_channel_for_peer(&rtc->turn, peer->addr, peer->family, peer->port,
+                                           &channel)) {
                 /* ChannelData (RFC 5766 §11.4) — 4 bytes overhead, preferred
                  * once a channel is bound for this peer. */
                 wrc = nano_turn_wrap_channel_data(channel, out->transmit.data, out->transmit.len,
@@ -487,6 +514,10 @@ int nanortc_poll_output(nanortc_t *rtc, nanortc_output_t *out)
             out->transmit.dest.family = (rtc->turn.server_family == STUN_FAMILY_IPV4) ? 4 : 6;
             memcpy(out->transmit.dest.addr, rtc->turn.server_addr, NANORTC_ADDR_SIZE);
             out->transmit.dest.port = rtc->turn.server_port;
+            /* The relayed candidate is an address on the TURN server, not a
+             * local interface the host can bind. Let the platform choose the
+             * client socket's source for this outer TURN datagram. */
+            memset(&out->transmit.src, 0, sizeof(out->transmit.src));
         }
 #endif /* NANORTC_FEATURE_TURN */
 
@@ -865,7 +896,13 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
 
 #if NANORTC_FEATURE_TURN
         /* TURN: intercept packets from the TURN server */
-        if (rtc->turn.configured &&
+        bool pending_srflx_response =
+            rtc->stun_server_configured && !rtc->srflx_discovered &&
+            src->family == rtc->stun_server_family && src->port == rtc->stun_server_port &&
+            memcmp(src->addr, rtc->stun_server_addr, src->family == 4 ? 4u : 16u) == 0 &&
+            len >= STUN_HEADER_SIZE && nanortc_read_u16be(data) == STUN_BINDING_RESPONSE &&
+            memcmp(data + 8, rtc->stun_txid, STUN_TXID_SIZE) == 0;
+        if (!pending_srflx_response && rtc->turn.configured &&
             turn_is_from_server(&rtc->turn, src->addr, src->family, src->port)) {
             /* Try Data indication first (relayed peer data) */
             uint8_t peer_addr[NANORTC_ADDR_SIZE];
@@ -889,7 +926,9 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
             /* Not a Data indication — try as TURN response */
             nano_turn_state_t prev_state = rtc->turn.state;
             int trc = turn_handle_response(&rtc->turn, rtc->now_ms, data, len, rtc->config.crypto);
-            (void)trc;
+            if (trc != NANORTC_OK) {
+                return trc;
+            }
 
             /* On fresh allocation: emit relay candidate + create permission */
             if (prev_state != NANORTC_TURN_ALLOCATED && rtc->turn.state == NANORTC_TURN_ALLOCATED) {
@@ -906,6 +945,29 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
                                              rtc->sdp.relay_candidate_ip, ip_len,
                                              rtc->turn.relay_port, "relay", 5);
                 nano_rtc_emit_ice_candidate(rtc, rtc->relay_cand_str);
+
+                /* RFC 8445 §5.1.1.2: the relayed address is a real local
+                 * candidate and must participate in the checklist. */
+                if (rtc->ice.local_candidate_count < NANORTC_MAX_LOCAL_CANDIDATES) {
+                    bool dup = false;
+                    for (uint8_t i = 0; i < rtc->ice.local_candidate_count; i++) {
+                        const nano_ice_candidate_t *c = &rtc->ice.local_candidates[i];
+                        if (c->family == relay_fam && c->port == rtc->turn.relay_port &&
+                            memcmp(c->addr, rtc->turn.relay_addr, NANORTC_ADDR_SIZE) == 0) {
+                            dup = true;
+                            break;
+                        }
+                    }
+                    if (!dup) {
+                        uint8_t idx = rtc->ice.local_candidate_count;
+                        rtc->ice.local_candidates[idx].family = relay_fam;
+                        memcpy(rtc->ice.local_candidates[idx].addr, rtc->turn.relay_addr,
+                               NANORTC_ADDR_SIZE);
+                        rtc->ice.local_candidates[idx].port = rtc->turn.relay_port;
+                        rtc->ice.local_candidates[idx].type = NANORTC_ICE_CAND_RELAY;
+                        rtc->ice.local_candidate_count = (uint8_t)(idx + 1);
+                    }
+                }
 
                 /* Permission fan-out is driven from rtc_process_timers so a
                  * single shared turn_buf can serialize one CreatePermission
@@ -1246,7 +1308,11 @@ static int rtc_process_timers(nanortc_t *rtc, uint32_t now_ms)
     if (rtc->ice.is_controlling && rtc->ice.state != NANORTC_ICE_STATE_CONNECTED &&
         rtc->ice.state != NANORTC_ICE_STATE_FAILED &&
         (rtc->ice.state != NANORTC_ICE_STATE_CHECKING || rtc->ice.next_check_ms == 0u ||
-         nano_time_is_due(now_ms, rtc->ice.next_check_ms))) {
+         nano_time_is_due(now_ms, rtc->ice.next_check_ms))
+#if NANORTC_FEATURE_TURN
+        && rtc_turn_current_pair_is_ready(rtc)
+#endif
+    ) {
         nano_ice_state_t prev_ice = rtc->ice.state;
         uint8_t local_before = rtc->ice.current_local;
         uint8_t remote_before = rtc->ice.current_remote;
@@ -1278,7 +1344,14 @@ static int rtc_process_timers(nanortc_t *rtc, uint32_t now_ms)
             local_src.family = rtc->ice.local_candidates[local_before].family;
             memcpy(local_src.addr, rtc->ice.local_candidates[local_before].addr, NANORTC_ADDR_SIZE);
             local_src.port = rtc->ice.local_candidates[local_before].port;
-            rc = rtc_tx_slot_commit_direct(rtc, tx_slot, out_len, &dest, &local_src);
+#if NANORTC_FEATURE_TURN
+            if (rtc->ice.local_candidates[local_before].type == NANORTC_ICE_CAND_RELAY) {
+                rc = nano_rtc_tx_slot_commit(rtc, tx_slot, out_len, &dest, true);
+            } else
+#endif
+            {
+                rc = rtc_tx_slot_commit_direct(rtc, tx_slot, out_len, &dest, &local_src);
+            }
             if (rc != NANORTC_OK) {
                 return rc;
             }
@@ -1383,6 +1456,32 @@ static int rtc_process_timers(nanortc_t *rtc, uint32_t now_ms)
         memcpy(turn_dest.addr, rtc->turn.server_addr, NANORTC_ADDR_SIZE);
         turn_dest.port = rtc->turn.server_port;
 
+        /* RFC 8489 §6.2.1 retransmissions are scheduled independently of
+         * higher-level allocation/permission/channel refresh deadlines. */
+        {
+            uint8_t *tx_buf = NULL;
+            uint8_t tx_slot = 0;
+            int trc = nano_rtc_tx_slot_acquire(rtc, &tx_buf, &tx_slot);
+            if (trc == NANORTC_ERR_WOULD_BLOCK) {
+                return NANORTC_OK;
+            }
+            if (trc != NANORTC_OK) {
+                return trc;
+            }
+            size_t retry_len = 0;
+            trc = turn_generate_retransmit(&rtc->turn, now_ms, rtc->config.crypto, tx_buf,
+                                           NANORTC_TX_SLOT_SIZE, &retry_len);
+            if (trc != NANORTC_OK) {
+                return trc;
+            }
+            if (retry_len > 0) {
+                trc = rtc_tx_slot_commit_direct(rtc, tx_slot, retry_len, &turn_dest, NULL);
+                if (trc != NANORTC_OK) {
+                    return trc;
+                }
+            }
+        }
+
         /* Start the unauthenticated Allocate from IDLE, or retry the same
          * state-aware builder with credentials after a 401 challenge. */
         if (rtc->turn.state == NANORTC_TURN_IDLE || rtc->turn.state == NANORTC_TURN_CHALLENGED) {
@@ -1432,6 +1531,7 @@ static int rtc_process_timers(nanortc_t *rtc, uint32_t now_ms)
                 bool has_perm = false;
                 for (uint8_t j = 0; j < rtc->turn.permission_count; j++) {
                     if (rtc->turn.permissions[j].family == c->family &&
+                        (rtc->turn.permissions[j].active || rtc->turn.permissions[j].pending) &&
                         memcmp(rtc->turn.permissions[j].addr, c->addr, addr_len) == 0) {
                         has_perm = true;
                         break;
@@ -1461,10 +1561,6 @@ static int rtc_process_timers(nanortc_t *rtc, uint32_t now_ms)
                     if (prc != NANORTC_OK) {
                         return prc;
                     }
-                    /* Defer the periodic refresh past this tick so the
-                     * refresh block below doesn't immediately overwrite
-                     * turn_buf with a refresh of permissions[0]. */
-                    rtc->turn.permission_at_ms = nano_time_deadline(now_ms, 240000u);
                 }
                 break; /* one CreatePermission per tick */
             }
@@ -1496,8 +1592,16 @@ static int rtc_process_timers(nanortc_t *rtc, uint32_t now_ms)
             }
 
             /* Permission refresh (RFC 5766 §8: expires at 5 min, refresh at 4 min) */
-            if (rtc->turn.permission_count > 0 && rtc->turn.permission_at_ms != 0u &&
-                nano_time_is_due(now_ms, rtc->turn.permission_at_ms)) {
+            bool permission_due = false;
+            for (uint8_t i = 0; i < rtc->turn.permission_count; i++) {
+                if (rtc->turn.permissions[i].active && !rtc->turn.permissions[i].pending &&
+                    (rtc->turn.permissions[i].deadline_ms == 0u ||
+                     nano_time_is_due(now_ms, rtc->turn.permissions[i].deadline_ms))) {
+                    permission_due = true;
+                    break;
+                }
+            }
+            if (permission_due) {
                 uint8_t *tx_buf = NULL;
                 uint8_t tx_slot = 0;
                 int prc = nano_rtc_tx_slot_acquire(rtc, &tx_buf, &tx_slot);
@@ -1521,13 +1625,69 @@ static int rtc_process_timers(nanortc_t *rtc, uint32_t now_ms)
                 }
             }
 
+            /* Bind a channel once the selected relayed pair has permission.
+             * Until the success response arrives, the data path continues to
+             * use Send Indications; afterwards it automatically uses
+             * ChannelData. */
+            if (__atomic_load_n(&rtc->ice.selected_local_type, __ATOMIC_RELAXED) ==
+                    NANORTC_ICE_CAND_RELAY &&
+                rtc->ice.selected_family != 0) {
+                bool permission_active = false;
+                bool channel_exists = false;
+                size_t addr_len = rtc->ice.selected_family == 4 ? 4u : 16u;
+                for (uint8_t i = 0; i < rtc->turn.permission_count; i++) {
+                    if (rtc->turn.permissions[i].active &&
+                        rtc->turn.permissions[i].family == rtc->ice.selected_family &&
+                        memcmp(rtc->turn.permissions[i].addr, rtc->ice.selected_addr, addr_len) ==
+                            0) {
+                        permission_active = true;
+                        break;
+                    }
+                }
+                for (uint8_t i = 0; i < rtc->turn.channel_count; i++) {
+                    if ((rtc->turn.channels[i].bound || rtc->turn.channels[i].pending) &&
+                        rtc->turn.channels[i].family == rtc->ice.selected_family &&
+                        rtc->turn.channels[i].port == rtc->ice.selected_port &&
+                        memcmp(rtc->turn.channels[i].addr, rtc->ice.selected_addr, addr_len) == 0) {
+                        channel_exists = true;
+                        break;
+                    }
+                }
+                if (permission_active && !channel_exists) {
+                    uint8_t *tx_buf = NULL;
+                    uint8_t tx_slot = 0;
+                    int crc = nano_rtc_tx_slot_acquire(rtc, &tx_buf, &tx_slot);
+                    if (crc == NANORTC_ERR_WOULD_BLOCK) {
+                        return NANORTC_OK;
+                    }
+                    if (crc != NANORTC_OK) {
+                        return crc;
+                    }
+                    size_t channel_len = 0;
+                    crc = turn_channel_bind(&rtc->turn, rtc->ice.selected_addr,
+                                            rtc->ice.selected_family, rtc->ice.selected_port,
+                                            rtc->config.crypto, tx_buf, NANORTC_TX_SLOT_SIZE,
+                                            &channel_len);
+                    if (crc != NANORTC_OK) {
+                        return crc;
+                    }
+                    if (channel_len > 0) {
+                        crc =
+                            rtc_tx_slot_commit_direct(rtc, tx_slot, channel_len, &turn_dest, NULL);
+                        if (crc != NANORTC_OK) {
+                            return crc;
+                        }
+                    }
+                }
+            }
+
             /* ChannelBind refresh (RFC 5766 §11: expires at 10 min, refresh at 9 min) */
             {
                 bool channel_due = false;
                 for (uint8_t i = 0; i < rtc->turn.channel_count; i++) {
                     if (rtc->turn.channels[i].bound &&
-                        (rtc->turn.channels[i].refresh_at_ms == 0u ||
-                         nano_time_is_due(now_ms, rtc->turn.channels[i].refresh_at_ms))) {
+                        (rtc->turn.channels[i].deadline_ms == 0u ||
+                         nano_time_is_due(now_ms, rtc->turn.channels[i].deadline_ms))) {
                         channel_due = true;
                         break;
                     }
@@ -1982,6 +2142,13 @@ int nanortc_ice_restart(nanortc_t *rtc)
     if (rc != NANORTC_OK) {
         return rc;
     }
+#if NANORTC_FEATURE_TURN
+    /* The allocation is independent of an ICE generation and remains usable
+     * until its Refresh lifetime expires. Permissions and channel bindings are
+     * peer-specific, so discard them and recreate them from the new remote
+     * candidate set after renegotiation. */
+    turn_reset_peer_state(&rtc->turn);
+#endif
 
     memcpy(rtc->ice.local_ufrag, new_ufrag, sizeof(new_ufrag));
     rtc->ice.local_ufrag_len = NANORTC_ICE_UFRAG_LEN;
