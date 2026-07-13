@@ -75,10 +75,15 @@ typedef struct nano_turn {
         uint8_t addr[NANORTC_ADDR_SIZE];
         uint16_t port;
         uint8_t family;
-        bool active;
+        uint8_t active : 1;           /**< Server confirmed the permission. */
+        uint8_t pending : 1;          /**< A CreatePermission transaction is in flight. */
+        uint8_t failed : 1;           /**< Last request failed; slot may be replaced. */
+        uint8_t retryable : 1;        /**< Failed request may be retried. */
+        uint8_t attempts : 4;         /**< CreatePermission sends in this retry cycle. */
         uint8_t txid[STUN_TXID_SIZE]; /**< Last CreatePermission transaction ID (RFC 5766 §9). */
     } permissions[NANORTC_TURN_MAX_PERMISSIONS];
     uint8_t permission_count;
+    uint8_t permission_refresh_idx;
 
     /* Channel bindings (RFC 5766 §11) */
     struct {
@@ -153,6 +158,12 @@ int turn_deallocate(nano_turn_t *turn, const nanortc_crypto_provider_t *crypto, 
 int turn_create_permission(nano_turn_t *turn, const uint8_t *peer_addr, uint8_t peer_family,
                            uint16_t peer_port, const nanortc_crypto_provider_t *crypto,
                            uint8_t *buf, size_t buf_len, size_t *out_len);
+
+/** Timestamped form used by the RTC scheduler for retry/backoff handling. */
+int turn_create_permission_at(nano_turn_t *turn, uint32_t now_ms, const uint8_t *peer_addr,
+                              uint8_t peer_family, uint16_t peer_port,
+                              const nanortc_crypto_provider_t *crypto, uint8_t *buf, size_t buf_len,
+                              size_t *out_len);
 
 /**
  * Wrap outgoing data in a TURN Send indication.

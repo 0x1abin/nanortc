@@ -502,6 +502,46 @@ static void test_api_remote_candidate_parses_type(void)
     nanortc_destroy(&rtc);
 }
 
+static void test_api_remote_candidate_deduplicates_endpoint(void)
+{
+    nanortc_t rtc;
+    memset(&rtc, 0, sizeof(rtc));
+    nanortc_config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.crypto = nano_test_crypto();
+    cfg.role = NANORTC_ROLE_CONTROLLING;
+    nanortc_init(&rtc, &cfg);
+
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK, nanortc_add_remote_candidate(
+                                          &rtc, "candidate:1 1 udp 1 203.0.113.9 5000 typ host"));
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK, nanortc_add_remote_candidate(
+                                          &rtc, "candidate:2 1 UDP 2 203.0.113.9 5000 typ srflx"));
+    TEST_ASSERT_EQUAL_INT(1, rtc.ice.remote_candidate_count);
+    TEST_ASSERT_EQUAL_INT(NANORTC_ICE_CAND_SRFLX, rtc.ice.remote_candidates[0].type);
+    nanortc_destroy(&rtc);
+}
+
+static void test_api_remote_candidate_rejects_unsupported_transport(void)
+{
+    nanortc_t rtc;
+    memset(&rtc, 0, sizeof(rtc));
+    nanortc_config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.crypto = nano_test_crypto();
+    cfg.role = NANORTC_ROLE_CONTROLLING;
+    nanortc_init(&rtc, &cfg);
+
+    TEST_ASSERT_EQUAL_INT(
+        NANORTC_ERR_NOT_IMPLEMENTED,
+        nanortc_add_remote_candidate(
+            &rtc, "candidate:1 1 TCP 1 203.0.113.9 5000 typ host tcptype passive"));
+    TEST_ASSERT_EQUAL_INT(
+        NANORTC_ERR_NOT_IMPLEMENTED,
+        nanortc_add_remote_candidate(&rtc, "candidate:2 2 UDP 2 203.0.113.9 5001 typ host"));
+    TEST_ASSERT_EQUAL_INT(0, rtc.ice.remote_candidate_count);
+    nanortc_destroy(&rtc);
+}
+
 /* T19: nanortc_ice_restart resets state and generates new credentials */
 static void test_api_ice_restart(void)
 {
@@ -654,6 +694,8 @@ int main(void)
     /* Public API */
     RUN_TEST(test_api_end_of_candidates);
     RUN_TEST(test_api_remote_candidate_parses_type);
+    RUN_TEST(test_api_remote_candidate_deduplicates_endpoint);
+    RUN_TEST(test_api_remote_candidate_rejects_unsupported_transport);
     RUN_TEST(test_api_ice_restart);
     RUN_TEST(test_api_ice_restart_clears_dtls);
     RUN_TEST(test_api_ice_restart_no_dtls_safe);

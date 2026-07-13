@@ -985,6 +985,7 @@ NANORTC_API int nanortc_add_local_candidate(nanortc_t *rtc, const char *ip, uint
  * @param candidate_str  NUL-terminated SDP candidate line (a=candidate:...).
  * @return NANORTC_OK on success.
  * @retval NANORTC_ERR_PARSE  Malformed candidate string.
+ * @retval NANORTC_ERR_NOT_IMPLEMENTED  Candidate is not RTP component 1 over UDP.
  */
 NANORTC_API int nanortc_add_remote_candidate(nanortc_t *rtc, const char *candidate_str);
 

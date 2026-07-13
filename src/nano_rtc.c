@@ -1408,65 +1408,57 @@ static int rtc_process_timers(nanortc_t *rtc, uint32_t now_ms)
                 }
             }
         } else if (rtc->turn.state == NANORTC_TURN_ALLOCATED) {
-            /* Initial / trickle CreatePermission fan-out. Walk candidates and
-             * emit at most one new permission per tick to bound control bursts
-             * and preserve the existing lifecycle cadence. */
-            for (uint8_t i = 0; i < rtc->ice.remote_candidate_count; i++) {
-                nano_ice_candidate_t *c = &rtc->ice.remote_candidates[i];
-                /* RFC 6157 §4.2 / RFC 5928 §6: CreatePermission's
-                 * XOR-PEER-ADDRESS family must match the allocation family,
-                 * otherwise coturn replies "443 Peer Address Family Mismatch"
-                 * and the permission slot is wasted. With
-                 * NANORTC_TURN_MAX_PERMISSIONS=4 and browsers/libdc routinely
-                 * trickling 4+ v6 host candidates, filling all 4 slots with
-                 * v6 perms against a v4 relay starves the v4 perm install
-                 * that the actual data path needs. Skip mismatched families
-                 * here so the fan-out only requests perms that can succeed.
-                 * relay_family is stored as STUN_FAMILY_IPV4 (0x01) /
-                 * STUN_FAMILY_IPV6 (0x02); candidate family is plain 4/6. */
-                uint8_t relay_fam_46 = (rtc->turn.relay_family == STUN_FAMILY_IPV4) ? 4 : 6;
-                if (c->family != relay_fam_46) {
-                    continue;
-                }
-                size_t addr_len = (c->family == 4) ? 4 : 16;
-                bool has_perm = false;
-                for (uint8_t j = 0; j < rtc->turn.permission_count; j++) {
-                    if (rtc->turn.permissions[j].family == c->family &&
-                        memcmp(rtc->turn.permissions[j].addr, c->addr, addr_len) == 0) {
-                        has_perm = true;
-                        break;
+            /* Initial / trickle CreatePermission fan-out. TURN permissions
+             * are keyed by peer IP (RFC 5766 §8), so private, link-local,
+             * VPN, and documentation addresses can never be reached from a
+             * public relay and must not consume the bounded table. Prefer
+             * relay, then srflx, then public host endpoints and emit at most
+             * one transaction per tick. The TURN state machine suppresses
+             * active/in-flight entries and schedules retries for failures. */
+            uint8_t relay_fam_46 = (rtc->turn.relay_family == STUN_FAMILY_IPV4) ? 4 : 6;
+            bool permission_sent = false;
+            for (int preferred_type = NANORTC_ICE_CAND_RELAY;
+                 preferred_type >= NANORTC_ICE_CAND_HOST && !permission_sent; preferred_type--) {
+                for (uint8_t i = 0; i < rtc->ice.remote_candidate_count; i++) {
+                    nano_ice_candidate_t *c = &rtc->ice.remote_candidates[i];
+                    if (c->type != (uint8_t)preferred_type || c->family != relay_fam_46 ||
+                        !addr_is_globally_routable(c->addr, c->family)) {
+                        continue;
                     }
-                }
-                if (has_perm) {
-                    continue;
-                }
-                uint8_t *tx_buf = NULL;
-                uint8_t tx_slot = 0;
-                int prc = nano_rtc_tx_slot_acquire(rtc, &tx_buf, &tx_slot);
-                if (prc == NANORTC_ERR_WOULD_BLOCK) {
-                    return NANORTC_OK;
-                }
-                if (prc != NANORTC_OK) {
-                    return prc;
-                }
-                size_t perm_len = 0;
-                prc = turn_create_permission(&rtc->turn, c->addr, c->family, c->port,
-                                             rtc->config.crypto, tx_buf, NANORTC_TX_SLOT_SIZE,
-                                             &perm_len);
-                if (prc != NANORTC_OK) {
-                    return prc;
-                }
-                if (prc == NANORTC_OK && perm_len > 0) {
+
+                    uint8_t *tx_buf = NULL;
+                    uint8_t tx_slot = 0;
+                    int prc = nano_rtc_tx_slot_acquire(rtc, &tx_buf, &tx_slot);
+                    if (prc == NANORTC_ERR_WOULD_BLOCK) {
+                        return NANORTC_OK;
+                    }
+                    if (prc != NANORTC_OK) {
+                        return prc;
+                    }
+
+                    size_t perm_len = 0;
+                    prc = turn_create_permission_at(&rtc->turn, now_ms, c->addr, c->family, c->port,
+                                                    rtc->config.crypto, tx_buf,
+                                                    NANORTC_TX_SLOT_SIZE, &perm_len);
+                    if (prc == NANORTC_ERR_BUFFER_TOO_SMALL) {
+                        /* Every slot is active or in flight. A failed entry
+                         * becomes replaceable after its response or timeout. */
+                        continue;
+                    }
+                    if (prc != NANORTC_OK) {
+                        return prc;
+                    }
+                    if (perm_len == 0) {
+                        continue;
+                    }
+
                     prc = rtc_tx_slot_commit_direct(rtc, tx_slot, perm_len, &turn_dest, NULL);
                     if (prc != NANORTC_OK) {
                         return prc;
                     }
-                    /* Defer the periodic refresh past this tick so the
-                     * refresh block below doesn't immediately overwrite
-                     * turn_buf with a refresh of permissions[0]. */
-                    rtc->turn.permission_at_ms = nano_time_deadline(now_ms, 240000u);
+                    permission_sent = true;
+                    break;
                 }
-                break; /* one CreatePermission per tick */
             }
 
             /* Periodic Refresh (RFC 5766 §7). */

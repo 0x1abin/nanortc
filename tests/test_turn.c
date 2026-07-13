@@ -420,7 +420,8 @@ static void test_turn_create_permission(void)
 
     /* Permission should be tracked */
     TEST_ASSERT_EQUAL_INT(1, turn.permission_count);
-    TEST_ASSERT_TRUE(turn.permissions[0].active);
+    TEST_ASSERT_FALSE(turn.permissions[0].active);
+    TEST_ASSERT_TRUE(turn.permissions[0].pending);
 }
 
 /* T13: Permission deduplication — same address twice */
@@ -449,7 +450,8 @@ static void test_turn_permission_dedup(void)
     rc = turn_create_permission(&turn, peer, 4, 7000, crypto(), buf, sizeof(buf), &out_len);
     TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
     TEST_ASSERT_EQUAL_INT(1, turn.permission_count);
-    TEST_ASSERT_TRUE(turn.permissions[0].active);
+    TEST_ASSERT_EQUAL_size_t(0, out_len);
+    TEST_ASSERT_TRUE(turn.permissions[0].pending);
 }
 
 /* T14: Permission distinct addresses */
@@ -674,6 +676,9 @@ static void test_turn_permission_refresh(void)
     size_t out_len = 0;
     turn_create_permission(&turn, peer, 4, 7000, crypto(), buf, sizeof(buf), &out_len);
     TEST_ASSERT_EQUAL_INT(1, turn.permission_count);
+
+    turn.permissions[0].active = true;
+    turn.permissions[0].pending = false;
 
     /* Force refresh due */
     turn.permission_at_ms = 0;
@@ -924,6 +929,9 @@ static void test_turn_permission_success_response(void)
 
     int rc = turn_handle_response(&turn, 0, resp, resp_len, crypto());
     TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
+    TEST_ASSERT_TRUE(turn.permissions[0].active);
+    TEST_ASSERT_FALSE(turn.permissions[0].pending);
+    TEST_ASSERT_FALSE(turn.permissions[0].failed);
 }
 
 /* T32: CreatePermission error 438 — stale nonce, must echo our txid (F1) */
@@ -942,9 +950,20 @@ static void test_turn_permission_438_stale_nonce(void)
     size_t resp_len = build_error_response(resp, STUN_CREATE_PERMISSION_ERROR,
                                            turn.permissions[0].txid, 438, "perm_nonce");
 
-    int rc = turn_handle_response(&turn, 0, resp, resp_len, crypto());
+    int rc = turn_handle_response(&turn, 750, resp, resp_len, crypto());
     TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
     TEST_ASSERT_EQUAL_STRING("perm_nonce", turn.nonce);
+    TEST_ASSERT_FALSE(turn.permissions[0].active);
+    TEST_ASSERT_FALSE(turn.permissions[0].pending);
+    TEST_ASSERT_TRUE(turn.permissions[0].failed);
+    TEST_ASSERT_EQUAL_UINT32(0, turn_next_timeout_ms(&turn, 750));
+
+    out_len = 0;
+    rc = turn_create_permission_at(&turn, 750, peer, 4, 7000, crypto(), buf, sizeof(buf), &out_len);
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
+    TEST_ASSERT_TRUE(out_len > 0);
+    TEST_ASSERT_TRUE(turn.permissions[0].pending);
+    TEST_ASSERT_FALSE(turn.permissions[0].failed);
 }
 
 /* T33: CreatePermission error non-438 — fails (F1: must echo our txid first) */
@@ -963,8 +982,97 @@ static void test_turn_permission_error_fails(void)
     size_t resp_len = build_error_response(resp, STUN_CREATE_PERMISSION_ERROR,
                                            turn.permissions[0].txid, 403, NULL);
 
-    int rc = turn_handle_response(&turn, 0, resp, resp_len, crypto());
+    int rc = turn_handle_response(&turn, 1000, resp, resp_len, crypto());
     TEST_ASSERT_EQUAL_INT(NANORTC_ERR_PROTOCOL, rc);
+    TEST_ASSERT_FALSE(turn.permissions[0].active);
+    TEST_ASSERT_FALSE(turn.permissions[0].pending);
+    TEST_ASSERT_TRUE(turn.permissions[0].failed);
+    TEST_ASSERT_FALSE(turn.permissions[0].retryable);
+    TEST_ASSERT_EQUAL_UINT32(UINT32_MAX, turn_next_timeout_ms(&turn, 1000));
+
+    out_len = 123;
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK,
+                          turn_create_permission_at(&turn, 60000, peer, 4, 7000, crypto(), buf,
+                                                    sizeof(buf), &out_len));
+    TEST_ASSERT_EQUAL_size_t(0, out_len);
+}
+
+static void test_turn_permission_timeout_retries_then_backs_off(void)
+{
+    nano_turn_t turn;
+    setup_turn_allocated(&turn);
+
+    uint8_t peer[NANORTC_ADDR_SIZE] = {203, 0, 113, 10};
+    uint8_t buf[512];
+    size_t out_len = 0;
+
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK, turn_create_permission_at(&turn, 100, peer, 4, 7000, crypto(),
+                                                                buf, sizeof(buf), &out_len));
+    TEST_ASSERT_TRUE(out_len > 0);
+    TEST_ASSERT_EQUAL_UINT8(1, turn.permissions[0].attempts);
+    TEST_ASSERT_EQUAL_UINT32(1000, turn_next_timeout_ms(&turn, 100));
+
+    out_len = 123;
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK,
+                          turn_create_permission_at(&turn, 1099, peer, 4, 7000, crypto(), buf,
+                                                    sizeof(buf), &out_len));
+    TEST_ASSERT_EQUAL_size_t(0, out_len);
+
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK,
+                          turn_create_permission_at(&turn, 1100, peer, 4, 7000, crypto(), buf,
+                                                    sizeof(buf), &out_len));
+    TEST_ASSERT_TRUE(out_len > 0);
+    TEST_ASSERT_EQUAL_UINT8(2, turn.permissions[0].attempts);
+
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK,
+                          turn_create_permission_at(&turn, 2100, peer, 4, 7000, crypto(), buf,
+                                                    sizeof(buf), &out_len));
+    TEST_ASSERT_TRUE(out_len > 0);
+    TEST_ASSERT_EQUAL_UINT8(3, turn.permissions[0].attempts);
+
+    out_len = 123;
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK,
+                          turn_create_permission_at(&turn, 3100, peer, 4, 7000, crypto(), buf,
+                                                    sizeof(buf), &out_len));
+    TEST_ASSERT_EQUAL_size_t(0, out_len);
+    TEST_ASSERT_TRUE(turn.permissions[0].failed);
+    TEST_ASSERT_TRUE(turn.permissions[0].retryable);
+    TEST_ASSERT_FALSE(turn.permissions[0].pending);
+    TEST_ASSERT_EQUAL_UINT32(30000, turn_next_timeout_ms(&turn, 3100));
+}
+
+static void test_turn_failed_permission_slot_is_replaced(void)
+{
+    nano_turn_t turn;
+    setup_turn_allocated(&turn);
+
+    uint8_t buf[512];
+    size_t out_len = 0;
+    for (uint8_t i = 0; i < NANORTC_TURN_MAX_PERMISSIONS; i++) {
+        uint8_t peer[NANORTC_ADDR_SIZE] = {203, 0, 113, (uint8_t)(10 + i)};
+        TEST_ASSERT_EQUAL_INT(NANORTC_OK,
+                              turn_create_permission_at(&turn, 100, peer, 4, (uint16_t)(7000 + i),
+                                                        crypto(), buf, sizeof(buf), &out_len));
+        TEST_ASSERT_TRUE(out_len > 0);
+    }
+    TEST_ASSERT_EQUAL_UINT8(NANORTC_TURN_MAX_PERMISSIONS, turn.permission_count);
+
+    uint8_t resp[256];
+    size_t resp_len = build_error_response(resp, STUN_CREATE_PERMISSION_ERROR,
+                                           turn.permissions[0].txid, 403, NULL);
+    TEST_ASSERT_EQUAL_INT(NANORTC_ERR_PROTOCOL,
+                          turn_handle_response(&turn, 200, resp, resp_len, crypto()));
+
+    uint8_t replacement[NANORTC_ADDR_SIZE] = {198, 51, 100, 99};
+    out_len = 0;
+    TEST_ASSERT_EQUAL_INT(NANORTC_OK,
+                          turn_create_permission_at(&turn, 200, replacement, 4, 9000, crypto(), buf,
+                                                    sizeof(buf), &out_len));
+    TEST_ASSERT_TRUE(out_len > 0);
+    TEST_ASSERT_EQUAL_UINT8(NANORTC_TURN_MAX_PERMISSIONS, turn.permission_count);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(replacement, turn.permissions[0].addr, 4);
+    TEST_ASSERT_TRUE(turn.permissions[0].pending);
+    TEST_ASSERT_FALSE(turn.permissions[0].failed);
 }
 
 /* T34: ChannelBind error 438 — stale nonce */
@@ -1606,6 +1714,8 @@ int main(void)
     RUN_TEST(test_turn_permission_success_response);
     RUN_TEST(test_turn_permission_438_stale_nonce);
     RUN_TEST(test_turn_permission_error_fails);
+    RUN_TEST(test_turn_permission_timeout_retries_then_backs_off);
+    RUN_TEST(test_turn_failed_permission_slot_is_replaced);
     RUN_TEST(test_turn_channel_bind_438_stale_nonce);
     RUN_TEST(test_turn_channel_bind_error_fails);
 
