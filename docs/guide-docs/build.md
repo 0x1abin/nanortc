@@ -109,8 +109,33 @@ cmake -B build -DNANORTC_CRYPTO=openssl -DNANORTC_BUILD_INTEROP_TESTS=ON \
       -DNANORTC_FEATURE_AUDIO=ON -DNANORTC_FEATURE_VIDEO=ON -DNANORTC_FEATURE_H265=ON
 cmake --build build -j$(nproc)
 ctest --test-dir build -N | grep -E 'interop_(audio|video)'
-ctest --test-dir build -R interop --output-on-failure
+ctest --test-dir build -R interop -LE network --output-on-failure
 ```
+
+The real-network TURN suite is opt-in. Without a reachable external relay it
+returns CTest skip code 77; strict mode converts missing credentials,
+unreachable service, or an unusable single-host topology into a failure:
+
+```bash
+export NANORTC_INTEROP_NETWORK_REQUIRED=1
+export NANORTC_TURN_URL=turn:turn.example.com:3478
+export NANORTC_STUN_URL=stun:turn.example.com:3478
+export NANORTC_TURN_USER="$TURN_USER"
+export NANORTC_TURN_PASS="$TURN_PASS"
+ctest --test-dir build -R '^interop_turn$' --output-on-failure
+ctest --test-dir build -L turn-relay --output-on-failure
+```
+
+GitHub Actions runs this only by manual dispatch from
+`.github/workflows/interop-turn-external.yml`. Configure a protected
+`turn-interop` environment with a required reviewer, `COTURN_AUTH_SECRET`, and
+the `NANORTC_TURN_URL` variable. The single-concurrency workflow builds before
+accessing the secret, derives a 30-minute TURN REST credential, and does not
+expose the shared secret to pull-request jobs. It may use an existing compatible
+coturn without changing or restarting the server, but each run creates real
+relay allocations and traffic.
+Deployment and secret-rotation guidance is in
+[turn-interop-ci.md](turn-interop-ci.md).
 
 ## AddressSanitizer
 

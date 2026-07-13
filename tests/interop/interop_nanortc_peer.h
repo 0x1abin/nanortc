@@ -36,6 +36,9 @@ typedef struct {
      * candidate (from STUN BIND) to be discovered before signaling.
      * Forces ICE pair selection through the srflx local candidate. */
     int srflx_only;
+    /* When non-zero, require both srflx and relay candidates before signaling.
+     * Used by strict real-network STUN+TURN discovery tests. */
+    int require_srflx_and_relay;
 } interop_nanortc_ice_config_t;
 
 typedef struct {
@@ -66,6 +69,7 @@ typedef struct {
     int has_ice;    /* True if ICE servers are configured (enables TURN warmup) */
     int relay_only; /* True if SDP must advertise only the TURN relay candidate */
     int srflx_only; /* True if SDP must advertise only the srflx candidate */
+    int require_srflx_and_relay;
 } interop_nanortc_peer_t;
 
 /*

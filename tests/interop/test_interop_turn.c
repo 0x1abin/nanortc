@@ -107,6 +107,7 @@ static int setup_turn_pair(interop_sig_pipe_t *pipe, interop_nanortc_peer_t *nan
         .ice_server_count = 2,
         .resolve_scratch = resolve_scratches[idx],
         .resolve_scratch_size = sizeof(resolve_scratches[idx]),
+        .require_srflx_and_relay = 1,
     };
 
     fprintf(stderr, "[test] STUN: %s\n", stun_url);

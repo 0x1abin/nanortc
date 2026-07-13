@@ -358,7 +358,7 @@ elif $HAS_OPENSSL && command -v c++ > /dev/null 2>&1; then
         bash -c "tests=\$(ctest --test-dir '$interop_dir' -N); printf '%s\n' \"\$tests\"; grep -q 'interop_audio' <<<\"\$tests\" && grep -q 'interop_video' <<<\"\$tests\""
 
     run_check "Test  interop (libdatachannel)" \
-        ctest --test-dir "$interop_dir" -R interop --output-on-failure
+        ctest --test-dir "$interop_dir" -R interop -LE network --output-on-failure
 else
     if ! $HAS_OPENSSL; then
         printf "  %-50s SKIP (openssl not available)\n" "Interop tests"

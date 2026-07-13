@@ -69,6 +69,7 @@ What this means for readers of this table: `OK` means on-spec and interop-verifi
 |-----------------------|---------------------------------------------------------------|--------------------|----------------|
 | 7675 §5.1             | Periodic STUN Binding Request on selected pair                | OK                 | [nano_ice.c:537](../../src/nano_ice.c); `NANORTC_ICE_CONSENT_INTERVAL_MS` = 15 s |
 | 7675 §5.1             | Arm `consent_expiry_ms` on ICE connect                        | OK                 | [nano_rtc.c:1229](../../src/nano_rtc.c) at `state → CONNECTED` |
+| 7675 §5.1 / 8445 §7.1.3 | Authenticate consent success before extending expiry        | OK                 | Transaction ID, FINGERPRINT, and MESSAGE-INTEGRITY are all verified; invalid responses leave `consent_pending` armed |
 | 7675 §5.1             | Unarmed `consent_expiry_ms` surfaces as expired (not silently ignored) | OK        | `ice_consent_expired()` treats zero-while-CONNECTED as expired to prevent a forgotten-arm bug from disabling the liveness timeout |
 | 7675 §5.2             | On consent expiry → transition to failure / DISCONNECTED       | OK                 | [nano_rtc.c](../../src/nano_rtc.c) emits `EV_DISCONNECTED` + state = CLOSED |
 | 7675 §5.2             | No further checks generated after consent loss                | OK                 | `ice_generate_check` short-circuits on DISCONNECTED (and CONNECTED / FAILED) |
@@ -80,6 +81,7 @@ What this means for readers of this table: `OK` means on-spec and interop-verifi
 | 8838 §4               | Late remote candidates accepted via `nanortc_add_remote_candidate` | OK            | Array append up to `NANORTC_MAX_ICE_CANDIDATES` |
 | 8838 §4               | `a=end-of-candidates` signal / API                            | OK                 | `ice.end_of_candidates` bit consumed in FAILED transition |
 | 8445 §9               | `ice-restart` resets check state, preserves role + local candidates | OK           | [nano_ice.c:502](../../src/nano_ice.c); pending table zeroed; generation counter bumped |
+| 8445 §9 / TURN peer state | Reuse live allocation but discard stale peer authorization | OK                 | `nanortc_ice_restart()` preserves the relay candidate/allocation and clears TURN permissions/channels for recreation from the new generation |
 
 ### Dual-Stack (RFC 8445 §6.1.2.2 + RFC 4291)
 

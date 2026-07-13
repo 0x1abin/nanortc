@@ -144,7 +144,8 @@ static int probe_turn_server(void)
             ssize_t n = recv(fd, resp, sizeof(resp), 0);
             /* Successful response: STUN Binding Success (0x0101) with the
              * same magic cookie + transaction id as our request. */
-            if (n >= 20 && resp[0] == 0x01 && resp[1] == 0x01 && memcmp(resp + 4, req + 4, 16) == 0) {
+            if (n >= 20 && resp[0] == 0x01 && resp[1] == 0x01 &&
+                memcmp(resp + 4, req + 4, 16) == 0) {
                 reachable = 1;
             }
         }
@@ -274,21 +275,20 @@ static void assert_relay_path(const interop_nanortc_peer_t *nano)
             break;
         }
     }
-    TEST_ASSERT_TRUE_MESSAGE(relay_seen,
-                             "libdc did not advertise a relay candidate "
-                             "(iceTransportPolicy=relay not effective?)");
+    TEST_ASSERT_TRUE_MESSAGE(relay_seen, "libdc did not advertise a relay candidate "
+                                         "(iceTransportPolicy=relay not effective?)");
 }
 
 /* ----------------------------------------------------------------
  * Skip-on-no-server guard — used at the top of each test
  * ---------------------------------------------------------------- */
 
-#define SKIP_IF_NO_TURN()                                                                          \
-    do {                                                                                           \
-        if (!turn_server_reachable) {                                                              \
-            fprintf(stderr, "[test] SKIP: TURN server unreachable (%s)\n", turn_url);              \
-            return;                                                                                \
-        }                                                                                          \
+#define SKIP_IF_NO_TURN()                                                             \
+    do {                                                                              \
+        if (!turn_server_reachable) {                                                 \
+            fprintf(stderr, "[test] SKIP: TURN server unreachable (%s)\n", turn_url); \
+            return;                                                                   \
+        }                                                                             \
     } while (0)
 
 /* ----------------------------------------------------------------
@@ -538,16 +538,26 @@ int main(void)
 {
     load_ice_config();
     turn_server_reachable = probe_turn_server();
+    const char *required_env = getenv("NANORTC_INTEROP_NETWORK_REQUIRED");
+    int network_required = required_env && strcmp(required_env, "1") == 0;
+    const char *env_turn_url = getenv("NANORTC_TURN_URL");
+    const char *env_turn_user = getenv("NANORTC_TURN_USER");
+    const char *env_turn_pass = getenv("NANORTC_TURN_PASS");
+
+    if (network_required && (!env_turn_url || !env_turn_url[0] || !env_turn_user ||
+                             !env_turn_user[0] || !env_turn_pass || !env_turn_pass[0])) {
+        fprintf(stderr, "TURN interop required but NANORTC_TURN_URL/USER/PASS is incomplete\n");
+        return EXIT_FAILURE;
+    }
+    if (!turn_server_reachable) {
+        fprintf(stderr, "TURN server unreachable: %s\n", turn_url);
+        return network_required ? EXIT_FAILURE : 77;
+    }
 
     printf("TURN relay-only interop test\n");
     printf("  STUN: %s\n", stun_url);
     printf("  TURN: %s user=%s\n", turn_url, turn_user);
     printf("  TURN reachable: %s\n", turn_server_reachable ? "yes" : "no");
-    if (!turn_server_reachable) {
-        printf("  → all tests will be SKIPPED. Start a TURN server with:\n");
-        printf("       ./scripts/start-test-turn.sh\n");
-        printf("    or override with NANORTC_TURN_URL/USER/PASS environment.\n");
-    }
 
     UNITY_BEGIN();
     RUN_TEST(test_relay_only_handshake);

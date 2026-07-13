@@ -24,14 +24,26 @@
 typedef struct nanortc_crypto_provider nanortc_crypto_provider_t;
 #endif
 
-/** @brief TURN client state machine. */
-typedef enum {
+/** @brief TURN client state machine. Kept byte-sized for embedded state. */
+typedef uint8_t nano_turn_state_t;
+enum {
     NANORTC_TURN_IDLE,       /**< Not configured or not started. */
     NANORTC_TURN_ALLOCATING, /**< Initial Allocate sent, awaiting response. */
     NANORTC_TURN_CHALLENGED, /**< Got 401, re-sending with credentials. */
     NANORTC_TURN_ALLOCATED,  /**< Have relay address. */
     NANORTC_TURN_FAILED,     /**< Unrecoverable error. */
-} nano_turn_state_t;
+};
+
+/** Outstanding allocation-wide transaction. */
+typedef uint8_t nano_turn_txn_t;
+enum {
+    NANORTC_TURN_TXN_NONE,
+    NANORTC_TURN_TXN_ALLOCATE,
+    NANORTC_TURN_TXN_REFRESH,
+};
+
+/** MD5 output size used by the long-term credential mechanism. */
+#define NANORTC_TURN_HMAC_KEY_SIZE 16
 
 /** @brief TURN client state. Embedded in nanortc_t. */
 typedef struct nano_turn {
@@ -45,57 +57,67 @@ typedef struct nano_turn {
 
     /* Credentials (passed by application) */
     char username[NANORTC_TURN_USERNAME_SIZE];
-    uint16_t username_len;
-    char password[NANORTC_TURN_PASSWORD_SIZE];
-    uint16_t password_len;
+    uint8_t username_len;
+    union {
+        char password[NANORTC_TURN_PASSWORD_SIZE];
+        uint8_t hmac_key[NANORTC_TURN_HMAC_KEY_SIZE];
+    } auth;
+    uint8_t password_len;
 
     /* From 401 challenge */
     char realm[NANORTC_TURN_REALM_SIZE];
-    uint16_t realm_len;
+    uint8_t realm_len;
     char nonce[NANORTC_TURN_NONCE_SIZE];
-    uint16_t nonce_len;
+    uint8_t nonce_len;
 
-    /* Derived HMAC key: MD5(username:realm:password) — RFC 8489 §9.2.2 */
-#define NANORTC_TURN_HMAC_KEY_SIZE 16 /* MD5 output size */
-    uint8_t hmac_key[NANORTC_TURN_HMAC_KEY_SIZE];
+    /* auth.hmac_key replaces auth.password after the 401 challenge is handled.
+     * The password is no longer needed after the long-term key is derived. */
     bool hmac_key_valid;
 
     /* Relay allocation result */
     uint8_t relay_addr[NANORTC_ADDR_SIZE];
     uint16_t relay_port;
     uint8_t relay_family;
-    uint32_t lifetime_s;
 
-    /* Timing */
-    uint32_t refresh_at_ms;    /**< When to send next Refresh. */
-    uint32_t permission_at_ms; /**< When to refresh permissions. */
+    /* Allocate/Refresh transaction (RFC 8489 §6.2.1). */
+    nano_turn_txn_t transaction;
+    bool transaction_authenticated;
+    uint8_t transaction_transmissions;
+
+    uint32_t lifetime_s;
+    uint32_t refresh_at_ms; /**< When to send next Refresh. */
+    uint32_t transaction_retry_at_ms;
+    uint8_t last_txid[STUN_TXID_SIZE];
+    uint8_t permission_count;
+    uint8_t channel_count;
+    uint16_t next_channel; /**< Next channel number to allocate (starts 0x4000). */
 
     /* Permissions (peer addresses we've authorized) */
     struct {
         uint8_t addr[NANORTC_ADDR_SIZE];
+        /** Retry deadline while pending; refresh deadline while active. */
+        uint32_t deadline_ms;
+        uint8_t txid[STUN_TXID_SIZE]; /**< Last CreatePermission transaction ID (RFC 5766 §9). */
         uint16_t port;
         uint8_t family;
         bool active;
-        uint8_t txid[STUN_TXID_SIZE]; /**< Last CreatePermission transaction ID (RFC 5766 §9). */
+        bool pending;
+        uint8_t transmissions;
     } permissions[NANORTC_TURN_MAX_PERMISSIONS];
-    uint8_t permission_count;
 
     /* Channel bindings (RFC 5766 §11) */
     struct {
         uint8_t addr[NANORTC_ADDR_SIZE];
-        uint16_t port;
-        uint8_t family;
-        uint16_t channel;             /**< 0x4000-0x4FFE (RFC 8656 §12). */
-        bool bound;                   /**< True after ChannelBind success response. */
-        uint32_t refresh_at_ms;       /**< When to re-send ChannelBind (9 min). */
+        /** Retry deadline while pending; refresh deadline while bound. */
+        uint32_t deadline_ms;
         uint8_t txid[STUN_TXID_SIZE]; /**< Last ChannelBind transaction ID. */
+        uint16_t port;
+        uint16_t channel; /**< 0x4000-0x4FFE (RFC 8656 §12). */
+        uint8_t family;
+        bool bound; /**< True after ChannelBind success response. */
+        bool pending;
+        uint8_t transmissions;
     } channels[NANORTC_TURN_MAX_CHANNELS];
-    uint8_t channel_count;
-    uint16_t next_channel; /**< Next channel number to allocate (starts 0x4000). */
-
-    /* Transaction tracking */
-    uint8_t last_txid[STUN_TXID_SIZE];
-    uint8_t alloc_retries;
 } nano_turn_t;
 
 /** Initialize TURN state. */
@@ -212,7 +234,7 @@ int turn_unwrap_channel_data(const uint8_t *data, size_t len, uint16_t *channel,
 
 /** Look up a bound channel number for a peer address (outgoing path). */
 bool turn_find_channel_for_peer(const nano_turn_t *turn, const uint8_t *peer_addr,
-                                uint8_t peer_family, uint16_t *channel);
+                                uint8_t peer_family, uint16_t peer_port, uint16_t *channel);
 
 /** Reverse lookup: channel number → peer address (incoming path). */
 bool turn_find_peer_for_channel(const nano_turn_t *turn, uint16_t channel, uint8_t *peer_addr,
@@ -248,5 +270,13 @@ uint32_t turn_next_timeout_ms(const nano_turn_t *turn, uint32_t now_ms);
 int turn_generate_channel_refresh(nano_turn_t *turn, uint32_t now_ms,
                                   const nanortc_crypto_provider_t *crypto, uint8_t *buf,
                                   size_t buf_len, size_t *out_len);
+
+/** Rebuild and emit one due TURN request retransmission (RFC 8489 §6.2.1). */
+int turn_generate_retransmit(nano_turn_t *turn, uint32_t now_ms,
+                             const nanortc_crypto_provider_t *crypto, uint8_t *buf, size_t buf_len,
+                             size_t *out_len);
+
+/** Drop peer-specific permissions and channels while preserving an allocation. */
+void turn_reset_peer_state(nano_turn_t *turn);
 
 #endif /* NANORTC_TURN_H_ */

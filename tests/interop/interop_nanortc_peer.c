@@ -155,7 +155,10 @@ static void *nanortc_thread_fn(void *arg)
      * once at the top of nanortc_do_signaling, so any candidate that needs
      * to ride in the SDP (instead of trickle) must be in place by then. */
     if (peer->has_ice) {
-        const char *want = peer->relay_only ? "relay" : peer->srflx_only ? "srflx" : "any";
+        const char *want = peer->require_srflx_and_relay ? "relay+srflx"
+                           : peer->relay_only            ? "relay"
+                           : peer->srflx_only            ? "srflx"
+                                                         : "any";
         fprintf(stderr, "[nanortc] ICE warmup: waiting for %s candidate...\n", want);
         uint32_t warmup_start = interop_get_millis();
         int relay_ready = 0;
@@ -164,9 +167,10 @@ static void *nanortc_thread_fn(void *arg)
             nano_run_loop_step(&peer->loop);
             relay_ready = peer->rtc.sdp.has_relay_candidate;
             srflx_ready = peer->rtc.sdp.has_srflx_candidate;
-            int needed_ready = peer->relay_only   ? relay_ready
-                               : peer->srflx_only ? srflx_ready
-                                                  : (relay_ready || srflx_ready);
+            int needed_ready = peer->require_srflx_and_relay ? (relay_ready && srflx_ready)
+                               : peer->relay_only            ? relay_ready
+                               : peer->srflx_only            ? srflx_ready
+                                                             : (relay_ready || srflx_ready);
             if (needed_ready) {
                 fprintf(stderr, "[nanortc] ICE warmup: ready (%u ms; relay=%d srflx=%d)\n",
                         interop_get_millis() - warmup_start, relay_ready, srflx_ready);
@@ -186,6 +190,12 @@ static void *nanortc_thread_fn(void *arg)
         if (peer->srflx_only && !srflx_ready) {
             fprintf(stderr, "[nanortc] srflx-only mode requires a successful STUN warmup; "
                             "aborting thread (signaling would hang with no candidates)\n");
+            atomic_store(&peer->running, 0);
+            return NULL;
+        }
+        if (peer->require_srflx_and_relay && (!relay_ready || !srflx_ready)) {
+            fprintf(stderr, "[nanortc] strict STUN+TURN warmup requires both candidates; "
+                            "aborting thread\n");
             atomic_store(&peer->running, 0);
             return NULL;
         }
@@ -255,6 +265,7 @@ int interop_nanortc_start(interop_nanortc_peer_t *peer, int sig_fd, uint16_t por
     peer->has_ice = (ice_cfg != NULL);
     peer->relay_only = (ice_cfg != NULL && ice_cfg->relay_only);
     peer->srflx_only = (ice_cfg != NULL && ice_cfg->srflx_only);
+    peer->require_srflx_and_relay = (ice_cfg != NULL && ice_cfg->require_srflx_and_relay);
     pthread_mutex_init(&peer->msg_mutex, NULL);
 
     /* Resolve ICE server domain names to IPs */

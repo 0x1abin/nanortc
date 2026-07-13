@@ -31,6 +31,9 @@
 /* REQUESTED-TRANSPORT value for UDP (RFC 5766 §14.7) */
 #define TURN_TRANSPORT_UDP 17
 
+/* RFC 8489 §6.2.1 default maximum retransmission-time multiplier (Rm). */
+#define TURN_RTO_MAX_MULTIPLIER 16
+
 static uint32_t turn_refresh_delay_ms(uint32_t lifetime_s)
 {
     uint32_t max_lifetime_s = NANO_TIME_MAX_INTERVAL_MS / 1000u;
@@ -160,10 +163,10 @@ static int turn_derive_key(nano_turn_t *turn, const nanortc_crypto_provider_t *c
     memcpy(input + pos, turn->realm, turn->realm_len);
     pos += turn->realm_len;
     input[pos++] = ':';
-    memcpy(input + pos, turn->password, turn->password_len);
+    memcpy(input + pos, turn->auth.password, turn->password_len);
     pos += turn->password_len;
 
-    crypto->md5(input, pos, turn->hmac_key);
+    crypto->md5(input, pos, turn->auth.hmac_key);
     turn->hmac_key_valid = true;
 
     NANORTC_LOGD("TURN", "HMAC key derived");
@@ -176,7 +179,138 @@ static void turn_store_nonce(nano_turn_t *turn, const char *nonce, size_t nonce_
         nonce_len < NANORTC_TURN_NONCE_SIZE - 1 ? nonce_len : NANORTC_TURN_NONCE_SIZE - 1;
     memcpy(turn->nonce, nonce, stored_len);
     turn->nonce[stored_len] = '\0';
-    turn->nonce_len = (uint16_t)stored_len;
+    turn->nonce_len = (uint8_t)stored_len;
+}
+
+static void turn_clear_transaction(nano_turn_t *turn)
+{
+    turn->transaction = NANORTC_TURN_TXN_NONE;
+    turn->transaction_authenticated = false;
+    turn->transaction_retry_at_ms = 0;
+    turn->transaction_transmissions = 0;
+}
+
+static void turn_start_transaction(nano_turn_t *turn, nano_turn_txn_t transaction,
+                                   bool authenticated, const uint8_t txid[STUN_TXID_SIZE])
+{
+    memcpy(turn->last_txid, txid, STUN_TXID_SIZE);
+    turn->transaction = transaction;
+    turn->transaction_authenticated = authenticated;
+    turn->transaction_retry_at_ms = 0;
+    turn->transaction_transmissions = 1;
+}
+
+static uint32_t turn_retry_delay_ms(uint8_t transmissions)
+{
+    uint32_t delay_ms = NANORTC_TURN_RTO_MS;
+    uint32_t max_delay_ms = NANORTC_TURN_RTO_MS * TURN_RTO_MAX_MULTIPLIER;
+    for (uint8_t i = 1; i < transmissions; i++) {
+        if (delay_ms >= max_delay_ms / 2u) {
+            return max_delay_ms;
+        }
+        delay_ms *= 2u;
+    }
+    return delay_ms;
+}
+
+static int turn_build_allocate(const nano_turn_t *turn, bool authenticated,
+                               const uint8_t txid[STUN_TXID_SIZE],
+                               const nanortc_crypto_provider_t *crypto, uint8_t *buf,
+                               size_t buf_len, size_t *out_len)
+{
+    if (buf_len < NANORTC_TURN_MAX_REQUEST_SIZE) {
+        return NANORTC_ERR_BUFFER_TOO_SMALL;
+    }
+
+    stun_write_header(buf, STUN_ALLOCATE_REQUEST, txid);
+    size_t pos = STUN_HEADER_SIZE;
+    uint8_t transport[4] = {TURN_TRANSPORT_UDP, 0, 0, 0};
+    pos += stun_write_attr(buf + pos, STUN_ATTR_REQUESTED_TRANSPORT, transport, 4);
+    uint8_t lifetime_val[4];
+    nanortc_write_u32be(lifetime_val, TURN_DEFAULT_LIFETIME);
+    pos += stun_write_attr(buf + pos, STUN_ATTR_LIFETIME, lifetime_val, 4);
+
+    if (authenticated) {
+        pos += stun_write_attr(buf + pos, STUN_ATTR_USERNAME, turn->username,
+                               (uint16_t)turn->username_len);
+        pos += stun_write_attr(buf + pos, STUN_ATTR_REALM, turn->realm, (uint16_t)turn->realm_len);
+        pos += stun_write_attr(buf + pos, STUN_ATTR_NONCE, turn->nonce, (uint16_t)turn->nonce_len);
+        pos = stun_append_integrity(buf, pos, turn->auth.hmac_key, crypto->hmac_sha1);
+    } else {
+        stun_finalize_length(buf, pos);
+    }
+    *out_len = pos;
+    return NANORTC_OK;
+}
+
+static int turn_build_refresh(const nano_turn_t *turn, uint32_t lifetime_s,
+                              const uint8_t txid[STUN_TXID_SIZE],
+                              const nanortc_crypto_provider_t *crypto, uint8_t *buf, size_t buf_len,
+                              size_t *out_len)
+{
+    if (buf_len < NANORTC_TURN_MAX_REQUEST_SIZE) {
+        return NANORTC_ERR_BUFFER_TOO_SMALL;
+    }
+    stun_write_header(buf, STUN_REFRESH_REQUEST, txid);
+    size_t pos = STUN_HEADER_SIZE;
+    uint8_t lifetime_val[4];
+    nanortc_write_u32be(lifetime_val, lifetime_s);
+    pos += stun_write_attr(buf + pos, STUN_ATTR_LIFETIME, lifetime_val, 4);
+    pos += stun_write_attr(buf + pos, STUN_ATTR_USERNAME, turn->username,
+                           (uint16_t)turn->username_len);
+    pos += stun_write_attr(buf + pos, STUN_ATTR_REALM, turn->realm, (uint16_t)turn->realm_len);
+    pos += stun_write_attr(buf + pos, STUN_ATTR_NONCE, turn->nonce, (uint16_t)turn->nonce_len);
+    pos = stun_append_integrity(buf, pos, turn->auth.hmac_key, crypto->hmac_sha1);
+    *out_len = pos;
+    return NANORTC_OK;
+}
+
+static int turn_build_permission(const nano_turn_t *turn, uint8_t index,
+                                 const nanortc_crypto_provider_t *crypto, uint8_t *buf,
+                                 size_t buf_len, size_t *out_len)
+{
+    if (buf_len < NANORTC_TURN_MAX_REQUEST_SIZE) {
+        return NANORTC_ERR_BUFFER_TOO_SMALL;
+    }
+    const uint8_t *txid = turn->permissions[index].txid;
+    stun_write_header(buf, STUN_CREATE_PERMISSION_REQUEST, txid);
+    size_t pos = STUN_HEADER_SIZE;
+    pos +=
+        stun_encode_xor_addr(buf + pos, STUN_ATTR_XOR_PEER_ADDRESS, turn->permissions[index].addr,
+                             turn->permissions[index].family, turn->permissions[index].port, txid);
+    pos += stun_write_attr(buf + pos, STUN_ATTR_USERNAME, turn->username,
+                           (uint16_t)turn->username_len);
+    pos += stun_write_attr(buf + pos, STUN_ATTR_REALM, turn->realm, (uint16_t)turn->realm_len);
+    pos += stun_write_attr(buf + pos, STUN_ATTR_NONCE, turn->nonce, (uint16_t)turn->nonce_len);
+    pos = stun_append_integrity(buf, pos, turn->auth.hmac_key, crypto->hmac_sha1);
+    *out_len = pos;
+    return NANORTC_OK;
+}
+
+static int turn_build_channel_bind(const nano_turn_t *turn, uint8_t index,
+                                   const nanortc_crypto_provider_t *crypto, uint8_t *buf,
+                                   size_t buf_len, size_t *out_len)
+{
+    if (buf_len < NANORTC_TURN_MAX_REQUEST_SIZE) {
+        return NANORTC_ERR_BUFFER_TOO_SMALL;
+    }
+    const uint8_t *txid = turn->channels[index].txid;
+    stun_write_header(buf, STUN_CHANNEL_BIND_REQUEST, txid);
+    size_t pos = STUN_HEADER_SIZE;
+    uint8_t cn[4];
+    nanortc_write_u16be(cn, turn->channels[index].channel);
+    cn[2] = 0;
+    cn[3] = 0;
+    pos += stun_write_attr(buf + pos, STUN_ATTR_CHANNEL_NUMBER, cn, 4);
+    pos += stun_encode_xor_addr(buf + pos, STUN_ATTR_XOR_PEER_ADDRESS, turn->channels[index].addr,
+                                turn->channels[index].family, turn->channels[index].port, txid);
+    pos += stun_write_attr(buf + pos, STUN_ATTR_USERNAME, turn->username,
+                           (uint16_t)turn->username_len);
+    pos += stun_write_attr(buf + pos, STUN_ATTR_REALM, turn->realm, (uint16_t)turn->realm_len);
+    pos += stun_write_attr(buf + pos, STUN_ATTR_NONCE, turn->nonce, (uint16_t)turn->nonce_len);
+    pos = stun_append_integrity(buf, pos, turn->auth.hmac_key, crypto->hmac_sha1);
+    *out_len = pos;
+    return NANORTC_OK;
 }
 
 /* ----------------------------------------------------------------
@@ -211,11 +345,11 @@ int turn_configure(nano_turn_t *turn, const uint8_t *server_addr, uint8_t server
 
     memcpy(turn->username, username, username_len);
     turn->username[username_len] = '\0';
-    turn->username_len = username_len;
+    turn->username_len = (uint8_t)username_len;
 
-    memcpy(turn->password, password, password_len);
-    turn->password[password_len] = '\0';
-    turn->password_len = password_len;
+    memcpy(turn->auth.password, password, password_len);
+    turn->auth.password[password_len] = '\0';
+    turn->password_len = (uint8_t)password_len;
 
     turn->configured = true;
     NANORTC_LOGI("TURN", "configured");
@@ -233,8 +367,8 @@ int turn_start_allocate(nano_turn_t *turn, const nanortc_crypto_provider_t *cryp
     if (!turn->configured) {
         return NANORTC_ERR_STATE;
     }
-    if (buf_len < NANORTC_TURN_MAX_REQUEST_SIZE) {
-        return NANORTC_ERR_BUFFER_TOO_SMALL;
+    if (turn->transaction != NANORTC_TURN_TXN_NONE) {
+        return NANORTC_ERR_STATE;
     }
 
     /* Generate transaction ID */
@@ -243,35 +377,13 @@ int turn_start_allocate(nano_turn_t *turn, const nanortc_crypto_provider_t *cryp
         return NANORTC_ERR_CRYPTO;
     }
 
-    /* Build Allocate Request */
-    stun_write_header(buf, STUN_ALLOCATE_REQUEST, txid);
-    size_t pos = STUN_HEADER_SIZE;
-
-    /* REQUESTED-TRANSPORT: UDP (RFC 5766 §14.7) */
-    uint8_t transport[4] = {TURN_TRANSPORT_UDP, 0, 0, 0};
-    pos += stun_write_attr(buf + pos, STUN_ATTR_REQUESTED_TRANSPORT, transport, 4);
-
-    /* LIFETIME */
-    uint8_t lifetime_val[4];
-    nanortc_write_u32be(lifetime_val, TURN_DEFAULT_LIFETIME);
-    pos += stun_write_attr(buf + pos, STUN_ATTR_LIFETIME, lifetime_val, 4);
-
-    if (turn->state == NANORTC_TURN_CHALLENGED && turn->hmac_key_valid) {
-        /* Authenticated retry after 401: add USERNAME, REALM, NONCE, MI */
-        pos += stun_write_attr(buf + pos, STUN_ATTR_USERNAME, turn->username,
-                               (uint16_t)turn->username_len);
-        pos += stun_write_attr(buf + pos, STUN_ATTR_REALM, turn->realm, (uint16_t)turn->realm_len);
-        pos += stun_write_attr(buf + pos, STUN_ATTR_NONCE, turn->nonce, (uint16_t)turn->nonce_len);
-
-        pos = stun_append_integrity(buf, pos, turn->hmac_key, crypto->hmac_sha1);
-    } else {
-        /* First attempt: unauthenticated */
-        stun_finalize_length(buf, pos);
+    bool authenticated = turn->state == NANORTC_TURN_CHALLENGED && turn->hmac_key_valid;
+    int rc = turn_build_allocate(turn, authenticated, txid, crypto, buf, buf_len, out_len);
+    if (rc != NANORTC_OK) {
+        return rc;
     }
-
-    memcpy(turn->last_txid, txid, sizeof(txid));
+    turn_start_transaction(turn, NANORTC_TURN_TXN_ALLOCATE, authenticated, txid);
     turn->state = NANORTC_TURN_ALLOCATING;
-    *out_len = pos;
     NANORTC_LOGD("TURN", "allocate request sent");
     return NANORTC_OK;
 }
@@ -291,15 +403,68 @@ int turn_handle_response(nano_turn_t *turn, uint32_t now_ms, const uint8_t *data
 
     /* Verify transaction ID — Allocate/Refresh use last_txid; ChannelBind and
      * CreatePermission use per-binding txid (matched in the dedicated branches
-     * below). Reject anything else as a foreign transaction (RFC 8489 §6.3.1). */
-    bool txid_match = (memcmp(msg.transaction_id, turn->last_txid, STUN_TXID_SIZE) == 0);
+     * below). RFC 8489 §6.3.1 requires responses for unknown or completed
+     * transactions to be silently discarded: UDP retransmission can otherwise
+     * turn a harmless late duplicate into a session-level protocol error. */
+    bool txid_match = turn->transaction != NANORTC_TURN_TXN_NONE &&
+                      memcmp(msg.transaction_id, turn->last_txid, STUN_TXID_SIZE) == 0;
     bool is_channel_bind_resp =
         (msg.type == STUN_CHANNEL_BIND_RESPONSE || msg.type == STUN_CHANNEL_BIND_ERROR);
     bool is_permission_resp =
         (msg.type == STUN_CREATE_PERMISSION_RESPONSE || msg.type == STUN_CREATE_PERMISSION_ERROR);
 
-    if (!txid_match && !is_channel_bind_resp && !is_permission_resp) {
-        return NANORTC_ERR_PROTOCOL; /* Not our transaction */
+    if (txid_match) {
+        bool allocation_response =
+            msg.type == STUN_ALLOCATE_RESPONSE || msg.type == STUN_ALLOCATE_ERROR;
+        bool refresh_response = msg.type == STUN_REFRESH_RESPONSE || msg.type == STUN_REFRESH_ERROR;
+        if ((turn->transaction == NANORTC_TURN_TXN_ALLOCATE && !allocation_response) ||
+            (turn->transaction == NANORTC_TURN_TXN_REFRESH && !refresh_response)) {
+            return NANORTC_ERR_PROTOCOL;
+        }
+    }
+
+    int permission_index = -1;
+    int channel_index = -1;
+    if (is_permission_resp) {
+        for (uint8_t i = 0; i < turn->permission_count; i++) {
+            if (turn->permissions[i].pending &&
+                memcmp(turn->permissions[i].txid, msg.transaction_id, STUN_TXID_SIZE) == 0) {
+                permission_index = (int)i;
+                break;
+            }
+        }
+    }
+    if (is_channel_bind_resp) {
+        for (uint8_t i = 0; i < turn->channel_count; i++) {
+            if (turn->channels[i].pending &&
+                memcmp(turn->channels[i].txid, msg.transaction_id, STUN_TXID_SIZE) == 0) {
+                channel_index = (int)i;
+                break;
+            }
+        }
+    }
+
+    if (!txid_match && permission_index < 0 && channel_index < 0) {
+        return NANORTC_OK; /* Foreign or late duplicate response: ignore. */
+    }
+
+    /* RFC 8489 §14.7: when a response carries FINGERPRINT it must validate. */
+    if (msg.has_fingerprint && stun_verify_fingerprint(data, len) != NANORTC_OK) {
+        return NANORTC_ERR_PROTOCOL;
+    }
+
+    bool success_response =
+        msg.type == STUN_ALLOCATE_RESPONSE || msg.type == STUN_REFRESH_RESPONSE ||
+        msg.type == STUN_CREATE_PERMISSION_RESPONSE || msg.type == STUN_CHANNEL_BIND_RESPONSE;
+    bool authenticated_transaction = (txid_match && turn->transaction_authenticated) ||
+                                     permission_index >= 0 || channel_index >= 0;
+    /* RFC 8489 §9.2.4: authenticated success responses carry MESSAGE-INTEGRITY.
+     * Error responses without it are still usable for bounded authentication
+     * failure handling because a server cannot authenticate an invalid key. */
+    if (authenticated_transaction && (success_response || msg.has_integrity) &&
+        stun_verify_integrity(data, len, &msg, turn->auth.hmac_key, NANORTC_TURN_HMAC_KEY_SIZE,
+                              crypto->hmac_sha1) != NANORTC_OK) {
+        return NANORTC_ERR_PROTOCOL;
     }
 
     if (msg.type == STUN_ALLOCATE_RESPONSE) {
@@ -315,12 +480,20 @@ int turn_handle_response(nano_turn_t *turn, uint32_t now_ms, const uint8_t *data
         turn->lifetime_s = msg.lifetime > 0 ? msg.lifetime : TURN_DEFAULT_LIFETIME;
         turn->refresh_at_ms = nano_time_deadline(now_ms, turn_refresh_delay_ms(turn->lifetime_s));
         turn->state = NANORTC_TURN_ALLOCATED;
+        turn_clear_transaction(turn);
 
         NANORTC_LOGI("TURN", "allocated");
         return NANORTC_OK;
 
     } else if (msg.type == STUN_ALLOCATE_ERROR) {
         if (msg.error_code == 401 && turn->state == NANORTC_TURN_ALLOCATING) {
+            bool authenticated = turn->transaction_authenticated;
+            turn_clear_transaction(turn);
+            if (authenticated) {
+                NANORTC_LOGW("TURN", "authenticated allocate rejected");
+                turn->state = NANORTC_TURN_FAILED;
+                return NANORTC_ERR_PROTOCOL;
+            }
             /* 401 Unauthorized: extract REALM + NONCE, derive key, retry */
             if (!msg.realm || !msg.nonce) {
                 NANORTC_LOGW("TURN", "401 missing realm/nonce");
@@ -333,7 +506,7 @@ int turn_handle_response(nano_turn_t *turn, uint32_t now_ms, const uint8_t *data
                                                                       : NANORTC_TURN_REALM_SIZE - 1;
             memcpy(turn->realm, msg.realm, rlen);
             turn->realm[rlen] = '\0';
-            turn->realm_len = rlen;
+            turn->realm_len = (uint8_t)rlen;
 
             turn_store_nonce(turn, msg.nonce, msg.nonce_len);
 
@@ -350,6 +523,7 @@ int turn_handle_response(nano_turn_t *turn, uint32_t now_ms, const uint8_t *data
 
         } else if (msg.error_code == 438) {
             /* 438 Stale Nonce: update nonce, retry */
+            turn_clear_transaction(turn);
             if (msg.nonce && msg.nonce_len > 0) {
                 turn_store_nonce(turn, msg.nonce, msg.nonce_len);
                 turn->state = NANORTC_TURN_CHALLENGED;
@@ -360,18 +534,21 @@ int turn_handle_response(nano_turn_t *turn, uint32_t now_ms, const uint8_t *data
             return NANORTC_ERR_PROTOCOL;
 
         } else {
+            turn_clear_transaction(turn);
             NANORTC_LOGW("TURN", "allocate error");
             turn->state = NANORTC_TURN_FAILED;
             return NANORTC_ERR_PROTOCOL;
         }
 
     } else if (msg.type == STUN_REFRESH_RESPONSE) {
+        turn_clear_transaction(turn);
         turn->lifetime_s = msg.lifetime > 0 ? msg.lifetime : TURN_DEFAULT_LIFETIME;
         turn->refresh_at_ms = nano_time_deadline(now_ms, turn_refresh_delay_ms(turn->lifetime_s));
         NANORTC_LOGD("TURN", "refreshed");
         return NANORTC_OK;
 
     } else if (msg.type == STUN_REFRESH_ERROR) {
+        turn_clear_transaction(turn);
         if (msg.error_code == 438 && msg.nonce) {
             /* Stale nonce on refresh — update and retry */
             turn_store_nonce(turn, msg.nonce, msg.nonce_len);
@@ -383,31 +560,16 @@ int turn_handle_response(nano_turn_t *turn, uint32_t now_ms, const uint8_t *data
         return NANORTC_ERR_PROTOCOL;
 
     } else if (msg.type == STUN_CREATE_PERMISSION_RESPONSE) {
-        /* F1: match by per-permission txid stored in turn_create_permission(). */
-        for (uint8_t i = 0; i < turn->permission_count; i++) {
-            if (memcmp(turn->permissions[i].txid, msg.transaction_id, STUN_TXID_SIZE) == 0) {
-                turn->permissions[i].active = true;
-                NANORTC_LOGD("TURN", "permission created");
-                return NANORTC_OK;
-            }
-        }
-        /* No matching outstanding request — drop silently per RFC 8489 §6.3.1. */
-        NANORTC_LOGW("TURN", "permission response txid mismatch (spoof?)");
-        return NANORTC_ERR_PROTOCOL;
+        turn->permissions[permission_index].pending = false;
+        turn->permissions[permission_index].active = true;
+        turn->permissions[permission_index].deadline_ms =
+            nano_time_deadline(now_ms, TURN_PERMISSION_INTERVAL_MS);
+        NANORTC_LOGD("TURN", "permission created");
+        return NANORTC_OK;
 
     } else if (msg.type == STUN_CREATE_PERMISSION_ERROR) {
-        /* F1: only act on errors that match an outstanding permission txid. */
-        bool matched = false;
-        for (uint8_t i = 0; i < turn->permission_count; i++) {
-            if (memcmp(turn->permissions[i].txid, msg.transaction_id, STUN_TXID_SIZE) == 0) {
-                matched = true;
-                break;
-            }
-        }
-        if (!matched) {
-            NANORTC_LOGW("TURN", "permission error txid mismatch (spoof?)");
-            return NANORTC_ERR_PROTOCOL;
-        }
+        turn->permissions[permission_index].pending = false;
+        turn->permissions[permission_index].deadline_ms = 0;
         if (msg.error_code == 438 && msg.nonce) {
             turn_store_nonce(turn, msg.nonce, msg.nonce_len);
             NANORTC_LOGD("TURN", "permission 438 stale nonce, retrying");
@@ -417,20 +579,17 @@ int turn_handle_response(nano_turn_t *turn, uint32_t now_ms, const uint8_t *data
         return NANORTC_ERR_PROTOCOL;
 
     } else if (msg.type == STUN_CHANNEL_BIND_RESPONSE) {
-        /* Match by transaction ID stored during turn_channel_bind() */
-        for (uint8_t i = 0; i < turn->channel_count; i++) {
-            if (memcmp(turn->channels[i].txid, msg.transaction_id, STUN_TXID_SIZE) == 0) {
-                turn->channels[i].bound = true;
-                /* RFC 5766 §11: bindings last 10 min, refresh at 9 min (540000 ms) */
-                turn->channels[i].refresh_at_ms =
-                    nano_time_deadline(now_ms, TURN_CHANNEL_REFRESH_MS);
-                break;
-            }
-        }
+        turn->channels[channel_index].pending = false;
+        turn->channels[channel_index].bound = true;
+        /* RFC 5766 §11: bindings last 10 min, refresh at 9 min (540000 ms) */
+        turn->channels[channel_index].deadline_ms =
+            nano_time_deadline(now_ms, TURN_CHANNEL_REFRESH_MS);
         NANORTC_LOGD("TURN", "channel bound");
         return NANORTC_OK;
 
     } else if (msg.type == STUN_CHANNEL_BIND_ERROR) {
+        turn->channels[channel_index].pending = false;
+        turn->channels[channel_index].deadline_ms = 0;
         if (msg.error_code == 438 && msg.nonce) {
             turn_store_nonce(turn, msg.nonce, msg.nonce_len);
             NANORTC_LOGD("TURN", "channel bind 438 stale nonce");
@@ -455,42 +614,23 @@ int turn_generate_refresh(nano_turn_t *turn, uint32_t now_ms,
     if (turn->state != NANORTC_TURN_ALLOCATED) {
         return NANORTC_OK;
     }
+    if (turn->transaction != NANORTC_TURN_TXN_NONE) {
+        return NANORTC_OK;
+    }
     if (turn->refresh_at_ms != 0u && !nano_time_is_due(now_ms, turn->refresh_at_ms)) {
         return NANORTC_OK;
     }
 
-    if (buf_len < NANORTC_TURN_MAX_REQUEST_SIZE) {
-        return NANORTC_ERR_BUFFER_TOO_SMALL;
-    }
-
-    /* Generate txid */
     uint8_t txid[STUN_TXID_SIZE];
     if (!crypto->random_bytes || crypto->random_bytes(txid, sizeof(txid)) != 0) {
         return NANORTC_ERR_CRYPTO;
     }
 
-    stun_write_header(buf, STUN_REFRESH_REQUEST, txid);
-    size_t pos = STUN_HEADER_SIZE;
-
-    /* LIFETIME */
-    uint8_t lifetime_val[4];
-    nanortc_write_u32be(lifetime_val, TURN_DEFAULT_LIFETIME);
-    pos += stun_write_attr(buf + pos, STUN_ATTR_LIFETIME, lifetime_val, 4);
-
-    /* Authentication */
-    pos += stun_write_attr(buf + pos, STUN_ATTR_USERNAME, turn->username,
-                           (uint16_t)turn->username_len);
-    pos += stun_write_attr(buf + pos, STUN_ATTR_REALM, turn->realm, (uint16_t)turn->realm_len);
-    pos += stun_write_attr(buf + pos, STUN_ATTR_NONCE, turn->nonce, (uint16_t)turn->nonce_len);
-
-    pos = stun_append_integrity(buf, pos, turn->hmac_key, crypto->hmac_sha1);
-
-    memcpy(turn->last_txid, txid, sizeof(txid));
-    *out_len = pos;
-
-    /* Schedule next refresh */
-    turn->refresh_at_ms = nano_time_deadline(now_ms, turn_refresh_delay_ms(turn->lifetime_s));
-
+    int rc = turn_build_refresh(turn, TURN_DEFAULT_LIFETIME, txid, crypto, buf, buf_len, out_len);
+    if (rc != NANORTC_OK) {
+        return rc;
+    }
+    turn_start_transaction(turn, NANORTC_TURN_TXN_REFRESH, true, txid);
     return NANORTC_OK;
 }
 
@@ -516,33 +656,19 @@ int turn_deallocate(nano_turn_t *turn, const nanortc_crypto_provider_t *crypto, 
         return NANORTC_ERR_CRYPTO;
     }
 
-    stun_write_header(buf, STUN_REFRESH_REQUEST, txid);
-    size_t pos = STUN_HEADER_SIZE;
-
-    /* LIFETIME=0 */
-    uint8_t lifetime_val[4] = {0, 0, 0, 0};
-    pos += stun_write_attr(buf + pos, STUN_ATTR_LIFETIME, lifetime_val, 4);
-
-    pos += stun_write_attr(buf + pos, STUN_ATTR_USERNAME, turn->username,
-                           (uint16_t)turn->username_len);
-    pos += stun_write_attr(buf + pos, STUN_ATTR_REALM, turn->realm, (uint16_t)turn->realm_len);
-    pos += stun_write_attr(buf + pos, STUN_ATTR_NONCE, turn->nonce, (uint16_t)turn->nonce_len);
-
-    pos = stun_append_integrity(buf, pos, turn->hmac_key, crypto->hmac_sha1);
-
-    memcpy(turn->last_txid, txid, sizeof(txid));
-    *out_len = pos;
+    int rc = turn_build_refresh(turn, 0, txid, crypto, buf, buf_len, out_len);
+    if (rc != NANORTC_OK) {
+        return rc;
+    }
 
     /* Local state: relay is gone. We do not wait for the response — server
      * will release it independently, and a timeout is harmless. */
     turn->state = NANORTC_TURN_IDLE;
+    turn_clear_transaction(turn);
     turn->lifetime_s = 0;
     turn->relay_family = 0;
     turn->refresh_at_ms = 0;
-    turn->permission_at_ms = 0;
-    turn->permission_count = 0;
-    turn->channel_count = 0;
-    turn->next_channel = 0x4000;
+    turn_reset_peer_state(turn);
 
     NANORTC_LOGI("TURN", "deallocate request sent");
     return NANORTC_OK;
@@ -581,6 +707,8 @@ int turn_create_permission(nano_turn_t *turn, const uint8_t *peer_addr, uint8_t 
     }
     if (is_new) {
         pi = turn->permission_count;
+    } else if (turn->permissions[pi].pending) {
+        return NANORTC_OK;
     }
 
     /* Generate per-permission txid (RFC 5766 §9 / RFC 8489 §6.3.1: response must
@@ -591,30 +719,24 @@ int turn_create_permission(nano_turn_t *turn, const uint8_t *peer_addr, uint8_t 
         return NANORTC_ERR_CRYPTO;
     }
 
-    stun_write_header(buf, STUN_CREATE_PERMISSION_REQUEST, txid);
-    size_t pos = STUN_HEADER_SIZE;
-
-    /* XOR-PEER-ADDRESS */
-    pos += stun_encode_xor_addr(buf + pos, STUN_ATTR_XOR_PEER_ADDRESS, peer_addr, peer_family,
-                                peer_port, txid);
-
-    /* Authentication */
-    pos += stun_write_attr(buf + pos, STUN_ATTR_USERNAME, turn->username,
-                           (uint16_t)turn->username_len);
-    pos += stun_write_attr(buf + pos, STUN_ATTR_REALM, turn->realm, (uint16_t)turn->realm_len);
-    pos += stun_write_attr(buf + pos, STUN_ATTR_NONCE, turn->nonce, (uint16_t)turn->nonce_len);
-
-    pos = stun_append_integrity(buf, pos, turn->hmac_key, crypto->hmac_sha1);
-
     if (is_new) {
         memcpy(turn->permissions[pi].addr, peer_addr, NANORTC_ADDR_SIZE);
         turn->permissions[pi].family = peer_family;
         turn->permission_count++;
     }
     turn->permissions[pi].port = peer_port;
-    turn->permissions[pi].active = true;
     memcpy(turn->permissions[pi].txid, txid, sizeof(txid));
-    *out_len = pos;
+    int rc = turn_build_permission(turn, (uint8_t)pi, crypto, buf, buf_len, out_len);
+    if (rc != NANORTC_OK) {
+        if (is_new) {
+            turn->permission_count--;
+            memset(&turn->permissions[pi], 0, sizeof(turn->permissions[pi]));
+        }
+        return rc;
+    }
+    turn->permissions[pi].pending = true;
+    turn->permissions[pi].deadline_ms = 0;
+    turn->permissions[pi].transmissions = 1;
 
     NANORTC_LOGD("TURN", "permission request sent");
     return NANORTC_OK;
@@ -722,7 +844,7 @@ int turn_channel_bind(nano_turn_t *turn, const uint8_t *peer_addr, uint8_t peer_
     size_t addr_len = (peer_family == 4) ? 4 : 16;
     int ci = -1;
     for (uint8_t i = 0; i < turn->channel_count; i++) {
-        if (turn->channels[i].family == peer_family &&
+        if (turn->channels[i].family == peer_family && turn->channels[i].port == peer_port &&
             memcmp(turn->channels[i].addr, peer_addr, addr_len) == 0) {
             ci = (int)i;
             break;
@@ -742,34 +864,15 @@ int turn_channel_bind(nano_turn_t *turn, const uint8_t *peer_addr, uint8_t peer_
         ci = turn->channel_count;
     }
     uint16_t channel = is_new ? turn->next_channel : turn->channels[ci].channel;
+    if (!is_new && turn->channels[ci].pending) {
+        return NANORTC_OK;
+    }
 
     /* Generate txid */
     uint8_t txid[STUN_TXID_SIZE];
     if (!crypto->random_bytes || crypto->random_bytes(txid, sizeof(txid)) != 0) {
         return NANORTC_ERR_CRYPTO;
     }
-    stun_write_header(buf, STUN_CHANNEL_BIND_REQUEST, txid);
-    size_t pos = STUN_HEADER_SIZE;
-
-    /* CHANNEL-NUMBER (RFC 5766 §14.1): 2B channel + 2B RFFU */
-    uint8_t cn[4];
-    nanortc_write_u16be(cn, channel);
-    cn[2] = 0;
-    cn[3] = 0;
-    pos += stun_write_attr(buf + pos, STUN_ATTR_CHANNEL_NUMBER, cn, 4);
-
-    /* XOR-PEER-ADDRESS */
-    pos += stun_encode_xor_addr(buf + pos, STUN_ATTR_XOR_PEER_ADDRESS, peer_addr, peer_family,
-                                peer_port, txid);
-
-    /* Authentication */
-    pos += stun_write_attr(buf + pos, STUN_ATTR_USERNAME, turn->username,
-                           (uint16_t)turn->username_len);
-    pos += stun_write_attr(buf + pos, STUN_ATTR_REALM, turn->realm, (uint16_t)turn->realm_len);
-    pos += stun_write_attr(buf + pos, STUN_ATTR_NONCE, turn->nonce, (uint16_t)turn->nonce_len);
-
-    pos = stun_append_integrity(buf, pos, turn->hmac_key, crypto->hmac_sha1);
-
     if (is_new) {
         memcpy(turn->channels[ci].addr, peer_addr, NANORTC_ADDR_SIZE);
         turn->channels[ci].family = peer_family;
@@ -780,7 +883,18 @@ int turn_channel_bind(nano_turn_t *turn, const uint8_t *peer_addr, uint8_t peer_
     }
     turn->channels[ci].port = peer_port;
     memcpy(turn->channels[ci].txid, txid, sizeof(txid));
-    *out_len = pos;
+    int rc = turn_build_channel_bind(turn, (uint8_t)ci, crypto, buf, buf_len, out_len);
+    if (rc != NANORTC_OK) {
+        if (is_new) {
+            turn->channel_count--;
+            turn->next_channel--;
+            memset(&turn->channels[ci], 0, sizeof(turn->channels[ci]));
+        }
+        return rc;
+    }
+    turn->channels[ci].pending = true;
+    turn->channels[ci].deadline_ms = 0;
+    turn->channels[ci].transmissions = 1;
     NANORTC_LOGD("TURN", "channel bind request sent");
     return NANORTC_OK;
 }
@@ -840,7 +954,7 @@ int turn_unwrap_channel_data(const uint8_t *data, size_t len, uint16_t *channel,
 }
 
 bool turn_find_channel_for_peer(const nano_turn_t *turn, const uint8_t *peer_addr,
-                                uint8_t peer_family, uint16_t *channel)
+                                uint8_t peer_family, uint16_t peer_port, uint16_t *channel)
 {
     if (!turn || !peer_addr || !channel) {
         return false;
@@ -848,6 +962,7 @@ bool turn_find_channel_for_peer(const nano_turn_t *turn, const uint8_t *peer_add
     size_t addr_len = (peer_family == 4) ? 4 : 16;
     for (uint8_t i = 0; i < turn->channel_count; i++) {
         if (turn->channels[i].bound && turn->channels[i].family == peer_family &&
+            turn->channels[i].port == peer_port &&
             memcmp(turn->channels[i].addr, peer_addr, addr_len) == 0) {
             *channel = turn->channels[i].channel;
             return true;
@@ -900,24 +1015,23 @@ int turn_generate_permission_refresh(nano_turn_t *turn, uint32_t now_ms,
     if (turn->state != NANORTC_TURN_ALLOCATED || !turn->hmac_key_valid) {
         return NANORTC_OK;
     }
-    if (turn->permission_at_ms != 0u && !nano_time_is_due(now_ms, turn->permission_at_ms)) {
-        return NANORTC_OK;
-    }
     if (turn->permission_count == 0) {
         return NANORTC_OK;
     }
 
-    /* Refresh the first active permission.
-     * Timer will fire again for subsequent permissions. */
+    /* Refresh the first active permission whose independent deadline is due. */
     for (uint8_t i = 0; i < turn->permission_count; i++) {
-        if (!turn->permissions[i].active) {
+        if (!turn->permissions[i].active || turn->permissions[i].pending) {
+            continue;
+        }
+        if (turn->permissions[i].deadline_ms != 0u &&
+            !nano_time_is_due(now_ms, turn->permissions[i].deadline_ms)) {
             continue;
         }
         int rc =
             turn_create_permission(turn, turn->permissions[i].addr, turn->permissions[i].family,
                                    turn->permissions[i].port, crypto, buf, buf_len, out_len);
         if (rc == NANORTC_OK && *out_len > 0) {
-            turn->permission_at_ms = nano_time_deadline(now_ms, TURN_PERMISSION_INTERVAL_MS);
             NANORTC_LOGD("TURN", "permission refreshed");
         }
         return rc;
@@ -941,11 +1055,11 @@ int turn_generate_channel_refresh(nano_turn_t *turn, uint32_t now_ms,
 
     /* Find first bound channel due for refresh */
     for (uint8_t i = 0; i < turn->channel_count; i++) {
-        if (!turn->channels[i].bound) {
+        if (!turn->channels[i].bound || turn->channels[i].pending) {
             continue;
         }
-        if (turn->channels[i].refresh_at_ms != 0u &&
-            !nano_time_is_due(now_ms, turn->channels[i].refresh_at_ms)) {
+        if (turn->channels[i].deadline_ms != 0u &&
+            !nano_time_is_due(now_ms, turn->channels[i].deadline_ms)) {
             continue;
         }
 
@@ -953,13 +1067,121 @@ int turn_generate_channel_refresh(nano_turn_t *turn, uint32_t now_ms,
         int rc = turn_channel_bind(turn, turn->channels[i].addr, turn->channels[i].family,
                                    turn->channels[i].port, crypto, buf, buf_len, out_len);
         if (rc == NANORTC_OK && *out_len > 0) {
-            turn->channels[i].refresh_at_ms = nano_time_deadline(now_ms, TURN_CHANNEL_REFRESH_MS);
             NANORTC_LOGD("TURN", "channel refreshed");
         }
         return rc;
     }
 
     return NANORTC_OK;
+}
+
+int turn_generate_retransmit(nano_turn_t *turn, uint32_t now_ms,
+                             const nanortc_crypto_provider_t *crypto, uint8_t *buf, size_t buf_len,
+                             size_t *out_len)
+{
+    if (!turn || !crypto || !buf || !out_len) {
+        return NANORTC_ERR_INVALID_PARAM;
+    }
+    *out_len = 0;
+
+    /* RFC 8489 §6.2.1: retransmit the identical request (same transaction ID)
+     * with exponential backoff. Builders are deterministic, so retaining the
+     * transaction metadata is sufficient; no packet-sized cache is needed. */
+    if (turn->transaction != NANORTC_TURN_TXN_NONE) {
+        if (turn->transaction_retry_at_ms == 0u) {
+            turn->transaction_retry_at_ms =
+                nano_time_deadline(now_ms, turn_retry_delay_ms(turn->transaction_transmissions));
+        } else if (nano_time_is_due(now_ms, turn->transaction_retry_at_ms)) {
+            if (turn->transaction_transmissions >= NANORTC_TURN_MAX_TRANSMISSIONS) {
+                turn_clear_transaction(turn);
+                turn->state = NANORTC_TURN_FAILED;
+                return NANORTC_ERR_PROTOCOL;
+            }
+            int rc;
+            if (turn->transaction == NANORTC_TURN_TXN_ALLOCATE) {
+                rc = turn_build_allocate(turn, turn->transaction_authenticated, turn->last_txid,
+                                         crypto, buf, buf_len, out_len);
+            } else {
+                rc = turn_build_refresh(turn, TURN_DEFAULT_LIFETIME, turn->last_txid, crypto, buf,
+                                        buf_len, out_len);
+            }
+            if (rc != NANORTC_OK) {
+                return rc;
+            }
+            turn->transaction_transmissions++;
+            turn->transaction_retry_at_ms =
+                nano_time_deadline(now_ms, turn_retry_delay_ms(turn->transaction_transmissions));
+            return NANORTC_OK;
+        }
+    }
+
+    for (uint8_t i = 0; i < turn->permission_count; i++) {
+        if (!turn->permissions[i].pending) {
+            continue;
+        }
+        if (turn->permissions[i].deadline_ms == 0u) {
+            turn->permissions[i].deadline_ms =
+                nano_time_deadline(now_ms, turn_retry_delay_ms(turn->permissions[i].transmissions));
+            continue;
+        }
+        if (!nano_time_is_due(now_ms, turn->permissions[i].deadline_ms)) {
+            continue;
+        }
+        if (turn->permissions[i].transmissions >= NANORTC_TURN_MAX_TRANSMISSIONS) {
+            turn->permissions[i].pending = false;
+            turn->permissions[i].deadline_ms = 0;
+            continue;
+        }
+        int rc = turn_build_permission(turn, i, crypto, buf, buf_len, out_len);
+        if (rc != NANORTC_OK) {
+            return rc;
+        }
+        turn->permissions[i].transmissions++;
+        turn->permissions[i].deadline_ms =
+            nano_time_deadline(now_ms, turn_retry_delay_ms(turn->permissions[i].transmissions));
+        return NANORTC_OK;
+    }
+
+    for (uint8_t i = 0; i < turn->channel_count; i++) {
+        if (!turn->channels[i].pending) {
+            continue;
+        }
+        if (turn->channels[i].deadline_ms == 0u) {
+            turn->channels[i].deadline_ms =
+                nano_time_deadline(now_ms, turn_retry_delay_ms(turn->channels[i].transmissions));
+            continue;
+        }
+        if (!nano_time_is_due(now_ms, turn->channels[i].deadline_ms)) {
+            continue;
+        }
+        if (turn->channels[i].transmissions >= NANORTC_TURN_MAX_TRANSMISSIONS) {
+            turn->channels[i].pending = false;
+            turn->channels[i].deadline_ms = 0;
+            continue;
+        }
+        int rc = turn_build_channel_bind(turn, i, crypto, buf, buf_len, out_len);
+        if (rc != NANORTC_OK) {
+            return rc;
+        }
+        turn->channels[i].transmissions++;
+        turn->channels[i].deadline_ms =
+            nano_time_deadline(now_ms, turn_retry_delay_ms(turn->channels[i].transmissions));
+        return NANORTC_OK;
+    }
+
+    return NANORTC_OK;
+}
+
+void turn_reset_peer_state(nano_turn_t *turn)
+{
+    if (!turn) {
+        return;
+    }
+    memset(turn->permissions, 0, sizeof(turn->permissions));
+    turn->permission_count = 0;
+    memset(turn->channels, 0, sizeof(turn->channels));
+    turn->channel_count = 0;
+    turn->next_channel = 0x4000;
 }
 
 uint32_t turn_next_timeout_ms(const nano_turn_t *turn, uint32_t now_ms)
@@ -976,11 +1198,20 @@ uint32_t turn_next_timeout_ms(const nano_turn_t *turn, uint32_t now_ms)
         return 0u;
     }
 
-    if (turn->state != NANORTC_TURN_ALLOCATED) {
-        return UINT32_MAX;
+    uint32_t best = UINT32_MAX;
+
+    if (turn->transaction != NANORTC_TURN_TXN_NONE) {
+        uint32_t left = turn->transaction_retry_at_ms == 0u
+                            ? 0u
+                            : nano_time_until(now_ms, turn->transaction_retry_at_ms);
+        if (left < best) {
+            best = left;
+        }
     }
 
-    uint32_t best = UINT32_MAX;
+    if (turn->state != NANORTC_TURN_ALLOCATED) {
+        return best;
+    }
 
     /* Allocation Refresh (RFC 5766 §7). */
     if (turn->refresh_at_ms != 0) {
@@ -992,19 +1223,29 @@ uint32_t turn_next_timeout_ms(const nano_turn_t *turn, uint32_t now_ms)
 
     /* Permission refresh (RFC 5766 §8). Only matters when at least one
      * permission is active; otherwise nothing to refresh. */
-    if (turn->permission_count > 0 && turn->permission_at_ms != 0) {
-        uint32_t left = nano_time_until(now_ms, turn->permission_at_ms);
-        if (left < best) {
-            best = left;
+    for (uint8_t i = 0; i < turn->permission_count; i++) {
+        uint32_t deadline = turn->permissions[i].deadline_ms;
+        if ((turn->permissions[i].pending || turn->permissions[i].active) && deadline == 0u) {
+            best = 0u;
+        } else if (deadline != 0u) {
+            uint32_t left = nano_time_until(now_ms, deadline);
+            if (left < best) {
+                best = left;
+            }
         }
     }
 
     /* Per-channel ChannelBind refresh (RFC 5766 §11). */
     for (uint8_t i = 0; i < turn->channel_count; i++) {
-        if (!turn->channels[i].bound || turn->channels[i].refresh_at_ms == 0) {
+        if (!turn->channels[i].bound && !turn->channels[i].pending) {
             continue;
         }
-        uint32_t left = nano_time_until(now_ms, turn->channels[i].refresh_at_ms);
+        uint32_t deadline = turn->channels[i].deadline_ms;
+        if (deadline == 0u) {
+            best = 0u;
+            continue;
+        }
+        uint32_t left = nano_time_until(now_ms, deadline);
         if (left < best) {
             best = left;
         }

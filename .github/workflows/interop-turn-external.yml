@@ -1,0 +1,64 @@
+name: External TURN Interop
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: external-turn-interop
+  cancel-in-progress: false
+
+jobs:
+  relay-only:
+    name: Relay-only ICE / DTLS / DataChannel
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: turn-interop
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libssl-dev
+
+      - name: Configure
+        run: |
+          cmake -B build-interop \
+            -DNANORTC_BUILD_INTEROP_TESTS=ON \
+            -DNANORTC_CRYPTO=openssl \
+            -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        run: cmake --build build-interop -j$(nproc)
+
+      - name: Generate short-lived TURN REST credentials
+        env:
+          COTURN_AUTH_SECRET: ${{ secrets.COTURN_AUTH_SECRET }}
+          TURN_URL: ${{ vars.NANORTC_TURN_URL }}
+          STUN_URL: ${{ vars.NANORTC_STUN_URL }}
+        run: |
+          set -euo pipefail
+          test -n "$COTURN_AUTH_SECRET"
+          test -n "$TURN_URL"
+          expires_at=$(( $(date +%s) + 1800 ))
+          # coturn accepts the expiry timestamp as the REST username. Keeping it
+          # colon-free also makes it safe for libdatachannel's URL userinfo form.
+          username="$expires_at"
+          password=$(printf '%s' "$username" | openssl dgst -sha1 \
+            -mac HMAC -macopt "key:${COTURN_AUTH_SECRET}" -binary | openssl base64 -A)
+          echo "::add-mask::$password"
+          {
+            echo "NANORTC_TURN_URL=$TURN_URL"
+            echo "NANORTC_STUN_URL=${STUN_URL:-${TURN_URL/turn:/stun:}}"
+            echo "NANORTC_TURN_USER=$username"
+            echo "NANORTC_TURN_PASS=$password"
+            echo "NANORTC_INTEROP_NETWORK_REQUIRED=1"
+          } >> "$GITHUB_ENV"
+          unset COTURN_AUTH_SECRET password
+
+      - name: Run strict real STUN + TURN discovery
+        run: ctest --test-dir build-interop -R '^interop_turn$' --output-on-failure
+
+      - name: Run strict relay-only interop
+        run: ctest --test-dir build-interop -L turn-relay --output-on-failure

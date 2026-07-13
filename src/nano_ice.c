@@ -277,6 +277,16 @@ int ice_handle_stun(nano_ice_t *ice, const uint8_t *data, size_t len, const nano
              * one or more IPv6 candidates registered later).
              */
             uint8_t resolved_idx = local_idx;
+            if (via_turn) {
+                resolved_idx = NANORTC_ICE_LOCAL_IDX_UNKNOWN;
+                for (uint8_t i = 0; i < ice->local_candidate_count; i++) {
+                    if (ice->local_candidates[i].type == NANORTC_ICE_CAND_RELAY &&
+                        ice->local_candidates[i].family == src->family) {
+                        resolved_idx = i;
+                        break;
+                    }
+                }
+            }
             if (resolved_idx == NANORTC_ICE_LOCAL_IDX_UNKNOWN ||
                 resolved_idx >= ice->local_candidate_count) {
                 resolved_idx = ice_find_local_idx_by_family(ice, src->family);
@@ -322,7 +332,18 @@ int ice_handle_stun(nano_ice_t *ice, const uint8_t *data, size_t len, const nano
         /* Check if this is a consent check response */
         if (ice->consent_pending &&
             memcmp(msg.transaction_id, ice->consent_txid, STUN_TXID_SIZE) == 0) {
-            /* Consent refreshed — reset expiry */
+            /* RFC 7675 §5.1 / RFC 8445 §7.1.3: a matching transaction ID is
+             * not sufficient. Authenticate the response before allowing it
+             * to extend consent. Keep consent_pending set on failure so a
+             * later valid retransmitted response can still satisfy it. */
+            if (!msg.has_fingerprint || stun_verify_fingerprint(data, len) != NANORTC_OK) {
+                return NANORTC_ERR_PROTOCOL;
+            }
+            if (!msg.has_integrity ||
+                stun_verify_integrity(data, len, &msg, (const uint8_t *)ice->remote_pwd,
+                                      ice->remote_pwd_len, crypto->hmac_sha1) != NANORTC_OK) {
+                return NANORTC_ERR_PROTOCOL;
+            }
             ice->consent_pending = false;
             /* consent_expiry_ms is updated by caller with now_ms + CONSENT_TIMEOUT */
             *resp_len = 0;
