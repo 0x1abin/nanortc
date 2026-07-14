@@ -34,6 +34,30 @@ static nanortc_t g_rtc;
 /* Default idle cap when nothing is armed (mirrors nano_rtc.c). */
 #define IDLE_CAP_MS 1000u
 
+#if NANORTC_FEATURE_TURN
+static void setup_turn_permission_candidate(nanortc_t *rtc)
+{
+    memset(rtc, 0, sizeof(*rtc));
+    rtc->turn.configured = true;
+    rtc->turn.state = NANORTC_TURN_ALLOCATED;
+    rtc->turn.relay_family = STUN_FAMILY_IPV4;
+    rtc->ice.remote_candidate_count = 1;
+    rtc->ice.remote_candidates[0].family = 4;
+    rtc->ice.remote_candidates[0].addr[0] = 192;
+    rtc->ice.remote_candidates[0].addr[2] = 2;
+    rtc->ice.remote_candidates[0].addr[3] = 10;
+    rtc->ice.remote_candidates[0].port = 40000;
+}
+
+static void add_matching_permission(nanortc_t *rtc)
+{
+    rtc->turn.permission_count = 1;
+    rtc->turn.permissions[0].family = rtc->ice.remote_candidates[0].family;
+    memcpy(rtc->turn.permissions[0].addr, rtc->ice.remote_candidates[0].addr, NANORTC_ADDR_SIZE);
+    rtc->turn.permissions[0].port = rtc->ice.remote_candidates[0].port;
+}
+#endif
+
 TEST(test_next_timeout_idle_returns_cap)
 {
     nanortc_t *rtc = &g_rtc;
@@ -301,6 +325,69 @@ TEST(test_next_timeout_turn_allocated_picks_min_refresh)
     ASSERT_EQ(out, 30000u);
 }
 
+TEST(test_next_timeout_turn_new_permission_is_immediate)
+{
+    nanortc_t *rtc = &g_rtc;
+    setup_turn_permission_candidate(rtc);
+
+    uint32_t out = 99u;
+    ASSERT_OK(nanortc_next_timeout_ms(rtc, 1000u, &out));
+    ASSERT_EQ(out, 0u);
+}
+
+TEST(test_next_timeout_turn_permission_retry_waits_until_due)
+{
+    nanortc_t *rtc = &g_rtc;
+    setup_turn_permission_candidate(rtc);
+    add_matching_permission(rtc);
+    rtc->turn.permissions[0].deadline_ms = 1200u;
+
+    uint32_t out = 0u;
+    ASSERT_OK(nanortc_next_timeout_ms(rtc, 1000u, &out));
+    ASSERT_EQ(out, 200u);
+
+    ASSERT_OK(nanortc_next_timeout_ms(rtc, 1200u, &out));
+    ASSERT_EQ(out, 0u);
+}
+
+TEST(test_next_timeout_turn_ineligible_permissions_do_not_spin)
+{
+    nanortc_t *rtc = &g_rtc;
+    uint32_t out = 0u;
+
+    setup_turn_permission_candidate(rtc);
+    rtc->ice.remote_candidates[0].family = 6;
+    ASSERT_OK(nanortc_next_timeout_ms(rtc, 1000u, &out));
+    ASSERT_EQ(out, IDLE_CAP_MS);
+
+    setup_turn_permission_candidate(rtc);
+    add_matching_permission(rtc);
+    rtc->turn.permissions[0].terminal = true;
+    ASSERT_OK(nanortc_next_timeout_ms(rtc, 1000u, &out));
+    ASSERT_EQ(out, IDLE_CAP_MS);
+
+    setup_turn_permission_candidate(rtc);
+    add_matching_permission(rtc);
+    rtc->turn.permissions[0].pending = true;
+    rtc->turn.permissions[0].deadline_ms = 1500u;
+    ASSERT_OK(nanortc_next_timeout_ms(rtc, 1000u, &out));
+    ASSERT_EQ(out, 500u);
+
+    setup_turn_permission_candidate(rtc);
+    rtc->turn.permission_count = NANORTC_TURN_MAX_PERMISSIONS;
+    for (uint16_t i = 0; i < NANORTC_TURN_MAX_PERMISSIONS; i++) {
+        rtc->turn.permissions[i].family = 4;
+        rtc->turn.permissions[i].addr[0] = 198;
+        rtc->turn.permissions[i].addr[1] = 51;
+        rtc->turn.permissions[i].addr[2] = 100;
+        rtc->turn.permissions[i].addr[3] = (uint8_t)(i + 1u);
+        rtc->turn.permissions[i].active = true;
+        rtc->turn.permissions[i].deadline_ms = 5000u;
+    }
+    ASSERT_OK(nanortc_next_timeout_ms(rtc, 1000u, &out));
+    ASSERT_EQ(out, 4000u);
+}
+
 TEST(test_next_timeout_turn_refresh_future_across_u32_wrap)
 {
     nanortc_t *rtc = &g_rtc;
@@ -469,6 +556,9 @@ RUN(test_next_timeout_stun_srflx_done_no_retry);
 #if NANORTC_FEATURE_TURN
 RUN(test_next_timeout_turn_idle_state_returns_zero);
 RUN(test_next_timeout_turn_allocated_picks_min_refresh);
+RUN(test_next_timeout_turn_new_permission_is_immediate);
+RUN(test_next_timeout_turn_permission_retry_waits_until_due);
+RUN(test_next_timeout_turn_ineligible_permissions_do_not_spin);
 RUN(test_next_timeout_turn_refresh_future_across_u32_wrap);
 RUN(test_next_timeout_turn_refresh_overdue_across_u32_wrap);
 RUN(test_next_timeout_turn_min_across_subsystems);

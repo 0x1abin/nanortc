@@ -4891,6 +4891,10 @@ TEST(test_e2e_relay_check_waits_without_blocking_permission)
     rtc.ice.remote_candidates[0].addr[3] = 10;
     rtc.ice.remote_candidates[0].port = 40000;
 
+    uint32_t timeout_ms = 99u;
+    ASSERT_OK(nanortc_next_timeout_ms(&rtc, 100u, &timeout_ms));
+    ASSERT_EQ(timeout_ms, 0u);
+
     ASSERT_OK(nanortc_handle_input(&rtc, &(nanortc_input_t){.now_ms = 100}));
     ASSERT_EQ(rtc.ice.check_count, 0);
     ASSERT_EQ(rtc.turn.permission_count, 1);
@@ -4944,20 +4948,18 @@ TEST(test_e2e_turn_permission_capacity_covers_remote_candidates)
     }
     rtc.ice.remote_candidates[NANORTC_MAX_ICE_CANDIDATES - 1].type = NANORTC_ICE_CAND_RELAY;
     if (NANORTC_MAX_ICE_CANDIDATES > 1) {
-        rtc.ice.remote_candidates[NANORTC_MAX_ICE_CANDIDATES - 2].type =
-            NANORTC_ICE_CAND_SRFLX;
+        rtc.ice.remote_candidates[NANORTC_MAX_ICE_CANDIDATES - 2].type = NANORTC_ICE_CAND_SRFLX;
     }
 
     nanortc_output_t out;
     const uint8_t expected = NANORTC_TURN_MAX_PERMISSIONS < NANORTC_MAX_ICE_CANDIDATES
                                  ? NANORTC_TURN_MAX_PERMISSIONS
                                  : NANORTC_MAX_ICE_CANDIDATES;
-    for (uint16_t tick = 0;
-         tick < (uint16_t)(NANORTC_MAX_ICE_CANDIDATES * 3u + 4u) &&
-         rtc.turn.permission_count < expected;
+    for (uint16_t tick = 0; tick < (uint16_t)(NANORTC_MAX_ICE_CANDIDATES * 3u + 4u) &&
+                            rtc.turn.permission_count < expected;
          tick++) {
-        ASSERT_OK(nanortc_handle_input(
-            &rtc, &(nanortc_input_t){.now_ms = (uint32_t)(100u + tick)}));
+        ASSERT_OK(
+            nanortc_handle_input(&rtc, &(nanortc_input_t){.now_ms = (uint32_t)(100u + tick)}));
         while (nanortc_poll_output(&rtc, &out) == NANORTC_OK) {
         }
     }
