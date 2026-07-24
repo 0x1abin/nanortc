@@ -197,6 +197,52 @@ TEST(test_tx_slot_reusable_after_more_than_32768_outputs)
     ASSERT_EQ(reacquired_slot, original_slot);
 }
 
+#if NANORTC_FEATURE_DATACHANNEL
+TEST(test_datachannel_event_slots_copy_and_release_payloads)
+{
+    nanortc_t *rtc = &g_rtc;
+    memset(rtc, 0, sizeof(*rtc));
+
+    for (uint8_t i = 0; i < NANORTC_DC_EVENT_SLOTS; i++) {
+        uint8_t message[4] = {'{', (uint8_t)('0' + i), '}', 0};
+        ASSERT_OK(nano_rtc_enqueue_datachannel_event(rtc, 4, message, 3, false));
+        memset(message, 0xEE, sizeof(message)); /* producer scratch is no longer owned */
+    }
+    static const uint8_t blocked[] = "blocked";
+    ASSERT_EQ(nano_rtc_enqueue_datachannel_event(rtc, 4, blocked, sizeof(blocked), false),
+              NANORTC_ERR_WOULD_BLOCK);
+
+    for (uint8_t i = 0; i < NANORTC_DC_EVENT_SLOTS; i++) {
+        nanortc_output_t out;
+        ASSERT_OK(nanortc_poll_output(rtc, &out));
+        ASSERT_EQ(out.type, NANORTC_OUTPUT_EVENT);
+        ASSERT_EQ(out.event.type, NANORTC_EV_DATACHANNEL_DATA);
+        ASSERT_EQ(out.event.datachannel_data.id, 4u);
+        ASSERT_EQ(out.event.datachannel_data.len, 3u);
+        ASSERT_EQ(out.event.datachannel_data.data[0], (uint8_t)'{');
+        ASSERT_EQ(out.event.datachannel_data.data[1], (uint8_t)('0' + i));
+        ASSERT_EQ(out.event.datachannel_data.data[2], (uint8_t)'}');
+    }
+    ASSERT_EQ(rtc->dc_event_slots_in_use, 0u);
+
+    ASSERT_OK(nano_rtc_enqueue_datachannel_event(rtc, 4, blocked, sizeof(blocked), false));
+    nanortc_output_t out;
+    ASSERT_OK(nanortc_poll_output(rtc, &out));
+    ASSERT_MEM_EQ(out.event.datachannel_data.data, blocked, sizeof(blocked));
+}
+
+TEST(test_datachannel_event_slot_rejects_oversized_payload)
+{
+    nanortc_t *rtc = &g_rtc;
+    memset(rtc, 0, sizeof(*rtc));
+    static uint8_t oversized[NANORTC_SCTP_REASSEMBLY_BUF_SIZE + 1];
+    ASSERT_EQ(nano_rtc_enqueue_datachannel_event(rtc, 0, oversized, sizeof(oversized), false),
+              NANORTC_ERR_BUFFER_TOO_SMALL);
+    ASSERT_EQ(rtc->out_head, rtc->out_tail);
+    ASSERT_EQ(rtc->dc_event_slots_in_use, 0u);
+}
+#endif
+
 /* ================================================================
  * Video pkt_ring lifetime (NANORTC_FEATURE_VIDEO)
  * ================================================================ */
@@ -447,6 +493,10 @@ TEST_MAIN_BEGIN("test_output_lifetime")
 RUN(test_tx_slot_burst_has_independent_payloads_and_exact_release);
 RUN(test_managed_backing_release_matches_cursor_across_u16_wrap);
 RUN(test_tx_slot_reusable_after_more_than_32768_outputs);
+#if NANORTC_FEATURE_DATACHANNEL
+RUN(test_datachannel_event_slots_copy_and_release_payloads);
+RUN(test_datachannel_event_slot_rejects_oversized_payload);
+#endif
 #if NANORTC_FEATURE_VIDEO
 RUN(test_pkt_ring_drain_before_wrap_keeps_pointers_valid);
 RUN(test_pkt_ring_overrun_aliases_pre_drain_pointers);

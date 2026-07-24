@@ -137,6 +137,7 @@ TEST(test_encode_parse_init_roundtrip)
     ASSERT_EQ(init.initial_tsn, 42u);
     ASSERT(init.cookie == NULL);
     ASSERT_EQ(init.cookie_len, 0);
+    ASSERT_TRUE(init.forward_tsn_supported);
 }
 
 TEST(test_encode_parse_init_ack_with_cookie)
@@ -155,6 +156,7 @@ TEST(test_encode_parse_init_ack_with_cookie)
     ASSERT_TRUE(init.cookie != NULL);
     ASSERT_EQ(init.cookie_len, sizeof(cookie));
     ASSERT_MEM_EQ(init.cookie, cookie, sizeof(cookie));
+    ASSERT_TRUE(init.forward_tsn_supported);
 }
 
 TEST(test_encode_parse_data_roundtrip)
@@ -655,16 +657,28 @@ TEST(test_forward_tsn_advances)
     pump(&a, &b);
     pump(&b, &a);
 
-    /* Send FORWARD-TSN from A to B, advancing B's cumulative TSN */
+    /* Buffer the TSN after the skipped one, then verify FORWARD-TSN both
+     * advances and releases that now-contiguous DATA. */
     uint32_t old_tsn = b.cumulative_tsn;
+    uint8_t payload = 0x5a;
+    uint8_t data_pkt[64];
+    size_t data_pos = nsctp_encode_header(data_pkt, 5000, 5000, b.local_vtag);
+    data_pos += nsctp_encode_data(data_pkt + data_pos, old_tsn + 2, 0, 0, 53,
+                                  SCTP_DATA_FLAG_BEGIN | SCTP_DATA_FLAG_END,
+                                  &payload, 1);
+    nsctp_finalize_checksum(data_pkt, data_pos);
+    ASSERT_OK(nsctp_handle_data(&b, data_pkt, data_pos));
+    ASSERT_EQ(b.recv_gap_count, 1);
 
     uint8_t pkt[64];
     size_t pos = nsctp_encode_header(pkt, 5000, 5000, b.local_vtag);
-    pos += nsctp_encode_forward_tsn(pkt + pos, old_tsn + 5);
+    pos += nsctp_encode_forward_tsn(pkt + pos, old_tsn + 1);
     nsctp_finalize_checksum(pkt, pos);
 
     nsctp_handle_data(&b, pkt, pos);
-    ASSERT_EQ(b.cumulative_tsn, old_tsn + 5);
+    ASSERT_EQ(b.cumulative_tsn, old_tsn + 2);
+    ASSERT_OK(nsctp_poll_delivery(&b));
+    ASSERT_EQ(b.delivered_data[0], payload);
 }
 
 /* ================================================================
@@ -1160,6 +1174,18 @@ TEST(test_sctp_gap_single)
     ASSERT_FALSE(sctp.has_delivered);     /* not delivered yet */
     ASSERT_EQ(sctp.cumulative_tsn, 101u); /* unchanged */
     ASSERT_EQ(sctp.recv_gap_count, 1);
+
+    /* An unordered message beyond the same gap is delivered immediately. */
+    uint8_t msg5[] = "u";
+    size_t cpos = nsctp_encode_header(pkt, 5000, 5000, sctp.local_vtag);
+    cpos += nsctp_encode_data(pkt + cpos, 105, 0, 0, 51,
+                              SCTP_DATA_FLAG_BEGIN | SCTP_DATA_FLAG_END |
+                                  SCTP_DATA_FLAG_UNORDERED,
+                              msg5, 1);
+    nsctp_finalize_checksum(pkt, cpos);
+    ASSERT_OK(nsctp_handle_data(&sctp, pkt, cpos));
+    ASSERT_OK(nsctp_poll_delivery(&sctp));
+    ASSERT_EQ(sctp.delivered_data[0], (uint8_t)'u');
 }
 
 TEST(test_sctp_gap_fill)
@@ -1366,11 +1392,120 @@ TEST(test_sctp_gap_fill_chain)
     ASSERT_EQ(nsctp_poll_delivery(&sctp), NANORTC_ERR_WOULD_BLOCK);
 }
 
+TEST(test_sctp_reassembles_fragmented_unordered_message)
+{
+    nano_sctp_t sctp;
+    setup_established_sctp(&sctp);
+
+    static const uint8_t prefix[] = "{\"v\":1,\"type\":\"h";
+    static const uint8_t suffix[] = "eartbeat\",\"id\":614}";
+    static const uint8_t expected[] = "{\"v\":1,\"type\":\"heartbeat\",\"id\":614}";
+    uint8_t pkt[256];
+    size_t pos = nsctp_encode_header(pkt, 5000, 5000, sctp.local_vtag);
+    pos += nsctp_encode_data(pkt + pos, 101, 0, 0, 51,
+                             SCTP_DATA_FLAG_BEGIN | SCTP_DATA_FLAG_UNORDERED,
+                             prefix, sizeof(prefix) - 1);
+    nsctp_finalize_checksum(pkt, pos);
+    ASSERT_OK(nsctp_handle_data(&sctp, pkt, pos));
+    ASSERT_FALSE(sctp.has_delivered);
+
+    pos = nsctp_encode_header(pkt, 5000, 5000, sctp.local_vtag);
+    pos += nsctp_encode_data(pkt + pos, 102, 0, 0, 51,
+                             SCTP_DATA_FLAG_END | SCTP_DATA_FLAG_UNORDERED,
+                             suffix, sizeof(suffix) - 1);
+    nsctp_finalize_checksum(pkt, pos);
+    ASSERT_OK(nsctp_handle_data(&sctp, pkt, pos));
+    ASSERT_TRUE(sctp.has_delivered);
+    ASSERT_EQ(sctp.delivered_len, sizeof(expected) - 1);
+    ASSERT_MEM_EQ(sctp.delivered_data, expected, sizeof(expected) - 1);
+}
+
+TEST(test_sctp_reassembles_fragmented_unordered_message_past_gap)
+{
+    nano_sctp_t sctp;
+    setup_established_sctp(&sctp); /* TSN 101 remains missing */
+
+    static const uint8_t prefix[] = "{\"type\":\"h";
+    static const uint8_t suffix[] = "eartbeat\"}";
+    static const uint8_t expected[] = "{\"type\":\"heartbeat\"}";
+    uint8_t pkt[256];
+    size_t pos = nsctp_encode_header(pkt, 5000, 5000, sctp.local_vtag);
+    pos += nsctp_encode_data(pkt + pos, 102, 0, 0, 51,
+                             SCTP_DATA_FLAG_BEGIN | SCTP_DATA_FLAG_UNORDERED,
+                             prefix, sizeof(prefix) - 1);
+    nsctp_finalize_checksum(pkt, pos);
+    ASSERT_OK(nsctp_handle_data(&sctp, pkt, pos));
+    ASSERT_EQ(nsctp_poll_delivery(&sctp), NANORTC_ERR_WOULD_BLOCK);
+    ASSERT_FALSE(sctp.has_delivered);
+
+    pos = nsctp_encode_header(pkt, 5000, 5000, sctp.local_vtag);
+    pos += nsctp_encode_data(pkt + pos, 103, 0, 0, 51,
+                             SCTP_DATA_FLAG_END | SCTP_DATA_FLAG_UNORDERED,
+                             suffix, sizeof(suffix) - 1);
+    nsctp_finalize_checksum(pkt, pos);
+    ASSERT_OK(nsctp_handle_data(&sctp, pkt, pos));
+    ASSERT_OK(nsctp_poll_delivery(&sctp));
+    ASSERT_TRUE(sctp.has_delivered);
+    ASSERT_EQ(sctp.delivered_len, sizeof(expected) - 1);
+    ASSERT_MEM_EQ(sctp.delivered_data, expected, sizeof(expected) - 1);
+}
+
 /* ================================================================
  * Connection-failure event propagation (Phase 8 PR-2)
  * ================================================================ */
 
 #if NANORTC_FEATURE_DC_RELIABLE
+TEST(test_sctp_zero_retransmit_emits_forward_tsn)
+{
+    nano_sctp_t sctp;
+    setup_established_sctp(&sctp);
+    sctp.next_tsn = 1;
+    sctp.peer_supports_forward_tsn = true;
+    const uint8_t payload[] = "drop";
+    ASSERT_OK(nsctp_send_ex(&sctp, 0, 53, payload, sizeof(payload) - 1,
+                            true, true, 0));
+    uint8_t packet[NANORTC_SCTP_MTU];
+    size_t packet_len = 0;
+    ASSERT_OK(nsctp_poll_output(&sctp, packet, sizeof(packet), &packet_len));
+    ASSERT_OK(nsctp_handle_timeout(&sctp, NANORTC_SCTP_RTO_INITIAL_MS));
+    ASSERT_OK(nsctp_poll_output(&sctp, packet, sizeof(packet), &packet_len));
+    ASSERT_EQ(packet[12], SCTP_CHUNK_FORWARD_TSN);
+    ASSERT_EQ(sctp.state, NANORTC_SCTP_STATE_ESTABLISHED);
+}
+
+TEST(test_sctp_gap_sack_fast_abandons_zero_retransmit)
+{
+    nano_sctp_t sctp;
+    setup_established_sctp(&sctp);
+    sctp.next_tsn = 1;
+    sctp.peer_supports_forward_tsn = true;
+    const uint8_t payload = 0x41;
+    uint8_t packet[NANORTC_SCTP_MTU];
+    size_t packet_len = 0;
+    for (int i = 0; i < 3; i++) {
+        ASSERT_OK(nsctp_send_ex(&sctp, 0, 53, &payload, 1, true, true, 0));
+        ASSERT_OK(nsctp_poll_output(&sctp, packet, sizeof(packet), &packet_len));
+    }
+
+    size_t pos = nsctp_encode_header(packet, 5000, 5000, sctp.local_vtag);
+    uint8_t *sack = packet + pos;
+    sack[0] = SCTP_CHUNK_SACK;
+    sack[1] = 0;
+    nanortc_write_u16be(sack + 2, 20);
+    nanortc_write_u32be(sack + 4, 0);
+    nanortc_write_u32be(sack + 8, 4096);
+    nanortc_write_u16be(sack + 12, 1);
+    nanortc_write_u16be(sack + 14, 0);
+    nanortc_write_u16be(sack + 16, 2);
+    nanortc_write_u16be(sack + 18, 3);
+    pos += 20;
+    nsctp_finalize_checksum(packet, pos);
+    ASSERT_OK(nsctp_handle_data(&sctp, packet, pos));
+    ASSERT_EQ(sctp.sq_head, sctp.sq_tail);
+    ASSERT_TRUE(sctp.forward_tsn_pending);
+    ASSERT_EQ(sctp.pending_forward_tsn, 1u);
+}
+
 TEST(test_sctp_timeout_sets_closed_flag)
 {
     /* Drive nsctp_handle_timeout through the full RTO ramp until
@@ -1581,8 +1716,12 @@ RUN(test_sctp_gap_duplicate);
 RUN(test_sctp_gap_overflow);
 RUN(test_sctp_sack_with_gaps);
 RUN(test_sctp_gap_fill_chain);
+RUN(test_sctp_reassembles_fragmented_unordered_message);
+RUN(test_sctp_reassembles_fragmented_unordered_message_past_gap);
 /* Connection-failure event propagation (Phase 8 PR-2) */
 #if NANORTC_FEATURE_DC_RELIABLE
+RUN(test_sctp_zero_retransmit_emits_forward_tsn);
+RUN(test_sctp_gap_sack_fast_abandons_zero_retransmit);
 RUN(test_sctp_timeout_sets_closed_flag);
 #endif
 RUN(test_sctp_abort_does_not_set_failure_flag);

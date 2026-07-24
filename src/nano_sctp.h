@@ -48,6 +48,8 @@ typedef struct nanortc_crypto_provider nanortc_crypto_provider_t;
 
 /* State Cookie parameter type (RFC 4960 §3.3.3) */
 #define SCTP_PARAM_STATE_COOKIE 7
+/* Forward-TSN-Supported parameter (RFC 3758 §3.1) */
+#define SCTP_PARAM_FORWARD_TSN_SUPPORTED 0xC000
 
 /* SCTP internal buffer sizes */
 #define NSCTP_NONCE_SIZE  8  /* heartbeat nonce */
@@ -74,6 +76,7 @@ typedef struct {
     uint32_t initial_tsn;
     const uint8_t *cookie; /* pointer into packet buffer (INIT-ACK only) */
     uint16_t cookie_len;
+    bool forward_tsn_supported;
 } nsctp_init_t;
 
 /** Parsed DATA chunk body. */
@@ -108,10 +111,13 @@ typedef struct {
     uint16_t data_len;
 #if NANORTC_FEATURE_DC_RELIABLE
     uint32_t sent_at_ms; /* timestamp of last send (for RTO) */
+    uint32_t max_retransmits;
     uint8_t retransmit_count;
+    bool partial_reliability;
 #endif
     uint8_t flags; /* B/E/U bits */
     bool acked;
+    bool abandoned;
     bool in_flight;
 } nsctp_send_entry_t;
 
@@ -170,7 +176,9 @@ typedef struct nano_sctp {
         uint16_t data_offset; /* offset into recv_gap_buf */
         uint16_t data_len;
         uint16_t stream_id;
+        uint16_t ssn;
         uint8_t flags;
+        bool delivered;
         bool valid;
     } recv_gap[NANORTC_SCTP_MAX_RECV_GAP];
     uint8_t recv_gap_count;
@@ -179,13 +187,27 @@ typedef struct nano_sctp {
 
     /* Delivery queue — for delivering multiple messages after gap fill */
     struct {
+        uint32_t tsn;
+        uint32_t ppid;
         uint16_t data_offset; /* offset into recv_gap_buf */
         uint16_t data_len;
         uint16_t stream_id;
-        uint32_t ppid;
+        uint16_t ssn;
+        uint8_t flags;
     } deliver_queue[NANORTC_SCTP_MAX_RECV_GAP];
     uint8_t dq_head;
     uint8_t dq_tail;
+
+    /* RFC 4960 DATA message reassembly. A user message may span multiple
+     * consecutive DATA chunks even when it is much smaller than the path
+     * MTU (browser SCTP stacks are free to fragment at any boundary). */
+    uint16_t recv_message_len;
+    uint16_t recv_message_stream;
+    uint16_t recv_message_ssn;
+    uint32_t recv_message_ppid;
+    uint32_t recv_message_next_tsn;
+    bool recv_message_unordered;
+    bool recv_message_active;
 
     /* Send queue */
     nsctp_send_entry_t send_queue[NANORTC_SCTP_MAX_SEND_QUEUE];
@@ -193,6 +215,8 @@ typedef struct nano_sctp {
     uint8_t sq_tail;
     uint8_t send_buf[NANORTC_SCTP_SEND_BUF_SIZE];
     uint16_t send_buf_used;
+    uint32_t pending_forward_tsn;
+    bool forward_tsn_pending;
 
 #if NANORTC_FEATURE_DC_RELIABLE
     /* Retransmission */
@@ -214,6 +238,7 @@ typedef struct nano_sctp {
     uint32_t peer_a_rwnd;
     uint16_t peer_num_istreams;
     uint16_t peer_num_ostreams;
+    bool peer_supports_forward_tsn;
 
     /* Output ring buffer (assembled SCTP packets for poll_output) */
     uint8_t out_bufs[NANORTC_SCTP_OUT_QUEUE_SIZE][NANORTC_SCTP_MTU];
@@ -251,6 +276,14 @@ bool nsctp_has_pending_output(const nano_sctp_t *sctp);
 /** Enqueue application data for transmission. */
 int nsctp_send(nano_sctp_t *sctp, uint16_t stream_id, uint32_t ppid, const uint8_t *data,
                size_t len);
+
+/** Enqueue application data with the negotiated DataChannel policy.
+ *  @p partial_reliability with @p max_retransmits == 0 means one transmission
+ *  and no retransmission. The policy is honored only when the peer advertised
+ *  Forward-TSN support; otherwise the message remains reliable. */
+int nsctp_send_ex(nano_sctp_t *sctp, uint16_t stream_id, uint32_t ppid, const uint8_t *data,
+                  size_t len, bool unordered, bool partial_reliability,
+                  uint32_t max_retransmits);
 
 /** Initiate SCTP association (client role — sends INIT). */
 int nsctp_start(nano_sctp_t *sctp);
