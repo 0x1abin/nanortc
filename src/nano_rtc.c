@@ -147,6 +147,15 @@ static void rtc_release_output_backing(nanortc_t *rtc)
             rtc->tx_slots_in_use &= ~bit;
         }
     }
+#if NANORTC_FEATURE_DATACHANNEL
+    for (uint8_t i = 0; i < NANORTC_DC_EVENT_SLOTS; i++) {
+        uint32_t bit = UINT32_C(1) << i;
+        if ((rtc->dc_event_slots_in_use & bit) != 0 &&
+            rtc->dc_event_free_at[i] == rtc->out_head) {
+            rtc->dc_event_slots_in_use &= ~bit;
+        }
+    }
+#endif
 #if NANORTC_FEATURE_VIDEO
     for (uint8_t i = 0; i < NANORTC_NACK_RETX_RING; i++) {
         uint64_t bit = UINT64_C(1) << i;
@@ -368,6 +377,51 @@ int nano_rtc_emit_event_full(nanortc_t *rtc, const nanortc_event_t *event)
     evt.event = *event;
     return rtc_enqueue_output(rtc, &evt);
 }
+
+#if NANORTC_FEATURE_DATACHANNEL
+int nano_rtc_enqueue_datachannel_event(nanortc_t *rtc, uint16_t stream_id,
+                                       const uint8_t *data, size_t len, bool binary)
+{
+    if (!rtc || (len > 0 && !data)) {
+        return NANORTC_ERR_INVALID_PARAM;
+    }
+    if (len > NANORTC_SCTP_REASSEMBLY_BUF_SIZE) {
+        return NANORTC_ERR_BUFFER_TOO_SMALL;
+    }
+    if (!rtc_output_has_space(rtc)) {
+        return NANORTC_ERR_WOULD_BLOCK;
+    }
+
+    for (uint8_t n = 0; n < NANORTC_DC_EVENT_SLOTS; n++) {
+        uint8_t slot = (uint8_t)((rtc->dc_event_slot_cursor + n) &
+                                 (NANORTC_DC_EVENT_SLOTS - 1));
+        uint32_t bit = UINT32_C(1) << slot;
+        if ((rtc->dc_event_slots_in_use & bit) != 0) {
+            continue;
+        }
+        if (len > 0) {
+            memcpy(rtc->dc_event_slots[slot], data, len);
+        }
+        nanortc_event_t event;
+        memset(&event, 0, sizeof(event));
+        event.type = NANORTC_EV_DATACHANNEL_DATA;
+        event.datachannel_data.id = stream_id;
+        event.datachannel_data.data = rtc->dc_event_slots[slot];
+        event.datachannel_data.len = len;
+        event.datachannel_data.binary = binary;
+        int rc = nano_rtc_emit_event_full(rtc, &event);
+        if (rc != NANORTC_OK) {
+            return rc;
+        }
+        rtc->dc_event_free_at[slot] = rtc->out_tail;
+        rtc->dc_event_slots_in_use |= bit;
+        rtc->dc_event_slot_cursor =
+            (uint8_t)((slot + 1u) & (NANORTC_DC_EVENT_SLOTS - 1));
+        return NANORTC_OK;
+    }
+    return NANORTC_ERR_WOULD_BLOCK;
+}
+#endif
 
 /* Emit NANORTC_EV_CONNECTED with pre-filled writer handles */
 static int rtc_emit_connected(nanortc_t *rtc)
@@ -784,9 +838,15 @@ static int rtc_begin_dtls_handshake(nanortc_t *rtc, const nanortc_addr_t *src)
 
 static void rtc_deliver_sctp_to_dc(nanortc_t *rtc)
 {
-    dc_handle_message(&rtc->datachannel, rtc->sctp.delivered_stream, rtc->sctp.delivered_ppid,
-                      rtc->sctp.delivered_data, rtc->sctp.delivered_len);
+    int dc_rc =
+        dc_handle_message(&rtc->datachannel, rtc->sctp.delivered_stream,
+                          rtc->sctp.delivered_ppid, rtc->sctp.delivered_data,
+                          rtc->sctp.delivered_len);
     rtc->sctp.has_delivered = false;
+    if (dc_rc != NANORTC_OK) {
+        NANORTC_LOGW("DC", "discarding invalid DataChannel message");
+        return;
+    }
 
     /* Emit DC events using typed event structs */
     if (rtc->sctp.delivered_ppid == DCEP_PPID_CONTROL) {
@@ -800,23 +860,28 @@ static void rtc_deliver_sctp_to_dc(nanortc_t *rtc)
         oevt.datachannel_open.id = rtc->sctp.delivered_stream;
         for (uint8_t ci = 0; ci < rtc->datachannel.channel_count; ci++) {
             if (rtc->datachannel.channels[ci].stream_id == rtc->sctp.delivered_stream) {
-                oevt.datachannel_open.label = rtc->datachannel.channels[ci].label;
+                const nano_dc_channel_t *channel = &rtc->datachannel.channels[ci];
+                oevt.datachannel_open.label = channel->label;
+                oevt.datachannel_open.protocol = channel->protocol;
+                oevt.datachannel_open.ordered = channel->ordered;
+                oevt.datachannel_open.partial_reliability = channel->partial_reliability;
+                oevt.datachannel_open.max_retransmits = channel->max_retransmits;
                 break;
             }
         }
         nano_rtc_emit_event_full(rtc, &oevt);
     } else {
+        if (!rtc->datachannel.has_delivered) {
+            return; /* legacy partial PPID; wait for the final fragment */
+        }
         /* CHANNEL_DATA event (binary or string) */
-        bool is_binary = (rtc->sctp.delivered_ppid == DCEP_PPID_BINARY ||
-                          rtc->sctp.delivered_ppid == DCEP_PPID_BINARY_EMPTY);
-        nanortc_event_t devt;
-        memset(&devt, 0, sizeof(devt));
-        devt.type = NANORTC_EV_DATACHANNEL_DATA;
-        devt.datachannel_data.id = rtc->sctp.delivered_stream;
-        devt.datachannel_data.data = rtc->sctp.delivered_data;
-        devt.datachannel_data.len = rtc->sctp.delivered_len;
-        devt.datachannel_data.binary = is_binary;
-        nano_rtc_emit_event_full(rtc, &devt);
+        int event_rc = nano_rtc_enqueue_datachannel_event(
+            rtc, rtc->sctp.delivered_stream, rtc->datachannel.delivered_data,
+            rtc->datachannel.delivered_len, rtc->datachannel.delivered_binary);
+        if (event_rc != NANORTC_OK) {
+            NANORTC_LOGW("DC", "DataChannel receive event queue full; dropping message");
+        }
+        rtc->datachannel.has_delivered = false;
     }
 }
 
@@ -2000,9 +2065,11 @@ int nanortc_create_datachannel(nanortc_t *rtc, const char *label,
 
     bool ordered = options ? !options->unordered : true;
     uint16_t max_rexmit = options ? options->max_retransmits : 0;
+    const char *protocol = options ? options->protocol : NULL;
 
     uint16_t sid = rtc_alloc_stream_id(rtc);
-    int rc = dc_open(&rtc->datachannel, sid, label, ordered, max_rexmit);
+    int rc = dc_open_ex(&rtc->datachannel, sid, label, protocol, ordered, max_rexmit != 0,
+                        max_rexmit);
     if (rc != NANORTC_OK) {
         return rc;
     }
@@ -2027,8 +2094,14 @@ int nanortc_datachannel_send(nanortc_t *rtc, uint16_t id, const void *data, size
         return NANORTC_ERR_STATE;
     }
 
+    nano_dc_channel_t *channel = dc_get_channel(&rtc->datachannel, id);
+    if (!channel || channel->state != NANORTC_DC_STATE_OPEN) {
+        return NANORTC_ERR_INVALID_PARAM;
+    }
     uint32_t ppid = (len > 0) ? DCEP_PPID_BINARY : DCEP_PPID_BINARY_EMPTY;
-    int rc = nsctp_send(&rtc->sctp, id, ppid, (const uint8_t *)data, len);
+    int rc = nsctp_send_ex(&rtc->sctp, id, ppid, (const uint8_t *)data, len,
+                           !channel->ordered, channel->partial_reliability,
+                           channel->max_retransmits);
     if (rc == NANORTC_ERR_BUFFER_TOO_SMALL) {
         NANORTC_LOGD("DC", "send would block (SCTP buffer full)");
         return NANORTC_ERR_WOULD_BLOCK;
@@ -2036,23 +2109,35 @@ int nanortc_datachannel_send(nanortc_t *rtc, uint16_t id, const void *data, size
     return rc;
 }
 
-int nanortc_datachannel_send_string(nanortc_t *rtc, uint16_t id, const char *str)
+int nanortc_datachannel_send_text(nanortc_t *rtc, uint16_t id, const char *data, size_t len)
 {
-    if (!rtc || !str) {
+    if (!rtc || (!data && len > 0)) {
         return NANORTC_ERR_INVALID_PARAM;
     }
     if (rtc->state != NANORTC_STATE_CONNECTED) {
         return NANORTC_ERR_STATE;
     }
 
-    size_t len = strlen(str); /* NANORTC_SAFE: API boundary */
-
+    nano_dc_channel_t *channel = dc_get_channel(&rtc->datachannel, id);
+    if (!channel || channel->state != NANORTC_DC_STATE_OPEN) {
+        return NANORTC_ERR_INVALID_PARAM;
+    }
     uint32_t ppid = (len > 0) ? DCEP_PPID_STRING : DCEP_PPID_STRING_EMPTY;
-    int rc = nsctp_send(&rtc->sctp, id, ppid, (const uint8_t *)str, len);
+    int rc = nsctp_send_ex(&rtc->sctp, id, ppid, (const uint8_t *)data, len,
+                           !channel->ordered, channel->partial_reliability,
+                           channel->max_retransmits);
     if (rc == NANORTC_ERR_BUFFER_TOO_SMALL) {
         return NANORTC_ERR_WOULD_BLOCK;
     }
     return rc;
+}
+
+int nanortc_datachannel_send_string(nanortc_t *rtc, uint16_t id, const char *str)
+{
+    if (!str) {
+        return NANORTC_ERR_INVALID_PARAM;
+    }
+    return nanortc_datachannel_send_text(rtc, id, str, strlen(str));
 }
 
 int nanortc_datachannel_close(nanortc_t *rtc, uint16_t id)
@@ -2061,14 +2146,7 @@ int nanortc_datachannel_close(nanortc_t *rtc, uint16_t id)
         return NANORTC_ERR_INVALID_PARAM;
     }
 
-    nano_dc_channel_t *dc = NULL;
-    for (uint8_t i = 0; i < rtc->datachannel.channel_count; i++) {
-        if (rtc->datachannel.channels[i].stream_id == id &&
-            rtc->datachannel.channels[i].state != NANORTC_DC_STATE_CLOSED) {
-            dc = &rtc->datachannel.channels[i];
-            break;
-        }
-    }
+    nano_dc_channel_t *dc = dc_get_channel(&rtc->datachannel, id);
     if (!dc) {
         return NANORTC_ERR_INVALID_PARAM;
     }
@@ -2089,13 +2167,8 @@ const char *nanortc_datachannel_get_label(nanortc_t *rtc, uint16_t id)
     if (!rtc) {
         return NULL;
     }
-    for (uint8_t i = 0; i < rtc->datachannel.channel_count; i++) {
-        if (rtc->datachannel.channels[i].stream_id == id &&
-            rtc->datachannel.channels[i].state != NANORTC_DC_STATE_CLOSED) {
-            return rtc->datachannel.channels[i].label;
-        }
-    }
-    return NULL;
+    nano_dc_channel_t *channel = dc_get_channel(&rtc->datachannel, id);
+    return channel ? channel->label : NULL;
 }
 #endif /* NANORTC_FEATURE_DATACHANNEL */
 

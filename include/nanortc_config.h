@@ -82,6 +82,15 @@
 #define NANORTC_SCTP_RECV_GAP_BUF_SIZE CONFIG_NANORTC_SCTP_RECV_GAP_BUF_SIZE
 #endif
 
+#if defined(CONFIG_NANORTC_SCTP_REASSEMBLY_BUF_SIZE) && \
+    !defined(NANORTC_SCTP_REASSEMBLY_BUF_SIZE)
+#define NANORTC_SCTP_REASSEMBLY_BUF_SIZE CONFIG_NANORTC_SCTP_REASSEMBLY_BUF_SIZE
+#endif
+
+#if defined(CONFIG_NANORTC_DC_EVENT_SLOTS) && !defined(NANORTC_DC_EVENT_SLOTS)
+#define NANORTC_DC_EVENT_SLOTS CONFIG_NANORTC_DC_EVENT_SLOTS
+#endif
+
 #if defined(CONFIG_NANORTC_SCTP_MAX_SEND_QUEUE) && !defined(NANORTC_SCTP_MAX_SEND_QUEUE)
 #define NANORTC_SCTP_MAX_SEND_QUEUE CONFIG_NANORTC_SCTP_MAX_SEND_QUEUE
 #endif
@@ -558,6 +567,20 @@
 /* Receive gap buffer size (bytes) for storing out-of-order DATA chunk payloads. */
 #ifndef NANORTC_SCTP_RECV_GAP_BUF_SIZE
 #define NANORTC_SCTP_RECV_GAP_BUF_SIZE 4096
+#endif
+
+/* Maximum reassembled DataChannel user-message size. Huina control protocol
+ * messages are capped at 768 bytes; keeping this separate from the 4 KiB SCTP
+ * receive window avoids permanently adding another 4 KiB to nanortc_t. */
+#ifndef NANORTC_SCTP_REASSEMBLY_BUF_SIZE
+#define NANORTC_SCTP_REASSEMBLY_BUF_SIZE 768
+#endif
+
+/* Owned payload slots for queued DataChannel receive events. The SDK drains
+ * multiple UDP packets before polling outputs, so borrowed DTLS pointers are
+ * not stable enough for events awaiting dispatch. */
+#ifndef NANORTC_DC_EVENT_SLOTS
+#define NANORTC_DC_EVENT_SLOTS 4
 #endif
 
 /* State cookie maximum size (bytes) */
@@ -1387,6 +1410,20 @@ typedef enum {
 #if NANORTC_SCTP_RECV_GAP_BUF_SIZE > 65535
 #error \
     "NANORTC_SCTP_RECV_GAP_BUF_SIZE must be <= 65535 (uint16_t offsets in nano_sctp_t.recv_gap_buf_used)"
+#endif
+
+#if NANORTC_SCTP_REASSEMBLY_BUF_SIZE < 1 || \
+    NANORTC_SCTP_REASSEMBLY_BUF_SIZE >= NANORTC_SCTP_RECV_GAP_BUF_SIZE
+#error \
+    "NANORTC_SCTP_REASSEMBLY_BUF_SIZE must be positive and smaller than NANORTC_SCTP_RECV_GAP_BUF_SIZE"
+#endif
+
+#if NANORTC_DC_EVENT_SLOTS < 1 || NANORTC_DC_EVENT_SLOTS > 32 || \
+    (NANORTC_DC_EVENT_SLOTS & (NANORTC_DC_EVENT_SLOTS - 1)) != 0
+#error "NANORTC_DC_EVENT_SLOTS must be a power of two in 1..32"
+#endif
+#if NANORTC_DC_EVENT_SLOTS > NANORTC_OUT_QUEUE_SIZE
+#error "NANORTC_DC_EVENT_SLOTS must not exceed NANORTC_OUT_QUEUE_SIZE"
 #endif
 #endif /* NANORTC_FEATURE_DATACHANNEL */
 

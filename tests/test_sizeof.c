@@ -75,7 +75,10 @@ static void test_sizeof_sctp(void)
 
 static void test_sizeof_dc(void)
 {
-    TEST_ASSERT_LESS_OR_EQUAL_size_t(600, sizeof(nano_dc_t));
+    /* Per-channel protocol and PR-SCTP policy are retained for send semantics
+     * and application callbacks. The additional 768-byte arena reassembles
+     * RFC 8831 legacy partial PPIDs without heap allocation. */
+    TEST_ASSERT_LESS_OR_EQUAL_size_t(1600, sizeof(nano_dc_t));
 }
 #endif
 
@@ -115,7 +118,7 @@ static void test_sizeof_rtc_profile(void)
     const size_t limit = 48u * 1024u;
 #endif
 #elif NANORTC_FEATURE_DATACHANNEL
-    const size_t limit = 36u * 1024u;
+    const size_t limit = 40u * 1024u;
 #else
 #if NANORTC_FEATURE_TURN
     const size_t permission_extra =

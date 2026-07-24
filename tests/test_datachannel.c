@@ -237,11 +237,76 @@ TEST(test_dc_handle_data_ppid)
 {
     nano_dc_t dc;
     dc_init(&dc);
+    ASSERT_OK(dc_open(&dc, 0, "data", true, 0));
+    dc.channels[0].state = NANORTC_DC_STATE_OPEN;
 
     /* Data PPIDs should return OK without allocating channels */
     uint8_t data[] = {'h', 'e', 'l', 'l', 'o'};
     ASSERT_OK(dc_handle_message(&dc, 0, DCEP_PPID_STRING, data, sizeof(data)));
     ASSERT_OK(dc_handle_message(&dc, 0, DCEP_PPID_BINARY, data, sizeof(data)));
+    ASSERT_EQ(dc_handle_message(&dc, 2, DCEP_PPID_STRING, data, sizeof(data)),
+              NANORTC_ERR_PROTOCOL);
+}
+
+TEST(test_dc_reassembles_legacy_string_partial_ppid)
+{
+    nano_dc_t dc;
+    dc_init(&dc);
+    ASSERT_OK(dc_open(&dc, 0, "data", false, 0));
+    dc.channels[0].state = NANORTC_DC_STATE_OPEN;
+
+    static const uint8_t prefix[] = "{\"v\":1,\"type\":\"h";
+    static const uint8_t suffix[] = "eartbeat\",\"id\":614}";
+    static const uint8_t expected[] = "{\"v\":1,\"type\":\"heartbeat\",\"id\":614}";
+    ASSERT_OK(dc_handle_message(&dc, 0, DCEP_PPID_STRING_PARTIAL,
+                                prefix, sizeof(prefix) - 1));
+    ASSERT_FALSE(dc.has_delivered);
+    ASSERT_TRUE(dc.in_active);
+    ASSERT_OK(dc_handle_message(&dc, 0, DCEP_PPID_STRING,
+                                suffix, sizeof(suffix) - 1));
+    ASSERT_TRUE(dc.has_delivered);
+    ASSERT_FALSE(dc.delivered_binary);
+    ASSERT_EQ(dc.delivered_len, sizeof(expected) - 1);
+    ASSERT_MEM_EQ(dc.delivered_data, expected, sizeof(expected) - 1);
+}
+
+TEST(test_dc_partial_ppid_rejects_type_change_and_overflow)
+{
+    nano_dc_t dc;
+    dc_init(&dc);
+    ASSERT_OK(dc_open(&dc, 0, "data", false, 0));
+    dc.channels[0].state = NANORTC_DC_STATE_OPEN;
+    static const uint8_t fragment[] = "part";
+    ASSERT_OK(dc_handle_message(&dc, 0, DCEP_PPID_STRING_PARTIAL,
+                                fragment, sizeof(fragment) - 1));
+    ASSERT_EQ(dc_handle_message(&dc, 0, DCEP_PPID_BINARY,
+                                fragment, sizeof(fragment) - 1), NANORTC_ERR_PROTOCOL);
+    ASSERT_FALSE(dc.in_active);
+
+    uint8_t oversized[NANORTC_SCTP_REASSEMBLY_BUF_SIZE];
+    memset(oversized, 'x', sizeof(oversized));
+    ASSERT_OK(dc_handle_message(&dc, 0, DCEP_PPID_STRING_PARTIAL,
+                                oversized, sizeof(oversized)));
+    ASSERT_EQ(dc_handle_message(&dc, 0, DCEP_PPID_STRING_PARTIAL, fragment, 1),
+              NANORTC_ERR_BUFFER_TOO_SMALL);
+    ASSERT_FALSE(dc.in_active);
+}
+
+TEST(test_dc_handle_pr_unordered_protocol)
+{
+    nano_dc_t dc;
+    dc_init(&dc);
+    static const uint8_t open_msg[] = {
+        0x03, 0x81, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x10, 0x00, 0x10,
+        'h', 'u', 'i', 'n', 'a', '-', 'c', 'o', 'n', 't', 'r', 'o', 'l', '-', 'v', '1',
+        'h', 'u', 'i', 'n', 'a', '.', 'c', 'o', 'n', 't', 'r', 'o', 'l', '.', 'v', '1',
+    };
+    ASSERT_OK(dc_handle_message(&dc, 0, DCEP_PPID_CONTROL, open_msg, sizeof(open_msg)));
+    ASSERT_FALSE(dc.channels[0].ordered);
+    ASSERT_TRUE(dc.channels[0].partial_reliability);
+    ASSERT_EQ(dc.channels[0].max_retransmits, 0u);
+    ASSERT_TRUE(strcmp(dc.channels[0].protocol, "huina.control.v1") == 0);
 }
 
 /* ================================================================
@@ -307,6 +372,9 @@ RUN(test_dc_handle_ack);
 RUN(test_dc_handle_open_malformed);
 RUN(test_dc_handle_null);
 RUN(test_dc_handle_data_ppid);
+RUN(test_dc_reassembles_legacy_string_partial_ppid);
+RUN(test_dc_partial_ppid_rejects_type_change_and_overflow);
+RUN(test_dc_handle_pr_unordered_protocol);
 /* Poll output */
 RUN(test_dc_poll_no_output);
 RUN(test_dc_poll_null_params);

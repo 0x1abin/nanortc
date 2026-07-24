@@ -385,6 +385,10 @@ typedef struct {
 typedef struct {
     uint16_t id;       /**< SCTP stream ID. */
     const char *label; /**< Channel label (valid until next state mutation). */
+    const char *protocol; /**< Sub-protocol from DCEP OPEN. */
+    bool ordered;         /**< True for ordered delivery. */
+    bool partial_reliability; /**< True for retransmit-limited delivery. */
+    uint32_t max_retransmits; /**< DCEP retransmit limit; zero is meaningful for PR-SCTP. */
 } nanortc_ev_datachannel_open_t;
 
 /** @brief Data for NANORTC_EV_DATACHANNEL_DATA. */
@@ -829,6 +833,16 @@ struct nanortc {
     uint16_t tx_slot_free_at[NANORTC_TX_SLOT_COUNT];
     uint32_t tx_slots_in_use;
     uint8_t tx_slot_cursor;
+
+#if NANORTC_FEATURE_DATACHANNEL
+    /** Owned backing for queued DataChannel receive events. The event loop may
+     * feed several UDP packets before polling, so pointers into DTLS scratch
+     * would otherwise alias the newest packet. */
+    uint8_t dc_event_slots[NANORTC_DC_EVENT_SLOTS][NANORTC_SCTP_REASSEMBLY_BUF_SIZE];
+    uint16_t dc_event_free_at[NANORTC_DC_EVENT_SLOTS];
+    uint32_t dc_event_slots_in_use;
+    uint8_t dc_event_slot_cursor;
+#endif
 
 #if NANORTC_FEATURE_TURN
     /* Per-output side-table for lazy TURN wrap (RFC 5766 §10/§11). When set,
@@ -1455,6 +1469,15 @@ NANORTC_API int nanortc_create_datachannel(nanortc_t *rtc, const char *label,
  * @retval NANORTC_ERR_WOULD_BLOCK  SCTP send buffer full.
  */
 NANORTC_API int nanortc_datachannel_send(nanortc_t *rtc, uint16_t id, const void *data, size_t len);
+
+/**
+ * @brief Send a length-delimited UTF-8 string on a DataChannel.
+ *
+ * Unlike nanortc_datachannel_send_string(), the payload need not be
+ * NUL-terminated and may be a slice of a larger buffer.
+ */
+NANORTC_API int nanortc_datachannel_send_text(nanortc_t *rtc, uint16_t id, const char *data,
+                                              size_t len);
 
 /**
  * @brief Send a UTF-8 string on a DataChannel.
