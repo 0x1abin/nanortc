@@ -75,7 +75,10 @@ static void test_sizeof_sctp(void)
 
 static void test_sizeof_dc(void)
 {
-    TEST_ASSERT_LESS_OR_EQUAL_size_t(600, sizeof(nano_dc_t));
+    /* Per-channel protocol and PR-SCTP policy are retained for send semantics
+     * and application callbacks. The additional 768-byte arena reassembles
+     * RFC 8831 legacy partial PPIDs without heap allocation. */
+    TEST_ASSERT_LESS_OR_EQUAL_size_t(1600, sizeof(nano_dc_t));
 }
 #endif
 

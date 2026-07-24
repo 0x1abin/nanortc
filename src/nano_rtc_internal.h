@@ -30,6 +30,12 @@ extern "C" {
  */
 int nano_rtc_emit_event_full(nanortc_t *rtc, const nanortc_event_t *event);
 
+#if NANORTC_FEATURE_DATACHANNEL
+/** Copy and enqueue one DataChannel receive event into owned payload storage. */
+int nano_rtc_enqueue_datachannel_event(nanortc_t *rtc, uint16_t stream_id,
+                                       const uint8_t *data, size_t len, bool binary);
+#endif
+
 /**
  * Format an RFC 8839 §5.1 SDP candidate line ("candidate:<f> 1 UDP <p>
  * <ip> <port> typ <type>") into @p buf and NUL-terminate. Defined in

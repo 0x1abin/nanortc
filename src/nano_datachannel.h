@@ -74,9 +74,11 @@ typedef struct nano_dc_channel {
     nano_dc_state_t state;
     uint16_t stream_id;
     char label[NANORTC_DC_LABEL_SIZE];
+    char protocol[NANORTC_DC_LABEL_SIZE];
     uint8_t channel_type;
     bool ordered;
-    uint16_t max_retransmits;
+    bool partial_reliability;
+    uint32_t max_retransmits;
 } nano_dc_channel_t;
 
 /* ----------------------------------------------------------------
@@ -93,6 +95,19 @@ typedef struct nano_dc {
     uint16_t out_stream;
     bool has_output;
     bool last_was_open; /* true when dc_handle_message opened a NEW channel */
+
+    /* RFC 8831 legacy partial PPID reassembly. Chromium can emit PPID 54/52
+     * followed by the normal final PPID even for small messages. */
+    uint8_t in_buf[NANORTC_SCTP_REASSEMBLY_BUF_SIZE];
+    uint16_t in_len;
+    uint16_t in_stream;
+    bool in_binary;
+    bool in_active;
+
+    const uint8_t *delivered_data;
+    uint16_t delivered_len;
+    bool delivered_binary;
+    bool has_delivered;
 } nano_dc_t;
 
 /* ----------------------------------------------------------------
@@ -128,6 +143,15 @@ int dc_handle_message(nano_dc_t *dc, uint16_t stream_id, uint32_t ppid, const ui
  */
 int dc_open(nano_dc_t *dc, uint16_t stream_id, const char *label, bool ordered,
             uint16_t max_retransmits);
+
+/** Extended OPEN used by the public RTC facade. Unlike the compatibility
+ *  wrapper above, @p partial_reliability disambiguates reliable delivery from
+ *  a PR-SCTP channel whose maximum retransmit count is zero. */
+int dc_open_ex(nano_dc_t *dc, uint16_t stream_id, const char *label, const char *protocol,
+               bool ordered, bool partial_reliability, uint32_t max_retransmits);
+
+/** Return an open/opening channel by SCTP stream ID, or NULL. */
+nano_dc_channel_t *dc_get_channel(nano_dc_t *dc, uint16_t stream_id);
 
 /** Poll for outbound DCEP message. Caller sends via nsctp_send(PPID=50). */
 int dc_poll_output(nano_dc_t *dc, uint8_t *buf, size_t buf_len, size_t *out_len,

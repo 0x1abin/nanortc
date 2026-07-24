@@ -87,6 +87,7 @@ int nsctp_parse_init(const uint8_t *chunk, size_t chunk_len, nsctp_init_t *out)
     out->initial_tsn = nanortc_read_u32be(body + 12);
     out->cookie = NULL;
     out->cookie_len = 0;
+    out->forward_tsn_supported = false;
 
     /* Scan optional parameters for State Cookie (type=7) */
     uint16_t declared_len = nanortc_read_u16be(chunk + 2);
@@ -105,6 +106,8 @@ int nsctp_parse_init(const uint8_t *chunk, size_t chunk_len, nsctp_init_t *out)
                 out->cookie = chunk + pos + 4;
                 out->cookie_len = cookie_data_len;
             }
+        } else if (ptype == SCTP_PARAM_FORWARD_TSN_SUPPORTED && plen == 4) {
+            out->forward_tsn_supported = true;
         }
         pos += SCTP_PAD4(plen);
     }
@@ -216,6 +219,11 @@ size_t nsctp_encode_init(uint8_t *buf, uint8_t type, uint32_t initiate_tag, uint
             buf[pos++] = 0;
         }
     }
+
+    /* RFC 3758 §3.1: advertise PR-SCTP support in INIT and INIT-ACK. */
+    nanortc_write_u16be(buf + pos, SCTP_PARAM_FORWARD_TSN_SUPPORTED);
+    nanortc_write_u16be(buf + pos + 2, 4);
+    pos += 4;
 
     /* Fill chunk length (unpadded) */
     uint16_t chunk_len = (uint16_t)pos;
@@ -578,6 +586,7 @@ static int nsctp_handle_init(nano_sctp_t *sctp, const uint8_t *chunk, size_t cle
     sctp->peer_a_rwnd = init.a_rwnd;
     sctp->peer_num_istreams = init.num_istreams;
     sctp->peer_num_ostreams = init.num_ostreams;
+    sctp->peer_supports_forward_tsn = init.forward_tsn_supported;
 
     /* Build INIT-ACK with a simple cookie.
      * Cookie = cookie_secret XOR'd with initiate_tag (simple, DTLS provides auth).
@@ -617,6 +626,7 @@ static int nsctp_handle_init_ack(nano_sctp_t *sctp, const uint8_t *chunk, size_t
     sctp->peer_initial_tsn = init.initial_tsn;
     sctp->cumulative_tsn = init.initial_tsn - 1;
     sctp->peer_a_rwnd = init.a_rwnd;
+    sctp->peer_supports_forward_tsn = init.forward_tsn_supported;
 
     /* Extract and store cookie */
     if (!init.cookie || init.cookie_len == 0 || init.cookie_len > NANORTC_SCTP_COOKIE_SIZE) {
@@ -680,24 +690,118 @@ static int nsctp_handle_cookie_ack(nano_sctp_t *sctp)
 /* ---- Gap tracking helpers (RFC 9260 §6.2) ---- */
 
 /** Enqueue a message into the delivery queue (for gap-fill batch delivery). */
-static void nsctp_enqueue_delivery(nano_sctp_t *sctp, uint16_t data_offset, uint16_t data_len,
-                                   uint16_t stream_id, uint32_t ppid)
+static bool nsctp_enqueue_delivery(nano_sctp_t *sctp, uint32_t tsn, uint16_t data_offset,
+                                    uint16_t data_len, uint16_t stream_id, uint16_t ssn,
+                                    uint32_t ppid, uint8_t flags)
 {
     uint8_t next = sctp->dq_tail + 1;
     if (next - sctp->dq_head >= NANORTC_SCTP_MAX_RECV_GAP) {
-        return; /* delivery queue full — should not happen in practice */
+        return false;
     }
     uint8_t idx = sctp->dq_tail & (NANORTC_SCTP_MAX_RECV_GAP - 1);
+    sctp->deliver_queue[idx].tsn = tsn;
     sctp->deliver_queue[idx].data_offset = data_offset;
     sctp->deliver_queue[idx].data_len = data_len;
     sctp->deliver_queue[idx].stream_id = stream_id;
+    sctp->deliver_queue[idx].ssn = ssn;
     sctp->deliver_queue[idx].ppid = ppid;
+    sctp->deliver_queue[idx].flags = flags;
     sctp->dq_tail++;
+    return true;
+}
+
+static void nsctp_reset_reassembly(nano_sctp_t *sctp)
+{
+    sctp->recv_message_len = 0;
+    sctp->recv_message_active = false;
+}
+
+static uint8_t *nsctp_reassembly_buf(nano_sctp_t *sctp)
+{
+    /* The tail of recv_gap_buf is reserved for one fragmented SCTP user
+     * message. This keeps the embedded association footprint flat while the
+     * lower portion remains an arena for out-of-order chunks. */
+    return sctp->recv_gap_buf +
+           (NANORTC_SCTP_RECV_GAP_BUF_SIZE - NANORTC_SCTP_REASSEMBLY_BUF_SIZE);
+}
+
+/** Consume one DATA chunk and expose only complete user messages.
+ *
+ * RFC 4960 section 6.9 permits a user message to span B/middle/E chunks.
+ * In particular, Chromium can split a small unordered DataChannel message at
+ * a 16-byte boundary. Delivering those chunks individually truncates JSON and
+ * can turn a heartbeat/neutral update into a protocol fault.
+ */
+static bool nsctp_deliver_chunk(nano_sctp_t *sctp, uint32_t tsn, uint16_t stream_id,
+                                uint16_t ssn, uint32_t ppid, uint8_t flags,
+                                const uint8_t *payload, uint16_t payload_len)
+{
+    bool begin = (flags & SCTP_DATA_FLAG_BEGIN) != 0;
+    bool end = (flags & SCTP_DATA_FLAG_END) != 0;
+    bool unordered = (flags & SCTP_DATA_FLAG_UNORDERED) != 0;
+
+    if (begin && end) {
+        nsctp_reset_reassembly(sctp);
+        sctp->delivered_data = payload;
+        sctp->delivered_len = payload_len;
+        sctp->delivered_stream = stream_id;
+        sctp->delivered_ppid = ppid;
+        sctp->has_delivered = true;
+        return true;
+    }
+
+    if (begin) {
+        nsctp_reset_reassembly(sctp);
+        if (payload_len > NANORTC_SCTP_REASSEMBLY_BUF_SIZE) {
+            NANORTC_LOGW("SCTP", "fragmented message exceeds receive buffer");
+            return false;
+        }
+        if (payload_len > 0) {
+            memcpy(nsctp_reassembly_buf(sctp), payload, payload_len);
+        }
+        sctp->recv_message_len = payload_len;
+        sctp->recv_message_stream = stream_id;
+        sctp->recv_message_ssn = ssn;
+        sctp->recv_message_ppid = ppid;
+        sctp->recv_message_next_tsn = tsn + 1;
+        sctp->recv_message_unordered = unordered;
+        sctp->recv_message_active = true;
+        return false;
+    }
+
+    if (!sctp->recv_message_active || sctp->recv_message_stream != stream_id ||
+        sctp->recv_message_ssn != ssn || sctp->recv_message_ppid != ppid ||
+        sctp->recv_message_unordered != unordered || sctp->recv_message_next_tsn != tsn) {
+        nsctp_reset_reassembly(sctp);
+        NANORTC_LOGW("SCTP", "discarding orphaned or non-contiguous DATA fragment");
+        return false;
+    }
+    if ((size_t)sctp->recv_message_len + payload_len > NANORTC_SCTP_REASSEMBLY_BUF_SIZE) {
+        nsctp_reset_reassembly(sctp);
+        NANORTC_LOGW("SCTP", "fragmented message exceeds receive buffer");
+        return false;
+    }
+    if (payload_len > 0) {
+        memcpy(nsctp_reassembly_buf(sctp) + sctp->recv_message_len, payload, payload_len);
+    }
+    sctp->recv_message_len += payload_len;
+    sctp->recv_message_next_tsn++;
+    if (!end) {
+        return false;
+    }
+
+    sctp->delivered_data = nsctp_reassembly_buf(sctp);
+    sctp->delivered_len = sctp->recv_message_len;
+    sctp->delivered_stream = stream_id;
+    sctp->delivered_ppid = ppid;
+    sctp->has_delivered = true;
+    sctp->recv_message_active = false;
+    return true;
 }
 
 /** Buffer an out-of-order DATA chunk into the gap array.
  *  Returns 0 on success, negative on error (no space). */
-static int nsctp_gap_insert(nano_sctp_t *sctp, const nsctp_data_t *data)
+static int nsctp_gap_insert(nano_sctp_t *sctp, const nsctp_data_t *data, bool delivered)
 {
     /* Check for duplicates */
     for (uint8_t i = 0; i < NANORTC_SCTP_MAX_RECV_GAP; i++) {
@@ -720,7 +824,8 @@ static int nsctp_gap_insert(nano_sctp_t *sctp, const nsctp_data_t *data)
     }
 
     /* Check payload fits in recv_gap_buf */
-    if (sctp->recv_gap_buf_used + data->payload_len > NANORTC_SCTP_RECV_GAP_BUF_SIZE) {
+    if (sctp->recv_gap_buf_used + data->payload_len >
+        NANORTC_SCTP_RECV_GAP_BUF_SIZE - NANORTC_SCTP_REASSEMBLY_BUF_SIZE) {
         NANORTC_LOGW("SCTP", "gap buf storage full, dropping out-of-order TSN");
         return NANORTC_ERR_BUFFER_TOO_SMALL;
     }
@@ -736,8 +841,10 @@ static int nsctp_gap_insert(nano_sctp_t *sctp, const nsctp_data_t *data)
     sctp->recv_gap[slot].data_offset = offset;
     sctp->recv_gap[slot].data_len = data->payload_len;
     sctp->recv_gap[slot].stream_id = data->stream_id;
+    sctp->recv_gap[slot].ssn = data->ssn;
     sctp->recv_gap[slot].ppid = data->ppid;
     sctp->recv_gap[slot].flags = data->flags;
+    sctp->recv_gap[slot].delivered = delivered;
     sctp->recv_gap[slot].valid = true;
     sctp->recv_gap_count++;
 
@@ -760,9 +867,15 @@ static void nsctp_gap_drain(nano_sctp_t *sctp)
                 /* This gap entry is now contiguous — deliver it */
                 sctp->cumulative_tsn = sctp->recv_gap[i].tsn;
 
-                nsctp_enqueue_delivery(sctp, sctp->recv_gap[i].data_offset,
-                                       sctp->recv_gap[i].data_len, sctp->recv_gap[i].stream_id,
-                                       sctp->recv_gap[i].ppid);
+                if (!sctp->recv_gap[i].delivered) {
+                    nsctp_enqueue_delivery(sctp, sctp->recv_gap[i].tsn,
+                                           sctp->recv_gap[i].data_offset,
+                                           sctp->recv_gap[i].data_len,
+                                           sctp->recv_gap[i].stream_id,
+                                           sctp->recv_gap[i].ssn,
+                                           sctp->recv_gap[i].ppid,
+                                           sctp->recv_gap[i].flags);
+                }
 
                 sctp->recv_gap[i].valid = false;
                 sctp->recv_gap_count--;
@@ -781,10 +894,6 @@ static void nsctp_gap_drain(nano_sctp_t *sctp)
         }
     }
 
-    /* If all gap entries drained, reclaim recv_gap_buf space */
-    if (sctp->recv_gap_count == 0) {
-        sctp->recv_gap_buf_used = 0;
-    }
 }
 
 int nsctp_poll_delivery(nano_sctp_t *sctp)
@@ -793,15 +902,20 @@ int nsctp_poll_delivery(nano_sctp_t *sctp)
         return NANORTC_ERR_WOULD_BLOCK;
     }
 
-    uint8_t idx = sctp->dq_head & (NANORTC_SCTP_MAX_RECV_GAP - 1);
-    sctp->delivered_data = sctp->recv_gap_buf + sctp->deliver_queue[idx].data_offset;
-    sctp->delivered_len = sctp->deliver_queue[idx].data_len;
-    sctp->delivered_stream = sctp->deliver_queue[idx].stream_id;
-    sctp->delivered_ppid = sctp->deliver_queue[idx].ppid;
-    sctp->has_delivered = true;
-    sctp->dq_head++;
-
-    return NANORTC_OK;
+    while (sctp->dq_head != sctp->dq_tail) {
+        uint8_t idx = sctp->dq_head & (NANORTC_SCTP_MAX_RECV_GAP - 1);
+        sctp->dq_head++;
+        if (nsctp_deliver_chunk(sctp, sctp->deliver_queue[idx].tsn,
+                                sctp->deliver_queue[idx].stream_id,
+                                sctp->deliver_queue[idx].ssn,
+                                sctp->deliver_queue[idx].ppid,
+                                sctp->deliver_queue[idx].flags,
+                                sctp->recv_gap_buf + sctp->deliver_queue[idx].data_offset,
+                                sctp->deliver_queue[idx].data_len)) {
+            return NANORTC_OK;
+        }
+    }
+    return NANORTC_ERR_WOULD_BLOCK;
 }
 
 static int nsctp_handle_data_chunk(nano_sctp_t *sctp, const uint8_t *chunk, size_t clen)
@@ -827,20 +941,56 @@ static int nsctp_handle_data_chunk(nano_sctp_t *sctp, const uint8_t *chunk, size
         /* In-order: advance cumulative TSN, deliver immediately */
         sctp->cumulative_tsn = data.tsn;
 
-        sctp->delivered_data = data.payload;
-        sctp->delivered_len = data.payload_len;
-        sctp->delivered_stream = data.stream_id;
-        sctp->delivered_ppid = data.ppid;
-        sctp->has_delivered = true;
+        nsctp_deliver_chunk(sctp, data.tsn, data.stream_id, data.ssn, data.ppid,
+                            data.flags, data.payload, data.payload_len);
 
         /* Drain any gap entries that are now contiguous */
         nsctp_gap_drain(sctp);
     } else {
-        /* Out-of-order: buffer in gap array */
-        nsctp_gap_insert(sctp, &data);
+        /* An unordered DataChannel message is deliverable immediately even
+         * while a lower TSN is missing. Keep a gap record for SACK/cumulative
+         * tracking, but mark it delivered so gap fill cannot replay it. */
+        bool unordered = (data.flags & SCTP_DATA_FLAG_UNORDERED) != 0;
+        if (nsctp_gap_insert(sctp, &data, false) == NANORTC_OK && unordered) {
+            for (uint8_t i = 0; i < NANORTC_SCTP_MAX_RECV_GAP; i++) {
+                if (sctp->recv_gap[i].valid && sctp->recv_gap[i].tsn == data.tsn) {
+                    sctp->recv_gap[i].delivered =
+                        nsctp_enqueue_delivery(sctp, sctp->recv_gap[i].tsn,
+                                                sctp->recv_gap[i].data_offset,
+                                                sctp->recv_gap[i].data_len,
+                                                sctp->recv_gap[i].stream_id, data.ssn,
+                                                sctp->recv_gap[i].ppid,
+                                                sctp->recv_gap[i].flags);
+                    break;
+                }
+            }
+        }
     }
 
     return NANORTC_OK;
+}
+
+static void nsctp_advance_send_head(nano_sctp_t *sctp)
+{
+    bool abandoned_prefix = false;
+    uint32_t forward_tsn = 0;
+    while (sctp->sq_head != sctp->sq_tail) {
+        nsctp_send_entry_t *e =
+            &sctp->send_queue[sctp->sq_head & (NANORTC_SCTP_MAX_SEND_QUEUE - 1)];
+        if (!e->acked && !e->abandoned)
+            break;
+        if (e->abandoned) {
+            abandoned_prefix = true;
+            forward_tsn = e->tsn;
+        }
+        sctp->sq_head++;
+    }
+    if (abandoned_prefix) {
+        sctp->pending_forward_tsn = forward_tsn;
+        sctp->forward_tsn_pending = true;
+    }
+    if (sctp->sq_head == sctp->sq_tail)
+        sctp->send_buf_used = 0;
 }
 
 static int nsctp_handle_sack_chunk(nano_sctp_t *sctp, const uint8_t *chunk, size_t clen)
@@ -849,32 +999,52 @@ static int nsctp_handle_sack_chunk(nano_sctp_t *sctp, const uint8_t *chunk, size
     if (nsctp_parse_sack(chunk, clen, &sack) != NANORTC_OK) {
         return NANORTC_ERR_PARSE;
     }
+    size_t gap_bytes = (size_t)sack.num_gap_blocks * 4u;
+    if ((size_t)SCTP_CHUNK_HDR_SIZE + SCTP_SACK_MIN_SIZE + gap_bytes > clen)
+        return NANORTC_ERR_PARSE;
 
-    /* Mark acked entries in send queue */
+    /* Mark cumulative and selective gap acknowledgements. */
+    uint32_t highest_acked_tsn = sack.cumulative_tsn;
     uint8_t idx = sctp->sq_head;
     while (idx != sctp->sq_tail) {
         nsctp_send_entry_t *e = &sctp->send_queue[idx & (NANORTC_SCTP_MAX_SEND_QUEUE - 1)];
-        /* TSN comparison: tsn <= cumulative_tsn_ack (handling wrap) */
         int32_t diff = (int32_t)(e->tsn - sack.cumulative_tsn);
-        if (diff <= 0 && !e->acked) {
+        bool acked = diff <= 0;
+        if (!acked && (uint32_t)diff <= UINT16_MAX) {
+            const uint8_t *gap = chunk + SCTP_CHUNK_HDR_SIZE + SCTP_SACK_MIN_SIZE;
+            for (uint16_t block = 0; block < sack.num_gap_blocks; block++, gap += 4) {
+                uint16_t start = nanortc_read_u16be(gap);
+                uint16_t end = nanortc_read_u16be(gap + 2);
+                if ((uint32_t)diff >= start && (uint32_t)diff <= end) {
+                    acked = true;
+                    break;
+                }
+            }
+        }
+        if (acked) {
             e->acked = true;
+            if ((int32_t)(e->tsn - highest_acked_tsn) > 0)
+                highest_acked_tsn = e->tsn;
         }
         idx++;
     }
 
-    /* Advance sq_head past acked entries to free space */
-    while (sctp->sq_head != sctp->sq_tail) {
+#if NANORTC_FEATURE_DC_RELIABLE
+    /* A later selectively acknowledged TSN proves an earlier zero-retransmit
+     * message was lost. Abandon it immediately instead of waiting for the
+     * one-second RTO and filling the bounded send ring. */
+    for (idx = sctp->sq_head; idx != sctp->sq_tail; idx++) {
         nsctp_send_entry_t *e =
-            &sctp->send_queue[sctp->sq_head & (NANORTC_SCTP_MAX_SEND_QUEUE - 1)];
-        if (!e->acked)
-            break;
-        sctp->sq_head++;
+            &sctp->send_queue[idx & (NANORTC_SCTP_MAX_SEND_QUEUE - 1)];
+        if (!e->acked && !e->abandoned && e->partial_reliability &&
+            e->max_retransmits == 0 && sctp->peer_supports_forward_tsn &&
+            (int32_t)(highest_acked_tsn - e->tsn) > 0) {
+            e->in_flight = false;
+            e->abandoned = true;
+        }
     }
-
-    /* If send queue fully drained, reclaim send_buf */
-    if (sctp->sq_head == sctp->sq_tail) {
-        sctp->send_buf_used = 0;
-    }
+#endif
+    nsctp_advance_send_head(sctp);
 
     return NANORTC_OK;
 }
@@ -924,8 +1094,13 @@ static int nsctp_handle_forward_tsn(nano_sctp_t *sctp, const uint8_t *chunk, siz
     /* Only advance forward */
     int32_t diff = (int32_t)(new_tsn - sctp->cumulative_tsn);
     if (diff > 0) {
+        if (sctp->recv_message_active &&
+            (int32_t)(new_tsn - sctp->recv_message_next_tsn) >= 0) {
+            nsctp_reset_reassembly(sctp);
+        }
         sctp->cumulative_tsn = new_tsn;
         sctp->sack_needed = true;
+        nsctp_gap_drain(sctp);
     }
 
     NANORTC_LOGD("SCTP", "cumulative TSN advanced by FORWARD-TSN");
@@ -951,8 +1126,14 @@ int nsctp_handle_data(nano_sctp_t *sctp, const uint8_t *data, size_t len)
     nsctp_header_t hdr;
     nsctp_parse_header(data, len, &hdr);
 
-    /* Clear delivered state from previous call */
+    /* Clear delivered state from previous call. Once the caller consumed the
+     * final queued message it is safe to reclaim the shared gap payload arena;
+     * reclaiming it in nsctp_poll_delivery() invalidated delivered_data before
+     * the DataChannel event callback ran. */
     sctp->has_delivered = false;
+    if (sctp->recv_gap_count == 0 && sctp->dq_head == sctp->dq_tail) {
+        sctp->recv_gap_buf_used = 0;
+    }
 
     /* Iterate chunks */
     size_t pos = SCTP_HEADER_SIZE;
@@ -1065,12 +1246,22 @@ int nsctp_poll_output(nano_sctp_t *sctp, uint8_t *buf, size_t buf_len, size_t *o
         return NANORTC_OK;
     }
 
-    /* Second: encode pending DATA from send queue */
+    /* Second: tell the peer which retransmit-limited TSNs were abandoned. */
+    if (sctp->state == NANORTC_SCTP_STATE_ESTABLISHED && sctp->forward_tsn_pending) {
+        size_t pos = nsctp_begin_packet(sctp, sctp->remote_vtag);
+        pos += nsctp_encode_forward_tsn(nsctp_out_write_buf(sctp) + pos,
+                                        sctp->pending_forward_tsn);
+        nsctp_queue_output(sctp, pos);
+        sctp->forward_tsn_pending = false;
+        return nsctp_poll_output(sctp, buf, buf_len, out_len);
+    }
+
+    /* Third: encode pending DATA from send queue */
     if (sctp->state == NANORTC_SCTP_STATE_ESTABLISHED) {
         uint8_t idx = sctp->sq_head;
         while (idx != sctp->sq_tail) {
             nsctp_send_entry_t *e = &sctp->send_queue[idx & (NANORTC_SCTP_MAX_SEND_QUEUE - 1)];
-            if (!e->in_flight && !e->acked) {
+            if (!e->in_flight && !e->acked && !e->abandoned) {
                 /* Build DATA packet directly into output buffer */
                 size_t pos = nsctp_begin_packet(sctp, sctp->remote_vtag);
                 pos += nsctp_encode_data(nsctp_out_write_buf(sctp) + pos, e->tsn, e->stream_id,
@@ -1079,6 +1270,9 @@ int nsctp_poll_output(nano_sctp_t *sctp, uint8_t *buf, size_t buf_len, size_t *o
 
                 nsctp_queue_output(sctp, pos);
                 e->in_flight = true;
+#if NANORTC_FEATURE_DC_RELIABLE
+                e->sent_at_ms = sctp->last_send_ms;
+#endif
 
                 /* Immediately dequeue the packet we just queued */
                 uint8_t ridx = (uint8_t)((sctp->out_head) & (NANORTC_SCTP_OUT_QUEUE_SIZE - 1));
@@ -1104,12 +1298,15 @@ bool nsctp_has_pending_output(const nano_sctp_t *sctp)
     if (sctp->out_head != sctp->out_tail) {
         return true;
     }
+    if (sctp->forward_tsn_pending) {
+        return true;
+    }
     if (sctp->state != NANORTC_SCTP_STATE_ESTABLISHED) {
         return false;
     }
     for (uint8_t idx = sctp->sq_head; idx != sctp->sq_tail; idx++) {
         const nsctp_send_entry_t *e = &sctp->send_queue[idx & (NANORTC_SCTP_MAX_SEND_QUEUE - 1)];
-        if (!e->in_flight && !e->acked) {
+        if (!e->in_flight && !e->acked && !e->abandoned) {
             return true;
         }
     }
@@ -1118,8 +1315,9 @@ bool nsctp_has_pending_output(const nano_sctp_t *sctp)
 
 /* ---- nsctp_send: enqueue application data ---- */
 
-int nsctp_send(nano_sctp_t *sctp, uint16_t stream_id, uint32_t ppid, const uint8_t *data,
-               size_t len)
+int nsctp_send_ex(nano_sctp_t *sctp, uint16_t stream_id, uint32_t ppid, const uint8_t *data,
+                  size_t len, bool unordered, bool partial_reliability,
+                  uint32_t max_retransmits)
 {
     if (!sctp) {
         return NANORTC_ERR_INVALID_PARAM;
@@ -1152,9 +1350,13 @@ int nsctp_send(nano_sctp_t *sctp, uint16_t stream_id, uint32_t ppid, const uint8
     e->tsn = sctp->next_tsn++;
     e->stream_id = stream_id;
 #if NANORTC_FEATURE_DC_ORDERED
-    e->ssn = sctp->next_ssn[stream_id % NANORTC_MAX_DATACHANNELS]++;
-    e->flags = SCTP_DATA_FLAG_BEGIN | SCTP_DATA_FLAG_END; /* single-chunk msg */
+    e->ssn = unordered ? 0 : sctp->next_ssn[stream_id % NANORTC_MAX_DATACHANNELS]++;
+    e->flags = SCTP_DATA_FLAG_BEGIN | SCTP_DATA_FLAG_END;
+    if (unordered) {
+        e->flags |= SCTP_DATA_FLAG_UNORDERED;
+    }
 #else
+    (void)unordered;
     e->ssn = 0;
     e->flags = SCTP_DATA_FLAG_BEGIN | SCTP_DATA_FLAG_END | SCTP_DATA_FLAG_UNORDERED;
 #endif
@@ -1164,12 +1366,23 @@ int nsctp_send(nano_sctp_t *sctp, uint16_t stream_id, uint32_t ppid, const uint8
     e->acked = false;
     e->in_flight = false;
 #if NANORTC_FEATURE_DC_RELIABLE
+    e->partial_reliability = partial_reliability;
+    e->max_retransmits = max_retransmits;
     e->retransmit_count = 0;
+#else
+    (void)partial_reliability;
+    (void)max_retransmits;
 #endif
 
     sctp->sq_tail++;
     NANORTC_LOGD("SCTP", "DATA enqueued");
     return NANORTC_OK;
+}
+
+int nsctp_send(nano_sctp_t *sctp, uint16_t stream_id, uint32_t ppid, const uint8_t *data,
+               size_t len)
+{
+    return nsctp_send_ex(sctp, stream_id, ppid, data, len, false, false, 0);
 }
 
 /* ---- Timeout handling ---- */
@@ -1183,15 +1396,24 @@ int nsctp_handle_timeout(nano_sctp_t *sctp, uint32_t now_ms)
     if (sctp->state != NANORTC_SCTP_STATE_ESTABLISHED) {
         return NANORTC_OK;
     }
+    sctp->last_send_ms = now_ms;
 
 #if NANORTC_FEATURE_DC_RELIABLE
     /* Retransmission: check send queue for timed-out entries */
     uint8_t idx = sctp->sq_head;
     while (idx != sctp->sq_tail) {
         nsctp_send_entry_t *e = &sctp->send_queue[idx & (NANORTC_SCTP_MAX_SEND_QUEUE - 1)];
-        if (e->in_flight && !e->acked) {
+        if (e->in_flight && !e->acked && !e->abandoned) {
             uint32_t elapsed = nano_time_elapsed(now_ms, e->sent_at_ms);
             if (elapsed >= sctp->rto_ms) {
+                if (e->partial_reliability && sctp->peer_supports_forward_tsn &&
+                    e->retransmit_count >= e->max_retransmits) {
+                    e->in_flight = false;
+                    e->abandoned = true;
+                    NANORTC_LOGD("SCTP", "PR-SCTP DATA abandoned");
+                    idx++;
+                    continue;
+                }
                 if (e->retransmit_count >= NANORTC_SCTP_MAX_RETRANSMITS) {
                     NANORTC_LOGE("SCTP", "max retransmits exceeded");
                     sctp->state = NANORTC_SCTP_STATE_CLOSED;
@@ -1213,6 +1435,8 @@ int nsctp_handle_timeout(nano_sctp_t *sctp, uint32_t now_ms)
         }
         idx++;
     }
+
+    nsctp_advance_send_head(sctp);
 #endif /* NANORTC_FEATURE_DC_RELIABLE */
 
     /* Heartbeat */
@@ -1250,7 +1474,7 @@ uint32_t nsctp_next_timeout_ms(const nano_sctp_t *sctp, uint32_t now_ms)
     /* Earliest retransmit deadline across the in-flight send queue. */
     for (uint8_t idx = sctp->sq_head; idx != sctp->sq_tail; idx++) {
         const nsctp_send_entry_t *e = &sctp->send_queue[idx & (NANORTC_SCTP_MAX_SEND_QUEUE - 1)];
-        if (!e->in_flight || e->acked) {
+        if (!e->in_flight || e->acked || e->abandoned) {
             continue;
         }
         uint32_t elapsed = nano_time_elapsed(now_ms, e->sent_at_ms);
