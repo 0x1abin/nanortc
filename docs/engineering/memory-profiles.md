@@ -1,15 +1,27 @@
 # Memory Profiles
 
-The ESP32-P4 table below is the last hardware-toolchain measurement
-(RISC-V HP, ESP-IDF 5.5 mbedTLS, `-Os` via
-`CONFIG_COMPILER_OPTIMIZATION_SIZE=y`). It predates the owned transient TX
-slot ring described below. The ring adds four independently owned output
-buffers by default while replacing several single-producer send scratch
-buffers; the expected host net increase is about 4.5 KiB. Re-run the size
-script before treating the ESP32-P4 rows as release measurements.
+Current host hardening measurements and validation are recorded in
+[design-hardening.md](design-hardening.md). The existing host profile ceilings
+are unchanged. Candidate formatting now shares receive/TURN scratch; SCTP
+reassembly reuses the receive pool without a second message-sized buffer.
+DCEP uses bounded caller scratch instead of an embedded output copy; SCTP
+returns a caller-owned message view without retaining a delivery pointer.
 
-All numbers below come from `./scripts/measure-sizes.sh --esp32 esp32p4`
-against the ESP-IDF Kconfig defaults in `Kconfig`. Full ICE stack is
+The ESP32-P4 table below was measured on **2026-09-07**, including the owned
+transient TX ring and design-hardening changes: RISC-V HP, ESP-IDF **5.5.4**,
+GCC **14.2.0**, mbedTLS **3.6.5**, `-Os` via
+`CONFIG_COMPILER_OPTIMIZATION_SIZE=y`. All seven profiles compiled and linked.
+These are cross-compiled archive/ELF measurements, not on-device heap or stack
+measurements. `sizeof(nanortc_t)` excludes crypto-provider allocations,
+application buffers and task stacks.
+
+The measurement project is `scripts/esp32-measure`; regenerate exact byte and rounded KiB
+values with `./scripts/measure-sizes.sh --esp32 esp32p4`. The table uses exact
+bytes extracted from the same archive sections and ELF state-size symbol,
+against the ESP-IDF Kconfig defaults in `Kconfig`. One seven-profile table
+drives both host and IDF builds. Each profile retains its own build log and
+SDK configuration under `.cache/measure-sizes/{host-<crypto>,esp32p4}/<profile>`;
+the script does not remove other build directories. Full ICE stack is
 preserved (TURN relay, srflx discovery, IPv6 host candidates, RFC 8445
 hardening); only buffer/queue sizing and logging are trimmed for IoT
 targets. Host Linux/macOS builds use `nanortc_config.h`'s generous
@@ -35,18 +47,24 @@ media recovery features all change the actual footprint.
 
 ## Configuration Matrix
 
-| Configuration | Flash (.text) | `sizeof(nanortc_t)` | Notes |
+| Configuration | Archive code + read-only data (bytes) | `sizeof(nanortc_t)` (bytes) | Notes |
 |---|---|---|---|
-| `CORE_ONLY` (no DC, no media) | 29.0 KB | 10.2 KB | ICE + DTLS + SDP + STUN + TURN |
-| `DC-only` | 38.8 KB | 19.4 KB | Adds SCTP + DCEP |
-| `Audio only` | 40.8 KB | 20.6 KB | Adds 1 audio track (jitter buffer) |
-| `DC + Audio` | 50.6 KB | 29.9 KB | Typical duplex voice IoT config |
-| `Media only` (no DC) | 45.3 KB | 51.0 KB | Audio + 1 video track + `pkt_ring` + BWE |
-| `DC + Audio + Video` | 55.0 KB | 60.3 KB | Full media stack |
+| `CORE_ONLY` | 35,563 | 14,552 | ICE + DTLS + SDP + STUN + TURN |
+| `DATA` | 49,027 | 24,016 | Adds SCTP + DCEP |
+| `AUDIO_ONLY` | 48,561 | 24,328 | Audio without DataChannel |
+| `AUDIO` | 61,985 | 33,792 | DataChannel + audio |
+| `MEDIA_ONLY` | 54,728 | 60,584 | Audio + video without DataChannel |
+| `MEDIA` | 68,116 | 70,056 | DataChannel + audio + video |
+| `MEDIA_H265` | 72,286 | 71,096 | MEDIA + H.265 |
+
+Archive size is GNU `size`'s `text` column summed across `libnanortc.a` members:
+code **and read-only data**, including the mbedTLS adapter but excluding mbedTLS
+itself. It is measured before final-link garbage collection and is not the
+whole firmware's flash usage. DTLS-SRTP negotiation is enabled for measurement.
 
 `NANORTC_FEATURE_TURN=0` claws back ~11 KB of flash in the last ESP
-measurement and 1,672 B from the current host DATA profile (34,920 B to
-33,248 B) — only valid for deployments that can always reach peers via host /
+measurement and 1,672 B from the previous host DATA measurement (34,920 B to
+33,248 B; predates the hardening delta) — only valid for deployments that can always reach peers via host /
 srflx candidates. Building at `-Og` (ESP-IDF's Kconfig default for
 the rest of the firmware) inflates every flash figure by roughly 15 %;
 the measurement pins `-Os` via `scripts/esp32-measure/sdkconfig.defaults`.
@@ -64,6 +82,7 @@ generous host defaults:
 | `NANORTC_DTLS_BUF_SIZE` | 2048 | 1536 |
 | `NANORTC_SDP_BUF_SIZE` | 2048 | 1024 |
 | `NANORTC_SCTP_{SEND,RECV,RECV_GAP}_BUF_SIZE` | 4096 each | 2048 each |
+| `NANORTC_SCTP_MAX_MESSAGE_SIZE` | 4096 (inherits receive limit) | 2048 (inherits receive limit) |
 | `NANORTC_SCTP_MAX_SEND_QUEUE` | 16 | 4 |
 | `NANORTC_SCTP_MAX_RECV_GAP` | 8 | 4 |
 | `NANORTC_OUT_QUEUE_SIZE` | 32 | 8 (`esp32_datachannel`), 16 (`esp32_media`), 64 (`esp32_camera` — 1080p HW H.264 must admit a complete access unit plus concurrent audio/control output) |
@@ -90,7 +109,7 @@ high-jitter cellular, large SDPs), raise the knob you care about.
 | Video packet ring (NACK retransmit window) | 39 KB host / ~20 KB Kconfig | `NANORTC_VIDEO_PKT_RING_SIZE` × `NANORTC_MEDIA_BUF_SIZE` |
 | Video send pacer (`nano_pacer_t`) | `4 × NANORTC_VIDEO_PKT_RING_SIZE` + 16 B ≈ 144 B host / ~80 B Kconfig | `NANORTC_FEATURE_VIDEO_PACING` (per-slot `enqueue_ms[]` for the latency cap) |
 | Video receive reorder buffer (`nano_reorder_t`, per video track) | `NANORTC_VIDEO_REORDER_SLOTS × NANORTC_MEDIA_BUF_SIZE` ≈ 9.6 KB at 8 slots — **0 when disabled** | `NANORTC_FEATURE_VIDEO_REORDER` (opt-in, default off; a send-only camera leaves it off) |
-| SCTP send + recv + gap buffers | ~12 KB host / ~6 KB Kconfig | `NANORTC_SCTP_SEND_BUF_SIZE`, `NANORTC_SCTP_RECV_BUF_SIZE`, `NANORTC_SCTP_RECV_GAP_BUF_SIZE` |
+| SCTP send + owned receive pool (RECV_SIZE caps advertised capacity) | ~8 KB host / ~4 KB Kconfig | `NANORTC_SCTP_SEND_BUF_SIZE`, `NANORTC_SCTP_RECV_BUF_SIZE`, `NANORTC_SCTP_RECV_GAP_BUF_SIZE` |
 | DTLS buffers (3 × `NANORTC_DTLS_BUF_SIZE`) | 6 KB host / 4.5 KB Kconfig | `NANORTC_DTLS_BUF_SIZE` |
 | Owned transient TX ring | `4 × max(DTLS, media, TURN request)` = 8 KB host / 6 KB with the default ESP-IDF DTLS size | `NANORTC_TX_SLOT_COUNT` (1/2/4/8…32, ≤ output queue); `NANORTC_TX_SLOT_SIZE` is derived and normally should not be overridden |
 | Shared receive/TURN scratch union | 344 B (core/data) / 1280 B (media) with TURN; 256 B / 1232 B without TURN | `NANORTC_STUN_BUF_SIZE`, `NANORTC_TURN_BUF_SIZE` (feature-gated — see below) |
@@ -296,15 +315,14 @@ line and `rtp_pack()` will not emit the extension.
 Historical: Phase 6 (2026-04-11) cut full-media RAM by ~34 % (157→103 KB on
 the 32-bit ARM reference baseline used at the time). The current defaults
 in `nanortc_config.h` reflect that tuning; the matrix above measures
-ESP32-P4 after Phase 7 stability hardening and Phase 9 TWCC/BWE additions
-folded in on top of the Phase 6 baseline. The six techniques below are
+ESP32-P4 after the 2026-09-07 design hardening. The six historical techniques below are
 kept for reference:
 
 1. **Config default tuning** (~49 KB saved) — Jitter buffer slots 64→32, slot data 640→320B, H.264 NAL buffer 32→16 KB. All `#ifndef` guarded; override via `NANORTC_CONFIG_FILE`.
 
 2. **Zero-copy CRC-32c** — `nsctp_verify_checksum()` used to copy the entire SCTP packet (1200B) to a stack buffer. Replaced with segmented `nano_crc32c_init/update/final` API that computes CRC in three passes, skipping the checksum field.
 
-3. **Struct field reordering** (~32 B saved) — SCTP `recv_gap` struct reordered to eliminate padding: `uint32_t` fields first, `uint16_t` next, `uint8_t/bool` last (20B→16B per entry × 8).
+3. **Struct field reordering** (~32 B saved) — SCTP `recv_gap` struct reordered to eliminate padding: `uint32_t` fields first, `uint16_t` next, `uint8_t/bool` last (20B→16B per entry × 8 at that time). The current owned-receive descriptor is 20 B, including wire flags and separate delivery/forwarding state.
 
 4. **Type narrowing** (~50 B saved) — Credential length fields (`size_t`→`uint16_t`) in ICE, TURN, and jitter structs. Max credential length is 128 bytes, well within `uint16_t` range.
 
@@ -315,8 +333,8 @@ kept for reference:
 ## Measuring Sizes
 
 ```bash
-# Regenerate the Configuration Matrix above (ESP32-P4, all six combos).
-# Requires a sourced ESP-IDF 5.x environment (IDF_PATH set, riscv32-esp-elf
+# Regenerate the Configuration Matrix above (ESP32-P4, all seven combos).
+# Measured with a sourced ESP-IDF 5.5.4 environment (IDF_PATH set, riscv32-esp-elf
 # toolchain in PATH). Building from a git worktree whose directory is not
 # named "nanortc" additionally requires NANORTC_COMPONENT_DIR to point at a
 # directory containing a `nanortc` symlink to the worktree root.

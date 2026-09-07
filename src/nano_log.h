@@ -23,6 +23,7 @@
  *
  * Called by the NANORTC_LOG_* macros. Do not call directly.
  *
+ * @param cfg       Per-instance callback and level (never process-global).
  * @param level     Severity level.
  * @param subsystem Component tag (static string).
  * @param message   Log message (static string).
@@ -30,18 +31,9 @@
  * @param line      Source line (__LINE__), or 0.
  * @param func      Function name (__func__), or NULL.
  */
-void nano_log_emit(nanortc_log_level_t level, const char *subsystem, const char *message,
-                   const char *file, uint32_t line, const char *func);
-
-/**
- * @brief Install the log callback (called from nanortc_init).
- */
-void nano_log_init(const nanortc_log_config_t *cfg);
-
-/**
- * @brief Clear the log callback (called from nanortc_destroy).
- */
-void nano_log_cleanup(void);
+void nano_log_emit(const nanortc_log_config_t *cfg, nanortc_log_level_t level,
+                   const char *subsystem, const char *message, const char *file, uint32_t line,
+                   const char *func);
 
 /* ----------------------------------------------------------------
  * Source location (can be compiled out with NANORTC_LOG_NO_LOC)
@@ -61,8 +53,8 @@ void nano_log_cleanup(void);
  * Public macros — NANORTC_LOG_ERROR / WARN / INFO / DEBUG / TRACE
  *
  * Usage:
- *   NANORTC_LOG_INFO("SCTP", "association established");
- *   NANORTC_LOG_ERROR("DTLS", "handshake failed");
+ *   NANORTC_LOGI(&rtc->config.log, "RTC", "association established");
+ *   NANORTC_LOGE(&rtc->config.log, "DTLS", "handshake failed");
  *
  * Messages above NANORTC_LOG_LEVEL are removed at compile time.
  * If NANORTC_LOG_DISABLED is defined, all macros expand to nothing.
@@ -70,45 +62,46 @@ void nano_log_cleanup(void);
 
 #ifdef NANORTC_LOG_DISABLED
 
-#define NANORTC_LOGE(subsys, msg) ((void)0)
-#define NANORTC_LOGW(subsys, msg) ((void)0)
-#define NANORTC_LOGI(subsys, msg) ((void)0)
-#define NANORTC_LOGD(subsys, msg) ((void)0)
-#define NANORTC_LOGT(subsys, msg) ((void)0)
+#define NANORTC_LOGE(cfg, subsys, msg) ((void)0)
+#define NANORTC_LOGW(cfg, subsys, msg) ((void)0)
+#define NANORTC_LOGI(cfg, subsys, msg) ((void)0)
+#define NANORTC_LOGD(cfg, subsys, msg) ((void)0)
+#define NANORTC_LOGT(cfg, subsys, msg) ((void)0)
 
 #else /* !NANORTC_LOG_DISABLED */
 
-#define NANORTC_LOG_(lvl, subsys, msg) \
-    nano_log_emit((lvl), (subsys), (msg), NANORTC_LOG_FILE_, NANORTC_LOG_LINE_, NANORTC_LOG_FUNC_)
+#define NANORTC_LOG_(cfg, lvl, subsys, msg)                                            \
+    nano_log_emit((cfg), (lvl), (subsys), (msg), NANORTC_LOG_FILE_, NANORTC_LOG_LINE_, \
+                  NANORTC_LOG_FUNC_)
 
 #if NANORTC_LOG_LEVEL >= 0 /* NANORTC_LOG_ERROR */
-#define NANORTC_LOGE(subsys, msg) NANORTC_LOG_(NANORTC_LOG_ERROR, subsys, msg)
+#define NANORTC_LOGE(cfg, subsys, msg) NANORTC_LOG_(cfg, NANORTC_LOG_ERROR, subsys, msg)
 #else
-#define NANORTC_LOGE(subsys, msg) ((void)0)
+#define NANORTC_LOGE(cfg, subsys, msg) ((void)0)
 #endif
 
 #if NANORTC_LOG_LEVEL >= 1 /* NANORTC_LOG_WARN */
-#define NANORTC_LOGW(subsys, msg) NANORTC_LOG_(NANORTC_LOG_WARN, subsys, msg)
+#define NANORTC_LOGW(cfg, subsys, msg) NANORTC_LOG_(cfg, NANORTC_LOG_WARN, subsys, msg)
 #else
-#define NANORTC_LOGW(subsys, msg) ((void)0)
+#define NANORTC_LOGW(cfg, subsys, msg) ((void)0)
 #endif
 
 #if NANORTC_LOG_LEVEL >= 2 /* NANORTC_LOG_INFO */
-#define NANORTC_LOGI(subsys, msg) NANORTC_LOG_(NANORTC_LOG_INFO, subsys, msg)
+#define NANORTC_LOGI(cfg, subsys, msg) NANORTC_LOG_(cfg, NANORTC_LOG_INFO, subsys, msg)
 #else
-#define NANORTC_LOGI(subsys, msg) ((void)0)
+#define NANORTC_LOGI(cfg, subsys, msg) ((void)0)
 #endif
 
 #if NANORTC_LOG_LEVEL >= 3 /* NANORTC_LOG_DEBUG */
-#define NANORTC_LOGD(subsys, msg) NANORTC_LOG_(NANORTC_LOG_DEBUG, subsys, msg)
+#define NANORTC_LOGD(cfg, subsys, msg) NANORTC_LOG_(cfg, NANORTC_LOG_DEBUG, subsys, msg)
 #else
-#define NANORTC_LOGD(subsys, msg) ((void)0)
+#define NANORTC_LOGD(cfg, subsys, msg) ((void)0)
 #endif
 
 #if NANORTC_LOG_LEVEL >= 4 /* NANORTC_LOG_TRACE */
-#define NANORTC_LOGT(subsys, msg) NANORTC_LOG_(NANORTC_LOG_TRACE, subsys, msg)
+#define NANORTC_LOGT(cfg, subsys, msg) NANORTC_LOG_(cfg, NANORTC_LOG_TRACE, subsys, msg)
 #else
-#define NANORTC_LOGT(subsys, msg) ((void)0)
+#define NANORTC_LOGT(cfg, subsys, msg) ((void)0)
 #endif
 
 #endif /* NANORTC_LOG_DISABLED */

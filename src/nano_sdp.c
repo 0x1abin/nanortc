@@ -8,7 +8,6 @@
 
 #include "nano_sdp.h"
 #include "nano_ice.h"
-#include "nano_log.h"
 #include "nanortc.h"
 #include <string.h>
 
@@ -292,6 +291,7 @@ int sdp_parse(nano_sdp_t *sdp, const char *sdp_str, size_t len)
 #endif
 #endif
 
+    sdp->remote_max_message_size = 65536u; /* RFC 8841 §6.1: absent attribute */
     size_t pos = 0;
     while (pos < len) {
         size_t eol = find_eol(sdp_str, len, pos);
@@ -406,19 +406,15 @@ int sdp_parse(nano_sdp_t *sdp, const char *sdp_str, size_t len)
 #endif
             if (is_valid_h264 && !local_is_h265 && (has_preferred_profile || ml->pt == 0)) {
                 ml->pt = (uint8_t)fmtp_pt;
-                NANORTC_LOGD("SDP", has_preferred_profile ? "video H264 PT selected (profile match)"
-                                                          : "video H264 PT selected (fallback)");
             }
 #if NANORTC_FEATURE_H265
             /* H.265 fmtp validation: applies only when this fmtp's PT maps to an
              * H.265 rtpmap we already parsed. */
             if (ml->video_h265_rtpmap_pt != 0 && (uint8_t)fmtp_pt == ml->video_h265_rtpmap_pt) {
                 if (h265_bad_txmode || h265_bad_don) {
-                    NANORTC_LOGW("SDP", "H265 fmtp rejected (unsupported tx-mode or DON)");
                     h265_reject = true;
                 } else if (ml->pt == 0 || ml->codec == NANORTC_CODEC_H265) {
                     ml->pt = (uint8_t)fmtp_pt;
-                    NANORTC_LOGD("SDP", "video H265 PT selected");
                 }
             }
 #endif
@@ -477,6 +473,21 @@ int sdp_parse(nano_sdp_t *sdp, const char *sdp_str, size_t len)
             } else if (line_starts_with(line, line_len, "a=fingerprint:")) {
                 extract_value(line, line_len, "a=fingerprint:", sdp->remote_fingerprint,
                               sizeof(sdp->remote_fingerprint));
+            } else if (line_starts_with(line, line_len, "a=max-message-size:")) {
+                const char *v = line + 19;
+                const char *end = line + line_len;
+                while (end > v &&
+                       (end[-1] == '\r' || end[-1] == '\n' || end[-1] == ' ' || end[-1] == '\t'))
+                    end--;
+                uint32_t limit = 0;
+                if (v == end)
+                    return NANORTC_ERR_PARSE;
+                for (; v < end; v++) {
+                    if (*v < '0' || *v > '9' || limit > (UINT32_MAX - (uint32_t)(*v - '0')) / 10u)
+                        return NANORTC_ERR_PARSE;
+                    limit = limit * 10u + (uint32_t)(*v - '0');
+                }
+                sdp->remote_max_message_size = limit;
             } else if (line_starts_with(line, line_len, "a=sctp-port:")) {
                 const char *val = line + 12;
                 sdp->remote_sctp_port = (uint16_t)parse_u32(val, sdp_str + eol, NULL);
@@ -522,7 +533,6 @@ int sdp_parse(nano_sdp_t *sdp, const char *sdp_str, size_t len)
                         c->addr[addr_len] = '\0';
                         c->port = cand_port;
                         sdp->candidate_count++;
-                        NANORTC_LOGD("SDP", "parsed candidate from SDP");
                     }
                 }
             } else if (line_starts_with(line, line_len, "a=end-of-candidates")) {
@@ -544,7 +554,6 @@ int sdp_parse(nano_sdp_t *sdp, const char *sdp_str, size_t len)
 
     /* Validate required fields */
     if (sdp->remote_ufrag[0] == '\0' || sdp->remote_pwd[0] == '\0') {
-        NANORTC_LOGW("SDP", "missing ice-ufrag or ice-pwd");
         return NANORTC_ERR_PARSE;
     }
 
@@ -555,7 +564,6 @@ int sdp_parse(nano_sdp_t *sdp, const char *sdp_str, size_t len)
 #endif
 
     sdp->parsed = true;
-    NANORTC_LOGI("SDP", "offer parsed");
     return NANORTC_OK;
 }
 
@@ -766,7 +774,9 @@ static bool sdp_append_datachannel_mline(nano_sdp_t *sdp, char *buf, size_t buf_
         return false;
     if (!sdp_append(buf, buf_len, pos, "\r\n"))
         return false;
-    if (!sdp_append(buf, buf_len, pos, "a=max-message-size:262144\r\n"))
+    if (!sdp_append(buf, buf_len, pos, "a=max-message-size:") ||
+        !sdp_append_u16(buf, buf_len, pos, NANORTC_SCTP_MAX_MESSAGE_SIZE) ||
+        !sdp_append(buf, buf_len, pos, "\r\n"))
         return false;
 #endif
     return true;
@@ -1097,11 +1107,9 @@ int sdp_generate_answer(nano_sdp_t *sdp, char *buf, size_t buf_len, size_t *out_
 #endif
 
     *out_len = pos;
-    NANORTC_LOGD("SDP", "answer generated");
     return NANORTC_OK;
 
 overflow:
-    NANORTC_LOGE("SDP", "buffer overflow generating answer");
     return NANORTC_ERR_BUFFER_TOO_SMALL;
 }
 

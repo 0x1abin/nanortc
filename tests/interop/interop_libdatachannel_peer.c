@@ -102,7 +102,7 @@ static void on_dc_message(int dc, const char *message, int size, void *ptr)
     fprintf(stderr, "[libdatachannel] DC message (%zu bytes, string=%d)\n", actual_len, is_string);
 
     pthread_mutex_lock(&peer->msg_mutex);
-    if (actual_len < sizeof(peer->last_msg)) {
+    if (actual_len <= sizeof(peer->last_msg) - (is_string ? 1u : 0u)) {
         memcpy(peer->last_msg, message, actual_len);
         if (is_string) {
             peer->last_msg[actual_len] = '\0';
@@ -199,8 +199,8 @@ int interop_libdatachannel_start_ex(interop_libdatachannel_peer_t *peer, int sig
              * inline rather than relying on a separate creds struct. */
             const char *user = ice_config->turn_user ? ice_config->turn_user : "";
             const char *pass = ice_config->turn_pass ? ice_config->turn_pass : "";
-            int written = snprintf(turn_with_creds, sizeof(turn_with_creds), "turn:%s:%s@%s",
-                                   user, pass, ice_config->turn_url + 5);
+            int written = snprintf(turn_with_creds, sizeof(turn_with_creds), "turn:%s:%s@%s", user,
+                                   pass, ice_config->turn_url + 5);
             if (written < 0 || (size_t)written >= sizeof(turn_with_creds)) {
                 fprintf(stderr, "[libdatachannel] TURN URL too long\n");
                 return -1;

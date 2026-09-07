@@ -172,14 +172,7 @@ jobs:
           fi
 
       - name: "Check: no global mutable state"
-        run: |
-          # B = uninitialized data, D = initialized data (both are mutable globals)
-          violations=$(nm build/libnanortc.a 2>/dev/null | grep ' [BD] ' | grep -v '__' | grep -v 'crc32c_table' || true)
-          if [ -n "$violations" ]; then
-            echo "Global mutable state found:"
-            echo "$violations"
-            exit 1
-          fi
+        run: bash scripts/check-mutable-state.sh build/libnanortc.a
 
       - name: "Check: DC-OFF has no SCTP symbols"
         run: |

@@ -166,14 +166,51 @@ size_t nano_rtc_build_candidate_str(char *buf, uint16_t foundation, uint32_t pri
     return pos;
 }
 
-void nano_rtc_emit_ice_candidate(nanortc_t *rtc, const char *candidate_str)
+int nano_rtc_candidate_produce(nanortc_t *rtc, nanortc_output_t *out)
 {
-    nanortc_event_t evt;
-    memset(&evt, 0, sizeof(evt));
-    evt.type = NANORTC_EV_ICE_CANDIDATE;
-    evt.ice_candidate.candidate_str = candidate_str;
-    evt.ice_candidate.end_of_candidates = false;
-    nano_rtc_emit_event_full(rtc, &evt);
+    const char *ip = NULL, *type = "host";
+    uint16_t port = 0, foundation = 0;
+    uint32_t priority = 0;
+    size_t type_len = 4;
+    for (uint8_t i = 0; i < rtc->sdp.local_candidate_count; i++) {
+        if (!rtc->host_candidate_pending[i])
+            continue;
+        rtc->host_candidate_pending[i] = false;
+        ip = rtc->sdp.local_candidates[i].addr;
+        port = rtc->sdp.local_candidates[i].port;
+        foundation = (uint16_t)(i + 1);
+        priority = ICE_HOST_PRIORITY(i);
+        break;
+    }
+    if (!ip && rtc->srflx_candidate_pending) {
+        rtc->srflx_candidate_pending = false;
+        ip = rtc->sdp.srflx_candidate_ip;
+        port = rtc->sdp.srflx_candidate_port;
+        type = "srflx";
+        type_len = 5;
+        foundation = 3;
+        priority = 1090519295;
+    }
+#if NANORTC_FEATURE_TURN
+    if (!ip && rtc->relay_candidate_pending) {
+        rtc->relay_candidate_pending = false;
+        ip = rtc->sdp.relay_candidate_ip;
+        port = rtc->sdp.relay_candidate_port;
+        type = "relay";
+        type_len = 5;
+        foundation = 2;
+        priority = 16777215;
+    }
+#endif
+    if (!ip)
+        return NANORTC_ERR_NO_DATA;
+    nano_rtc_build_candidate_str(rtc->candidate_str, foundation, priority, ip,
+                                 nanortc_strnlen(ip, NANORTC_IPV6_STR_SIZE), port, type, type_len);
+    memset(out, 0, sizeof(*out));
+    out->type = NANORTC_OUTPUT_EVENT;
+    out->event.type = NANORTC_EV_ICE_CANDIDATE;
+    out->event.ice_candidate.candidate_str = rtc->candidate_str;
+    return NANORTC_OK;
 }
 
 /* ----------------------------------------------------------------
@@ -234,6 +271,7 @@ static void rtc_apply_remote_sdp(nanortc_t *rtc)
         rtc->sctp.remote_port = rtc->sdp.remote_sctp_port;
     }
     rtc->sctp.crypto = rtc->config.crypto;
+    rtc->sctp.peer_max_message_size = rtc->sdp.remote_max_message_size;
 #endif
 }
 
@@ -340,11 +378,11 @@ static void rtc_apply_negotiated_media(nanortc_t *rtc)
 
         if (ml->kind == SDP_MLINE_VIDEO && ml->pt != 0) {
             m->rtp.payload_type = ml->pt;
-            NANORTC_LOGD("SDP", "video using negotiated PT");
+            NANORTC_LOGD(&rtc->config.log, "SDP", "video using negotiated PT");
         } else if (ml->remote_pt != 0) {
             m->rtp.payload_type = ml->remote_pt;
             ml->pt = ml->remote_pt;
-            NANORTC_LOGD("SDP", "media using remote PT");
+            NANORTC_LOGD(&rtc->config.log, "SDP", "media using remote PT");
         }
 
 #if NANORTC_FEATURE_VIDEO
@@ -441,7 +479,7 @@ int nanortc_accept_offer(nanortc_t *rtc, const char *offer, char *answer_buf, si
 
     rtc_add_sdp_candidates(rtc);
 
-    NANORTC_LOGI("RTC", "offer accepted, answer generated");
+    NANORTC_LOGI(&rtc->config.log, "RTC", "offer accepted, answer generated");
     return NANORTC_OK;
 }
 
@@ -482,7 +520,7 @@ int nanortc_create_offer(nanortc_t *rtc, char *offer_buf, size_t offer_buf_len, 
         *out_len = offer_len;
     }
 
-    NANORTC_LOGI("RTC", "offer created");
+    NANORTC_LOGI(&rtc->config.log, "RTC", "offer created");
     return NANORTC_OK;
 }
 
@@ -513,7 +551,8 @@ int nanortc_accept_answer(nanortc_t *rtc, const char *answer)
     } else {
         /* Answerer returned actpass — invalid per RFC 8842 §5.2.
          * Both sides would become server. Default to active. */
-        NANORTC_LOGW("RTC", "remote answer has setup:actpass, forcing local active");
+        NANORTC_LOGW(&rtc->config.log, "RTC",
+                     "remote answer has setup:actpass, forcing local active");
         rtc->sdp.local_setup = NANORTC_SDP_SETUP_ACTIVE;
     }
 
@@ -530,7 +569,7 @@ int nanortc_accept_answer(nanortc_t *rtc, const char *answer)
     rtc_apply_negotiated_media(rtc);
     rtc_add_sdp_candidates(rtc);
 
-    NANORTC_LOGI("RTC", "answer accepted");
+    NANORTC_LOGI(&rtc->config.log, "RTC", "answer accepted");
     return NANORTC_OK;
 }
 
@@ -572,11 +611,9 @@ int nanortc_add_local_candidate(nanortc_t *rtc, const char *ip, uint16_t port)
     rtc->sdp.local_candidate_count = idx + 1;
     rtc->ice.local_candidate_count = idx + 1;
 
-    nano_rtc_build_candidate_str(rtc->host_cand_str, (uint16_t)(idx + 1), ICE_HOST_PRIORITY(idx),
-                                 ip, ip_len, port, "host", 4);
-    nano_rtc_emit_ice_candidate(rtc, rtc->host_cand_str);
+    rtc->host_candidate_pending[idx] = true;
 
-    NANORTC_LOGI("RTC", "local candidate added");
+    NANORTC_LOGI(&rtc->config.log, "RTC", "local candidate added");
     return NANORTC_OK;
 }
 
@@ -683,7 +720,7 @@ int nanortc_add_remote_candidate(nanortc_t *rtc, const char *candidate_str)
     }
 
     if (rtc->ice.remote_candidate_count >= NANORTC_MAX_ICE_CANDIDATES) {
-        NANORTC_LOGW("RTC", "remote candidate table full");
+        NANORTC_LOGW(&rtc->config.log, "RTC", "remote candidate table full");
         return NANORTC_ERR_BUFFER_TOO_SMALL;
     }
     uint8_t idx = rtc->ice.remote_candidate_count;
@@ -694,7 +731,7 @@ int nanortc_add_remote_candidate(nanortc_t *rtc, const char *candidate_str)
     rtc->ice.remote_candidates[idx].type = cand_type;
     rtc->ice.remote_candidate_count++;
 
-    NANORTC_LOGI("RTC", "remote candidate added");
+    NANORTC_LOGI(&rtc->config.log, "RTC", "remote candidate added");
     return NANORTC_OK;
 }
 
@@ -705,7 +742,7 @@ int nanortc_end_of_candidates(nanortc_t *rtc)
     }
     rtc->ice.end_of_candidates = true;
     rtc->sdp.end_of_candidates = true;
-    NANORTC_LOGD("RTC", "end-of-candidates signaled");
+    NANORTC_LOGD(&rtc->config.log, "RTC", "end-of-candidates signaled");
     return NANORTC_OK;
 }
 
@@ -809,7 +846,7 @@ int nano_rtc_apply_ice_servers(nanortc_t *rtc, const nanortc_ice_server_t *serve
                 rc = turn_configure(&rtc->turn, server_addr, family, port, s->username, ulen,
                                     s->credential, plen);
                 if (rc == NANORTC_OK) {
-                    NANORTC_LOGI("RTC", "TURN server configured");
+                    NANORTC_LOGI(&rtc->config.log, "RTC", "TURN server configured");
                 }
             }
 #endif /* NANORTC_FEATURE_TURN */
@@ -826,7 +863,7 @@ int nano_rtc_apply_ice_servers(nanortc_t *rtc, const nanortc_ice_server_t *serve
                     rtc->stun_server_family = family;
                     rtc->stun_server_port = port;
                     rtc->stun_server_configured = true;
-                    NANORTC_LOGI("RTC", "STUN server configured");
+                    NANORTC_LOGI(&rtc->config.log, "RTC", "STUN server configured");
                 }
             }
         }

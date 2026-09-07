@@ -43,7 +43,6 @@
 #include <mbedtls/x509_crt.h>
 #include <mbedtls/pk.h>
 #include <mbedtls/md.h>
-#include <mbedtls/timing.h>
 #include <mbedtls/error.h>
 #else
 /* ---- mbedtls 2.x/3.x headers ---- */
@@ -55,7 +54,6 @@
 #include <mbedtls/pk.h>
 #include <mbedtls/ecp.h>
 #include <mbedtls/sha256.h>
-#include <mbedtls/timing.h>
 #include <mbedtls/error.h>
 #include <mbedtls/bignum.h>
 #ifdef NANORTC_MBEDTLS_3_6
@@ -230,7 +228,9 @@ struct nanortc_crypto_dtls_ctx {
     mbedtls_entropy_context entropy;
     mbedtls_ctr_drbg_context ctr_drbg;
 #endif
-    mbedtls_timing_delay_context timer;
+    struct {
+        uint32_t now_ms, start_ms, intermediate_ms, final_ms;
+    } timer;
     int is_server;
     int handshake_done;
 
@@ -248,6 +248,36 @@ struct nanortc_crypto_dtls_ctx {
     /* Fingerprint cache */
     char fingerprint[NANORTC_DTLS_FINGERPRINT_STR_SIZE]; /* "XX:XX:..." SHA-256, 95 chars + NUL */
 };
+
+/* RFC 6347 §4.2.4: timers are driven by the caller, never platform clocks. */
+static void mbed_timer_set(void *p, uint32_t intermediate, uint32_t final)
+{
+    nanortc_crypto_dtls_ctx_t *ctx = p;
+    ctx->timer.start_ms = ctx->timer.now_ms;
+    ctx->timer.intermediate_ms = intermediate;
+    ctx->timer.final_ms = final;
+}
+static int mbed_timer_get(void *p)
+{
+    nanortc_crypto_dtls_ctx_t *ctx = p;
+    if (!ctx->timer.final_ms)
+        return -1;
+    uint32_t elapsed = ctx->timer.now_ms - ctx->timer.start_ms;
+    if (elapsed >= ctx->timer.final_ms)
+        return 2;
+    return elapsed >= ctx->timer.intermediate_ms ? 1 : 0;
+}
+static void mbed_dtls_set_time(nanortc_crypto_dtls_ctx_t *ctx, uint32_t now_ms)
+{
+    ctx->timer.now_ms = now_ms;
+}
+static uint32_t mbed_dtls_next_timeout(nanortc_crypto_dtls_ctx_t *ctx)
+{
+    if (!ctx->timer.final_ms)
+        return UINT32_MAX;
+    uint32_t elapsed = ctx->timer.now_ms - ctx->timer.start_ms;
+    return elapsed >= ctx->timer.final_ms ? 0 : ctx->timer.final_ms - elapsed;
+}
 
 /* ---- Certificate verification callback: accept self-signed ---- */
 
@@ -618,8 +648,7 @@ static nanortc_crypto_dtls_ctx_t *mbed_dtls_ctx_new(int is_server)
     }
 
     /* Set timer callbacks for DTLS retransmission */
-    mbedtls_ssl_set_timer_cb(&ctx->ssl, &ctx->timer, mbedtls_timing_set_delay,
-                             mbedtls_timing_get_delay);
+    mbedtls_ssl_set_timer_cb(&ctx->ssl, ctx, mbed_timer_set, mbed_timer_get);
 
     /* Register key export callback (mbedtls 3.x/4.x: on ssl context) */
 #ifdef NANORTC_MBEDTLS_3
@@ -884,6 +913,9 @@ static const nanortc_crypto_provider_t mbedtls_provider = {
     .dtls_ctx_new = mbed_dtls_ctx_new,
     .dtls_set_bio = mbed_dtls_set_bio,
     .dtls_handshake = mbed_dtls_handshake,
+    .dtls_set_time = mbed_dtls_set_time,
+    .dtls_next_timeout = mbed_dtls_next_timeout,
+    .dtls_handle_timeout = mbed_dtls_handshake,
     .dtls_encrypt = mbed_dtls_encrypt,
     .dtls_decrypt = mbed_dtls_decrypt,
     .dtls_export_keying_material = mbed_dtls_export_keying_material,

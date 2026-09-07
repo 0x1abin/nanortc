@@ -20,7 +20,6 @@
 
 #include "nanortc.h" /* umbrella: defines nanortc_spec_rung_t, pulls in nano_rate_control.h */
 #include "nano_rate_control.h"
-#include "nano_log.h"
 #include <string.h>
 
 #if NANORTC_FEATURE_VIDEO && NANORTC_FEATURE_VIDEO_RATE_CONTROL
@@ -109,7 +108,6 @@ int rate_control_update(nano_rate_control_t *rc, uint32_t estimate_bps, uint16_t
         /* Down: back off fast, possibly several rungs at once. */
         rc->cur_rung = target;
         rate_control_clear_up(rc);
-        NANORTC_LOGD("RCTL", "spec step down");
     } else if (target > rc->cur_rung) {
         /* Up: one rung at a time, gated by headroom AND a minimum hold time. */
         uint8_t next = (uint8_t)(rc->cur_rung + 1);
@@ -124,7 +122,6 @@ int rate_control_update(nano_rate_control_t *rc, uint32_t estimate_bps, uint16_t
             if ((uint32_t)(now_ms - rc->up_since_ms) >= NANORTC_RATE_CONTROL_MIN_HOLD_MS) {
                 rc->cur_rung = next;
                 rate_control_clear_up(rc);
-                NANORTC_LOGD("RCTL", "spec step up");
             }
         } else {
             /* Headroom lapsed before the hold elapsed — disarm. */

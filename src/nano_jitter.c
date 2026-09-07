@@ -8,7 +8,6 @@
  */
 
 #include "nano_jitter.h"
-#include "nano_log.h"
 #include "nanortc.h"
 #include <string.h>
 
@@ -19,7 +18,6 @@ int jitter_init(nano_jitter_t *jb, uint32_t depth_ms)
     }
     memset(jb, 0, sizeof(*jb));
     jb->depth_ms = depth_ms;
-    NANORTC_LOGI("JITTER", "init ok");
     return NANORTC_OK;
 }
 
@@ -30,7 +28,6 @@ int jitter_push(nano_jitter_t *jb, uint16_t seq, uint32_t timestamp, const uint8
         return NANORTC_ERR_INVALID_PARAM;
     }
     if (len > NANORTC_JITTER_SLOT_DATA_SIZE) {
-        NANORTC_LOGW("JITTER", "packet too large for slot");
         return NANORTC_ERR_BUFFER_TOO_SMALL;
     }
 
@@ -45,7 +42,6 @@ int jitter_push(nano_jitter_t *jb, uint16_t seq, uint32_t timestamp, const uint8
     int16_t delta = (int16_t)(seq - jb->head_seq);
     if (delta < 0 && (uint16_t)(-delta) >= NANORTC_JITTER_SLOTS) {
         /* Too old, discard */
-        NANORTC_LOGD("JITTER", "discarded stale packet");
         return NANORTC_ERR_NO_DATA;
     }
 
@@ -149,4 +145,21 @@ int jitter_pop(nano_jitter_t *jb, uint32_t now_ms, uint8_t *buf, size_t buf_len,
     jb->head_seq++;
 
     return NANORTC_OK;
+}
+
+/* Use the same first-present-packet rule as jitter_pop, including a missing
+ * head. RFC 3550 sequence ordering; modular elapsed time handles clock wrap. */
+uint32_t jitter_next_timeout_ms(const nano_jitter_t *jb, uint32_t now_ms)
+{
+    if (!jb || !jb->started)
+        return UINT32_MAX;
+    for (uint16_t i = 0; i < NANORTC_JITTER_SLOTS; i++) {
+        uint16_t seq = (uint16_t)(jb->head_seq + i);
+        const nano_jitter_slot_t *slot = &jb->slots[seq % NANORTC_JITTER_SLOTS];
+        if (!slot->occupied || slot->seq != seq)
+            continue;
+        uint32_t elapsed = now_ms - slot->arrival_ms;
+        return elapsed >= jb->depth_ms ? 0 : jb->depth_ms - elapsed;
+    }
+    return UINT32_MAX;
 }

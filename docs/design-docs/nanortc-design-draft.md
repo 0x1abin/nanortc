@@ -107,7 +107,7 @@ NanoRTC 遵循 [Sans I/O](https://sans-io.readthedocs.io) 模式。核心
 - NanoRTC **绝不**调用 `socket()`, `sendto()`, `select()` 或任何网络 API
 - NanoRTC **绝不**调用 `malloc()` 或 `free()`（使用调用者提供的 buffer 或静态池）
 - NanoRTC **绝不**调用 `pthread_create()` 或任何线程 API
-- NanoRTC **绝不**调用 `clock_gettime()` 或任何时钟 API——时间由外部传入
+- `src/` 不调用时钟 API——时间由外部传入；mbedTLS 定时回调使用该时钟。OpenSSL 3.0 的 DTLS 定时器仍使用其内部真实时钟，由 provider 暴露剩余时间。
 - NanoRTC **可以超实时速度测试**——通过注入合成时间戳驱动
 - NanoRTC **没有内部互斥锁**——线程安全由调用者负责
 
@@ -178,7 +178,6 @@ void nanortc_disconnect(nanortc_t *rtc);
 typedef enum {
     NANORTC_OUTPUT_TRANSMIT,   // 需要通过 UDP socket 发送的数据
     NANORTC_OUTPUT_EVENT,      // 应用层事件
-    NANORTC_OUTPUT_TIMEOUT,    // 下次需要调用 handle_input 的时间
 } nanortc_output_type_t;
 
 typedef enum {
@@ -304,7 +303,7 @@ NanoRTC 提供 BIO（缓冲 I/O）接口：
 
 ### 3.4 SCTP-Lite（nano_sctp.c）
 
-**范围**：RFC 4960 的最小 SCTP 子集，用于 WebRTC DataChannel 传输。
+**范围**：RFC 9260 的有界 SCTP 子集，用于 WebRTC DataChannel 传输。这里记录实际实现范围，不表示完整 SCTP 合规。
 
 这是最具挑战性的自研模块。NanoRTC 仅实现 WebRTC Data Channel 规范（RFC 8831）
 所需的功能：
@@ -314,14 +313,16 @@ NanoRTC 提供 BIO（缓冲 I/O）接口：
 - SCTP-over-DTLS 封装（RFC 8261）
 - 单关联（无多宿主）
 - 四次握手：INIT → INIT-ACK → COOKIE-ECHO → COOKIE-ACK
-- DATA / SACK chunk 处理（选择性确认）
+- DATA / SACK chunk 处理：生成 gap ACK，发送队列按累计 ACK 回收
 - 有序和无序交付
 - 流管理（多 DataChannel 流）
-- 分片与重组
+- 按 MTU 原子预留并发送分片；B/E 重组后才交付，接收池持有消息直到 poll
+- 分片身份与连续性判断共用；有界迭代原地合并，线协议标志与交付状态分开；输出参数返回消息视图，不持续保存交付指针
+- `NANORTC_SCTP_MAX_MESSAGE_SIZE` 默认随接收池（主机 4096 B，ESP 默认 2048 B），SDP 宣告真实上限，并遵守远端上限（RFC 8841 §6）
 - 重传定时器（基础 RTO 计算）
-- FORWARD-TSN，用于不可靠 DataChannel（RFC 3758）
+- 协商 FORWARD-TSN；按通道最大重传次数放弃整条消息，携带流 SSN 并重发至累计 ACK（RFC 3758 §3.5–3.6）
 - HEARTBEAT / HEARTBEAT-ACK 保活
-- SHUTDOWN 关闭序列
+- SHUTDOWN 编码；完整优雅关闭状态机尚未实现
 
 **不实现：**
 
@@ -330,26 +331,9 @@ NanoRTC 提供 BIO（缓冲 I/O）接口：
 - 动态地址重配置（RFC 5061）
 - SCTP 认证（RFC 4895）— 在 DTLS 之上不需要
 
-**状态机：**
-
-```
-CLOSED ──(收到 INIT)──> COOKIE_WAIT
-    │                        │
-    │                   (发送 INIT-ACK 含 cookie)
-    │                        │
-    │                   (收到 COOKIE-ECHO)
-    │                        │
-    │                        ▼
-    │                   ESTABLISHED ──(收到 SHUTDOWN)──> SHUTDOWN_RECEIVED
-    │                        │                                │
-    │                   (收发 DATA)                      (发送 SHUTDOWN-ACK)
-    │                        │                                │
-    │                   (发送 SHUTDOWN)                  (收到 SHUTDOWN-COMPLETE)
-    │                        │                                │
-    │                        ▼                                ▼
-    └────────────────── CLOSED <───────────────────────── CLOSED
-```
-
+**实际状态路径：** 主动端 `CLOSED → COOKIE_WAIT → COOKIE_ECHOED → ESTABLISHED`；
+被动端收到 INIT 后生成 INIT-ACK，验证 COOKIE-ECHO 后进入 ESTABLISHED。
+SHUTDOWN 完整状态机、拥塞窗口及 gap SACK 驱动的快速重传仍是后续工作。
 
 ### 3.5 DataChannel（nano_datachannel.c）
 
@@ -357,7 +341,9 @@ CLOSED ──(收到 INIT)──> COOKIE_WAIT
 
 - DATA_CHANNEL_OPEN 消息解析/生成
 - DATA_CHANNEL_ACK 响应
-- 通道类型映射：可靠、不可靠（最大重传次数 / 最大生命周期）
+- 通道类型映射：可靠、按最大重传次数部分可靠；最大生命周期类型明确返回 NOT_IMPLEMENTED
+- 每个通道保留待发送 OPEN/ACK：查看消息并写入调用方 scratch，SCTP 接纳后确认；无全局输出暂存状态
+- 本地创建非空 sub-protocol 暂返回 NOT_IMPLEMENTED；收到的 OPEN 中协议字段可解析，但当前 API 不暴露或协商该字段
 - 有序 vs 无序交付（映射到 SCTP 流参数）
 - 字符串 vs 二进制消息类型（PPID: 51 为字符串, 53 为二进制）
 - 多个 DataChannel 使用不同 SCTP stream ID 并发
@@ -560,5 +546,24 @@ NanoRTC 采用 **MIT License** 发布。
 ---
 
 *文档版本: 1.0*
-*最后更新: 2026-05-03*
+*最后更新: 2026-09-07*
 *作者: Bin (0x1abin) + Claude 架构分析*
+
+### 设计收敛：输出、时钟与诊断（2026-09-07）
+
+`nanortc_poll_output` 只返回 TRANSMIT / EVENT。排空输出后，通过
+`nanortc_next_timeout_ms` 查询下一次 tick；DTLS、SCTP、ICE/TURN、音频 jitter
+及视频 pacing/reorder 共同参与计算。mbedTLS 使用调用方时钟，OpenSSL 3.0
+保留内部真实时钟这一 provider 例外。自定义 provider 必须实现
+`dtls_set_time` / `dtls_next_timeout` / `dtls_handle_timeout`。
+
+队列满时，标量事件按类型和 track/channel 保留最新状态；候选地址只保存身份，
+在 poll 时格式化；DataChannel 有效载荷保存在 SCTP 接收池。日志配置只属于实例，
+无全局 logger。输出轮询采用迭代流程，保持优先级与指针有效期。
+
+TURN 的发送与期限查询共用模块内任务选择逻辑；等待 Refresh 响应时只考虑重传期限。
+RTC 保留候选顺序及发送槽管理，TURN 负责权限就绪、逐 peer 失败隔离与退避。
+响应认证在错误码分派前完成；nonce 更新废弃受影响的旧事务 ID，后续发送生成新 ID，
+保留累计发送预算与并发请求的退避期限，连续 438 不会无限重试。
+
+详细迁移和验证见 [设计加固记录](../engineering/design-hardening.md)。

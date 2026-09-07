@@ -8,7 +8,6 @@
  */
 
 #include "nano_rtcp.h"
-#include "nano_log.h"
 #include "nanortc.h"
 #include <string.h>
 
@@ -42,7 +41,6 @@ int rtcp_init(nano_rtcp_t *rtcp, uint32_t ssrc)
     }
     memset(rtcp, 0, sizeof(*rtcp));
     rtcp->ssrc = ssrc;
-    NANORTC_LOGI("RTCP", "init ok");
     return NANORTC_OK;
 }
 
@@ -227,7 +225,6 @@ int rtcp_parse(const uint8_t *data, size_t len, nano_rtcp_info_t *info)
     /* Validate version */
     uint8_t version = (data[0] >> 6) & 0x03;
     if (version != RTCP_VERSION) {
-        NANORTC_LOGW("RTCP", "bad version in RTCP packet");
         return NANORTC_ERR_PARSE;
     }
 
@@ -235,7 +232,6 @@ int rtcp_parse(const uint8_t *data, size_t len, nano_rtcp_info_t *info)
     uint16_t length_words = nanortc_read_u16be(data + 2);
     uint32_t pkt_size = ((uint32_t)length_words + 1) * 4;
     if (pkt_size > len) {
-        NANORTC_LOGW("RTCP", "truncated RTCP packet");
         return NANORTC_ERR_PARSE;
     }
 

@@ -2,7 +2,7 @@
  * nanortc — DataChannel / DCEP internal interface (RFC 8831, RFC 8832)
  * @internal Not part of the public API.
  *
- * Reference: str0m src/sctp/dcep.rs (message format).
+ * Wire format: RFC 8832 §5.
  *
  * SPDX-License-Identifier: MIT
  */
@@ -77,6 +77,7 @@ typedef struct nano_dc_channel {
     uint8_t channel_type;
     bool ordered;
     uint16_t max_retransmits;
+    uint8_t pending; /* DCEP OPEN/ACK not yet transferred to SCTP */
 } nano_dc_channel_t;
 
 /* ----------------------------------------------------------------
@@ -87,12 +88,6 @@ typedef struct nano_dc {
     nano_dc_channel_t channels[NANORTC_MAX_DATACHANNELS];
     uint8_t channel_count;
 
-    /* Output: DCEP message to send via SCTP (PPID=50) */
-    uint8_t out_buf[NANORTC_DC_OUT_BUF_SIZE];
-    uint16_t out_len;
-    uint16_t out_stream;
-    bool has_output;
-    bool last_was_open; /* true when dc_handle_message opened a NEW channel */
 } nano_dc_t;
 
 /* ----------------------------------------------------------------
@@ -101,6 +96,8 @@ typedef struct nano_dc {
 
 /** Initialize DataChannel manager. */
 int dc_init(nano_dc_t *dc);
+nano_dc_channel_t *dc_find_channel(nano_dc_t *dc, uint16_t stream_id);
+bool dc_has_pending_output(const nano_dc_t *dc);
 
 /**
  * Handle incoming SCTP payload routed by PPID.
@@ -113,10 +110,11 @@ int dc_init(nano_dc_t *dc);
  * @param ppid      Payload Protocol Identifier.
  * @param data      Payload data.
  * @param len       Payload length.
+ * @param opened    Set when this message transitions a channel to OPEN.
  * @return NANORTC_OK on success, negative error code on failure.
  */
 int dc_handle_message(nano_dc_t *dc, uint16_t stream_id, uint32_t ppid, const uint8_t *data,
-                      size_t len);
+                      size_t len, bool *opened);
 
 /**
  * Open a DataChannel (generate DCEP OPEN message).
@@ -129,9 +127,10 @@ int dc_handle_message(nano_dc_t *dc, uint16_t stream_id, uint32_t ppid, const ui
 int dc_open(nano_dc_t *dc, uint16_t stream_id, const char *label, bool ordered,
             uint16_t max_retransmits);
 
-/** Poll for outbound DCEP message. Caller sends via nsctp_send(PPID=50). */
-int dc_poll_output(nano_dc_t *dc, uint8_t *buf, size_t buf_len, size_t *out_len,
+/** Encode pending DCEP without consuming it. Commit only after SCTP accepts it. */
+int dc_peek_output(const nano_dc_t *dc, uint8_t *buf, size_t buf_len, size_t *out_len,
                    uint16_t *stream_id);
+void dc_commit_output(nano_dc_t *dc, uint16_t stream_id);
 
 /* DCEP codec functions are static in nano_datachannel.c */
 

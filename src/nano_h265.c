@@ -11,7 +11,6 @@
  */
 
 #include "nano_h265.h"
-#include "nano_log.h"
 #include "nanortc.h"
 
 #include <string.h>
@@ -336,12 +335,10 @@ int h265_depkt_push(nano_h265_depkt_t *d, const uint8_t *payload, size_t len, in
      * -------------------------------------------------------------- */
     if (type < H265_PKT_AP) {
         if (d->in_progress) {
-            NANORTC_LOGW("H265", "FU interrupted by single NAL");
             d->in_progress = 0;
             d->len = 0;
         }
         if (len > NANORTC_VIDEO_NAL_BUF_SIZE) {
-            NANORTC_LOGW("H265", "single NAL exceeds buffer");
             return NANORTC_ERR_BUFFER_TOO_SMALL;
         }
         memcpy(d->buf, payload, len);
@@ -364,7 +361,6 @@ int h265_depkt_push(nano_h265_depkt_t *d, const uint8_t *payload, size_t len, in
      * -------------------------------------------------------------- */
     if (type == H265_PKT_AP) {
         if (d->in_progress) {
-            NANORTC_LOGW("H265", "FU interrupted by AP");
             d->in_progress = 0;
             d->len = 0;
         }
@@ -379,7 +375,6 @@ int h265_depkt_push(nano_h265_depkt_t *d, const uint8_t *payload, size_t len, in
 
             /* Length bounds check via subtraction to avoid size_t wrap. */
             if (sub_len > len - offset) {
-                NANORTC_LOGW("H265", "AP sub-NAL exceeds packet");
                 return NANORTC_ERR_PARSE;
             }
             if (sub_len == 0) {
@@ -438,7 +433,6 @@ int h265_depkt_push(nano_h265_depkt_t *d, const uint8_t *payload, size_t len, in
             d->nal_hdr[1] = payload[1];
 
             if ((size_t)H265_NAL_HEADER_SIZE + frag_len > NANORTC_VIDEO_NAL_BUF_SIZE) {
-                NANORTC_LOGW("H265", "FU start exceeds buffer");
                 d->in_progress = 0;
                 d->len = 0;
                 return NANORTC_ERR_BUFFER_TOO_SMALL;
@@ -450,7 +444,6 @@ int h265_depkt_push(nano_h265_depkt_t *d, const uint8_t *payload, size_t len, in
             d->in_progress = 1;
         } else if (d->in_progress) {
             if (d->len + frag_len > NANORTC_VIDEO_NAL_BUF_SIZE) {
-                NANORTC_LOGW("H265", "FU reassembly exceeds buffer");
                 d->in_progress = 0;
                 d->len = 0;
                 return NANORTC_ERR_BUFFER_TOO_SMALL;
@@ -459,7 +452,6 @@ int h265_depkt_push(nano_h265_depkt_t *d, const uint8_t *payload, size_t len, in
             d->len += frag_len;
         } else {
             /* FU continuation without a prior Start fragment — drop. */
-            NANORTC_LOGD("H265", "FU continuation without start");
             return NANORTC_OK;
         }
 
@@ -477,12 +469,10 @@ int h265_depkt_push(nano_h265_depkt_t *d, const uint8_t *payload, size_t len, in
      * NAL types.
      * -------------------------------------------------------------- */
     if (type == H265_PKT_PACI) {
-        NANORTC_LOGD("H265", "PACI packet ignored");
         return NANORTC_OK;
     }
 
     /* Types 51..63 are reserved per RFC 7798 §4.4. Ignore. */
-    NANORTC_LOGD("H265", "unknown H.265 RTP payload type");
     return NANORTC_OK;
 }
 

@@ -252,7 +252,7 @@ if [ -f "$MEDIA_LIB" ]; then
         bash -c 'test -z "$(nm -g '"$MEDIA_LIB"' 2>/dev/null | grep " T " | awk "{print \$3}" | grep -v "^_" | grep -vE "^('"$ALLOWED"')")"'
 
     run_check "No global mutable state" \
-        bash -c 'test -z "$(nm '"$MEDIA_LIB"' 2>/dev/null | grep " [BD] " | grep -v "__" | grep -v "crc32c_table")"'
+        bash scripts/check-mutable-state.sh "$MEDIA_LIB"
 else
     printf "  %-50s SKIP (MEDIA build failed)\n" "Symbol checks"
 fi

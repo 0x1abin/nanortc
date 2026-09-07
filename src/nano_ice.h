@@ -13,6 +13,10 @@
 #define NANORTC_ICE_H_
 
 #include "nanortc_config.h"
+
+/* Fixed candidate syntax plus its longest printable IP address. */
+#define ICE_CANDIDATE_STR_SIZE (NANORTC_IPV6_STR_SIZE + 96)
+
 #include "nano_stun.h"
 
 #include <stdint.h>
