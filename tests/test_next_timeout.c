@@ -41,6 +41,7 @@ static void setup_turn_permission_candidate(nanortc_t *rtc)
     rtc->turn.configured = true;
     rtc->turn.state = NANORTC_TURN_ALLOCATED;
     rtc->turn.relay_family = STUN_FAMILY_IPV4;
+    rtc->turn.refresh_at_ms = 500000u;
     rtc->ice.remote_candidate_count = 1;
     rtc->ice.remote_candidates[0].family = 4;
     rtc->ice.remote_candidates[0].addr[0] = 192;
@@ -77,15 +78,18 @@ TEST(test_next_timeout_null_args_reject)
     ASSERT_FAIL(nanortc_next_timeout_ms(rtc, 0, NULL));
 }
 
-TEST(test_next_timeout_dtls_handshake_caps_at_min_poll)
+TEST(test_next_timeout_dtls_handshake_uses_provider_deadline)
 {
     nanortc_t *rtc = &g_rtc;
     memset(rtc, 0, sizeof(*rtc));
     rtc->state = NANORTC_STATE_DTLS_HANDSHAKING;
+    rtc->dtls.state = NANORTC_DTLS_STATE_HANDSHAKING;
+    rtc->dtls.timeout_ms = 350u;
+    rtc->dtls.timeout_observed_ms = 0u;
 
     uint32_t out = 0;
     ASSERT_OK(nanortc_next_timeout_ms(rtc, 0, &out));
-    ASSERT_EQ(out, NANORTC_MIN_POLL_INTERVAL_MS);
+    ASSERT_EQ(out, 350u);
 }
 
 #if NANORTC_FEATURE_DATACHANNEL
@@ -113,8 +117,7 @@ TEST(test_next_timeout_dcep_waits_for_sctp_established)
     nanortc_t *rtc = &g_rtc;
     memset(rtc, 0, sizeof(*rtc));
     rtc->ice.state = NANORTC_ICE_STATE_FAILED;
-    rtc->datachannel.has_output = true;
-    rtc->datachannel.out_len = 1u;
+    ASSERT_OK(dc_open(&rtc->datachannel, 0, "pending", true, 0));
 
     uint32_t out = 0u;
     ASSERT_OK(nanortc_next_timeout_ms(rtc, 1000u, &out));
@@ -358,13 +361,13 @@ TEST(test_next_timeout_turn_ineligible_permissions_do_not_spin)
     setup_turn_permission_candidate(rtc);
     rtc->ice.remote_candidates[0].family = 6;
     ASSERT_OK(nanortc_next_timeout_ms(rtc, 1000u, &out));
-    ASSERT_EQ(out, IDLE_CAP_MS);
+    ASSERT_EQ(out, 499000u); /* Only the allocation refresh remains. */
 
     setup_turn_permission_candidate(rtc);
     add_matching_permission(rtc);
     rtc->turn.permissions[0].terminal = true;
     ASSERT_OK(nanortc_next_timeout_ms(rtc, 1000u, &out));
-    ASSERT_EQ(out, IDLE_CAP_MS);
+    ASSERT_EQ(out, 499000u); /* Only the allocation refresh remains. */
 
     setup_turn_permission_candidate(rtc);
     add_matching_permission(rtc);
@@ -534,10 +537,39 @@ TEST(test_next_timeout_pacer_overdue_across_u32_wrap)
 
 #endif /* NANORTC_HAVE_MEDIA_TRANSPORT */
 
+#if NANORTC_FEATURE_AUDIO
+TEST(test_jitter_deadline_releases_tail_without_network_input)
+{
+    nanortc_t *rtc = &g_rtc;
+    memset(rtc, 0, sizeof(*rtc));
+    rtc->media_count = 1;
+    rtc->media[0].active = true;
+    rtc->media[0].kind = NANORTC_TRACK_AUDIO;
+    nano_jitter_t *jb = &rtc->media[0].track.audio.jitter;
+    ASSERT_OK(jitter_init(jb, 40));
+    uint8_t sample = 0x55;
+    ASSERT_OK(jitter_push(jb, 10, 960, &sample, 1, UINT32_MAX - 19u));
+    uint32_t timeout;
+    ASSERT_OK(nanortc_next_timeout_ms(rtc, UINT32_MAX - 19u, &timeout));
+    ASSERT_EQ(timeout, 40u);
+    ASSERT_OK(nanortc_next_timeout_ms(rtc, 20, &timeout));
+    ASSERT_EQ(timeout, 0u);
+    rtc->now_ms = 20;
+    nanortc_output_t out;
+    ASSERT_OK(nanortc_poll_output(rtc, &out));
+    ASSERT_EQ(out.event.type, NANORTC_EV_MEDIA_DATA);
+    ASSERT_EQ(out.event.media_data.len, 1u);
+    ASSERT_EQ(out.event.media_data.data[0], sample);
+}
+#endif
+
 TEST_MAIN_BEGIN("test_next_timeout")
+#if NANORTC_FEATURE_AUDIO
+RUN(test_jitter_deadline_releases_tail_without_network_input);
+#endif
 RUN(test_next_timeout_idle_returns_cap);
 RUN(test_next_timeout_null_args_reject);
-RUN(test_next_timeout_dtls_handshake_caps_at_min_poll);
+RUN(test_next_timeout_dtls_handshake_uses_provider_deadline);
 #if NANORTC_FEATURE_DATACHANNEL
 RUN(test_next_timeout_pending_dtls_and_sctp_output_are_immediate);
 RUN(test_next_timeout_dcep_waits_for_sctp_established);

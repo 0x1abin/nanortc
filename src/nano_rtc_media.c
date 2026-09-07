@@ -132,7 +132,7 @@ static int nanortc_add_track(nanortc_t *rtc, nanortc_track_kind_t kind,
     }
     rtc->media_count = tidx + 1;
 
-    NANORTC_LOGI("RTC", "media track added");
+    NANORTC_LOGI(&rtc->config.log, "RTC", "media track added");
     return mid;
 }
 
@@ -255,7 +255,7 @@ int nanortc_video_set_h265_parameter_sets(nanortc_t *rtc, uint8_t mid, const uin
             ml->h265_level_id = level;
         }
     }
-    NANORTC_LOGI("SDP", "H265 sprop-vps/sps/pps stored");
+    NANORTC_LOGI(&rtc->config.log, "SDP", "H265 sprop-vps/sps/pps stored");
     return NANORTC_OK;
 }
 #endif /* NANORTC_FEATURE_H265 */
@@ -339,7 +339,8 @@ static uint8_t *pkt_ring_alloc_slot(nanortc_t *rtc, uint16_t *out_pslot)
 #endif
     if (out_inflight >= NANORTC_VIDEO_PKT_RING_SIZE) {
         __atomic_fetch_add(&rtc->stats_pkt_ring_overrun, 1, __ATOMIC_RELAXED);
-        NANORTC_LOGW("RTC", "pkt_ring overrun — raise NANORTC_VIDEO_PKT_RING_SIZE");
+        NANORTC_LOGW(&rtc->config.log, "RTC",
+                     "pkt_ring overrun — raise NANORTC_VIDEO_PKT_RING_SIZE");
     }
     uint16_t pslot = rtc->pkt_ring_tail & (NANORTC_VIDEO_PKT_RING_SIZE - 1);
     *out_pslot = pslot;
@@ -535,7 +536,7 @@ static int video_send_fragment_cb(const uint8_t *payload, size_t len, int marker
     int rc =
         rtp_pack(&m->rtp, ctx->timestamp, payload, len, pkt_buf, NANORTC_MEDIA_BUF_SIZE, &rtp_len);
     if (rc != NANORTC_OK) {
-        NANORTC_LOGW("RTP", "video rtp_pack failed");
+        NANORTC_LOGW(&rtc->config.log, "RTP", "video rtp_pack failed");
         ctx->last_rc = rc;
         return rc;
     }
@@ -548,7 +549,7 @@ static int video_send_fragment_cb(const uint8_t *payload, size_t len, int marker
     size_t srtp_len = 0;
     rc = nano_srtp_protect(&rtc->srtp, pkt_buf, rtp_len, &srtp_len);
     if (rc != NANORTC_OK) {
-        NANORTC_LOGW("SRTP", "video srtp_protect failed");
+        NANORTC_LOGW(&rtc->config.log, "SRTP", "video srtp_protect failed");
         ctx->last_rc = rc;
         return rc;
     }
@@ -617,7 +618,7 @@ static int rtc_send_video(nanortc_t *rtc, nanortc_track_t *m, uint32_t timestamp
         rc = h264_fragment_iter_next(&it, pkt_buf + off, NANORTC_MEDIA_BUF_SIZE - off, &payload,
                                      &payload_len, &is_last_frag);
         if (rc != NANORTC_OK) {
-            NANORTC_LOGW("H264", "fragment_iter_next failed");
+            NANORTC_LOGW(&rtc->config.log, "H264", "fragment_iter_next failed");
             return rc;
         }
 
@@ -628,7 +629,7 @@ static int rtc_send_video(nanortc_t *rtc, nanortc_track_t *m, uint32_t timestamp
         rc = rtp_pack(&m->rtp, timestamp, payload, payload_len, pkt_buf, NANORTC_MEDIA_BUF_SIZE,
                       &rtp_len);
         if (rc != NANORTC_OK) {
-            NANORTC_LOGW("RTP", "video rtp_pack failed");
+            NANORTC_LOGW(&rtc->config.log, "RTP", "video rtp_pack failed");
             return rc;
         }
 
@@ -640,7 +641,7 @@ static int rtc_send_video(nanortc_t *rtc, nanortc_track_t *m, uint32_t timestamp
         size_t srtp_len = 0;
         rc = nano_srtp_protect(&rtc->srtp, pkt_buf, rtp_len, &srtp_len);
         if (rc != NANORTC_OK) {
-            NANORTC_LOGW("SRTP", "video srtp_protect failed");
+            NANORTC_LOGW(&rtc->config.log, "SRTP", "video srtp_protect failed");
             return rc;
         }
 
@@ -824,7 +825,7 @@ int nanortc_send_video(nanortc_t *rtc, uint8_t mid, uint32_t pts_ms, const void 
         return NANORTC_ERR_INVALID_PARAM;
     }
     if (rtc->state < NANORTC_STATE_DTLS_CONNECTED || !rtc->srtp.ready) {
-        NANORTC_LOGW("RTP", "video send blocked by state");
+        NANORTC_LOGW(&rtc->config.log, "RTP", "video send blocked by state");
         return NANORTC_ERR_STATE;
     }
 
@@ -871,7 +872,7 @@ int nanortc_send_video(nanortc_t *rtc, uint8_t mid, uint32_t pts_ms, const void 
          * retransmit. */
         size_t cap = (size_t)NANORTC_VIDEO_PKT_RING_SIZE;
         if (needed > cap) {
-            NANORTC_LOGW("RTP", "video frame exceeds pkt_ring capacity");
+            NANORTC_LOGW(&rtc->config.log, "RTP", "video frame exceeds pkt_ring capacity");
             return NANORTC_ERR_BUFFER_TOO_SMALL;
         }
         size_t occupied = (size_t)(uint16_t)(rtc->out_tail - rtc->out_head) +
@@ -888,7 +889,8 @@ int nanortc_send_video(nanortc_t *rtc, uint8_t mid, uint32_t pts_ms, const void 
         if (needed > cap) {
             /* Permanently over capacity — retrying cannot help. The frame
              * must shrink (encoder bitrate/GOP) or the rings must grow. */
-            NANORTC_LOGW("RTP", "video frame exceeds out_queue/pkt_ring capacity");
+            NANORTC_LOGW(&rtc->config.log, "RTP",
+                         "video frame exceeds out_queue/pkt_ring capacity");
             return NANORTC_ERR_BUFFER_TOO_SMALL;
         }
         size_t inflight = (size_t)(uint16_t)(rtc->out_tail - rtc->out_head);
@@ -1062,7 +1064,7 @@ static void rtc_video_on_lost(nanortc_t *rtc, nanortc_track_t *m, bool lost)
                 m->track.video.recv_last_pli_ms = rtc->now_ms;
                 m->track.video.recv_last_pli_valid = true;
                 __atomic_fetch_add(&rtc->stats_auto_pli_sent, 1, __ATOMIC_RELAXED);
-                NANORTC_LOGD("RTCP", "auto-PLI on receive loss");
+                NANORTC_LOGD(&rtc->config.log, "RTCP", "auto-PLI on receive loss");
             }
         }
     }
@@ -1798,7 +1800,10 @@ int nano_rtc_media_handle_rtp_or_rtcp(nanortc_t *rtc, const uint8_t *data, size_
                              * PKT_RING_SIZE is small (4-256) so this is fast. */
                             for (uint16_t s = 0; s < NANORTC_VIDEO_PKT_RING_SIZE; s++) {
                                 if (rtc->pkt_ring_meta[s].len == 0 ||
-                                    rtc->pkt_ring_meta[s].seq != lost[i]) {
+                                    rtc->pkt_ring_meta[s].seq != lost[i] ||
+                                    rtc->pkt_ring_meta[s].len < RTP_HEADER_SIZE ||
+                                    nanortc_read_u32be(rtc->pkt_ring[s] + 8) !=
+                                        info.nack_media_ssrc) {
                                     continue;
                                 }
                                 /* TD-023: copy the packet into a free retransmit
@@ -1830,7 +1835,7 @@ int nano_rtc_media_handle_rtp_or_rtcp(nanortc_t *rtc, const uint8_t *data, size_
                             }
                         }
                         if (retx > 0) {
-                            NANORTC_LOGD("NACK", "retransmitted packet(s)");
+                            NANORTC_LOGD(&rtc->config.log, "NACK", "retransmitted packet(s)");
                         }
                     } else if (rtpfb_fmt == TWCC_FMT) {
                         /* Transport-wide CC feedback (draft-holmer-rmcat-twcc-01).

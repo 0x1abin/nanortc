@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# nanortc — Measure Flash (.text) and RAM (sizeof) for each feature combo
+# nanortc — Measure archive code/read-only data and state size for each feature combo
 #
 # Usage: ./scripts/measure-sizes.sh                    # Host build (auto-detect crypto)
 #        ./scripts/measure-sizes.sh --esp32 [TARGET]   # ESP-IDF build (default: esp32p4)
@@ -24,27 +24,45 @@ fi
 
 NCPU=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 
-# Format bytes to KB (round to nearest integer)
+# Format bytes as KiB with one decimal place.
 format_kb() {
     local bytes="$1"
     if [ "$bytes" = "?" ] || [ -z "$bytes" ]; then
         echo "?"
         return
     fi
-    echo "$bytes" | awk '{printf "%.1f KB", $1/1024}'
+    echo "$bytes" | awk '{printf "%d B (%.1f KiB)", $1, $1/1024}'
 }
 
-# Arrays indexed by position (bash 3.2 compatible)
-COMBO_NAMES=(  CORE_ONLY    DATA    AUDIO_ONLY    AUDIO    MEDIA_ONLY    MEDIA)
-COMBO_LABELS=( "Core only"  "DataChannel"  "Audio only"  "DataChannel + Audio"  "Media only (no DC)"  "Full media")
-COMBO_SHORT=(
-    "DC=OFF AUDIO=OFF VIDEO=OFF"
-    "DC=ON"
-    "DC=OFF AUDIO=ON"
-    "DC=ON AUDIO=ON"
-    "DC=OFF AUDIO=ON VIDEO=ON"
-    "DC=ON AUDIO=ON VIDEO=ON"
+# One profile table drives host defines, CMake options and ESP-IDF defaults.
+PROFILES=(
+    "CORE_ONLY|Core only|0 0 0 0"
+    "DATA|DataChannel|1 0 0 0"
+    "AUDIO_ONLY|Audio only|0 1 0 0"
+    "AUDIO|DataChannel + Audio|1 1 0 0"
+    "MEDIA_ONLY|Media only (no DC)|0 1 1 0"
+    "MEDIA|Full media|1 1 1 0"
+    "MEDIA_H265|Full media + H.265|1 1 1 1"
 )
+FEATURES=(DATACHANNEL AUDIO VIDEO H265)
+COMBO_NAMES=() COMBO_LABELS=() COMBO_VALUES=() COMBO_SHORT=()
+for row in "${PROFILES[@]}"; do
+    IFS='|' read -r combo label bits <<< "$row"
+    COMBO_NAMES+=("$combo") COMBO_LABELS+=("$label") COMBO_VALUES+=("$bits")
+    read -r dc audio video h265 <<< "$bits"
+    COMBO_SHORT+=("DC=$dc AUDIO=$audio VIDEO=$video H265=$h265")
+done
+
+MEASURE_ROOT="$ROOT/.cache/measure-sizes"
+mkdir -p "$MEASURE_ROOT"
+
+run_logged() {
+    if ! "$@" >> "$build_log" 2>&1; then
+        tail -n 60 "$build_log" >&2
+        echo "Build failed; full log: $build_log" >&2
+        return 1
+    fi
+}
 
 # --- ESP-IDF mode ------------------------------------------------------------
 
@@ -61,23 +79,13 @@ if $ESP32_MODE; then
         exit 1
     fi
 
-    # Kconfig feature configs for each combo (DC, AUDIO, VIDEO)
-    COMBO_KCONFIG=(
-        "n n n"
-        "y n n"
-        "n y n"
-        "y y n"
-        "n y y"
-        "y y y"
-    )
-
     # Auto-detect toolchain prefix based on target architecture
     case "$ESP_TARGET" in
         esp32|esp32s2|esp32s3)
             # Xtensa targets
             TOOL_PREFIX=$(command -v xtensa-esp-elf-size 2>/dev/null | sed 's/-size$//' || true)
             if [ -z "$TOOL_PREFIX" ]; then
-                TOOL_PREFIX=$(command -v "xtensa-${ESP_TARGET/esp32/esp32s3}-elf-size" 2>/dev/null | sed 's/-size$//' || true)
+                TOOL_PREFIX=$(command -v "xtensa-${ESP_TARGET}-elf-size" 2>/dev/null | sed 's/-size$//' || true)
             fi
             ARCH_LABEL="Xtensa"
             ;;
@@ -110,50 +118,38 @@ if $ESP32_MODE; then
 
     for i in "${!COMBO_NAMES[@]}"; do
         combo="${COMBO_NAMES[$i]}"
-        read -r dc audio video <<< "${COMBO_KCONFIG[$i]}"
+        read -r -a values <<< "${COMBO_VALUES[$i]}"
 
         echo "Building ${ESP_TARGET}: $combo ..." >&2
 
-        build_dir="$MEASURE_DIR/build-${combo}"
-
-        # Write per-combo sdkconfig.defaults with feature flags
-        sdkconfig_defaults="$MEASURE_DIR/sdkconfig.defaults.combo"
+        profile_dir="$MEASURE_ROOT/$ESP_TARGET/$combo"
+        build_dir="$profile_dir/build"
+        mkdir -p "$profile_dir"
+        build_log="$profile_dir/build.log"
+        : > "$build_log"
+        sdkconfig_defaults="$profile_dir/sdkconfig.defaults"
         cp "$MEASURE_DIR/sdkconfig.defaults" "$sdkconfig_defaults"
-        {
-            echo ""
-            echo "# Feature flags for $combo"
-            if [ "$dc" = "y" ]; then
-                echo "CONFIG_NANORTC_FEATURE_DATACHANNEL=y"
-                echo "CONFIG_NANORTC_FEATURE_DC_RELIABLE=y"
-                echo "CONFIG_NANORTC_FEATURE_DC_ORDERED=y"
+        for j in "${!FEATURES[@]}"; do
+            if [ "${values[$j]}" = 1 ]; then
+                echo "CONFIG_NANORTC_FEATURE_${FEATURES[$j]}=y"
             else
-                echo "# CONFIG_NANORTC_FEATURE_DATACHANNEL is not set"
+                echo "# CONFIG_NANORTC_FEATURE_${FEATURES[$j]} is not set"
             fi
-            if [ "$audio" = "y" ]; then
-                echo "CONFIG_NANORTC_FEATURE_AUDIO=y"
-            else
-                echo "# CONFIG_NANORTC_FEATURE_AUDIO is not set"
-            fi
-            if [ "$video" = "y" ]; then
-                echo "CONFIG_NANORTC_FEATURE_VIDEO=y"
-            else
-                echo "# CONFIG_NANORTC_FEATURE_VIDEO is not set"
-            fi
-        } >> "$sdkconfig_defaults"
-
-        # Clean previous build to ensure feature flags take effect
-        rm -rf "$build_dir" "$MEASURE_DIR/sdkconfig"
-
-        # Build with idf.py
+        done >> "$sdkconfig_defaults"
+        if [ "${values[0]}" = 1 ]; then
+            echo "CONFIG_NANORTC_FEATURE_DC_RELIABLE=y" >> "$sdkconfig_defaults"
+            echo "CONFIG_NANORTC_FEATURE_DC_ORDERED=y" >> "$sdkconfig_defaults"
+        fi
+        # Regenerate only this script's private config; keep build artifacts/logs.
+        rm -f "$profile_dir/sdkconfig"
         (
             cd "$MEASURE_DIR"
-            idf.py -B "build-${combo}" \
-                -DSDKCONFIG_DEFAULTS="$sdkconfig_defaults" \
-                set-target "$ESP_TARGET" > /dev/null 2>&1
-            idf.py -B "build-${combo}" build > /dev/null 2>&1
+            run_logged idf.py --no-hints -B "$build_dir" \
+                -DIDF_TARGET="$ESP_TARGET" -DSDKCONFIG="$profile_dir/sdkconfig" \
+                -DSDKCONFIG_DEFAULTS="$sdkconfig_defaults" build
         )
 
-        # Measure .text from libnanortc.a
+        # GNU size's text column includes read-only data, before final linking.
         lib="$build_dir/esp-idf/nanortc/libnanortc.a"
         if [ -f "$lib" ]; then
             text_bytes=$("$CROSS_SIZE" "$lib" 2>/dev/null | awk 'NR>1{s+=$1}END{print s}')
@@ -166,11 +162,12 @@ if $ESP32_MODE; then
         elf="$build_dir/esp32_measure.elf"
         if [ -f "$elf" ]; then
             # Extract nanortc_sizeof symbol address and read 4 bytes from .rodata
-            sizeof_val=$( python3 -c "
+            sizeof_val=$(python3 - "$CROSS_NM" "$CROSS_SIZE" "$elf" <<'PY_ELF'
 import subprocess, struct, re, sys
 
 # Get symbol address from nm
-nm_out = subprocess.check_output(['$CROSS_NM', '$elf'], text=True)
+nm_tool, size_tool, elf = sys.argv[1:]
+nm_out = subprocess.check_output([nm_tool, elf], text=True)
 for line in nm_out.splitlines():
     if 'nanortc_sizeof' in line:
         parts = line.split()
@@ -181,8 +178,8 @@ else:
     sys.exit(0)
 
 # Find the section containing the symbol via readelf
-readelf = '$CROSS_SIZE'.replace('-size', '-readelf')
-sections_out = subprocess.check_output([readelf, '-S', '$elf'], text=True)
+readelf = size_tool.removesuffix('-size') + '-readelf'
+sections_out = subprocess.check_output([readelf, '-SW', elf], text=True)
 
 # Parse sections to find which one contains our address
 for line in sections_out.splitlines():
@@ -194,7 +191,7 @@ for line in sections_out.splitlines():
         sec_size = int(m.group(4), 16)
         if sec_addr <= addr < sec_addr + sec_size:
             file_offset = sec_off + (addr - sec_addr)
-            with open('$elf', 'rb') as f:
+            with open(elf, 'rb') as f:
                 f.seek(file_offset)
                 data = f.read(4)
             val = struct.unpack('<I', data)[0]
@@ -202,7 +199,8 @@ for line in sections_out.splitlines():
             sys.exit(0)
 
 print('?')
-" 2>/dev/null )
+PY_ELF
+            )
             RAM_SIZES+=("${sizeof_val:-?}")
         else
             RAM_SIZES+=("?")
@@ -211,7 +209,7 @@ print('?')
 
     # Output markdown table
     echo ""
-    echo "| Configuration | Flash (.text) | RAM (sizeof) | Flags |"
+    echo "| Configuration | Archive code + read-only data | State (sizeof) | Flags |"
     echo "|--------------|---------------|-------------|-------|"
 
     for i in "${!COMBO_NAMES[@]}"; do
@@ -223,11 +221,10 @@ print('?')
     done
 
     echo ""
-    echo "> Measured on ${CHIP_LABEL}, mbedTLS, -O2."
-    echo "> \`sizeof(nanortc_t)\` is the full per-connection RAM — no heap allocation."
+    echo "> Measured on ${CHIP_LABEL}, mbedTLS adapter, -Os; excludes the mbedTLS library and final-link garbage collection."
+    echo "> \`sizeof(nanortc_t)\` excludes crypto-provider allocations, application buffers and task stacks."
 
-    # Cleanup
-    rm -rf "$MEASURE_DIR"/build-* "$MEASURE_DIR/sdkconfig" "$MEASURE_DIR/sdkconfig.defaults.combo"
+    echo "Build artifacts and logs: $MEASURE_ROOT/$ESP_TARGET" >&2
 
     exit 0
 fi
@@ -263,28 +260,24 @@ get_text_size() {
     fi
 }
 
-COMBO_CMAKE=(
-    "-DNANORTC_FEATURE_DATACHANNEL=OFF -DNANORTC_FEATURE_AUDIO=OFF -DNANORTC_FEATURE_VIDEO=OFF"
-    "-DNANORTC_FEATURE_DATACHANNEL=ON  -DNANORTC_FEATURE_AUDIO=OFF -DNANORTC_FEATURE_VIDEO=OFF"
-    "-DNANORTC_FEATURE_DATACHANNEL=OFF -DNANORTC_FEATURE_AUDIO=ON  -DNANORTC_FEATURE_VIDEO=OFF"
-    "-DNANORTC_FEATURE_DATACHANNEL=ON  -DNANORTC_FEATURE_AUDIO=ON  -DNANORTC_FEATURE_VIDEO=OFF"
-    "-DNANORTC_FEATURE_DATACHANNEL=OFF -DNANORTC_FEATURE_AUDIO=ON  -DNANORTC_FEATURE_VIDEO=ON"
-    "-DNANORTC_FEATURE_DATACHANNEL=ON  -DNANORTC_FEATURE_AUDIO=ON  -DNANORTC_FEATURE_VIDEO=ON"
-)
-
 TEXT_SIZES=()
 RAM_SIZES=()
 
 for i in "${!COMBO_NAMES[@]}"; do
     combo="${COMBO_NAMES[$i]}"
-    cmake_flags="${COMBO_CMAKE[$i]}"
-    build_dir="$ROOT/build-measure-${combo}"
-    rm -rf "$build_dir"
+    read -r -a values <<< "${COMBO_VALUES[$i]}"
+    cmake_flags=()
+    for j in "${!FEATURES[@]}"; do
+        cmake_flags+=("-DNANORTC_FEATURE_${FEATURES[$j]}=${values[$j]}")
+    done
+    build_dir="$MEASURE_ROOT/host-$CRYPTO_NAME/$combo"
+    mkdir -p "$build_dir"
+    build_log="$build_dir/build.log"
+    : > "$build_log"
 
     echo "Building $combo ..." >&2
-    eval cmake -B "$build_dir" $cmake_flags $CRYPTO_FLAG \
-          -DCMAKE_BUILD_TYPE=Release > /dev/null 2>&1
-    cmake --build "$build_dir" -j"$NCPU" > /dev/null 2>&1
+    run_logged cmake -B "$build_dir" "${cmake_flags[@]}" "$CRYPTO_FLAG" -DCMAKE_BUILD_TYPE=Release
+    run_logged cmake --build "$build_dir" -j"$NCPU"
 
     # Measure .text size
     lib="$build_dir/libnanortc.a"
@@ -306,16 +299,9 @@ int main(void) {
 }
 SIZEOF_EOF
 
-    # Convert cmake ON/OFF to cc -D...=1/0
-    defines=""
-    for flag in $cmake_flags; do
-        define=$(echo "$flag" | sed 's/=ON$/=1/' | sed 's/=OFF$/=0/')
-        defines="$defines $define"
-    done
-
     sizeof_bin="$build_dir/_sizeof_nanortc"
-    cc -I"$ROOT/include" -I"$ROOT/src" -I"$ROOT/crypto" $defines \
-       "$sizeof_prog" -o "$sizeof_bin" 2>/dev/null || true
+    run_logged cc -I"$ROOT/include" -I"$ROOT/src" -I"$ROOT/crypto" "${cmake_flags[@]}" \
+        "$sizeof_prog" -o "$sizeof_bin"
 
     if [ -x "$sizeof_bin" ]; then
         RAM_SIZES+=("$("$sizeof_bin")")
@@ -326,7 +312,7 @@ done
 
 # Output markdown table
 echo ""
-echo "| Configuration | Flash (.text) | RAM (sizeof) | Flags |"
+echo "| Configuration | Archive code / read-only data (see below) | State (sizeof) | Flags |"
 echo "|--------------|---------------|-------------|-------|"
 
 for i in "${!COMBO_NAMES[@]}"; do
@@ -340,8 +326,8 @@ done
 echo ""
 ARCH=$(uname -m)
 OS=$(uname -s)
-echo "> Measured on ${ARCH} ${OS}, ${CRYPTO_NAME}, -O2. ARM Cortex-M sizes differ (smaller pointers, different alignment)."
-echo "> sizeof(nanortc_t) is the full per-connection RAM — no heap allocation."
+echo "> Measured on ${ARCH} ${OS}, ${CRYPTO_NAME}, CMake Release. ARM Cortex-M sizes differ (smaller pointers, different alignment)."
+echo "> GNU size includes read-only data; macOS reports __text. Crypto libraries and final-link garbage collection are excluded."
+echo "> sizeof(nanortc_t) excludes crypto-provider allocations, application buffers and task stacks."
 
-# Cleanup
-rm -rf "$ROOT"/build-measure-*
+echo "Build artifacts and logs: $MEASURE_ROOT/host-$CRYPTO_NAME" >&2

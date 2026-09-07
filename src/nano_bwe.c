@@ -26,7 +26,6 @@
  */
 
 #include "nano_bwe.h"
-#include "nano_log.h"
 #include "nanortc.h"
 #include <stdbool.h>
 #include <string.h>
@@ -201,8 +200,6 @@ int bwe_on_rtcp_feedback(nano_bwe_t *bwe, const uint8_t *data, size_t len, uint3
 
     bwe_apply(bwe, remb_bitrate, now_ms, bwe->remb_count == 1);
 
-    NANORTC_LOGD("BWE", "REMB received, estimate updated");
-
     return NANORTC_OK;
 }
 
@@ -259,7 +256,6 @@ int bwe_on_twcc_loss(nano_bwe_t *bwe, uint16_t loss_fraction_q8, uint32_t now_ms
      * feedback is not blended with the compile-time initial estimate. */
     bwe_apply(bwe, target, now_ms, bwe->twcc_count == 1);
 
-    NANORTC_LOGD("BWE", "TWCC loss sample processed");
     return NANORTC_OK;
 }
 

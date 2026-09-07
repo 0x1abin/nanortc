@@ -43,13 +43,8 @@ size_t nano_rtc_build_candidate_str(char *buf, uint16_t foundation, uint32_t pri
                                     const char *ip, size_t ip_len, uint16_t port, const char *type,
                                     size_t type_len);
 
-/**
- * Emit a NANORTC_EV_ICE_CANDIDATE event carrying the trickle string.
- * Caller owns the lifetime of @p candidate_str through the next
- * nanortc_poll_output() call (matches the pointer-lifetime contract on
- * `nanortc_output_t`). Defined in nano_rtc_negotiate.c.
- */
-void nano_rtc_emit_ice_candidate(nanortc_t *rtc, const char *candidate_str);
+/* Produce one retained candidate identity into caller-visible scratch. */
+int nano_rtc_candidate_produce(nanortc_t *rtc, nanortc_output_t *out);
 
 /**
  * Cache the local DTLS fingerprint with the "sha-256 " prefix into

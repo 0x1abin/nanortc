@@ -4,6 +4,15 @@
 **Estimated effort:** 4–6 agent sessions (split across 5 independent PRs)
 **Goal:** Continue the memory/perf/stability trajectory established by Phase 6 (34% RAM reduction) and Phase 7 (hot-path + latent-bug hardening), targeting IoT / ESP32-class targets. Also close out the ICE CONTROLLING bug uncovered by Phase 7 browser_interop testing. Every sub-PR is independent and ships on its own.
 
+## Current implementation reference (2026-09-07)
+
+The [design-hardening and transport-convergence record](../../engineering/design-hardening.md)
+supersedes the memory snapshots and interface assumptions below for current
+SCTP/DCEP ownership, TURN scheduling, provider timers and output polling. All
+seven P4 profiles and four SDK examples were rebuilt with ESP-IDF 5.5.4; host
+size ceilings remain unchanged. This does not reopen the independent pending
+Phase 8 work or claim hardware validation.
+
 ## Context
 
 Phase 7 scoped itself to a critical bug fix plus zero-risk micro-optimizations and defensive hardening so it could ship in one reviewable PR. During the same audit we identified a larger set of optimizations that need more code churn, CI time, or API commitment to land — collecting them here so future sessions can execute without re-doing the exploration.

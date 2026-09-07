@@ -443,7 +443,42 @@ TEST(test_turn_lazy_wrap_drop_releases_backing_tx_slot)
  * Test runner
  * ================================================================ */
 
+TEST(test_full_queue_retains_terminal_events_and_candidate_identity)
+{
+    nanortc_t *rtc = &g_rtc;
+    memset(rtc, 0, sizeof(*rtc));
+    for (uint16_t i = 0; i < NANORTC_OUT_QUEUE_SIZE; i++)
+        enqueue_unmanaged_event(rtc);
+    ASSERT_OK(nanortc_add_local_candidate(rtc, "192.0.2.1", 1001));
+    ASSERT_OK(nanortc_add_local_candidate(rtc, "192.0.2.2", 1002));
+    nanortc_event_t event = {.type = NANORTC_EV_DISCONNECTED};
+    ASSERT_OK(nano_rtc_emit_event_full(rtc, &event));
+    event.type = NANORTC_EV_ICE_STATE_CHANGE;
+    event.ice_state = NANORTC_ICE_STATE_CHECKING;
+    ASSERT_OK(nano_rtc_emit_event_full(rtc, &event));
+    event.ice_state = NANORTC_ICE_STATE_FAILED;
+    ASSERT_OK(nano_rtc_emit_event_full(rtc, &event));
+    nanortc_output_t out;
+    for (uint16_t i = 0; i < NANORTC_OUT_QUEUE_SIZE; i++)
+        ASSERT_OK(nanortc_poll_output(rtc, &out));
+    ASSERT_OK(nanortc_poll_output(rtc, &out));
+    ASSERT_EQ(out.event.type, NANORTC_EV_DISCONNECTED);
+    ASSERT_OK(nanortc_poll_output(rtc, &out));
+    ASSERT_EQ(out.event.ice_state, NANORTC_ICE_STATE_FAILED);
+    uint32_t timeout;
+    ASSERT_OK(nanortc_next_timeout_ms(rtc, 0, &timeout));
+    ASSERT_EQ(timeout, 0u);
+    ASSERT_OK(nanortc_poll_output(rtc, &out));
+    ASSERT_EQ(out.event.type, NANORTC_EV_ICE_CANDIDATE);
+    ASSERT_TRUE(strstr(out.event.ice_candidate.candidate_str, "192.0.2.1 1001") != NULL);
+    ASSERT_OK(nanortc_poll_output(rtc, &out));
+    ASSERT_EQ(out.event.type, NANORTC_EV_ICE_CANDIDATE);
+    ASSERT_TRUE(strstr(out.event.ice_candidate.candidate_str, "192.0.2.2 1002") != NULL);
+    ASSERT_EQ(nanortc_poll_output(rtc, &out), NANORTC_ERR_NO_DATA);
+}
+
 TEST_MAIN_BEGIN("test_output_lifetime")
+RUN(test_full_queue_retains_terminal_events_and_candidate_identity);
 RUN(test_tx_slot_burst_has_independent_payloads_and_exact_release);
 RUN(test_managed_backing_release_matches_cursor_across_u16_wrap);
 RUN(test_tx_slot_reusable_after_more_than_32768_outputs);

@@ -115,7 +115,10 @@ TEST(test_sdp_generate_answer)
     ASSERT_TRUE(strstr(buf, "a=setup:passive") != NULL);
 #if NANORTC_FEATURE_DATACHANNEL
     ASSERT_TRUE(strstr(buf, "a=sctp-port:5000") != NULL);
-    ASSERT_TRUE(strstr(buf, "a=max-message-size:262144") != NULL);
+    char limit[64];
+    snprintf(limit, sizeof(limit), "a=max-message-size:%u",
+             (unsigned)NANORTC_SCTP_MAX_MESSAGE_SIZE);
+    ASSERT_TRUE(strstr(buf, limit) != NULL);
 #endif
 }
 
@@ -1447,7 +1450,29 @@ TEST(test_sdp_twcc_roundtrip)
  * Test runner
  * ================================================================ */
 
+TEST(test_sdp_message_size_limits)
+{
+    nano_sdp_t sdp;
+    sdp_init(&sdp);
+    const char absent[] = "v=0\r\na=ice-ufrag:peer\r\na=ice-pwd:passwordpasswordpassword\r\nm="
+                          "application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n";
+    ASSERT_OK(sdp_parse(&sdp, absent, sizeof(absent) - 1));
+    ASSERT_EQ(sdp.remote_max_message_size, 65536u);
+    const char zero[] =
+        "v=0\r\na=ice-ufrag:peer\r\na=ice-pwd:passwordpasswordpassword\r\na=max-message-size:0\r\n";
+    ASSERT_OK(sdp_parse(&sdp, zero, sizeof(zero) - 1));
+    ASSERT_EQ(sdp.remote_max_message_size, 0u);
+    const char limit[] = "v=0\r\na=ice-ufrag:peer\r\na=ice-pwd:passwordpasswordpassword\r\na=max-"
+                         "message-size:1024\r\n";
+    ASSERT_OK(sdp_parse(&sdp, limit, sizeof(limit) - 1));
+    ASSERT_EQ(sdp.remote_max_message_size, 1024u);
+    const char overflow[] = "v=0\r\na=ice-ufrag:peer\r\na=ice-pwd:passwordpasswordpassword\r\na="
+                            "max-message-size:4294967296\r\n";
+    ASSERT_EQ(sdp_parse(&sdp, overflow, sizeof(overflow) - 1), NANORTC_ERR_PARSE);
+}
+
 TEST_MAIN_BEGIN("test_sdp")
+RUN(test_sdp_message_size_limits);
 RUN(test_sdp_parse_chrome_offer);
 RUN(test_sdp_parse_missing_ufrag);
 RUN(test_sdp_parse_null);

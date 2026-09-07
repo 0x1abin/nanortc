@@ -24,6 +24,7 @@ NanoRTC is built by AI coding agents. Estimates use **agent sessions** (one focu
 
 | Plan | Completed | Effort | Outcome |
 |------|-----------|--------|---------|
+| [Design hardening and transport convergence](engineering/design-hardening.md) | 2026-09-07 | Implementation + review + validation | Bounded SCTP ownership/iterative reassembly, DCEP peek/commit, TURN shared scheduling and authenticated nonce transactions, instance logs, provider timers and length-delimited text; full CI, ASan/UBSan, SCTP/TURN million-run fuzz, 4 KiB interop, 4 Chrome sessions, 4 ESP-IDF examples and 7 P4 profiles passed. ESP32 hardware validation excluded by user. |
 | [Phase 0: Skeleton](exec-plans/completed/phase0-skeleton.md) | 2026-03-26 | 1 session | 75 files, all 3 profiles build, 12 tests pass |
 | [Phase 1: DataChannel E2E](exec-plans/completed/phase1-datachannel.md) | 2026-03-29 | 7 sessions | 5/5 interop tests, browser + ESP32-S3 DC verified, 140+ unit tests |
 | [Phase 3: Video](exec-plans/completed/phase3-video.md) | 2026-04-05 | 2 sessions | H.264 FU-A + BWE + REMB, ESP32 camera (H.264 hw + Opus), Chrome verified |
