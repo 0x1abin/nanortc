@@ -106,7 +106,7 @@ static void nat_drain(unsigned side, uint32_t now, bool signal_candidates)
     }
 }
 
-static void nat_connect(unsigned offerer)
+static void nat_connect(unsigned offerer, bool host_candidates)
 {
     memset(opened, 0, sizeof(opened));
     memset(mapped, 0, sizeof(mapped));
@@ -119,8 +119,9 @@ static void nat_connect(unsigned offerer)
         cfg.crypto = nano_test_crypto();
         cfg.role = i == offerer ? NANORTC_ROLE_CONTROLLING : NANORTC_ROLE_CONTROLLED;
         ASSERT_OK(nanortc_init(&peers[i], &cfg));
-        ASSERT_OK(nanortc_add_local_candidate(&peers[i], i ? "10.1.0.1" : "10.0.0.1",
-                                              private_addr[i].port));
+        if (host_candidates)
+            ASSERT_OK(nanortc_add_local_candidate(&peers[i], i ? "10.1.0.1" : "10.0.0.1",
+                                                  private_addr[i].port));
         const char *urls[] = {"stun:192.0.2.100:3478"};
         nanortc_ice_server_t server = {.urls = urls, .url_count = 1};
         ASSERT_OK(nanortc_set_ice_servers(&peers[i], &server, 1));
@@ -177,16 +178,24 @@ static void nat_connect(unsigned offerer)
 }
 TEST(test_nat_endpoint_zero_offers)
 {
-    nat_connect(0);
+    nat_connect(0, true);
 }
 TEST(test_nat_endpoint_one_offers)
 {
-    nat_connect(1);
+    nat_connect(1, true);
+}
+TEST(test_nat_default_socket)
+{
+    /* STUN uses the application's default socket before any host candidate
+     * is registered. Its public mapping must never become a bind hint. */
+    nat_connect(0, false);
+    nat_connect(1, false);
 }
 #endif
 TEST_MAIN_BEGIN("ICE NAT")
 #if NANORTC_FEATURE_DATACHANNEL && NANORTC_FEATURE_ICE_SRFLX
 RUN(test_nat_endpoint_zero_offers);
 RUN(test_nat_endpoint_one_offers);
+RUN(test_nat_default_socket);
 #endif
 TEST_MAIN_END

@@ -162,6 +162,7 @@ uint32_t ice_get_check(const nano_ice_t *ice, uint32_t now_ms, const bool *relay
 int ice_send_check(nano_ice_t *ice, uint32_t now_ms, const nano_ice_check_t *check,
                    const nanortc_crypto_provider_t *crypto, uint8_t *buf, size_t buf_len,
                    size_t *out_len);
+/* UNKNOWN retains the application's default socket for an unregistered base. */
 uint8_t ice_local_base_idx(const nano_ice_t *ice, uint8_t idx);
 
 int ice_init(nano_ice_t *ice, int is_controlling);

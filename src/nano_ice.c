@@ -131,10 +131,14 @@ static void ice_unqueue_check(nano_ice_t *ice, int slot)
 uint8_t ice_local_base_idx(const nano_ice_t *ice, uint8_t idx)
 {
     if (idx < ice->local_candidate_count &&
-        ice->local_candidates[idx].type == NANORTC_ICE_CAND_SRFLX &&
-        ice->srflx_base_idx < ice->local_candidate_count &&
-        ice->local_candidates[ice->srflx_base_idx].type == NANORTC_ICE_CAND_HOST)
-        return ice->srflx_base_idx;
+        ice->local_candidates[idx].type == NANORTC_ICE_CAND_SRFLX) {
+        if (ice->srflx_base_idx < ice->local_candidate_count &&
+            ice->local_candidates[ice->srflx_base_idx].type == NANORTC_ICE_CAND_HOST)
+            return ice->srflx_base_idx;
+        /* RFC 8445 §5.1.1.2: a mapped address is not a local socket.
+         * Without a registered base, reuse discovery's default socket. */
+        return NANORTC_ICE_LOCAL_IDX_UNKNOWN;
+    }
     return idx;
 }
 
@@ -147,14 +151,20 @@ static bool ice_addr_matches(const nano_ice_candidate_t *c, const nanortc_addr_t
 static void ice_select_pair(nano_ice_t *ice, uint8_t local, uint8_t remote)
 {
     const nano_ice_candidate_t *r = &ice->remote_candidates[remote];
-    const nano_ice_candidate_t *l = &ice->local_candidates[ice_local_base_idx(ice, local)];
+    uint8_t base = ice_local_base_idx(ice, local);
     memcpy(ice->selected_addr, r->addr, NANORTC_ADDR_SIZE);
     ice->selected_port = r->port;
     ice->selected_family = r->family;
     __atomic_store_n(&ice->selected_type, r->type, __ATOMIC_RELAXED);
-    memcpy(ice->selected_local_addr, l->addr, NANORTC_ADDR_SIZE);
-    ice->selected_local_port = l->port;
-    ice->selected_local_family = l->family;
+    memset(ice->selected_local_addr, 0, NANORTC_ADDR_SIZE);
+    ice->selected_local_port = 0;
+    ice->selected_local_family = 0;
+    if (base < ice->local_candidate_count) {
+        const nano_ice_candidate_t *l = &ice->local_candidates[base];
+        memcpy(ice->selected_local_addr, l->addr, NANORTC_ADDR_SIZE);
+        ice->selected_local_port = l->port;
+        ice->selected_local_family = l->family;
+    }
     ice->selected_local_idx = local;
     __atomic_store_n(&ice->selected_local_type, ice->local_candidates[local].type,
                      __ATOMIC_RELAXED);

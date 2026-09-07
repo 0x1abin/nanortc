@@ -38,7 +38,9 @@ nomination of a validated pair can finish after that budget is reached.
 The STUN discovery base is retained separately from the mapped address. Checks
 and selected-path traffic use the host socket as their source hint, including
 when the selected local candidate is srflx. Known mapped candidates are reused
-when a success response identifies them.
+when a success response identifies them. If discovery used the default socket
+before any host candidate was registered, source hints remain unset so the
+application continues using that socket instead of binding the public mapping.
 
 ## Compatibility and limits
 
@@ -55,7 +57,7 @@ require TURN or a different reachable candidate.
 ## Validation
 
 - `test_ice_nat`: two private endpoints with separate mappings and
-  address/port-dependent filtering; both role assignments, srflx trickling,
+  address/port-dependent filtering; both role assignments, with and without registered host candidates, srflx trickling,
   ICE/DTLS/SCTP/DCEP and bidirectional UTF-8 text containing an embedded NUL.
   The same test fails against the pre-change main revision. A bounded test
   packet queue retains input across output backpressure, including one TX slot.
@@ -72,9 +74,17 @@ UTF-8 and embedded-NUL messages), with Opus reception and decoded H.264 frames.
 The browser runner exposed a shutdown/profile-directory cleanup race; bounded
 filesystem retries are delivered in the separate example-hardening change.
 
+The combined tree with [example hardening, PR #84](https://github.com/0x1abin/nanortc/pull/84)
+also passed **34/34** ASan/UBSan suites and both Chrome roles with both crypto
+backends, including candidate forwarding and audio/video. The OpenSSL build
+explicitly disabled `getifaddrs`. The temporary worktree initially lacked the
+media sample submodule; browser validation passed after using the existing
+pinned samples. Final CI reused the local v0.22.5 interop dependency after its
+network download failed.
+
 Host `sizeof(nanortc_t)` is unchanged: CORE_ONLY 20,640; DATA 35,760;
 AUDIO_ONLY 46,400; AUDIO 61,512; MEDIA_ONLY 102,472; MEDIA 117,592;
 MEDIA_H265 118,632 bytes. Host Release archive code/read-only bytes are
-97,406 / 135,160 / 123,431 / 160,793 / 135,935 / 173,953 / 181,713 in that order.
+97,838 / 135,560 / 123,863 / 161,193 / 136,367 / 174,353 / 182,113 in that order.
 These exclude crypto libraries and final-link garbage collection.
 No ESP32 hardware, external TURN service or WASI runtime validation is included.

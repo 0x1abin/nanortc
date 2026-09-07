@@ -50,20 +50,20 @@ These guards catch accidental structural growth. They do not replace target
 measurements: pointer width, Kconfig buffer trims, crypto backend, and enabled
 media recovery features all change the actual footprint.
 
-## Current host state (after #79)
+## Current host state (Issue #81)
 
 Release/OpenSSL, x86_64 defaults; code + read-only data uses GNU `size`.
 The #82-only snapshot remains in the historical hardening record.
 
 | Profile | State bytes | Archive code + read-only data bytes |
 |---|---:|---:|
-| CORE_ONLY | 20,640 | 88,872 |
-| DATA | 35,760 | 126,642 |
-| AUDIO_ONLY | 46,400 | 114,897 |
-| AUDIO | 61,512 | 152,307 |
-| MEDIA_ONLY | 102,472 | 127,401 |
-| MEDIA | 117,592 | 165,419 |
-| MEDIA_H265 | 118,632 | 173,195 |
+| CORE_ONLY | 20,640 | 97,838 |
+| DATA | 35,760 | 135,560 |
+| AUDIO_ONLY | 46,400 | 123,863 |
+| AUDIO | 61,512 | 161,193 |
+| MEDIA_ONLY | 102,472 | 136,367 |
+| MEDIA | 117,592 | 174,353 |
+| MEDIA_H265 | 118,632 | 182,113 |
 
 Protocol names use existing label-size bounds; one-byte channel state avoids
 raising the 600-byte DCEP ceiling. Compared with #82, host DataChannel profiles

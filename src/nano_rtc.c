@@ -1259,9 +1259,9 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
              * USE-CANDIDATE has flipped selected_type. Without this, the
              * first pre-nomination responses leak direct and the peer ICE
              * stack builds a prflx direct candidate on loopback / LAN. */
-            if (!via_turn && local_idx < rtc->ice.local_candidate_count) {
-                const nano_ice_candidate_t *c =
-                    &rtc->ice.local_candidates[ice_local_base_idx(&rtc->ice, local_idx)];
+            uint8_t base = ice_local_base_idx(&rtc->ice, local_idx);
+            if (!via_turn && base < rtc->ice.local_candidate_count) {
+                const nano_ice_candidate_t *c = &rtc->ice.local_candidates[base];
                 nanortc_addr_t local = {.family = c->family, .port = c->port};
                 memcpy(local.addr, c->addr, NANORTC_ADDR_SIZE);
                 rc = rtc_tx_slot_commit_direct(rtc, tx_slot, resp_len, src, &local);
@@ -1419,9 +1419,11 @@ static int rtc_process_timers(nanortc_t *rtc, uint32_t now_ms)
             nanortc_addr_t local_src;
             memset(&local_src, 0, sizeof(local_src));
             uint8_t base = ice_local_base_idx(&rtc->ice, local_before);
-            local_src.family = rtc->ice.local_candidates[base].family;
-            memcpy(local_src.addr, rtc->ice.local_candidates[base].addr, NANORTC_ADDR_SIZE);
-            local_src.port = rtc->ice.local_candidates[base].port;
+            if (base < rtc->ice.local_candidate_count) {
+                local_src.family = rtc->ice.local_candidates[base].family;
+                memcpy(local_src.addr, rtc->ice.local_candidates[base].addr, NANORTC_ADDR_SIZE);
+                local_src.port = rtc->ice.local_candidates[base].port;
+            }
 #if NANORTC_FEATURE_TURN
             if (rtc->ice.local_candidates[local_before].type == NANORTC_ICE_CAND_RELAY) {
                 rc = nano_rtc_tx_slot_commit(rtc, tx_slot, out_len, &dest, true);
