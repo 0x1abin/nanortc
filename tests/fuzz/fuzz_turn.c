@@ -72,15 +72,48 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
         nano_turn_t turn;
         turn_init(&turn);
         turn.state = NANORTC_TURN_ALLOCATED;
+        turn.configured = true;
         turn.hmac_key_valid = true;
         memset(turn.auth.hmac_key, 0xAA, NANORTC_TURN_HMAC_KEY_SIZE);
 
         /* Copy transaction ID from fuzzer input so responses may match */
         if (size >= STUN_HEADER_SIZE) {
-            memcpy(turn.last_txid, data + 8, STUN_TXID_SIZE);
+            uint16_t method = nanortc_read_u16be(data) & 0x000fu;
+            if (method == 8) {
+                turn.permission_count = 1;
+                turn.permissions[0].family = 4;
+                turn.permissions[0].pending = NANORTC_TURN_REQUEST_WAITING;
+                turn.permissions[0].transmissions = 1;
+                memcpy(turn.permissions[0].txid, data + 8, STUN_TXID_SIZE);
+            } else if (method == 9) {
+                turn.channel_count = 1;
+                turn.channels[0].family = 4;
+                turn.channels[0].channel = 0x4000;
+                turn.channels[0].pending = NANORTC_TURN_REQUEST_WAITING;
+                turn.channels[0].transmissions = 1;
+                memcpy(turn.channels[0].txid, data + 8, STUN_TXID_SIZE);
+            } else {
+                turn.transaction =
+                    method == 3 ? NANORTC_TURN_TXN_ALLOCATE : NANORTC_TURN_TXN_REFRESH;
+                turn.transaction_authenticated = true;
+                turn.transaction_transmissions = 1;
+                if (method == 3)
+                    turn.state = NANORTC_TURN_ALLOCATING;
+                memcpy(turn.last_txid, data + 8, STUN_TXID_SIZE);
+            }
         }
 
-        turn_handle_response(&turn, 0, data, size, &fuzz_crypto);
+        uint8_t packet[NANORTC_TURN_MAX_REQUEST_SIZE];
+        uint32_t now = UINT32_MAX - 100u;
+        for (unsigned i = 0; i < 4; i++) {
+            turn_handle_response(&turn, now, data, size, &fuzz_crypto);
+            size_t len;
+            turn_poll_output(&turn, now, &fuzz_crypto, packet, sizeof(packet), &len);
+            uint32_t delay = turn_next_timeout_ms(&turn, now);
+            if (delay == UINT32_MAX)
+                break;
+            now += delay;
+        }
     }
 
     return 0;

@@ -36,6 +36,9 @@ typedef enum {
 
 typedef struct nano_dtls {
     nano_dtls_state_t state;
+    uint32_t now_ms;
+    uint32_t timeout_ms;
+    uint32_t timeout_observed_ms;
 
     /* Outbound: DTLS records to send (filled by crypto provider via BIO send) */
     uint8_t out_buf[NANORTC_DTLS_BUF_SIZE];
@@ -88,12 +91,17 @@ typedef struct nano_dtls {
  * Initialize DTLS state machine and create crypto context.
  * is_server: 1 = DTLS server (answerer), 0 = DTLS client (offerer).
  */
+int dtls_validate_provider(const nanortc_crypto_provider_t *crypto);
 int dtls_init(nano_dtls_t *dtls, const nanortc_crypto_provider_t *crypto, int is_server);
 
 /*
  * Start handshake (client role: generates ClientHello).
  * After this call, poll dtls_poll_output() for the initial flight.
  */
+void dtls_set_time(nano_dtls_t *dtls, uint32_t now_ms);
+int dtls_handle_timeout(nano_dtls_t *dtls, uint32_t now_ms);
+uint32_t dtls_next_timeout_ms(const nano_dtls_t *dtls, uint32_t now_ms);
+
 int dtls_start(nano_dtls_t *dtls);
 
 /*

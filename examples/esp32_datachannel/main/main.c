@@ -69,8 +69,9 @@ static void on_event(nanortc_t *rtc, const nanortc_event_t *evt, void *userdata)
         } else {
             ESP_LOGI(TAG, "DC string: %.*s", (int)evt->datachannel_data.len,
                      (char *)evt->datachannel_data.data);
-            nanortc_datachannel_send_string(rtc, evt->datachannel_data.id,
-                                            (const char *)evt->datachannel_data.data);
+            nanortc_datachannel_send_text(rtc, evt->datachannel_data.id,
+                                          (const char *)evt->datachannel_data.data,
+                                          evt->datachannel_data.len);
         }
         break;
 
@@ -110,8 +111,8 @@ static int handle_offer(const char *offer, char *answer, size_t answer_size, siz
         .event_cb = on_event,
     };
 
-    int rc = nano_session_accept_offer(&s_rtc, &s_loop, &params, offer, answer, answer_size,
-                                       answer_len);
+    int rc =
+        nano_session_accept_offer(&s_rtc, &s_loop, &params, offer, answer, answer_size, answer_len);
     if (rc != NANORTC_OK) {
         ESP_LOGE(TAG, "nano_session_accept_offer failed: %d (%s)", rc, nanortc_err_name(rc));
     }

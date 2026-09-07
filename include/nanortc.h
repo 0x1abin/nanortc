@@ -246,7 +246,6 @@ struct nanortc_addr {
 typedef enum {
     NANORTC_OUTPUT_TRANSMIT, /**< UDP data to send to the network. */
     NANORTC_OUTPUT_EVENT,    /**< Application-level event. */
-    NANORTC_OUTPUT_TIMEOUT,  /**< Requested callback delay in milliseconds. */
 } nanortc_output_type_t;
 
 /** @brief Application event types delivered via NANORTC_OUTPUT_EVENT. */
@@ -459,7 +458,6 @@ typedef struct nanortc_output {
                                   *   family==0 means "use any" (backward compat). */
         } transmit;              /**< Valid when type == NANORTC_OUTPUT_TRANSMIT. */
         nanortc_event_t event;   /**< Valid when type == NANORTC_OUTPUT_EVENT. */
-        uint32_t timeout_ms;     /**< Valid when type == NANORTC_OUTPUT_TIMEOUT. */
     };
 } nanortc_output_t;
 
@@ -569,10 +567,6 @@ typedef struct nanortc_config {
      *  Pointer fields are copied during nanortc_init(); need not persist after. */
     const nanortc_ice_server_t *ice_servers; /**< Array of ICE server descriptors (NULL = none). */
     size_t ice_server_count;                 /**< Number of entries in ice_servers[]. */
-
-    /* Memory configuration */
-    uint32_t sctp_send_buf_size; /**< SCTP send buffer size (0 = default). */
-    uint32_t sctp_recv_buf_size; /**< SCTP receive buffer size (0 = default). */
 
 #if NANORTC_FEATURE_AUDIO
     uint32_t jitter_depth_ms; /**< Jitter buffer depth in ms (default for new audio tracks). */
@@ -822,6 +816,10 @@ struct nanortc {
     nanortc_output_t out_queue[NANORTC_OUT_QUEUE_SIZE];
     uint16_t out_head;
     uint16_t out_tail;
+    /* Queue-full metadata: latest snapshot per event type and track/channel.
+     * Payload events retain their bytes in the protocol/track producer instead. */
+    nanortc_event_t pending_events[NANORTC_PENDING_EVENT_SLOTS];
+    uint8_t pending_event_count;
 
     /** Owned backing storage for transient transmit producers. A slot remains
      * busy until poll_output advances out_head to its exact free_at cursor. */
@@ -861,6 +859,8 @@ struct nanortc {
      * STUN/SRTP scratch and poll-time TURN wrapping can share storage. Their
      * uses never overlap within one API call; outbound control uses TX slots. */
     union {
+        /* Candidates are formatted only while polling, after receive processing. */
+        char candidate_str[ICE_CANDIDATE_STR_SIZE];
         uint8_t stun_buf[NANORTC_STUN_BUF_SIZE];
 #if NANORTC_FEATURE_TURN
         uint8_t turn_buf[NANORTC_TURN_BUF_SIZE];
@@ -870,16 +870,11 @@ struct nanortc {
     /* Stored remote address for SCTP output routing */
     nanortc_addr_t remote_addr;
 
-    /* Candidate events are emitted by separate state-mutating API calls, so
-     * their strings follow the same pointer-lifetime contract and share one
-     * fixed scratch region. */
-    union {
+    bool host_candidate_pending[NANORTC_MAX_LOCAL_CANDIDATES];
+    bool srflx_candidate_pending;
 #if NANORTC_FEATURE_TURN
-        char relay_cand_str[NANORTC_IPV6_STR_SIZE + 96];
+    bool relay_candidate_pending;
 #endif
-        char srflx_cand_str[NANORTC_IPV6_STR_SIZE + 96];
-        char host_cand_str[NANORTC_IPV6_STR_SIZE + 96];
-    };
 
     /* STUN server for srflx discovery (RFC 8445 §5.1.1.1) */
     uint8_t stun_server_addr[NANORTC_ADDR_SIZE];
@@ -1081,9 +1076,8 @@ NANORTC_API int nanortc_handle_input(nanortc_t *rtc, const nanortc_input_t *in);
  * Aggregates ICE connectivity-check pacing, ICE consent freshness send +
  * expiry, STUN srflx retry, TURN Allocate / Refresh / CreatePermission /
  * ChannelBind refresh, SCTP retransmission RTOs and heartbeat, and the
- * RTCP Sender Report period. While a DTLS handshake is in progress the
- * result is capped at @c NANORTC_MIN_POLL_INTERVAL_MS so the underlying
- * crypto provider's retransmits still fire on time. When no deadline is
+ * RTCP Sender Report period, DTLS provider retransmissions, audio jitter
+ * playout and video pacing/reorder. Pending output returns zero. When no deadline is
  * armed, the function returns a conservative idle cap (1000 ms) so the
  * caller never sleeps indefinitely.
  *
@@ -1133,7 +1127,7 @@ NANORTC_API uint16_t nanortc_output_free_slots(const nanortc_t *rtc);
 /** @brief Optional DataChannel parameters for nanortc_create_datachannel().
  *  Pass NULL for defaults (reliable, ordered). Zero-initialized struct also gives defaults. */
 typedef struct nanortc_datachannel_options {
-    const char *protocol;     /**< Sub-protocol (NUL-terminated, NULL = none). */
+    const char *protocol;     /**< NULL/empty supported; nonempty returns NOT_IMPLEMENTED. */
     bool unordered;           /**< Set true for unordered delivery (default: false = ordered). */
     uint16_t max_retransmits; /**< Max retransmit count (0 = reliable). */
 } nanortc_datachannel_options_t;
@@ -1457,11 +1451,24 @@ NANORTC_API int nanortc_create_datachannel(nanortc_t *rtc, const char *label,
 NANORTC_API int nanortc_datachannel_send(nanortc_t *rtc, uint16_t id, const void *data, size_t len);
 
 /**
+ * @brief Send length-delimited UTF-8 text on a DataChannel.
+ *
+ * @param rtc  Initialized RTC state (must be connected).
+ * @param id   SCTP stream ID.
+ * @param str  UTF-8 payload (required; no NUL terminator needed).
+ * @param len  Payload length in bytes; embedded NUL bytes are preserved.
+ * @return NANORTC_OK on success; same errors as nanortc_datachannel_send().
+ */
+NANORTC_API int nanortc_datachannel_send_text(nanortc_t *rtc, uint16_t id, const char *str,
+                                              size_t len);
+
+/**
  * @brief Send a UTF-8 string on a DataChannel.
  *
  * @param rtc  Initialized RTC state (must be connected).
  * @param id   SCTP stream ID.
  * @param str  NUL-terminated UTF-8 string.
+ *             Use nanortc_datachannel_send_text() for received event payloads.
  * @return NANORTC_OK on success.
  */
 NANORTC_API int nanortc_datachannel_send_string(nanortc_t *rtc, uint16_t id, const char *str);

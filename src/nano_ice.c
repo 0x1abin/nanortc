@@ -8,7 +8,6 @@
  */
 
 #include "nano_ice.h"
-#include "nano_log.h"
 #include "nano_stun.h"
 #include "nano_time.h"
 #include "nanortc_crypto.h"
@@ -315,10 +314,6 @@ int ice_handle_stun(nano_ice_t *ice, const uint8_t *data, size_t len, const nano
              * whether ICE picked a direct (HOST) or a relay (TURN) pair and
              * which family — needed to diagnose dual-stack pair selection
              * without enabling DEBUG-level packet traces. */
-            NANORTC_LOGI("ICE", via_turn ? (src->family == 6 ? "nominated: pair=RELAY family=v6"
-                                                             : "nominated: pair=RELAY family=v4")
-                                         : (src->family == 6 ? "nominated: pair=HOST family=v6"
-                                                             : "nominated: pair=HOST family=v4"));
         }
 
         return NANORTC_OK;

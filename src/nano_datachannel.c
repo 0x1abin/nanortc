@@ -1,13 +1,12 @@
 /*
  * nanortc — DataChannel / DCEP protocol (RFC 8831, RFC 8832)
  *
- * Reference: str0m src/sctp/dcep.rs (message format).
+ * Wire format: RFC 8832 §5.
  *
  * SPDX-License-Identifier: MIT
  */
 
 #include "nano_datachannel.h"
-#include "nano_log.h"
 #include "nanortc.h"
 #include <string.h>
 
@@ -77,17 +76,11 @@ static size_t dcep_encode_open(uint8_t *buf, uint8_t channel_type, uint16_t prio
     return pos;
 }
 
-static size_t dcep_encode_ack(uint8_t *buf)
-{
-    buf[0] = DCEP_DATA_CHANNEL_ACK;
-    return 1;
-}
-
 /* ================================================================
  * Channel management
  * ================================================================ */
 
-static nano_dc_channel_t *dc_find_channel(nano_dc_t *dc, uint16_t stream_id)
+nano_dc_channel_t *dc_find_channel(nano_dc_t *dc, uint16_t stream_id)
 {
     for (uint8_t i = 0; i < dc->channel_count; i++) {
         if (dc->channels[i].stream_id == stream_id &&
@@ -122,13 +115,29 @@ int dc_init(nano_dc_t *dc)
     return NANORTC_OK;
 }
 
-int dc_handle_message(nano_dc_t *dc, uint16_t stream_id, uint32_t ppid, const uint8_t *data,
-                      size_t len)
+static const nano_dc_channel_t *dc_pending_channel(const nano_dc_t *dc)
 {
-    if (!dc) {
+    for (uint8_t i = 0; i < dc->channel_count; i++) {
+        const nano_dc_channel_t *ch = &dc->channels[i];
+        if (ch->pending && ch->state != NANORTC_DC_STATE_CLOSED)
+            return ch;
+    }
+    return NULL;
+}
+
+bool dc_has_pending_output(const nano_dc_t *dc)
+{
+    return dc_pending_channel(dc) != NULL;
+}
+
+int dc_handle_message(nano_dc_t *dc, uint16_t stream_id, uint32_t ppid, const uint8_t *data,
+                      size_t len, bool *opened)
+{
+    if (!dc || !opened || (!data && len)) {
         return NANORTC_ERR_INVALID_PARAM;
     }
 
+    *opened = false;
     if (ppid == DCEP_PPID_CONTROL) {
         if (len < 1) {
             return NANORTC_ERR_PARSE;
@@ -142,27 +151,26 @@ int dc_handle_message(nano_dc_t *dc, uint16_t stream_id, uint32_t ppid, const ui
                 return rc;
             }
 
-            dc->last_was_open = false;
-
             /* Idempotent: if channel already exists, just re-ACK */
             nano_dc_channel_t *existing = dc_find_channel(dc, stream_id);
             if (existing) {
-                dc->out_len = (uint16_t)dcep_encode_ack(dc->out_buf);
-                dc->out_stream = stream_id;
-                dc->has_output = true;
+                existing->pending = DCEP_DATA_CHANNEL_ACK;
                 return NANORTC_OK;
             }
 
+            if ((open.channel_type & 0x7f) > DCEP_CHANNEL_REXMIT ||
+                open.reliability_param > UINT16_MAX)
+                return NANORTC_ERR_NOT_IMPLEMENTED;
             /* Allocate channel */
             nano_dc_channel_t *ch = dc_alloc_channel(dc, stream_id);
             if (!ch) {
-                NANORTC_LOGW("DC", "max channels reached");
                 return NANORTC_ERR_BUFFER_TOO_SMALL;
             }
 
             ch->state = NANORTC_DC_STATE_OPEN;
             ch->channel_type = open.channel_type;
             ch->ordered = !(open.channel_type & 0x80);
+            ch->max_retransmits = (uint16_t)open.reliability_param;
 
             /* Copy label (truncate to fit) */
             uint16_t copy_len = open.label_len;
@@ -173,12 +181,9 @@ int dc_handle_message(nano_dc_t *dc, uint16_t stream_id, uint32_t ppid, const ui
             ch->label[copy_len] = '\0';
 
             /* Queue DCEP ACK response */
-            dc->out_len = (uint16_t)dcep_encode_ack(dc->out_buf);
-            dc->out_stream = stream_id;
-            dc->has_output = true;
-            dc->last_was_open = true;
+            ch->pending = DCEP_DATA_CHANNEL_ACK;
+            *opened = true;
 
-            NANORTC_LOGI("DC", "channel opened by peer");
             return NANORTC_OK;
 
         } else if (data[0] == DCEP_DATA_CHANNEL_ACK) {
@@ -186,7 +191,7 @@ int dc_handle_message(nano_dc_t *dc, uint16_t stream_id, uint32_t ppid, const ui
             nano_dc_channel_t *ch = dc_find_channel(dc, stream_id);
             if (ch && ch->state == NANORTC_DC_STATE_OPENING) {
                 ch->state = NANORTC_DC_STATE_OPEN;
-                NANORTC_LOGI("DC", "channel opened (ACK received)");
+                *opened = true;
             }
             return NANORTC_OK;
         }
@@ -216,12 +221,10 @@ int dc_open(nano_dc_t *dc, uint16_t stream_id, const char *label, bool ordered,
 
     /* Determine DCEP channel type (RFC 8832 §5) */
     uint8_t ctype;
-    uint32_t reliability = 0;
     if (max_retransmits == 0) {
         ctype = ordered ? DCEP_CHANNEL_RELIABLE : DCEP_CHANNEL_RELIABLE_UNORDERED;
     } else {
         ctype = ordered ? DCEP_CHANNEL_REXMIT : DCEP_CHANNEL_REXMIT_UNORDERED;
-        reliability = max_retransmits;
     }
 
     ch->state = NANORTC_DC_STATE_OPENING;
@@ -236,36 +239,41 @@ int dc_open(nano_dc_t *dc, uint16_t stream_id, const char *label, bool ordered,
     memcpy(ch->label, label, label_len);
     ch->label[label_len] = '\0';
 
-    /* Encode DCEP OPEN */
-    dc->out_len =
-        (uint16_t)dcep_encode_open(dc->out_buf, ctype, 0, reliability, label, label_len, NULL, 0);
-    dc->out_stream = stream_id;
-    dc->has_output = true;
+    ch->pending = DCEP_DATA_CHANNEL_OPEN;
 
-    NANORTC_LOGD("DC", "OPEN queued");
     return NANORTC_OK;
 }
 
-int dc_poll_output(nano_dc_t *dc, uint8_t *buf, size_t buf_len, size_t *out_len,
+int dc_peek_output(const nano_dc_t *dc, uint8_t *buf, size_t buf_len, size_t *out_len,
                    uint16_t *stream_id)
 {
-    if (!dc || !buf || !out_len || !stream_id) {
+    if (!dc || !buf || !out_len || !stream_id)
         return NANORTC_ERR_INVALID_PARAM;
-    }
-
-    if (!dc->has_output || dc->out_len == 0) {
-        *out_len = 0;
+    *out_len = 0;
+    const nano_dc_channel_t *ch = dc_pending_channel(dc);
+    if (!ch)
         return NANORTC_ERR_NO_DATA;
+    size_t label_len = 0;
+    if (ch->pending == DCEP_DATA_CHANNEL_OPEN) {
+        while (label_len < sizeof(ch->label) && ch->label[label_len])
+            label_len++;
     }
-
-    if (buf_len < dc->out_len) {
+    size_t needed = ch->pending == DCEP_DATA_CHANNEL_ACK ? 1u : 12u + label_len;
+    if (buf_len < needed)
         return NANORTC_ERR_BUFFER_TOO_SMALL;
-    }
-
-    memcpy(buf, dc->out_buf, dc->out_len);
-    *out_len = dc->out_len;
-    *stream_id = dc->out_stream;
-    dc->has_output = false;
-    dc->out_len = 0;
+    if (ch->pending == DCEP_DATA_CHANNEL_ACK)
+        buf[0] = DCEP_DATA_CHANNEL_ACK;
+    else
+        dcep_encode_open(buf, ch->channel_type, 0, ch->max_retransmits, ch->label,
+                         (uint16_t)label_len, NULL, 0);
+    *out_len = needed;
+    *stream_id = ch->stream_id;
     return NANORTC_OK;
+}
+
+void dc_commit_output(nano_dc_t *dc, uint16_t stream_id)
+{
+    nano_dc_channel_t *ch = dc_find_channel(dc, stream_id);
+    if (ch)
+        ch->pending = 0;
 }

@@ -8,7 +8,6 @@
  */
 
 #include "nano_h264.h"
-#include "nano_log.h"
 #include "nanortc.h"
 #include <string.h>
 
@@ -165,14 +164,12 @@ int h264_depkt_push(nano_h264_depkt_t *d, const uint8_t *payload, size_t len, in
     if (nal_type >= 1 && nal_type <= 23) {
         /* Abort any in-progress FU-A reassembly */
         if (d->in_progress) {
-            NANORTC_LOGW("H264", "FU-A interrupted by single NAL");
             d->in_progress = 0;
             d->len = 0;
         }
 
         /* Copy into buffer and return */
         if (len > NANORTC_VIDEO_NAL_BUF_SIZE) {
-            NANORTC_LOGW("H264", "single NAL exceeds buffer");
             return NANORTC_ERR_BUFFER_TOO_SMALL;
         }
         memcpy(d->buf, payload, len);
@@ -188,7 +185,6 @@ int h264_depkt_push(nano_h264_depkt_t *d, const uint8_t *payload, size_t len, in
      * For now, extract the first sub-NAL unit. */
     if (nal_type == H264_NAL_STAPA) {
         if (d->in_progress) {
-            NANORTC_LOGW("H264", "FU-A interrupted by STAP-A");
             d->in_progress = 0;
             d->len = 0;
         }
@@ -204,7 +200,6 @@ int h264_depkt_push(nano_h264_depkt_t *d, const uint8_t *payload, size_t len, in
             offset += H264_STAPA_NALU_LEN_SIZE;
 
             if (sub_len > len - offset) {
-                NANORTC_LOGW("H264", "STAP-A sub-NAL exceeds packet");
                 return NANORTC_ERR_PARSE;
             }
             if (sub_len == 0) {
@@ -254,7 +249,6 @@ int h264_depkt_push(nano_h264_depkt_t *d, const uint8_t *payload, size_t len, in
             d->in_progress = 1;
 
             if (1 + frag_len > NANORTC_VIDEO_NAL_BUF_SIZE) {
-                NANORTC_LOGW("H264", "FU-A start exceeds buffer");
                 d->in_progress = 0;
                 d->len = 0;
                 return NANORTC_ERR_BUFFER_TOO_SMALL;
@@ -264,7 +258,6 @@ int h264_depkt_push(nano_h264_depkt_t *d, const uint8_t *payload, size_t len, in
         } else if (d->in_progress) {
             /* Continuation or end fragment */
             if (d->len + frag_len > NANORTC_VIDEO_NAL_BUF_SIZE) {
-                NANORTC_LOGW("H264", "FU-A reassembly exceeds buffer");
                 d->in_progress = 0;
                 d->len = 0;
                 return NANORTC_ERR_BUFFER_TOO_SMALL;
@@ -273,7 +266,6 @@ int h264_depkt_push(nano_h264_depkt_t *d, const uint8_t *payload, size_t len, in
             d->len += frag_len;
         } else {
             /* Continuation without start — discard */
-            NANORTC_LOGD("H264", "FU-A continuation without start");
             return NANORTC_OK;
         }
 
@@ -288,7 +280,6 @@ int h264_depkt_push(nano_h264_depkt_t *d, const uint8_t *payload, size_t len, in
     }
 
     /* Unknown NAL type — ignore */
-    NANORTC_LOGD("H264", "unknown NAL type in RTP payload");
     return NANORTC_OK;
 }
 

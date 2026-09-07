@@ -315,9 +315,9 @@ TEST(test_interop_dc_large_binary)
     rc = interop_nanortc_wait_flag(&nano.dc_open, INTEROP_TIMEOUT_MS);
     ASSERT_OK(rc);
 
-    /* 1000-byte payload (fits in single SCTP DATA chunk, larger than basic 256) */
-    uint8_t payload[1000];
-    for (int i = 0; i < 1000; i++) {
+    /* Exercise the advertised receive limit across multiple SCTP DATA chunks. */
+    uint8_t payload[NANORTC_SCTP_MAX_MESSAGE_SIZE];
+    for (size_t i = 0; i < sizeof(payload); i++) {
         payload[i] = (uint8_t)(i & 0xFF);
     }
 
@@ -338,6 +338,19 @@ TEST(test_interop_dc_large_binary)
     ASSERT_EQ(nano.last_msg_len, sizeof(payload));
     ASSERT_TRUE(memcmp(nano.last_msg, payload, sizeof(payload)) == 0);
     pthread_mutex_unlock(&nano.msg_mutex);
+
+    initial_count = atomic_load(&libdatachannel.msg_count);
+    rc = nanortc_datachannel_send(&nano.rtc, 0, payload, sizeof(payload));
+    ASSERT_OK(rc);
+    start = interop_get_millis();
+    while (atomic_load(&libdatachannel.msg_count) <= initial_count) {
+        ASSERT_TRUE(interop_get_millis() - start < INTEROP_TIMEOUT_MS);
+        interop_sleep_ms(10);
+    }
+    pthread_mutex_lock(&libdatachannel.msg_mutex);
+    ASSERT_EQ(libdatachannel.last_msg_len, sizeof(payload));
+    ASSERT_TRUE(memcmp(libdatachannel.last_msg, payload, sizeof(payload)) == 0);
+    pthread_mutex_unlock(&libdatachannel.msg_mutex);
 
     teardown_pair(&pipe, &nano, &libdatachannel);
 }

@@ -81,8 +81,9 @@ static void on_event(nanortc_t *rtc, const nanortc_event_t *evt, void *userdata)
         } else {
             fprintf(stderr, "[event] DC string: %.*s\n", (int)evt->datachannel_data.len,
                     (char *)evt->datachannel_data.data);
-            nanortc_datachannel_send_string(rtc, evt->datachannel_data.id,
-                                            (const char *)evt->datachannel_data.data);
+            nanortc_datachannel_send_text(rtc, evt->datachannel_data.id,
+                                          (const char *)evt->datachannel_data.data,
+                                          evt->datachannel_data.len);
         }
         break;
 
@@ -112,6 +113,7 @@ static void usage(const char *prog)
     fprintf(stderr, "  --turn-server IP:PORT  TURN relay server\n");
     fprintf(stderr, "  --turn-user USER       TURN username\n");
     fprintf(stderr, "  --turn-pass PASS       TURN password/credential\n");
+    fprintf(stderr, "  --host-only            Disable STUN/TURN for local tests\n");
     fprintf(stderr, "  --offer                Act as offerer (CONTROLLING)\n");
     fprintf(stderr, "  --answer               Act as answerer (CONTROLLED, default)\n");
 }
@@ -303,6 +305,7 @@ int main(int argc, char *argv[])
     char sig_host[256] = "localhost";
     uint16_t sig_port = 8765;
     int offer_mode = 0;
+    bool host_only = false;
     const char *audio_dir = NULL;
     const char *video_dir = NULL;
     int video_codec = 0; /* 0 = H264 (default), 1 = H265 */
@@ -342,6 +345,8 @@ int main(int argc, char *argv[])
             turn_user = argv[++i];
         } else if (strcmp(argv[i], "--turn-pass") == 0 && i + 1 < argc) {
             turn_pass = argv[++i];
+        } else if (strcmp(argv[i], "--host-only") == 0) {
+            host_only = true;
         } else if (strcmp(argv[i], "--offer") == 0) {
             offer_mode = 1;
         } else if (strcmp(argv[i], "--answer") == 0) {
@@ -395,9 +400,9 @@ int main(int argc, char *argv[])
     size_t ice_server_count = 0;
 
     ice_servers[0] = (nanortc_ice_server_t){.urls = &stun_url, .url_count = 1};
-    ice_server_count = 1;
+    ice_server_count = host_only ? 0 : 1;
 
-    if (turn_ip[0] && turn_user && turn_pass) {
+    if (!host_only && turn_ip[0] && turn_user && turn_pass) {
         snprintf(turn_url, sizeof(turn_url), "turn:%s:%u", turn_ip, turn_port);
         turn_url_ptr = turn_url;
         ice_servers[1] = (nanortc_ice_server_t){
@@ -410,7 +415,7 @@ int main(int argc, char *argv[])
     cfg.ice_servers = ice_servers;
     cfg.ice_server_count = ice_server_count;
 
-    if (turn_ip[0] && turn_user) {
+    if (!host_only && turn_ip[0] && turn_user) {
         fprintf(stderr, "ICE servers: STUN + TURN %s user=%s\n",
                 ice_server_count > 1 ? ice_servers[1].urls[0] : "(none)", turn_user);
     }

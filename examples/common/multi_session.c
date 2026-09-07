@@ -268,13 +268,12 @@ void nano_session_dispatch(nano_session_t *s, uint32_t *timeout_ms)
         case NANORTC_OUTPUT_EVENT:
             handle_session_event(s, &out.event);
             break;
-        case NANORTC_OUTPUT_TIMEOUT:
-            if (timeout_ms && out.timeout_ms < *timeout_ms) {
-                *timeout_ms = out.timeout_ms;
-            }
-            break;
         }
     }
+    uint32_t next_ms;
+    if (timeout_ms && nanortc_next_timeout_ms(&s->rtc, s->rtc.now_ms, &next_ms) == NANORTC_OK &&
+        next_ms < *timeout_ms)
+        *timeout_ms = next_ms;
 }
 
 /* ----------------------------------------------------------------
@@ -314,8 +313,7 @@ void nano_session_pool_handle_udp(nano_session_pool_t *pool, int select_ret, con
             if (n > 0) {
                 nanortc_addr_t src = {.family = 4, .port = ntohs(from.sin_port)};
                 memcpy(src.addr, &from.sin_addr, 4);
-                nanortc_input_t in = {
-                    .now_ms = now_ms, .data = buf, .len = (size_t)n, .src = src};
+                nanortc_input_t in = {.now_ms = now_ms, .data = buf, .len = (size_t)n, .src = src};
                 nanortc_handle_input(&s->rtc, &in);
             }
         } else {

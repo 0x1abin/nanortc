@@ -153,6 +153,31 @@ cmake -B build -DNANORTC_CRYPTO=openssl -DNANORTC_BUILD_EXAMPLES=ON \
 cmake --build build -j$(nproc)
 ```
 
+### Automated Chrome smoke test (no ESP32 required)
+
+With Node.js 22+ and Chrome installed, run from the repository root after building:
+
+```bash
+node scripts/test-browser.mjs build/examples/browser_interop/browser_interop --media
+```
+
+Omit `--media` for a DataChannel-only binary. Set `CHROME` to a different Chrome
+executable if needed. The script starts the existing signaling server and a fresh
+headless browser profile, tests NanoRTC as both offerer and answerer, and cleans
+up its processes. Chrome runs with `--no-sandbox` for this local test profile.
+No npm packages are needed. The harness passes `--host-only` to disable the
+C example's default ICE servers and exercise same-host connectivity.
+
+Each role checks two channels (ordered/reliable and unordered/limited-retry),
+18 exact binary/text echoes including empty messages, 4096-byte messages,
+UTF-8 and embedded NUL characters. Media mode also requires decoded H.264 frames
+and received Opus samples via `getStats()`. Failures save process logs in the
+reported temporary directory. Run against both crypto-backend builds.
+
+Received text is length-delimited. Echo it with
+`nanortc_datachannel_send_text(rtc, id, data, len)`; `send_string()` is only for
+NUL-terminated application strings.
+
 ### Step 1: Start signaling server
 
 ```bash
@@ -301,6 +326,15 @@ Entering event loop...
 [event] DataChannel open (stream=1)
 [event] DC string: hello
 ```
+
+## Local smoke-test isolation
+
+`--host-only` disables the example's default STUN/TURN servers. The automated
+`scripts/test-browser.mjs` harness always uses this option: its evidence covers
+local host-candidate interoperability, not external relay reachability.
+The harness probes UDP ports with UDP sockets, reports process-spawn errors
+immediately, waits for child shutdown and removes successful temporary runs.
+Failure logs are retained at the printed temporary path.
 
 ## Troubleshooting
 

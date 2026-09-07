@@ -7,18 +7,18 @@ Authoritative protocol specifications for NanoRTC. RFCs are the **sole** authori
 | Module | RFC | Title | Key Sections | Priority |
 |--------|-----|-------|-------------|----------|
 | Mux | [RFC 7983](https://www.rfc-editor.org/rfc/rfc7983) | Multiplexing Scheme Updates for DTLS-SRTP | §3 (demux algorithm by first byte) | Phase 1 |
-| STUN | [RFC 8489](https://www.rfc-editor.org/rfc/rfc8489) | Session Traversal Utilities for NAT | §5 (message structure), §6 (attributes), §14 (FINGERPRINT), §15 (MESSAGE-INTEGRITY) | Phase 1 Week 1 |
+| STUN | [RFC 8489](https://www.rfc-editor.org/rfc/rfc8489) | Session Traversal Utilities for NAT | §5 (message/transaction ID), §6.2.1 (UDP retry), §9.2.5 (response authentication), §14.5 (MESSAGE-INTEGRITY), §14.7 (FINGERPRINT) | Phase 1 Week 1 |
 | STUN Vectors | [RFC 5769](https://www.rfc-editor.org/rfc/rfc5769) | Test Vectors for STUN | §2.1 (request), §2.2 (IPv4 response), §2.3 (IPv6 response) | Phase 1 Week 1 |
 | ICE | [RFC 8445](https://www.rfc-editor.org/rfc/rfc8445) | Interactive Connectivity Establishment | §2.2 (ICE Lite), §5.1 (full), §7 (performing checks), §7.3 (responding) | Phase 1 Week 1 |
 | TURN | [RFC 5766](https://www.rfc-editor.org/rfc/rfc5766) | Traversal Using Relays around NAT | §6 (Allocate), §7 (Refresh), §9 (CreatePermission), §10 (Send/Data Indication), §11 (Channels), §14 (Attributes) | Phase 5 |
-| TURN-bis | [RFC 8656](https://www.rfc-editor.org/rfc/rfc8656) | Traversal Using Relays around NAT (updates 5766) | §6 (Refresh), §7 (Allocate), §9 (CreatePermission), §10 (Send/Data Indication), §11 (Channels), §12 (ChannelData) | Phase 5 |
+| TURN-bis | [RFC 8656](https://www.rfc-editor.org/rfc/rfc8656) | Traversal Using Relays around NAT (obsoletes 5766 and 6156) | §7 (Allocate), §8 (Refresh), §9 (Permissions), §10 (CreatePermission), §11 (Send/Data), §12 (Channels), §18 (Attributes) | Phase 5 |
 | TURN IPv6 | [RFC 6156](https://www.rfc-editor.org/rfc/rfc6156) | TURN Extension for IPv6 | §4 (REQUESTED-ADDRESS-FAMILY), §6 (relay address selection) | Future (currently out of scope) |
 | DTLS | [RFC 6347](https://www.rfc-editor.org/rfc/rfc6347) | Datagram Transport Layer Security 1.2 | §4 (record protocol), §4.2 (handshake) | Phase 1 Week 2 |
-| SCTP | [RFC 4960](https://www.rfc-editor.org/rfc/rfc4960) | Stream Control Transmission Protocol | §3 (packet format), §5 (association setup), §6 (chunk processing), §8 (fault) | Phase 1 Week 3 |
+| SCTP | [RFC 9260](https://www.rfc-editor.org/rfc/rfc9260) | Stream Control Transmission Protocol (obsoletes 4960) | §3 (packet format), §5 (association setup), §6 (chunk processing), §8 (fault) | Phase 1 Week 3 |
 | SCTP/DTLS | [RFC 8261](https://www.rfc-editor.org/rfc/rfc8261) | Datagram Transport Layer Security for SCTP | Entire document | Phase 1 Week 3 |
 | PR-SCTP | [RFC 3758](https://www.rfc-editor.org/rfc/rfc3758) | SCTP Partial Reliability Extension | §3 (FORWARD-TSN) | Phase 1 Week 3 |
 | DC Transport | [RFC 8831](https://www.rfc-editor.org/rfc/rfc8831) | WebRTC Data Channels | Entire document | Phase 1 Week 4 |
-| DCEP | [RFC 8832](https://www.rfc-editor.org/rfc/rfc8832) | WebRTC Data Channel Establishment Protocol | §5 (DATA_CHANNEL_OPEN), §6 (DATA_CHANNEL_ACK) | Phase 1 Week 4 |
+| DCEP | [RFC 8832](https://www.rfc-editor.org/rfc/rfc8832) | WebRTC Data Channel Establishment Protocol | §5.1 (DATA_CHANNEL_OPEN), §5.2 (DATA_CHANNEL_ACK), §6 (procedures) | Phase 1 Week 4 |
 | SDP | [RFC 8866](https://www.rfc-editor.org/rfc/rfc8866) | Session Description Protocol | §5 (SDP spec), §9 (attributes) | Phase 1 Week 4 |
 | JSEP | [RFC 8829](https://www.rfc-editor.org/rfc/rfc8829) | JavaScript Session Establishment Protocol | §5 (SDP offer/answer) | Phase 1 Week 4 |
 
