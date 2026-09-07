@@ -31,6 +31,10 @@ set(TURN_TESTS test_turn)
 foreach(test_source ${TEST_SOURCES})
     get_filename_component(test_name ${test_source} NAME_WE)
 
+    if(test_name STREQUAL "test_example_io" AND NOT UNIX)
+        continue()
+    endif()
+
     # Skip media-transport tests when neither AUDIO nor VIDEO is enabled
     list(FIND MEDIA_TESTS ${test_name} _is_media_test)
     if(_is_media_test GREATER -1 AND NOT NANORTC_FEATURE_AUDIO AND NOT NANORTC_FEATURE_VIDEO)
@@ -127,4 +131,13 @@ if(NANORTC_FEATURE_VIDEO AND NANORTC_FEATURE_TURN)
     endif()
     set_target_properties(test_output_lifetime_min PROPERTIES C_STANDARD 99)
     add_test(NAME test_output_lifetime_min COMMAND test_output_lifetime_min)
+endif()
+
+# Exercise the standard nonblocking fallback when MSG_DONTWAIT is unavailable.
+if(UNIX)
+    add_executable(test_example_io_fcntl test_example_io.c)
+    target_link_libraries(test_example_io_fcntl PRIVATE nanortc unity)
+    target_include_directories(test_example_io_fcntl PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/crypto)
+    target_compile_definitions(test_example_io_fcntl PRIVATE TEST_EXAMPLE_FCNTL=1)
+    add_test(NAME test_example_io_fcntl COMMAND test_example_io_fcntl)
 endif()

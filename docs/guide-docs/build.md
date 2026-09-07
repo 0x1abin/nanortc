@@ -229,3 +229,13 @@ intersection, FEC with receiver NACK and automatic PLI disabled, and fixed-rate
 FEC with video pacing disabled. Each check writes a log under
 `.cache/ci/logs/`; the final 100 lines are replayed on failure instead of being
 discarded.
+
+
+### Host examples without interface enumeration
+
+Host CMake builds detect `getifaddrs` independently of the protocol library.
+`-DNANO_HAVE_GETIFADDRS=OFF` exercises the explicit-address fallback; pass
+`-b <local-IP>` to `browser_interop`. See the [example portability notes](../../examples/browser_interop/README.md#local-addresses-memory-and-portability-issue-81).
+This switch does not assert WASI support. `test_example_io` and its fcntl variant
+exercise receive races, timer progression, socket-family conversion and HTTP
+allocation/connection-failure cleanup without real networking.
