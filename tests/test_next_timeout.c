@@ -135,6 +135,10 @@ TEST(test_next_timeout_ice_controlling_uses_next_check_ms)
     nanortc_t *rtc = &g_rtc;
     memset(rtc, 0, sizeof(*rtc));
 
+    rtc->ice.local_ufrag_len = rtc->ice.local_pwd_len = 1;
+    rtc->ice.remote_ufrag_len = rtc->ice.remote_pwd_len = 1;
+    rtc->ice.local_candidate_count = rtc->ice.remote_candidate_count = 1;
+    rtc->ice.local_candidates[0].family = rtc->ice.remote_candidates[0].family = 4;
     rtc->ice.is_controlling = true;
     rtc->ice.state = NANORTC_ICE_STATE_CHECKING;
     rtc->ice.next_check_ms = 1500;
@@ -150,6 +154,10 @@ TEST(test_next_timeout_ice_check_already_due_returns_zero)
     nanortc_t *rtc = &g_rtc;
     memset(rtc, 0, sizeof(*rtc));
 
+    rtc->ice.local_ufrag_len = rtc->ice.local_pwd_len = 1;
+    rtc->ice.remote_ufrag_len = rtc->ice.remote_pwd_len = 1;
+    rtc->ice.local_candidate_count = rtc->ice.remote_candidate_count = 1;
+    rtc->ice.local_candidates[0].family = rtc->ice.remote_candidates[0].family = 4;
     rtc->ice.is_controlling = true;
     rtc->ice.state = NANORTC_ICE_STATE_CHECKING;
     rtc->ice.next_check_ms = 1000;
@@ -164,6 +172,10 @@ TEST(test_next_timeout_ice_check_future_across_u32_wrap)
     nanortc_t *rtc = &g_rtc;
     memset(rtc, 0, sizeof(*rtc));
 
+    rtc->ice.local_ufrag_len = rtc->ice.local_pwd_len = 1;
+    rtc->ice.remote_ufrag_len = rtc->ice.remote_pwd_len = 1;
+    rtc->ice.local_candidate_count = rtc->ice.remote_candidate_count = 1;
+    rtc->ice.local_candidates[0].family = rtc->ice.remote_candidates[0].family = 4;
     rtc->ice.is_controlling = true;
     rtc->ice.state = NANORTC_ICE_STATE_CHECKING;
     rtc->ice.next_check_ms = 50;
@@ -179,6 +191,10 @@ TEST(test_next_timeout_ice_check_overdue_across_u32_wrap)
     nanortc_t *rtc = &g_rtc;
     memset(rtc, 0, sizeof(*rtc));
 
+    rtc->ice.local_ufrag_len = rtc->ice.local_pwd_len = 1;
+    rtc->ice.remote_ufrag_len = rtc->ice.remote_pwd_len = 1;
+    rtc->ice.local_candidate_count = rtc->ice.remote_candidate_count = 1;
+    rtc->ice.local_candidates[0].family = rtc->ice.remote_candidates[0].family = 4;
     rtc->ice.is_controlling = true;
     rtc->ice.state = NANORTC_ICE_STATE_CHECKING;
     rtc->ice.next_check_ms = UINT32_MAX - 20u;

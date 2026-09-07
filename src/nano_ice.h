@@ -3,8 +3,8 @@
  * @internal Not part of the public API.
  *
  * Supports two roles:
- *   CONTROLLED (answerer)  — respond to incoming STUN checks (ICE-Lite)
- *   CONTROLLING (offerer)  — initiate STUN connectivity checks
+ *   CONTROLLED (answerer)  — check connectivity and accept nomination
+ *   CONTROLLING (offerer)  — check connectivity, then nominate a valid pair
  *
  * SPDX-License-Identifier: MIT
  */
@@ -47,6 +47,7 @@ typedef enum {
 typedef enum {
     NANORTC_ICE_CAND_HOST = 0,  /**< Local host address. */
     NANORTC_ICE_CAND_SRFLX = 1, /**< Server-reflexive (from STUN). */
+    NANORTC_ICE_CAND_PRFLX = 3, /**< Learned from an authenticated connectivity check. */
     NANORTC_ICE_CAND_RELAY = 2, /**< Relay (from TURN). */
 } nano_ice_cand_type_t;
 
@@ -58,6 +59,11 @@ typedef enum {
  * local_pref differentiates candidates of the same type: 65535 - index.
  */
 #define ICE_HOST_PRIORITY(idx) ((uint32_t)((126u << 24) | ((uint32_t)(65535u - (idx)) << 8) | 255u))
+
+/* RFC 8445 §7.1.1: STUN PRIORITY describes a prospective peer-reflexive
+ * candidate, not the host/srflx priority advertised in SDP. */
+#define ICE_PRFLX_PRIORITY(idx) \
+    ((uint32_t)((110u << 24) | ((uint32_t)(65535u - (idx)) << 8) | 255u))
 
 /** @brief Server-reflexive priority (RFC 8445 §5.1.2.2: type_pref = 100). */
 #define ICE_SRFLX_PRIORITY(idx) \
@@ -73,26 +79,20 @@ typedef struct nano_ice_candidate {
     uint8_t type;   /* nano_ice_cand_type_t */
 } nano_ice_candidate_t;
 
-/**
- * @brief Per-pair in-flight STUN Binding Request tracking (RFC 8445 §7.1.3).
- *
- * CONTROLLING role sends one check per pair every NANORTC_ICE_CHECK_INTERVAL_MS
- * while rotating through candidate pairs. Browsers typically respond to those
- * checks in bursts and possibly out of order, so we need to match each
- * Binding Response to its originating pair by transaction ID. Storing only
- * the most recent transaction (TD-018) loses every response except the last.
- */
+/** Fixed-capacity transaction/trigger/valid-pair table (RFC 8445 §7).
+ * Both roles keep transaction IDs until success, cancellation or timeout. */
 typedef struct nano_ice_pending {
     uint8_t txid[STUN_TXID_SIZE]; /**< 12-byte STUN transaction ID. */
     uint32_t sent_at_ms;          /**< Wall clock at send time (for stale reaping). */
     uint8_t local_idx;            /**< Index into local_candidates[]. */
     uint8_t remote_idx;           /**< Index into remote_candidates[]. */
     bool in_flight;               /**< True while awaiting a matching response. */
+    uint8_t flags; /**< Queue/valid/nomination flags and retransmission count; uses old padding. */
 } nano_ice_pending_t;
 
 typedef struct nano_ice {
     nano_ice_state_t state;
-    int is_controlling; /* 0 = controlled (answerer), 1 = controlling (offerer) */
+    int is_controlling; /* Both roles check; only controlling nominates. */
     char local_ufrag[NANORTC_ICE_UFRAG_SIZE];
     uint16_t local_ufrag_len;
     char local_pwd[NANORTC_ICE_PWD_SIZE];
@@ -105,13 +105,14 @@ typedef struct nano_ice {
     uint16_t selected_port;
     uint8_t selected_family;
     uint8_t selected_type;      /**< nano_ice_cand_type_t of selected pair. */
-    uint32_t check_interval_ms; /* for controlling role: STUN check pacing */
+    uint32_t check_interval_ms; /* STUN check pacing for both roles */
     uint32_t next_check_ms;
 
-    /* Controlling role state */
-    uint64_t tie_breaker; /* 8-byte random for ICE-CONTROLLING/CONTROLLED */
-    uint8_t check_count;  /* number of checks sent */
-    bool nominated;       /* selected pair nominated */
+    /* Check/nomination state */
+    uint64_t tie_breaker;   /* 8-byte random for ICE-CONTROLLING/CONTROLLED */
+    uint8_t check_count;    /* number of checks sent */
+    bool nominated;         /* selected pair nominated */
+    uint8_t srflx_base_idx; /**< Host socket used for STUN discovery. */
 
     /* Per-pair in-flight check tracking (TD-018, RFC 8445 §7.1.3) */
     nano_ice_pending_t pending[NANORTC_ICE_MAX_PENDING_CHECKS];
@@ -131,7 +132,7 @@ typedef struct nano_ice {
     nano_ice_candidate_t remote_candidates[NANORTC_MAX_ICE_CANDIDATES];
     uint8_t remote_candidate_count;
 
-    /* Pair iteration state (controlling role) */
+    /* Ordinary candidate-pair iteration */
     uint8_t current_local;  /* index of local candidate being checked */
     uint8_t current_remote; /* index of remote candidate being checked */
 
@@ -146,24 +147,30 @@ typedef struct nano_ice {
     bool consent_pending;                 /**< True if a consent check is awaiting response. */
 } nano_ice_t;
 
+/* A transient task view. The reader is shared by sending and timeout queries.
+ * relay_ready, when non-NULL, contains one permission-ready flag per remote. */
+typedef struct nano_ice_check {
+    int slot;
+    uint8_t local_idx;
+    uint8_t remote_idx;
+    bool retransmit;
+    bool expire;
+} nano_ice_check_t;
+
+uint32_t ice_get_check(const nano_ice_t *ice, uint32_t now_ms, const bool *relay_ready,
+                       nano_ice_check_t *check);
+int ice_send_check(nano_ice_t *ice, uint32_t now_ms, const nano_ice_check_t *check,
+                   const nanortc_crypto_provider_t *crypto, uint8_t *buf, size_t buf_len,
+                   size_t *out_len);
+uint8_t ice_local_base_idx(const nano_ice_t *ice, uint8_t idx);
+
 int ice_init(nano_ice_t *ice, int is_controlling);
 
-/* Handle incoming STUN message (both roles).
- * Writes response to resp_buf if needed; sets *resp_len to 0 if no response.
- *
- * @p via_turn must be true when @p data was just unwrapped from a TURN Data
- * Indication or ChannelData (i.e. the OUTER source was the TURN server even
- * though @p src is the inner peer address). When set, USE-CANDIDATE marks the
- * selected pair as RELAY instead of HOST so subsequent transmits get wrapped
- * back through the TURN relay (RFC 5766 §10/§11). Without this signal the
- * controlled side has no way to tell a direct check from a relay-tunneled one,
- * because in both cases @p src is the same peer.
- *
- * @p local_idx is the index into local_candidates[] that received this packet.
- * Used by the controlled-role USE-CANDIDATE nomination to record which local
- * candidate was selected (so consent freshness uses the correct PRIORITY).
- * Pass NANORTC_ICE_LOCAL_IDX_UNKNOWN when the caller cannot determine it; the
- * controlled-side fallback is to record idx 0, preserving prior behavior. */
+/* Handle authenticated incoming STUN on the receiving transport path.
+ * via_turn distinguishes a relay from a direct packet with the same peer IP.
+ * local_idx identifies the receiving socket; UNKNOWN uses a same-family
+ * candidate. A nomination waits for a successful check before selection.
+ * WOULD_BLOCK with resp_len=0 means bounded admission needs a retry. */
 #if NANORTC_MAX_LOCAL_CANDIDATES >= 0xFFu
 #error \
     "NANORTC_MAX_LOCAL_CANDIDATES must be < 255; 0xFF is reserved as NANORTC_ICE_LOCAL_IDX_UNKNOWN sentinel"
@@ -173,7 +180,7 @@ int ice_handle_stun(nano_ice_t *ice, const uint8_t *data, size_t len, const nano
                     uint8_t local_idx, bool via_turn, const nanortc_crypto_provider_t *crypto,
                     uint8_t *resp_buf, size_t resp_buf_len, size_t *resp_len);
 
-/* Generate outgoing STUN Binding Request (controlling role only).
+/* Generate outgoing STUN Binding Request (both roles).
  * Returns NANORTC_OK with *out_len=0 if not time to send yet. */
 int ice_generate_check(nano_ice_t *ice, uint32_t now_ms, const nanortc_crypto_provider_t *crypto,
                        uint8_t *buf, size_t buf_len, size_t *out_len);
@@ -203,10 +210,9 @@ bool ice_consent_expired(const nano_ice_t *ice, uint32_t now_ms);
 
 /**
  * Compute milliseconds until ICE needs the timer wheel to fire.
- * Considers controlling-role check pacing, post-CONNECTED consent freshness
+ * Considers check work for either role, post-CONNECTED consent freshness
  * keepalive, and the consent expiry deadline. Returns UINT32_MAX when no
- * deadline is currently armed (e.g., FAILED state, or controlled role
- * without nominated pair).
+ * deadline is currently armed (e.g. FAILED or waiting for remote credentials).
  *
  * Pure const reader — used by the library's own Sans-I/O timeout
  * aggregator to let event loops sleep up to the next deadline.

@@ -19,6 +19,7 @@
 #include "nanortc_crypto.h"
 #include "nano_test.h"
 #include "nano_test_config.h"
+#include "nano_test_ice.h"
 #include <string.h>
 
 static const nanortc_crypto_provider_t *crypto(void)
@@ -80,6 +81,9 @@ static void setup_ice_pair(nano_ice_t *controlling, nano_ice_t *controlled)
     controlled->remote_ufrag_len = 4;
     memcpy(controlled->remote_pwd, "ctrl-password-abcdef", 21);
     controlled->remote_pwd_len = 20;
+    controlled->local_candidates[0] = controlling->remote_candidates[0];
+    controlled->remote_candidates[0] = controlling->local_candidates[0];
+    controlled->local_candidate_count = controlled->remote_candidate_count = 1;
 }
 
 /* Build a single host candidate with the given address family and port.
@@ -105,34 +109,37 @@ static void fill_candidate(nano_ice_candidate_t *c, uint8_t family, uint16_t por
 /* Helper: generate a check and feed to peer */
 static int do_ice_roundtrip(nano_ice_t *ctrl, nano_ice_t *ctld, uint32_t now_ms)
 {
-    uint8_t req_buf[256], resp_buf[256], dummy[256];
-    size_t req_len = 0, resp_len = 0, dummy_len = 0;
-
-    int rc = ice_generate_check(ctrl, now_ms, crypto(), req_buf, sizeof(req_buf), &req_len);
-    if (rc != NANORTC_OK || req_len == 0)
-        return rc;
-
-    nanortc_addr_t src;
-    memset(&src, 0, sizeof(src));
-    src.family = 4;
-    src.addr[0] = 10;
-    src.addr[3] = 1;
-    src.port = 4000;
-
-    rc = ice_handle_stun(ctld, req_buf, req_len, &src, NANORTC_ICE_LOCAL_IDX_UNKNOWN, false,
-                         crypto(), resp_buf, sizeof(resp_buf), &resp_len);
-    if (rc != NANORTC_OK)
-        return rc;
-
-    nanortc_addr_t resp_src;
-    memset(&resp_src, 0, sizeof(resp_src));
-    resp_src.family = 4;
-    resp_src.addr[0] = 10;
-    resp_src.addr[3] = 2;
-    resp_src.port = 5000;
-
-    return ice_handle_stun(ctrl, resp_buf, resp_len, &resp_src, NANORTC_ICE_LOCAL_IDX_UNKNOWN,
-                           false, crypto(), dummy, sizeof(dummy), &dummy_len);
+    for (unsigned step = 0; step < 20; step++, now_ms += 50) {
+        nano_ice_t *agents[] = {ctrl, ctld};
+        for (unsigned side = 0; side < 2; side++) {
+            nano_ice_t *from = agents[side], *to = agents[1 - side];
+            nano_ice_check_t check;
+            if (ice_get_check(from, now_ms, NULL, &check) != 0)
+                continue;
+            uint8_t req[256], resp[256], unused[256];
+            size_t len = 0, resp_len = 0, unused_len = 0;
+            int rc = ice_generate_check(from, now_ms, crypto(), req, sizeof(req), &len);
+            if (rc || !len)
+                continue;
+            nano_ice_candidate_t *local = &from->local_candidates[check.local_idx];
+            nano_ice_candidate_t *remote = &from->remote_candidates[check.remote_idx];
+            nanortc_addr_t src = {.family = local->family, .port = local->port};
+            nanortc_addr_t dst = {.family = remote->family, .port = remote->port};
+            memcpy(src.addr, local->addr, sizeof(src.addr));
+            memcpy(dst.addr, remote->addr, sizeof(dst.addr));
+            rc = ice_handle_stun(to, req, len, &src, 0, false, crypto(), resp, sizeof(resp),
+                                 &resp_len);
+            if (rc)
+                return rc;
+            rc = ice_handle_stun(from, resp, resp_len, &dst, check.local_idx, false, crypto(),
+                                 unused, sizeof(unused), &unused_len);
+            if (rc)
+                return rc;
+        }
+        if (ctrl->nominated && ctld->nominated)
+            return NANORTC_OK;
+    }
+    return NANORTC_ERR_STATE;
 }
 
 /* ================================================================
@@ -201,7 +208,7 @@ TEST(test_ice_generate_check_basic)
 
     /* RFC 8445 §7.1.1: controlling sends ICE-CONTROLLING + USE-CANDIDATE */
     ASSERT_TRUE(msg.has_ice_controlling);
-    ASSERT_TRUE(msg.use_candidate);
+    ASSERT_FALSE(msg.use_candidate);
     ASSERT_FALSE(msg.has_ice_controlled);
 
     /* MI and FP present */
@@ -234,11 +241,11 @@ TEST(test_ice_generate_check_pacing)
     ASSERT_EQ(out_len, 0);
     ASSERT_EQ(ctrl.check_count, 1);
 
-    /* t=50 — exactly at interval */
+    /* One pair is in flight: the next deadline is its RTO, not Ta. */
     out_len = 0;
-    ASSERT_OK(ice_generate_check(&ctrl, 50, crypto(), buf, sizeof(buf), &out_len));
+    ASSERT_OK(ice_generate_check(&ctrl, NANORTC_ICE_RTO_MS, crypto(), buf, sizeof(buf), &out_len));
     ASSERT_TRUE(out_len > 0);
-    ASSERT_EQ(ctrl.check_count, 2);
+    ASSERT_EQ(ctrl.check_count, 1);
 }
 
 TEST(test_ice_generate_check_pacing_wrap)
@@ -257,7 +264,8 @@ TEST(test_ice_generate_check_pacing_wrap)
     ASSERT_OK(ice_generate_check(&ctrl, 0u, crypto(), buf, sizeof(buf), &out_len));
     ASSERT_EQ(out_len, 0u);
 
-    ASSERT_OK(ice_generate_check(&ctrl, 29u, crypto(), buf, sizeof(buf), &out_len));
+    ASSERT_OK(ice_generate_check(&ctrl, start_ms + NANORTC_ICE_RTO_MS, crypto(), buf, sizeof(buf),
+                                 &out_len));
     ASSERT_TRUE(out_len > 0u);
 }
 
@@ -322,18 +330,23 @@ TEST(test_ice_consent_rng_failure_does_not_commit_txid)
     }
 }
 
-TEST(test_ice_controlled_does_not_generate)
+TEST(test_ice_controlled_generates_check)
 {
-    /* RFC 8445: only controlling role initiates checks */
-    nano_ice_t ice;
-    ice_init(&ice, 0); /* controlled */
-    memcpy(ice.remote_pwd, "pw", 3);
-    ice.remote_pwd_len = 2;
-
+    /* RFC 8445 §6.1.1: both full agents check; only controlling nominates. */
+    nano_ice_t ctrl, ctld;
+    setup_ice_pair(&ctrl, &ctld);
+    ctld.local_candidates[0] = ctrl.remote_candidates[0];
+    ctld.remote_candidates[0] = ctrl.local_candidates[0];
+    ctld.local_candidate_count = ctld.remote_candidate_count = 1;
     uint8_t buf[256];
-    size_t out_len = 0;
-    ASSERT_OK(ice_generate_check(&ice, 0, crypto(), buf, sizeof(buf), &out_len));
-    ASSERT_EQ(out_len, 0);
+    size_t len = 0;
+    ASSERT_OK(ice_generate_check(&ctld, 0, crypto(), buf, sizeof(buf), &len));
+    ASSERT_TRUE(len > 0);
+    stun_msg_t msg;
+    ASSERT_OK(stun_parse(buf, len, &msg));
+    ASSERT_TRUE(msg.has_ice_controlled);
+    ASSERT_FALSE(msg.has_ice_controlling);
+    ASSERT_FALSE(msg.use_candidate);
 }
 
 /* ================================================================
@@ -453,7 +466,11 @@ TEST(test_ice_use_candidate_nominates)
 
     uint8_t req_buf[256];
     size_t req_len = 0;
-    ASSERT_OK(ice_generate_check(&ctrl, 100, crypto(), req_buf, sizeof(req_buf), &req_len));
+    uint8_t txid[STUN_TXID_SIZE] = {1};
+    ASSERT_OK(stun_encode_binding_request("PEER:CTRL", 9, ICE_HOST_PRIORITY(0), true, true,
+                                          ctrl.tie_breaker, txid, (const uint8_t *)ctld.local_pwd,
+                                          ctld.local_pwd_len, crypto()->hmac_sha1, req_buf,
+                                          sizeof(req_buf), &req_len));
 
     /* Verify USE-CANDIDATE is present in the request */
     stun_msg_t req;
@@ -472,7 +489,9 @@ TEST(test_ice_use_candidate_nominates)
     ASSERT_OK(ice_handle_stun(&ctld, req_buf, req_len, &src, NANORTC_ICE_LOCAL_IDX_UNKNOWN, false,
                               crypto(), resp_buf, sizeof(resp_buf), &resp_len));
 
-    /* Controlled should be CONNECTED with selected address */
+    ASSERT_FALSE(ctld.nominated);
+    ASSERT_OK(test_ice_answer_check(&ctld, 150, crypto()));
+    /* Nomination completes only after the reverse check succeeds. */
     ASSERT_EQ(ctld.state, NANORTC_ICE_STATE_CONNECTED);
     ASSERT_TRUE(ctld.nominated);
     ASSERT_EQ(ctld.selected_port, 4000);
@@ -586,6 +605,10 @@ TEST(test_ice_controlled_dual_stack_local_fallback)
     ASSERT_OK(ice_handle_stun(&ctld, req_buf, req_len, &src, NANORTC_ICE_LOCAL_IDX_UNKNOWN, false,
                               crypto(), resp_buf, sizeof(resp_buf), &resp_len));
 
+    ASSERT_FALSE(ctld.nominated);
+    memcpy(ctld.remote_pwd, "remote", 6);
+    ctld.remote_pwd_len = 6;
+    ASSERT_OK(test_ice_answer_check(&ctld, 100, crypto()));
     ASSERT_EQ(ctld.state, NANORTC_ICE_STATE_CONNECTED);
     ASSERT_TRUE(ctld.nominated);
     /* The whole point: idx 1 (the v6 candidate), NOT the legacy idx 0. */
@@ -634,18 +657,14 @@ TEST(test_ice_controlled_single_v4_local_fallback_keeps_idx_0)
 
     uint8_t resp_buf[256];
     size_t resp_len = 0;
-    ASSERT_OK(ice_handle_stun(&ctld, req_buf, req_len, &src, NANORTC_ICE_LOCAL_IDX_UNKNOWN, false,
-                              crypto(), resp_buf, sizeof(resp_buf), &resp_len));
+    ASSERT_EQ(ice_handle_stun(&ctld, req_buf, req_len, &src, NANORTC_ICE_LOCAL_IDX_UNKNOWN, false,
+                              crypto(), resp_buf, sizeof(resp_buf), &resp_len),
+              NANORTC_ERR_WOULD_BLOCK);
 
-    ASSERT_EQ(ctld.state, NANORTC_ICE_STATE_CONNECTED);
-    ASSERT_TRUE(ctld.nominated);
-    ASSERT_EQ(ctld.selected_local_idx, 0);    /* legacy fallback */
-    ASSERT_EQ(ctld.selected_local_family, 4); /* the only candidate */
+    /* An IPv6 request cannot nominate a nonexistent IPv6 local socket. */
+    ASSERT_FALSE(ctld.nominated);
+    ASSERT_EQ(ctld.state, NANORTC_ICE_STATE_NEW);
 }
-
-/* ================================================================
- * RFC 8445 §7.3 — Processing Binding Responses (Controlling)
- * ================================================================ */
 
 TEST(test_ice_controlling_receives_response)
 {
@@ -791,6 +810,8 @@ TEST(test_ice_controlling_multi_pair_response_out_of_order)
 
     /* The 2nd pair (remote_idx=1, addr .20, port 5001) must be the one
      * selected — NOT whichever `last_remote_idx` happened to hold. */
+    ASSERT_FALSE(ctrl.nominated);
+    ASSERT_OK(test_ice_answer_check(&ctrl, 250, crypto()));
     ASSERT_EQ(ctrl.state, NANORTC_ICE_STATE_CONNECTED);
     ASSERT_TRUE(ctrl.nominated);
     ASSERT_EQ(ctrl.selected_addr[0], 10);
@@ -810,60 +831,27 @@ TEST(test_ice_controlling_multi_pair_response_out_of_order)
 
 TEST(test_ice_controlling_pending_table_full)
 {
-    /*
-     * TD-018 regression: when the pending table fills up without responses,
-     * the allocator must reap the oldest slot so forward progress continues.
-     * Verify that (a) every generate call succeeds, (b) the table stays at
-     * exactly NANORTC_ICE_MAX_PENDING_CHECKS in-flight entries, and (c) the
-     * first (oldest) txid is no longer present in any slot.
-     */
     nano_ice_t ctrl, ctld;
     setup_ice_pair(&ctrl, &ctld);
-
+    ctrl.remote_candidate_count = NANORTC_ICE_MAX_PENDING_CHECKS + 1;
+    for (uint8_t i = 0; i < ctrl.remote_candidate_count; i++)
+        fill_candidate(&ctrl.remote_candidates[i], 4, (uint16_t)(5000 + i));
     uint8_t req[256];
-    size_t req_len = 0;
-
-    /* Initial check — capture its txid so we can prove it gets reaped */
-    ASSERT_OK(ice_generate_check(&ctrl, 100, crypto(), req, sizeof(req), &req_len));
-    ASSERT_TRUE(req_len > 0);
-
-    int oldest_slot = -1;
-    for (int i = 0; i < NANORTC_ICE_MAX_PENDING_CHECKS; i++) {
-        if (ctrl.pending[i].in_flight) {
-            ASSERT_EQ(oldest_slot, -1); /* exactly one in-flight slot */
-            oldest_slot = i;
-        }
+    size_t len = 0;
+    for (unsigned i = 0; i < NANORTC_ICE_MAX_PENDING_CHECKS; i++) {
+        ASSERT_OK(ice_generate_check(&ctrl, i * 50, crypto(), req, sizeof(req), &len));
+        ASSERT_TRUE(len > 0);
     }
-    ASSERT_NEQ(oldest_slot, -1);
-    uint8_t oldest_txid[STUN_TXID_SIZE];
-    memcpy(oldest_txid, ctrl.pending[oldest_slot].txid, STUN_TXID_SIZE);
-
-    /* Generate NANORTC_ICE_MAX_PENDING_CHECKS + 1 more checks without any
-     * responses. The first NANORTC_ICE_MAX_PENDING_CHECKS - 1 fill the
-     * remaining free slots; the next two force the reap-oldest path. */
-    uint32_t now = 100;
-    for (int i = 0; i < NANORTC_ICE_MAX_PENDING_CHECKS + 1; i++) {
-        now += 50;
-        req_len = 0;
-        ASSERT_OK(ice_generate_check(&ctrl, now, crypto(), req, sizeof(req), &req_len));
-        ASSERT_TRUE(req_len > 0);
-    }
-    ASSERT_EQ(ctrl.check_count, (uint8_t)(NANORTC_ICE_MAX_PENDING_CHECKS + 2));
-
-    /* Every slot must be in_flight (table at capacity) and none of them
-     * may still hold the original oldest txid. */
-    int still_in_flight = 0;
-    bool oldest_present = false;
-    for (int i = 0; i < NANORTC_ICE_MAX_PENDING_CHECKS; i++) {
-        if (ctrl.pending[i].in_flight) {
-            still_in_flight++;
-        }
-        if (memcmp(ctrl.pending[i].txid, oldest_txid, STUN_TXID_SIZE) == 0) {
-            oldest_present = true;
-        }
-    }
-    ASSERT_EQ(still_in_flight, NANORTC_ICE_MAX_PENDING_CHECKS);
-    ASSERT_FALSE(oldest_present);
+    nano_ice_pending_t saved[NANORTC_ICE_MAX_PENDING_CHECKS];
+    memcpy(saved, ctrl.pending, sizeof(saved));
+    ASSERT_OK(ice_generate_check(&ctrl, NANORTC_ICE_MAX_PENDING_CHECKS * 50, crypto(), req,
+                                 sizeof(req), &len));
+    ASSERT_EQ(len, 0);
+    ASSERT_MEM_EQ(saved, ctrl.pending, sizeof(saved));
+    ASSERT_EQ(ice_next_timeout_ms(&ctrl, 200), NANORTC_ICE_RTO_MS - 200);
+    ASSERT_OK(ice_generate_check(&ctrl, NANORTC_ICE_RTO_MS, crypto(), req, sizeof(req), &len));
+    ASSERT_TRUE(len > 0);
+    ASSERT_MEM_EQ(req + 8, saved[0].txid, STUN_TXID_SIZE);
 }
 
 /* ================================================================
@@ -896,27 +884,16 @@ TEST(test_ice_state_checking_to_connected)
 
 TEST(test_ice_state_checking_to_failed)
 {
-    /* After NANORTC_ICE_MAX_CHECKS without response → FAILED */
     nano_ice_t ctrl, ctld;
     setup_ice_pair(&ctrl, &ctld);
-
     uint8_t buf[256];
-    size_t out_len = 0;
-    uint32_t t = 0;
-
-    for (int i = 0; i < NANORTC_ICE_MAX_CHECKS; i++) {
-        out_len = 0;
-        ASSERT_OK(ice_generate_check(&ctrl, t, crypto(), buf, sizeof(buf), &out_len));
-        ASSERT_TRUE(out_len > 0);
-        t += 50;
+    size_t len;
+    for (uint32_t t = 0; t < (NANORTC_ICE_MAX_CHECKS + 1u) * (NANORTC_ICE_CHECK_TIMEOUT_MS + 100u);
+         t += 50) {
+        ASSERT_OK(ice_generate_check(&ctrl, t, crypto(), buf, sizeof(buf), &len));
+        if (ctrl.state == NANORTC_ICE_STATE_FAILED)
+            break;
     }
-    ASSERT_EQ(ctrl.check_count, NANORTC_ICE_MAX_CHECKS);
-    ASSERT_EQ(ctrl.state, NANORTC_ICE_STATE_CHECKING);
-
-    /* One more attempt → FAILED */
-    out_len = 0;
-    ASSERT_OK(ice_generate_check(&ctrl, t, crypto(), buf, sizeof(buf), &out_len));
-    ASSERT_EQ(out_len, 0);
     ASSERT_EQ(ctrl.state, NANORTC_ICE_STATE_FAILED);
 }
 
@@ -989,18 +966,7 @@ TEST(test_ice_credential_usage)
  * RFC 8445 MUST/SHOULD requirement tests
  * ================================================================ */
 
-/*
- * RFC 8445 §5.1.2.1: Candidate priority formula.
- * priority = (2^24)*type_pref + (2^8)*local_pref + (256 - component_id)
- *
- * For host candidates: type_pref=126, local_pref=65535, component_id=1
- * Expected: (2^24)*126 + (2^8)*65535 + (256-1) = 2113929471 + 16776960 + 255
- *         = 2113929471 + 16776960 + 255 = 2130706687 - but that overflows.
- * Let me recalculate: 126*16777216 = 2113929216, 65535*256 = 16776960, 255
- * Total: 2113929216 + 16776960 + 255 = 2130706431
- *
- * Verify the STUN PRIORITY attribute in a generated check matches this.
- */
+/* RFC 8445 §7.1.1: the request carries the prospective prflx priority. */
 TEST(test_ice_priority_formula_rfc8445)
 {
     nano_ice_t ice;
@@ -1043,9 +1009,8 @@ TEST(test_ice_priority_formula_rfc8445)
     stun_msg_t msg;
     ASSERT_OK(stun_parse(buf, len, &msg));
 
-    /* RFC 8445 §5.1.2.1: For host, type_pref=126, local=65535, comp=1 */
-    /* priority = 126*2^24 + 65535*2^8 + 255 = 2130706431 */
-    uint32_t expected = (uint32_t)126 * (1u << 24) + (uint32_t)65535 * (1u << 8) + 255;
+    /* RFC 8445 §5.1.2.1 and §7.1.1: prflx=110, local=65535, component=1. */
+    uint32_t expected = (uint32_t)110 * (1u << 24) + (uint32_t)65535 * (1u << 8) + 255;
     ASSERT_EQ(msg.priority, expected);
 }
 
@@ -1222,7 +1187,7 @@ TEST(test_ice_response_without_integrity_rejected)
  * RFC 8489 §6.3.4 — Binding Error Response (0x0111) frees pending slot
  * ================================================================ */
 
-TEST(test_ice_binding_error_frees_pending_slot)
+TEST(test_ice_unauthenticated_error_preserves_pending_slot)
 {
     nano_ice_t ctrl;
     ice_init(&ctrl, 1);
@@ -1275,7 +1240,7 @@ TEST(test_ice_binding_error_frees_pending_slot)
     for (int i = 0; i < NANORTC_ICE_MAX_PENDING_CHECKS; i++)
         if (ctrl.pending[i].in_flight)
             in_flight_after++;
-    ASSERT_EQ(in_flight_after, in_flight_before - 1);
+    ASSERT_EQ(in_flight_after, in_flight_before);
     ASSERT_EQ(ctrl.state, NANORTC_ICE_STATE_CHECKING); /* NOT connected */
 }
 
@@ -1500,9 +1465,142 @@ TEST(test_ice_consent_rejects_corrupt_integrity)
 
 /* ---- Runner ---- */
 
+TEST(test_ice_trigger_authentication_and_retired_response)
+{
+    nano_ice_t ctrl, ctld;
+    setup_ice_pair(&ctrl, &ctld);
+    uint8_t old[256], req[256], resp[256], unused[256];
+    size_t old_len, req_len, resp_len, unused_len;
+    ASSERT_OK(ice_generate_check(&ctld, 100, crypto(), old, sizeof(old), &old_len));
+    ASSERT_OK(ice_generate_check(&ctrl, 100, crypto(), req, sizeof(req), &req_len));
+    nanortc_addr_t src = {.family = 4, .port = 4000, .addr = {10, 0, 0, 1}};
+    nano_ice_pending_t saved = ctld.pending[0];
+    req[req_len - 1] ^= 1;
+    ASSERT_FAIL(ice_handle_stun(&ctld, req, req_len, &src, 0, false, crypto(), resp, sizeof(resp),
+                                &resp_len));
+    ASSERT_MEM_EQ(&saved, &ctld.pending[0], sizeof(saved));
+    req[req_len - 1] ^= 1;
+    ASSERT_OK(ice_handle_stun(&ctld, req, req_len, &src, 0, false, crypto(), resp, sizeof(resp),
+                              &resp_len));
+    ASSERT_FALSE(ctld.pending[0].in_flight);
+    /* The old ordinary transaction is cancelled; a late success is ignored. */
+    stun_msg_t msg;
+    ASSERT_OK(stun_parse(old, old_len, &msg));
+    ASSERT_OK(stun_encode_binding_response(&msg, ctld.local_candidates[0].addr, 1, 5000,
+                                           (const uint8_t *)ctrl.local_pwd, ctrl.local_pwd_len,
+                                           crypto()->hmac_sha1, resp, sizeof(resp), &resp_len));
+    ASSERT_EQ(ice_handle_stun(&ctld, resp, resp_len, &src, 0, false, crypto(), unused,
+                              sizeof(unused), &unused_len),
+              NANORTC_ERR_PROTOCOL);
+    ASSERT_FALSE(ctld.nominated);
+    ASSERT_OK(ice_generate_check(&ctld, 150, crypto(), old, sizeof(old), &old_len));
+    ASSERT_TRUE(old_len > 0);
+    ASSERT_TRUE(memcmp(saved.txid, old + 8, STUN_TXID_SIZE) != 0);
+    saved = ctld.pending[0];
+    /* A duplicate incoming request cannot continually reset the triggered RTO. */
+    ASSERT_OK(ice_handle_stun(&ctld, req, req_len, &src, 0, false, crypto(), resp, sizeof(resp),
+                              &resp_len));
+    ASSERT_MEM_EQ(&saved, &ctld.pending[0], sizeof(saved));
+}
+
+TEST(test_ice_idle_deadlines_and_late_credentials)
+{
+    nano_ice_t ctrl, ctld;
+    setup_ice_pair(&ctrl, &ctld);
+    ctld.remote_pwd_len = 0;
+    ASSERT_EQ(ice_next_timeout_ms(&ctld, 100), UINT32_MAX);
+    ctld.remote_pwd_len = ctrl.local_pwd_len;
+    ASSERT_EQ(ice_next_timeout_ms(&ctld, 100), 0);
+    ctld.remote_candidates[0].family = 6;
+    ASSERT_EQ(ice_next_timeout_ms(&ctld, 100), UINT32_MAX);
+}
+
+TEST(test_ice_full_trigger_table_does_not_ack_nomination)
+{
+    nano_ice_t ctrl, ctld;
+    setup_ice_pair(&ctrl, &ctld);
+    for (int i = 0; i < NANORTC_ICE_MAX_PENDING_CHECKS; i++) {
+        ctld.pending[i].in_flight = true;
+        ctld.pending[i].remote_idx = 0;
+        ctld.pending[i].local_idx = 0;
+    }
+    nano_ice_t before = ctld;
+    uint8_t txid[STUN_TXID_SIZE] = {1}, req[256], resp[256];
+    size_t req_len, resp_len;
+    ASSERT_OK(stun_encode_binding_request("PEER:CTRL", 9, ICE_HOST_PRIORITY(0), true, true,
+                                          ctrl.tie_breaker, txid, (const uint8_t *)ctld.local_pwd,
+                                          ctld.local_pwd_len, crypto()->hmac_sha1, req, sizeof(req),
+                                          &req_len));
+    nanortc_addr_t src = {.family = 4, .port = 9999, .addr = {198, 51, 100, 5}};
+    ASSERT_EQ(ice_handle_stun(&ctld, req, req_len, &src, 0, false, crypto(), resp, sizeof(resp),
+                              &resp_len),
+              NANORTC_ERR_WOULD_BLOCK);
+    ASSERT_EQ(resp_len, 0);
+    ASSERT_MEM_EQ(&before, &ctld, sizeof(ctld));
+    ctld.pending[1].in_flight = false;
+    ASSERT_OK(ice_handle_stun(&ctld, req, req_len, &src, 0, false, crypto(), resp, sizeof(resp),
+                              &resp_len));
+    ASSERT_TRUE(resp_len > 0);
+    ASSERT_EQ(ctld.remote_candidate_count, 2);
+    ASSERT_EQ(ctld.remote_candidates[1].type, NANORTC_ICE_CAND_PRFLX);
+    ASSERT_FALSE(ctld.nominated);
+    ASSERT_OK(test_ice_answer_check(&ctld, 100, crypto()));
+    ASSERT_TRUE(ctld.nominated);
+    ASSERT_EQ(ctld.selected_port, 9999);
+}
+
+TEST(test_ice_trigger_fifo_and_rng_rollback)
+{
+    nano_ice_t ctrl, ctld;
+    setup_ice_pair(&ctrl, &ctld);
+    uint8_t buf[256], req[256], resp[256];
+    size_t len, req_len, resp_len;
+    ASSERT_OK(ice_generate_check(&ctld, 100, crypto(), buf, sizeof(buf), &len));
+    ASSERT_OK(ice_generate_check(&ctrl, 100, crypto(), req, sizeof(req), &req_len));
+    nanortc_addr_t src = {.family = 4, .port = 6000, .addr = {10, 0, 0, 1}};
+    ASSERT_OK(ice_handle_stun(&ctld, req, req_len, &src, 0, false, crypto(), resp, sizeof(resp),
+                              &resp_len));
+    src.port = 4000;
+    ASSERT_OK(ice_handle_stun(&ctld, req, req_len, &src, 0, false, crypto(), resp, sizeof(resp),
+                              &resp_len));
+    nano_ice_check_t check;
+    ASSERT_EQ(ice_get_check(&ctld, 150, NULL, &check), 0);
+    ASSERT_EQ(check.remote_idx, 1); /* Enqueued first, despite its higher slot index. */
+    nano_ice_t saved = ctld;
+    nanortc_crypto_provider_t bad = crypto_failing_random();
+    ASSERT_EQ(ice_generate_check(&ctld, 150, &bad, buf, sizeof(buf), &len), NANORTC_ERR_CRYPTO);
+    ASSERT_MEM_EQ(&saved, &ctld, sizeof(ctld));
+    ASSERT_OK(test_ice_answer_check(&ctld, 150, crypto()));
+    ASSERT_EQ(ice_get_check(&ctld, 200, NULL, &check), 0);
+    ASSERT_EQ(check.remote_idx, 0);
+}
+
+TEST(test_ice_blocked_relay_does_not_starve_direct)
+{
+    nano_ice_t ctrl, ctld;
+    setup_ice_pair(&ctrl, &ctld);
+    ctrl.local_candidates[1] = ctrl.local_candidates[0];
+    ctrl.local_candidates[0].type = NANORTC_ICE_CAND_RELAY;
+    ctrl.local_candidate_count = 2;
+    bool ready[NANORTC_MAX_ICE_CANDIDATES] = {false};
+    nano_ice_check_t check;
+    ASSERT_EQ(ice_get_check(&ctrl, 100, ready, &check), 0);
+    ASSERT_EQ(check.local_idx, 1);
+    ctrl.local_candidate_count = 1;
+    ASSERT_EQ(ice_get_check(&ctrl, 100, ready, &check), UINT32_MAX);
+    ready[0] = true;
+    ASSERT_EQ(ice_get_check(&ctrl, 100, ready, &check), 0);
+    ASSERT_EQ(check.local_idx, 0);
+}
+
 TEST_MAIN_BEGIN("nanortc ICE tests")
 /* Lifecycle */
 RUN(test_ice_init);
+RUN(test_ice_trigger_fifo_and_rng_rollback);
+RUN(test_ice_blocked_relay_does_not_starve_direct);
+RUN(test_ice_trigger_authentication_and_retired_response);
+RUN(test_ice_idle_deadlines_and_late_credentials);
+RUN(test_ice_full_trigger_table_does_not_ack_nomination);
 RUN(test_ice_is_stun);
 /* §7.1.1: Controlling generates requests */
 RUN(test_ice_generate_check_basic);
@@ -1512,7 +1610,7 @@ RUN(test_ice_rng_failure_does_not_commit_txid);
 RUN(test_ice_consent_deadlines_wrap);
 RUN(test_ice_consent_rng_failure_does_not_commit_txid);
 RUN(test_ice_consent_rejects_corrupt_integrity);
-RUN(test_ice_controlled_does_not_generate);
+RUN(test_ice_controlled_generates_check);
 /* §7.2.1: Controlled receives requests */
 RUN(test_ice_controlled_handle_request);
 RUN(test_ice_reject_bad_username);
@@ -1542,7 +1640,7 @@ RUN(test_ice_multiple_candidates_cycling);
 RUN(test_ice_request_without_fingerprint_rejected);
 RUN(test_ice_response_without_integrity_rejected);
 /* Binding Error Response frees pending slot */
-RUN(test_ice_binding_error_frees_pending_slot);
+RUN(test_ice_unauthenticated_error_preserves_pending_slot);
 /* DISCONNECTED (consent lost) halts check generation */
 RUN(test_ice_generate_check_noop_in_disconnected);
 /* §6.1.2.2: same-family pair formation */

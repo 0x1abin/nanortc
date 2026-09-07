@@ -248,13 +248,21 @@ Phase 5.2.
 
 ### NAT Traversal (ICE candidate types)
 
-NanoRTC supports all three ICE candidate types (RFC 8445 §5.1.2.1):
+NanoRTC gathers host, srflx and relay candidates and can learn remote prflx candidates from authenticated checks (RFC 8445 §7.3.1.3):
 
 | Type | Source | Priority | Discovery |
 |------|--------|----------|-----------|
 | **host** | Local address from `nanortc_add_local_candidate()` | 2130706431–2130705919 (varies by index) | Caller provides |
-| **srflx** | STUN server Binding Response (XOR-MAPPED-ADDRESS) | 1090519295 | Automatic via `stun:` URL |
+| **srflx** | STUN server Binding Response (XOR-MAPPED-ADDRESS) | `ICE_SRFLX_PRIORITY(index)` | Automatic via `stun:` URL |
 | **relay** | TURN server Allocate Response (XOR-RELAYED-ADDRESS) | 16777215 | Automatic via `turn:` URL |
+
+Both roles initiate ordinary and triggered checks. The controlling role validates
+before nominating; the controlled role completes nomination after its reverse
+check succeeds. RTC supplies TURN permission readiness and transmit capacity;
+ICE supplies the selected task, its actual pair and its deadline. srflx traffic
+uses the retained host base as its source hint. See
+[Issue #81 implementation](docs/engineering/issue-81-ice.md) for bounded-state
+behavior, remaining RFC gaps and validation.
 
 Multiple local host candidates are supported (`NANORTC_MAX_LOCAL_CANDIDATES`, default 4).
 Each host candidate gets a distinct priority per RFC 8445 §5.1.2.1:

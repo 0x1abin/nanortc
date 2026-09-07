@@ -76,20 +76,22 @@ static bool rtc_turn_can_bind_channel(const nanortc_t *rtc)
                                  rtc->ice.selected_port);
 }
 
-static bool rtc_turn_current_pair_is_ready(const nanortc_t *rtc)
-{
-    uint8_t local_idx = rtc->ice.current_local;
-    uint8_t remote_idx = rtc->ice.current_remote;
-    if (local_idx >= rtc->ice.local_candidate_count ||
-        remote_idx >= rtc->ice.remote_candidate_count ||
-        rtc->ice.local_candidates[local_idx].type != NANORTC_ICE_CAND_RELAY) {
-        return true;
-    }
-
-    const nano_ice_candidate_t *remote = &rtc->ice.remote_candidates[remote_idx];
-    return turn_peer_is_ready(&rtc->turn, remote->addr, remote->family);
-}
 #endif
+
+/* TURN supplies permission readiness; ICE owns pair selection and deadlines. */
+static uint32_t rtc_ice_get_check(const nanortc_t *rtc, uint32_t now_ms, nano_ice_check_t *check)
+{
+#if NANORTC_FEATURE_TURN
+    bool ready[NANORTC_MAX_ICE_CANDIDATES];
+    for (uint8_t i = 0; i < rtc->ice.remote_candidate_count; i++) {
+        const nano_ice_candidate_t *r = &rtc->ice.remote_candidates[i];
+        ready[i] = turn_peer_is_ready(&rtc->turn, r->addr, r->family);
+    }
+    return ice_get_check(&rtc->ice, now_ms, ready, check);
+#else
+    return ice_get_check(&rtc->ice, now_ms, NULL, check);
+#endif
+}
 
 /* Release every managed backing buffer whose queue entry has just been
  * dequeued. Exact equality plus an explicit busy bit remains correct across
@@ -656,7 +658,10 @@ int nanortc_next_timeout_ms(const nanortc_t *rtc, uint32_t now_ms, uint32_t *out
 
     /* ICE: connectivity checks + consent freshness + consent expiry. */
     {
-        uint32_t d = ice_next_timeout_ms(&rtc->ice, now_ms);
+        nano_ice_check_t check;
+        uint32_t d = rtc->ice.state == NANORTC_ICE_STATE_CONNECTED
+                         ? ice_next_timeout_ms(&rtc->ice, now_ms)
+                         : rtc_ice_get_check(rtc, now_ms, &check);
         if (d < best) {
             best = d;
         }
@@ -1254,7 +1259,15 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
              * USE-CANDIDATE has flipped selected_type. Without this, the
              * first pre-nomination responses leak direct and the peer ICE
              * stack builds a prflx direct candidate on loopback / LAN. */
-            rc = nano_rtc_tx_slot_commit(rtc, tx_slot, resp_len, src, via_turn);
+            if (!via_turn && local_idx < rtc->ice.local_candidate_count) {
+                const nano_ice_candidate_t *c =
+                    &rtc->ice.local_candidates[ice_local_base_idx(&rtc->ice, local_idx)];
+                nanortc_addr_t local = {.family = c->family, .port = c->port};
+                memcpy(local.addr, c->addr, NANORTC_ADDR_SIZE);
+                rc = rtc_tx_slot_commit_direct(rtc, tx_slot, resp_len, src, &local);
+            } else {
+                rc = nano_rtc_tx_slot_commit(rtc, tx_slot, resp_len, src, via_turn);
+            }
             if (rc != NANORTC_OK) {
                 return rc;
             }
@@ -1375,18 +1388,11 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
 
 static int rtc_process_timers(nanortc_t *rtc, uint32_t now_ms)
 {
-    /* ICE: generate connectivity checks (controlling role) */
-    if (rtc->ice.is_controlling && rtc->ice.state != NANORTC_ICE_STATE_CONNECTED &&
-        rtc->ice.state != NANORTC_ICE_STATE_FAILED &&
-        (rtc->ice.state != NANORTC_ICE_STATE_CHECKING || rtc->ice.next_check_ms == 0u ||
-         nano_time_is_due(now_ms, rtc->ice.next_check_ms))
-#if NANORTC_FEATURE_TURN
-        && rtc_turn_current_pair_is_ready(rtc)
-#endif
-    ) {
+    nano_ice_check_t check;
+    if (rtc_ice_get_check(rtc, now_ms, &check) == 0) {
         nano_ice_state_t prev_ice = rtc->ice.state;
-        uint8_t local_before = rtc->ice.current_local;
-        uint8_t remote_before = rtc->ice.current_remote;
+        uint8_t local_before = check.local_idx;
+        uint8_t remote_before = check.remote_idx;
         size_t out_len = 0;
         uint8_t *tx_buf = NULL;
         uint8_t tx_slot = 0;
@@ -1397,8 +1403,8 @@ static int rtc_process_timers(nanortc_t *rtc, uint32_t now_ms)
         if (rc != NANORTC_OK) {
             return rc;
         }
-        rc = ice_generate_check(&rtc->ice, now_ms, rtc->config.crypto, tx_buf, NANORTC_TX_SLOT_SIZE,
-                                &out_len);
+        rc = ice_send_check(&rtc->ice, now_ms, &check, rtc->config.crypto, tx_buf,
+                            NANORTC_TX_SLOT_SIZE, &out_len);
         if (rc != NANORTC_OK) {
             return rc;
         }
@@ -1412,9 +1418,10 @@ static int rtc_process_timers(nanortc_t *rtc, uint32_t now_ms)
             dest.port = rtc->ice.remote_candidates[remote_before].port;
             nanortc_addr_t local_src;
             memset(&local_src, 0, sizeof(local_src));
-            local_src.family = rtc->ice.local_candidates[local_before].family;
-            memcpy(local_src.addr, rtc->ice.local_candidates[local_before].addr, NANORTC_ADDR_SIZE);
-            local_src.port = rtc->ice.local_candidates[local_before].port;
+            uint8_t base = ice_local_base_idx(&rtc->ice, local_before);
+            local_src.family = rtc->ice.local_candidates[base].family;
+            memcpy(local_src.addr, rtc->ice.local_candidates[base].addr, NANORTC_ADDR_SIZE);
+            local_src.port = rtc->ice.local_candidates[base].port;
 #if NANORTC_FEATURE_TURN
             if (rtc->ice.local_candidates[local_before].type == NANORTC_ICE_CAND_RELAY) {
                 rc = nano_rtc_tx_slot_commit(rtc, tx_slot, out_len, &dest, true);
@@ -1607,13 +1614,23 @@ static int rtc_process_timers(nanortc_t *rtc, uint32_t now_ms)
                     dest.port = rtc->stun_server_port;
                     nanortc_addr_t *local_src_p = NULL;
                     nanortc_addr_t local_src;
-                    /* Source: first local candidate (srflx base) */
-                    if (rtc->ice.local_candidate_count > 0) {
+                    if (rtc->stun_retries == 0) {
+                        rtc->ice.srflx_base_idx = NANORTC_ICE_LOCAL_IDX_UNKNOWN;
+                        for (uint8_t i = 0; i < rtc->ice.local_candidate_count; i++) {
+                            if (rtc->ice.local_candidates[i].family == dest.family &&
+                                rtc->ice.local_candidates[i].type == NANORTC_ICE_CAND_HOST) {
+                                rtc->ice.srflx_base_idx = i;
+                                break;
+                            }
+                        }
+                    }
+                    uint8_t base = rtc->ice.srflx_base_idx;
+                    if (base < rtc->ice.local_candidate_count) {
                         memset(&local_src, 0, sizeof(local_src));
-                        local_src.family = rtc->ice.local_candidates[0].family;
-                        memcpy(local_src.addr, rtc->ice.local_candidates[0].addr,
+                        local_src.family = rtc->ice.local_candidates[base].family;
+                        memcpy(local_src.addr, rtc->ice.local_candidates[base].addr,
                                NANORTC_ADDR_SIZE);
-                        local_src.port = rtc->ice.local_candidates[0].port;
+                        local_src.port = rtc->ice.local_candidates[base].port;
                         local_src_p = &local_src;
                     }
                     src = rtc_tx_slot_commit_direct(rtc, tx_slot, req_len, &dest, local_src_p);

@@ -127,7 +127,8 @@ static void test_trickle_add_during_checking(void)
     TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
     TEST_ASSERT_TRUE(out_len > 0);
     /* After round-robin: remote advances 0→1, local stays 0 */
-    TEST_ASSERT_EQUAL_INT(1, ice.current_remote);
+    TEST_ASSERT_EQUAL_INT(0, ice.current_remote);
+    TEST_ASSERT_EQUAL_INT(1, ice.pending[1].remote_idx);
 }
 
 /* T4: Candidate type field defaults to HOST */

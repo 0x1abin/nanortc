@@ -1,5 +1,10 @@
 # Memory Profiles
 
+Issue #81 reuses pending-slot padding for ICE queue/valid/nomination state and
+retains the existing structure ceilings. All seven host state sizes were
+remeasured and are unchanged; current archive sizes are in [issue-81-ice.md](issue-81-ice.md). The P4 archive/code-size values below
+predate this ICE change and have not been remeasured for it.
+
 Current host hardening measurements and validation are recorded in
 [design-hardening.md](design-hardening.md). The existing host profile ceilings
 are unchanged. Candidate formatting now shares receive/TURN scratch; SCTP

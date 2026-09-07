@@ -20,6 +20,7 @@
 #include "nano_srtp.h"
 #include "nano_test.h"
 #include "nano_test_config.h"
+#include "nano_test_ice.h"
 #include <string.h>
 
 /* ----------------------------------------------------------------
@@ -157,19 +158,19 @@ static int e2e_relay(nanortc_t *from, nanortc_t *to, uint32_t now_ms)
 
     while (nanortc_poll_output(from, &out) == NANORTC_OK) {
         if (out.type == NANORTC_OUTPUT_TRANSMIT) {
-            nanortc_addr_t src;
-            memset(&src, 0, sizeof(src));
-            src.family = 4;
-            src.addr[0] = 192;
-            src.addr[1] = 168;
-            src.addr[2] = 1;
-            src.addr[3] = 1;
-            src.port = 9999;
+            nanortc_addr_t src = out.transmit.src;
+            if (!src.family && from->ice.local_candidate_count) {
+                const nano_ice_candidate_t *c = &from->ice.local_candidates[0];
+                src.family = c->family;
+                src.port = c->port;
+                memcpy(src.addr, c->addr, sizeof(src.addr));
+            }
 
             int rc = nanortc_handle_input(to, &(nanortc_input_t){.now_ms = now_ms,
                                                                  .data = out.transmit.data,
                                                                  .len = out.transmit.len,
-                                                                 .src = src});
+                                                                 .src = src,
+                                                                 .dst = out.transmit.dest});
             (void)rc;
             relayed++;
         }
@@ -187,19 +188,21 @@ static int e2e_relay_checked(nanortc_t *from, nanortc_t *to, uint32_t now_ms)
         if (out.type != NANORTC_OUTPUT_TRANSMIT) {
             continue;
         }
-        nanortc_addr_t src;
-        memset(&src, 0, sizeof(src));
-        src.family = 4;
-        src.addr[0] = 192;
-        src.addr[1] = 168;
-        src.addr[2] = 1;
-        src.addr[3] = 1;
-        src.port = 9999;
+        nanortc_addr_t src = out.transmit.src;
+        if (!src.family && from->ice.local_candidate_count) {
+            const nano_ice_candidate_t *c = &from->ice.local_candidates[0];
+            src.family = c->family;
+            src.port = c->port;
+            memcpy(src.addr, c->addr, sizeof(src.addr));
+        }
         int rc = nanortc_handle_input(to, &(nanortc_input_t){.now_ms = now_ms,
                                                              .data = out.transmit.data,
                                                              .len = out.transmit.len,
-                                                             .src = src});
-        if (rc != NANORTC_OK) {
+                                                             .src = src,
+                                                             .dst = out.transmit.dest});
+        if (rc != NANORTC_OK &&
+            !(rc == NANORTC_ERR_PROTOCOL && out.transmit.len >= STUN_HEADER_SIZE &&
+              nanortc_read_u16be(out.transmit.data) == STUN_BINDING_RESPONSE)) {
             return rc;
         }
     }
@@ -461,7 +464,7 @@ TEST(test_e2e_media_seed_rng_failure_rolls_back_all_tracks)
     answerer.ice.remote_candidates[0].addr[1] = 168;
     answerer.ice.remote_candidates[0].addr[2] = 1;
     answerer.ice.remote_candidates[0].addr[3] = 1;
-    answerer.ice.remote_candidates[0].port = 9999;
+    answerer.ice.remote_candidates[0].port = 4000;
     answerer.ice.remote_candidate_count = 1;
 
     nano_rtp_t rtp0_before = offerer.media[0].rtp;
@@ -478,6 +481,9 @@ TEST(test_e2e_media_seed_rng_failure_rolls_back_all_tracks)
     ASSERT_OK(nanortc_handle_input(&offerer, &(nanortc_input_t){.now_ms = now_ms}));
     int observed_rc = NANORTC_OK;
     for (int round = 0; round < 50; round++) {
+        now_ms += 50;
+        ASSERT_OK(nanortc_handle_input(&offerer, &(nanortc_input_t){.now_ms = now_ms}));
+        ASSERT_OK(nanortc_handle_input(&answerer, &(nanortc_input_t){.now_ms = now_ms}));
         observed_rc = e2e_relay_checked(&offerer, &answerer, now_ms);
         if (observed_rc != NANORTC_OK) {
             break;
@@ -866,158 +872,27 @@ TEST(test_e2e_demux_byte_ranges)
     nanortc_destroy(&rtc);
 }
 
+static void e2e_setup_ice_creds(nanortc_t *offerer, nanortc_t *answerer);
 TEST(test_e2e_ice_loopback)
 {
-    /*
-     * Full ICE loopback: controlling sends STUN check,
-     * controlled responds, controlling receives response.
-     * Both reach ICE_CONNECTED.
-     */
     nanortc_t offerer, answerer;
-
-    /* Offerer = controlling role */
-    nanortc_config_t off_cfg = e2e_default_config();
-    off_cfg.role = NANORTC_ROLE_CONTROLLING;
-    ASSERT_OK(nanortc_init(&offerer, &off_cfg));
-
-    /* Answerer = controlled role */
-    nanortc_config_t ans_cfg = e2e_default_config();
-    ans_cfg.role = NANORTC_ROLE_CONTROLLED;
-    ASSERT_OK(nanortc_init(&answerer, &ans_cfg));
-
-    /* Set matching ICE credentials */
-    memcpy(offerer.ice.local_ufrag, "OFF", 4);
-    offerer.ice.local_ufrag_len = 3;
-    memcpy(offerer.ice.local_pwd, "offerer-password-1234", 22);
-    offerer.ice.local_pwd_len = 21;
-    memcpy(offerer.ice.remote_ufrag, "ANS", 4);
-    offerer.ice.remote_ufrag_len = 3;
-    memcpy(offerer.ice.remote_pwd, "answerer-password-5678", 23);
-    offerer.ice.remote_pwd_len = 22;
-    offerer.ice.tie_breaker = 0x1234567890ABCDEFull;
-    /* Local candidate for offerer */
-    offerer.ice.local_candidates[0].family = 4;
-    offerer.ice.local_candidates[0].addr[0] = 192;
-    offerer.ice.local_candidates[0].addr[1] = 168;
-    offerer.ice.local_candidates[0].addr[2] = 1;
-    offerer.ice.local_candidates[0].addr[3] = 1;
-    offerer.ice.local_candidates[0].port = 4000;
-    offerer.ice.local_candidates[0].type = NANORTC_ICE_CAND_HOST;
-    offerer.ice.local_candidate_count = 1;
-
-    memcpy(answerer.ice.local_ufrag, "ANS", 4);
-    answerer.ice.local_ufrag_len = 3;
-    memcpy(answerer.ice.local_pwd, "answerer-password-5678", 23);
-    answerer.ice.local_pwd_len = 22;
-    memcpy(answerer.ice.remote_ufrag, "OFF", 4);
-    answerer.ice.remote_ufrag_len = 3;
-    memcpy(answerer.ice.remote_pwd, "offerer-password-1234", 22);
-    answerer.ice.remote_pwd_len = 21;
-
-    /* Set remote candidate address on offerer (where to send checks) */
-    offerer.ice.remote_candidates[0].family = 4;
-    offerer.ice.remote_candidates[0].addr[0] = 192;
-    offerer.ice.remote_candidates[0].addr[1] = 168;
-    offerer.ice.remote_candidates[0].addr[2] = 1;
-    offerer.ice.remote_candidates[0].addr[3] = 2;
-    offerer.ice.remote_candidates[0].port = 5000;
-    offerer.ice.remote_candidate_count = 1;
-
-    /* Step 1: offerer generates STUN Binding Request via timeout */
-    uint32_t now_ms = 100;
-    ASSERT_OK(nanortc_handle_input(&offerer, &(nanortc_input_t){.now_ms = now_ms}));
-    ASSERT_EQ(offerer.ice.state, NANORTC_ICE_STATE_CHECKING);
-
-    /* Step 2: relay offerer's STUN request to answerer */
-    nanortc_output_t out;
-    ASSERT_OK(nanortc_poll_output(&offerer, &out));
-    ASSERT_EQ(out.type, NANORTC_OUTPUT_TRANSMIT);
-    ASSERT_TRUE(out.transmit.len > 0);
-
-    /* Save request data (pointer references rtc->stun_buf, must copy) */
-    uint8_t saved_req[256];
-    size_t saved_req_len = out.transmit.len;
-    memcpy(saved_req, out.transmit.data, saved_req_len);
-
-    /* Drain the state event; deadlines are queried separately. */
-    nanortc_output_t ice_chg;
-    ASSERT_OK(nanortc_poll_output(&offerer, &ice_chg));
-    ASSERT_EQ(ice_chg.type, NANORTC_OUTPUT_EVENT);
-    ASSERT_EQ(ice_chg.event.type, NANORTC_EV_ICE_STATE_CHANGE);
-    ASSERT_EQ(ice_chg.event.ice_state, (uint16_t)NANORTC_ICE_STATE_CHECKING);
-
-    uint32_t timeout_ms;
-    ASSERT_OK(nanortc_next_timeout_ms(&offerer, now_ms, &timeout_ms));
-    ASSERT_TRUE(timeout_ms < 1000u);
-
-    /* Feed the STUN request into the answerer */
-    nanortc_addr_t offerer_addr;
-    memset(&offerer_addr, 0, sizeof(offerer_addr));
-    offerer_addr.family = 4;
-    offerer_addr.addr[0] = 192;
-    offerer_addr.addr[1] = 168;
-    offerer_addr.addr[2] = 1;
-    offerer_addr.addr[3] = 1;
-    offerer_addr.port = 9999;
-
-    ASSERT_OK(nanortc_handle_input(&answerer, &(nanortc_input_t){.now_ms = now_ms,
-                                                                 .data = saved_req,
-                                                                 .len = saved_req_len,
-                                                                 .src = offerer_addr}));
-
-    /* Answerer: ICE connected → DTLS handshaking (server waits for ClientHello) */
-    ASSERT_EQ(answerer.ice.state, NANORTC_ICE_STATE_CONNECTED);
-    ASSERT_EQ(answerer.state, NANORTC_STATE_DTLS_HANDSHAKING);
-
-    /* Step 3: relay answerer's STUN response back to offerer */
-    nanortc_output_t ans_out;
-    ASSERT_OK(nanortc_poll_output(&answerer, &ans_out));
-    ASSERT_EQ(ans_out.type, NANORTC_OUTPUT_TRANSMIT);
-
-    /* Save response data (pointer references rtc->stun_buf) */
-    uint8_t saved_resp[256];
-    size_t saved_resp_len = ans_out.transmit.len;
-    memcpy(saved_resp, ans_out.transmit.data, saved_resp_len);
-
-    /* Check for ICE_STATE_CHANGE (CONNECTED) event on answerer */
-    nanortc_output_t evt;
-    ASSERT_OK(nanortc_poll_output(&answerer, &evt));
-    ASSERT_EQ(evt.type, NANORTC_OUTPUT_EVENT);
-    ASSERT_EQ(evt.event.type, NANORTC_EV_ICE_STATE_CHANGE);
-    ASSERT_EQ(evt.event.ice_state, (uint16_t)NANORTC_ICE_STATE_CONNECTED);
-
-    /* Feed response into offerer */
-    nanortc_addr_t answerer_addr;
-    memset(&answerer_addr, 0, sizeof(answerer_addr));
-    answerer_addr.family = 4;
-    answerer_addr.addr[0] = 192;
-    answerer_addr.addr[1] = 168;
-    answerer_addr.addr[2] = 1;
-    answerer_addr.addr[3] = 2;
-    answerer_addr.port = 5000;
-
-    ASSERT_OK(nanortc_handle_input(&offerer, &(nanortc_input_t){.now_ms = now_ms,
-                                                                .data = saved_resp,
-                                                                .len = saved_resp_len,
-                                                                .src = answerer_addr}));
-
-    /* Offerer: ICE connected → DTLS handshaking (client sends ClientHello) */
-    ASSERT_EQ(offerer.ice.state, NANORTC_ICE_STATE_CONNECTED);
-    ASSERT_EQ(offerer.state, NANORTC_STATE_DTLS_HANDSHAKING);
-
-    /* ICE_STATE_CHANGE (CONNECTED) event should be queued for offerer */
-    nanortc_output_t off_evt;
-    ASSERT_OK(nanortc_poll_output(&offerer, &off_evt));
-    ASSERT_EQ(off_evt.type, NANORTC_OUTPUT_EVENT);
-    ASSERT_EQ(off_evt.event.type, NANORTC_EV_ICE_STATE_CHANGE);
-    ASSERT_EQ(off_evt.event.ice_state, (uint16_t)NANORTC_ICE_STATE_CONNECTED);
-
-    /* Offerer (client role) should have a ClientHello TRANSMIT output */
-    nanortc_output_t ch_out;
-    ASSERT_OK(nanortc_poll_output(&offerer, &ch_out));
-    ASSERT_EQ(ch_out.type, NANORTC_OUTPUT_TRANSMIT);
-    ASSERT_TRUE(ch_out.transmit.len > 0);
-
+    nanortc_config_t cfg = e2e_default_config();
+    cfg.role = NANORTC_ROLE_CONTROLLING;
+    ASSERT_OK(nanortc_init(&offerer, &cfg));
+    cfg.role = NANORTC_ROLE_CONTROLLED;
+    ASSERT_OK(nanortc_init(&answerer, &cfg));
+    e2e_setup_ice_creds(&offerer, &answerer);
+    ASSERT_OK(nanortc_handle_input(&offerer, &(nanortc_input_t){.now_ms = 100}));
+    e2e_relay(&offerer, &answerer, 100);
+    ASSERT_FALSE(answerer.ice.nominated);
+    ASSERT_TRUE(answerer.state < NANORTC_STATE_ICE_CONNECTED);
+    for (uint32_t now = 100; now < 2000 && (!offerer.ice.nominated || !answerer.ice.nominated);
+         now += 50)
+        e2e_pump(&offerer, &answerer, now, 10);
+    ASSERT_TRUE(offerer.ice.nominated);
+    ASSERT_TRUE(answerer.ice.nominated);
+    ASSERT_EQ(offerer.ice.selected_port, 5000);
+    ASSERT_EQ(answerer.ice.selected_port, 4000);
     nanortc_destroy(&offerer);
     nanortc_destroy(&answerer);
 }
@@ -1066,6 +941,9 @@ static void e2e_setup_ice_creds(nanortc_t *offerer, nanortc_t *answerer)
     offerer->ice.remote_candidates[0].addr[3] = 2;
     offerer->ice.remote_candidates[0].port = 5000;
     offerer->ice.remote_candidate_count = 1;
+    answerer->ice.local_candidates[0] = offerer->ice.remote_candidates[0];
+    answerer->ice.remote_candidates[0] = offerer->ice.local_candidates[0];
+    answerer->ice.local_candidate_count = answerer->ice.remote_candidate_count = 1;
 }
 
 TEST(test_e2e_ice_dtls_loopback)
@@ -1090,6 +968,7 @@ TEST(test_e2e_ice_dtls_loopback)
     int connected = 0;
     for (int round = 0; round < 30; round++) {
         e2e_pump(&offerer, &answerer, now_ms, 5);
+        now_ms += 50;
 
         /* Offerer transitions DTLS_CONNECTED → SCTP_CONNECTING automatically */
         if (offerer.state >= NANORTC_STATE_DTLS_CONNECTED &&
@@ -1172,6 +1051,7 @@ TEST(test_e2e_ice_restart_dtls_rehandshake)
     int connected = 0;
     for (int round = 0; round < 30; round++) {
         e2e_pump(&offerer, &answerer, now_ms, 5);
+        now_ms += 50;
         if (offerer.state >= NANORTC_STATE_DTLS_CONNECTED &&
             answerer.state >= NANORTC_STATE_DTLS_CONNECTED) {
             connected = 1;
@@ -1209,6 +1089,7 @@ TEST(test_e2e_ice_restart_dtls_rehandshake)
     int reconnected = 0;
     for (int round = 0; round < 30; round++) {
         e2e_pump(&offerer, &answerer, now_ms, 5);
+        now_ms += 50;
         if (offerer.state >= NANORTC_STATE_DTLS_CONNECTED &&
             answerer.state >= NANORTC_STATE_DTLS_CONNECTED) {
             reconnected = 1;
@@ -1451,7 +1332,7 @@ TEST(test_e2e_full_sdp_to_dtls)
     answerer.ice.remote_candidates[0].addr[1] = 168;
     answerer.ice.remote_candidates[0].addr[2] = 1;
     answerer.ice.remote_candidates[0].addr[3] = 1;
-    answerer.ice.remote_candidates[0].port = 9999;
+    answerer.ice.remote_candidates[0].port = 4000;
     answerer.ice.remote_candidate_count = 1;
 
     /* Kick off ICE on the controlling side */
@@ -1462,6 +1343,7 @@ TEST(test_e2e_full_sdp_to_dtls)
     int connected = 0;
     for (int round = 0; round < 30; round++) {
         e2e_pump(&offerer, &answerer, now_ms, 5);
+        now_ms += 50;
 
         if (offerer.state >= NANORTC_STATE_DTLS_CONNECTED &&
             answerer.state >= NANORTC_STATE_DTLS_CONNECTED) {
@@ -2054,7 +1936,7 @@ TEST(test_e2e_ice_connection_timeout)
     int got_state_failed = 0;
     int got_disconnected = 0;
     uint32_t now_ms = 100;
-    for (int i = 0; i < NANORTC_ICE_MAX_CHECKS + 5; i++) {
+    for (int i = 0; i < 2 * NANORTC_ICE_MAX_CHECKS + 5; i++) {
         nanortc_handle_input(&rtc, &(nanortc_input_t){.now_ms = now_ms});
         nanortc_output_t out;
         while (nanortc_poll_output(&rtc, &out) == NANORTC_OK) {
@@ -2068,7 +1950,7 @@ TEST(test_e2e_ice_connection_timeout)
                 }
             }
         }
-        now_ms += rtc.ice.check_interval_ms + 1;
+        now_ms += NANORTC_ICE_CHECK_TIMEOUT_MS + 1;
     }
 
     /* ICE should have reached FAILED state, both events emitted, rtc closed */
@@ -2214,6 +2096,10 @@ TEST(test_e2e_ipv6_loopback_connects)
     memcpy(offerer.ice.remote_candidates[0].addr, v6_loopback, 16);
     offerer.ice.remote_candidates[0].port = 5000;
     offerer.ice.remote_candidate_count = 1;
+
+    answerer.ice.local_candidates[0] = offerer.ice.remote_candidates[0];
+    answerer.ice.remote_candidates[0] = offerer.ice.local_candidates[0];
+    answerer.ice.local_candidate_count = answerer.ice.remote_candidate_count = 1;
 
     uint32_t now_ms = 100;
     ASSERT_OK(nanortc_handle_input(&offerer, &(nanortc_input_t){.now_ms = now_ms}));
@@ -2400,7 +2286,7 @@ TEST(test_e2e_h265_loopback)
     answerer.ice.remote_candidates[0].addr[1] = 168;
     answerer.ice.remote_candidates[0].addr[2] = 1;
     answerer.ice.remote_candidates[0].addr[3] = 1;
-    answerer.ice.remote_candidates[0].port = 9999;
+    answerer.ice.remote_candidates[0].port = 4000;
     answerer.ice.remote_candidate_count = 1;
 
     /* ICE + DTLS handshake. */
@@ -2409,6 +2295,7 @@ TEST(test_e2e_h265_loopback)
     int connected = 0;
     for (int round = 0; round < 30; round++) {
         e2e_pump(&offerer, &answerer, now_ms, 5);
+        now_ms += 50;
         if (offerer.state >= NANORTC_STATE_DTLS_CONNECTED &&
             answerer.state >= NANORTC_STATE_DTLS_CONNECTED && offerer.srtp.ready &&
             answerer.srtp.ready) {
@@ -2514,7 +2401,7 @@ TEST(test_e2e_h265_midstream_param_refresh)
     answerer.ice.remote_candidates[0].addr[1] = 168;
     answerer.ice.remote_candidates[0].addr[2] = 1;
     answerer.ice.remote_candidates[0].addr[3] = 1;
-    answerer.ice.remote_candidates[0].port = 9999;
+    answerer.ice.remote_candidates[0].port = 4000;
     answerer.ice.remote_candidate_count = 1;
 
     uint32_t now_ms = 100;
@@ -2522,6 +2409,7 @@ TEST(test_e2e_h265_midstream_param_refresh)
     int connected = 0;
     for (int round = 0; round < 30; round++) {
         e2e_pump(&offerer, &answerer, now_ms, 5);
+        now_ms += 50;
         if (offerer.srtp.ready && answerer.srtp.ready) {
             connected = 1;
             break;
@@ -2683,7 +2571,7 @@ TEST(test_e2e_video_send_admission)
     answerer.ice.remote_candidates[0].addr[1] = 168;
     answerer.ice.remote_candidates[0].addr[2] = 1;
     answerer.ice.remote_candidates[0].addr[3] = 1;
-    answerer.ice.remote_candidates[0].port = 9999;
+    answerer.ice.remote_candidates[0].port = 4000;
     answerer.ice.remote_candidate_count = 1;
 
     uint32_t now_ms = 100;
@@ -2691,6 +2579,7 @@ TEST(test_e2e_video_send_admission)
     int connected = 0;
     for (int round = 0; round < 30; round++) {
         e2e_pump(&offerer, &answerer, now_ms, 5);
+        now_ms += 50;
         if (offerer.state >= NANORTC_STATE_DTLS_CONNECTED &&
             answerer.state >= NANORTC_STATE_DTLS_CONNECTED && offerer.srtp.ready &&
             answerer.srtp.ready) {
@@ -2823,7 +2712,7 @@ TEST(test_e2e_video_auto_pli_on_loss)
     answerer.ice.remote_candidates[0].addr[1] = 168;
     answerer.ice.remote_candidates[0].addr[2] = 1;
     answerer.ice.remote_candidates[0].addr[3] = 1;
-    answerer.ice.remote_candidates[0].port = 9999;
+    answerer.ice.remote_candidates[0].port = 4000;
     answerer.ice.remote_candidate_count = 1;
 
     uint32_t now = 100;
@@ -2831,6 +2720,7 @@ TEST(test_e2e_video_auto_pli_on_loss)
     int connected = 0;
     for (int round = 0; round < 30; round++) {
         e2e_pump(&offerer, &answerer, now, 5);
+        now += 50;
         if (offerer.srtp.ready && answerer.srtp.ready) {
             connected = 1;
             break;
@@ -2997,7 +2887,7 @@ TEST(test_e2e_video_reorder_heals_swap)
     answerer.ice.remote_candidates[0].addr[1] = 168;
     answerer.ice.remote_candidates[0].addr[2] = 1;
     answerer.ice.remote_candidates[0].addr[3] = 1;
-    answerer.ice.remote_candidates[0].port = 9999;
+    answerer.ice.remote_candidates[0].port = 4000;
     answerer.ice.remote_candidate_count = 1;
 
     uint32_t now = 100;
@@ -3005,6 +2895,7 @@ TEST(test_e2e_video_reorder_heals_swap)
     int connected = 0;
     for (int round = 0; round < 30; round++) {
         e2e_pump(&offerer, &answerer, now, 5);
+        now += 50;
         if (offerer.srtp.ready && answerer.srtp.ready) {
             connected = 1;
             break;
@@ -3157,7 +3048,7 @@ TEST(test_e2e_video_nack_recovers_drop)
     answerer.ice.remote_candidates[0].addr[1] = 168;
     answerer.ice.remote_candidates[0].addr[2] = 1;
     answerer.ice.remote_candidates[0].addr[3] = 1;
-    answerer.ice.remote_candidates[0].port = 9999;
+    answerer.ice.remote_candidates[0].port = 4000;
     answerer.ice.remote_candidate_count = 1;
 
     uint32_t now = 100;
@@ -3165,6 +3056,7 @@ TEST(test_e2e_video_nack_recovers_drop)
     int connected = 0;
     for (int round = 0; round < 30; round++) {
         e2e_pump(&offerer, &answerer, now, 5);
+        now += 50;
         if (offerer.srtp.ready && answerer.srtp.ready) {
             connected = 1;
             break;
@@ -3490,7 +3382,7 @@ TEST(test_e2e_video_fec_recovers_drop)
     answerer.ice.remote_candidates[0].addr[1] = 168;
     answerer.ice.remote_candidates[0].addr[2] = 1;
     answerer.ice.remote_candidates[0].addr[3] = 1;
-    answerer.ice.remote_candidates[0].port = 9999;
+    answerer.ice.remote_candidates[0].port = 4000;
     answerer.ice.remote_candidate_count = 1;
 
     uint32_t now = 100;
@@ -3498,6 +3390,7 @@ TEST(test_e2e_video_fec_recovers_drop)
     int connected = 0;
     for (int round = 0; round < 30; round++) {
         e2e_pump(&offerer, &answerer, now, 5);
+        now += 50;
         if (offerer.srtp.ready && answerer.srtp.ready) {
             connected = 1;
             break;
@@ -3631,7 +3524,7 @@ TEST(test_e2e_video_fec_adaptive_k_tracks_loss)
     answerer.ice.remote_candidates[0].addr[1] = 168;
     answerer.ice.remote_candidates[0].addr[2] = 1;
     answerer.ice.remote_candidates[0].addr[3] = 1;
-    answerer.ice.remote_candidates[0].port = 9999;
+    answerer.ice.remote_candidates[0].port = 4000;
     answerer.ice.remote_candidate_count = 1;
 
     uint32_t now = 100;
@@ -3639,6 +3532,7 @@ TEST(test_e2e_video_fec_adaptive_k_tracks_loss)
     int connected = 0;
     for (int round = 0; round < 30; round++) {
         e2e_pump(&offerer, &answerer, now, 5);
+        now += 50;
         if (offerer.srtp.ready && answerer.srtp.ready) {
             connected = 1;
             break;
@@ -3735,7 +3629,7 @@ TEST(test_e2e_video_fec_multigroup_idr)
     answerer.ice.remote_candidates[0].addr[1] = 168;
     answerer.ice.remote_candidates[0].addr[2] = 1;
     answerer.ice.remote_candidates[0].addr[3] = 1;
-    answerer.ice.remote_candidates[0].port = 9999;
+    answerer.ice.remote_candidates[0].port = 4000;
     answerer.ice.remote_candidate_count = 1;
 
     uint32_t now = 100;
@@ -3743,6 +3637,7 @@ TEST(test_e2e_video_fec_multigroup_idr)
     int connected = 0;
     for (int round = 0; round < 30; round++) {
         e2e_pump(&offerer, &answerer, now, 5);
+        now += 50;
         if (offerer.srtp.ready && answerer.srtp.ready) {
             connected = 1;
             break;
@@ -4540,6 +4435,10 @@ TEST(test_e2e_handle_input_dst_resolves_local_idx)
     nanortc_config_t cfg = e2e_default_config();
     cfg.role = NANORTC_ROLE_CONTROLLED;
     ASSERT_OK(nanortc_init(&rtc, &cfg));
+    memcpy(rtc.ice.local_ufrag, "LOCAL", 5);
+    rtc.ice.local_ufrag_len = 5;
+    memcpy(rtc.ice.local_pwd, "local-password", 14);
+    rtc.ice.local_pwd_len = 14;
 
     /* Put two local host candidates on different ports so dst selects index 1. */
     ASSERT_OK(nanortc_add_local_candidate(&rtc, "127.0.0.1", 5001));
@@ -4587,6 +4486,12 @@ TEST(test_e2e_handle_input_dst_resolves_local_idx)
     ASSERT_OK(nanortc_handle_input(
         &rtc,
         &(nanortc_input_t){.now_ms = 100, .data = req, .len = req_len, .src = src, .dst = dst}));
+    ASSERT_FALSE(rtc.ice.nominated);
+    if (!rtc.ice.remote_pwd_len) {
+        memcpy(rtc.ice.remote_pwd, "remote", 6);
+        rtc.ice.remote_pwd_len = 6;
+    }
+    ASSERT_OK(test_ice_answer_check(&rtc.ice, 200, cfg.crypto));
     ASSERT_EQ(rtc.ice.state, NANORTC_ICE_STATE_CONNECTED);
     ASSERT_EQ(rtc.ice.selected_local_idx, 1);
     ASSERT_EQ(rtc.ice.selected_local_type, NANORTC_ICE_CAND_HOST);
@@ -4603,6 +4508,10 @@ TEST(test_e2e_handle_input_dst_exact_beats_wildcard)
     nanortc_config_t cfg = e2e_default_config();
     cfg.role = NANORTC_ROLE_CONTROLLED;
     ASSERT_OK(nanortc_init(&rtc, &cfg));
+    memcpy(rtc.ice.local_ufrag, "LOCAL", 5);
+    rtc.ice.local_ufrag_len = 5;
+    memcpy(rtc.ice.local_pwd, "local-password", 14);
+    rtc.ice.local_pwd_len = 14;
 
     /* Slot 0 = wildcard (0.0.0.0) host on port 5200. Slot 1 = concrete
      * srflx candidate on the same port (mirrors how nanortc registers a
@@ -4651,6 +4560,12 @@ TEST(test_e2e_handle_input_dst_exact_beats_wildcard)
     ASSERT_OK(nanortc_handle_input(
         &rtc,
         &(nanortc_input_t){.now_ms = 100, .data = req, .len = req_len, .src = src, .dst = dst}));
+    ASSERT_FALSE(rtc.ice.nominated);
+    if (!rtc.ice.remote_pwd_len) {
+        memcpy(rtc.ice.remote_pwd, "remote", 6);
+        rtc.ice.remote_pwd_len = 6;
+    }
+    ASSERT_OK(test_ice_answer_check(&rtc.ice, 200, cfg.crypto));
     ASSERT_EQ(rtc.ice.state, NANORTC_ICE_STATE_CONNECTED);
     ASSERT_EQ(rtc.ice.selected_local_idx, 1);
     ASSERT_EQ(rtc.ice.selected_local_type, NANORTC_ICE_CAND_SRFLX);
@@ -4665,6 +4580,10 @@ TEST(test_e2e_handle_input_dst_null_falls_back)
     nanortc_config_t cfg = e2e_default_config();
     cfg.role = NANORTC_ROLE_CONTROLLED;
     ASSERT_OK(nanortc_init(&rtc, &cfg));
+    memcpy(rtc.ice.local_ufrag, "LOCAL", 5);
+    rtc.ice.local_ufrag_len = 5;
+    memcpy(rtc.ice.local_pwd, "local-password", 14);
+    rtc.ice.local_pwd_len = 14;
 
     ASSERT_OK(nanortc_add_local_candidate(&rtc, "127.0.0.1", 5101));
     ASSERT_OK(nanortc_add_local_candidate(&rtc, "127.0.0.1", 5102));
@@ -4697,6 +4616,12 @@ TEST(test_e2e_handle_input_dst_null_falls_back)
     /* dst=NULL: legacy fallback → selected_local_idx == 0. */
     ASSERT_OK(nanortc_handle_input(
         &rtc, &(nanortc_input_t){.now_ms = 100, .data = req, .len = req_len, .src = src}));
+    ASSERT_FALSE(rtc.ice.nominated);
+    if (!rtc.ice.remote_pwd_len) {
+        memcpy(rtc.ice.remote_pwd, "remote", 6);
+        rtc.ice.remote_pwd_len = 6;
+    }
+    ASSERT_OK(test_ice_answer_check(&rtc.ice, 200, cfg.crypto));
     ASSERT_EQ(rtc.ice.state, NANORTC_ICE_STATE_CONNECTED);
     ASSERT_EQ(rtc.ice.selected_local_idx, 0);
 

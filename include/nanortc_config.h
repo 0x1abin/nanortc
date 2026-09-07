@@ -395,6 +395,11 @@
 
 /* A pending connectivity check is considered stale and may be reaped
  * after this many milliseconds without a matching Binding Response. */
+/* RFC 8445 §14: minimum initial STUN retransmission timeout. */
+#ifndef NANORTC_ICE_RTO_MS
+#define NANORTC_ICE_RTO_MS 500u
+#endif
+
 #ifndef NANORTC_ICE_CHECK_TIMEOUT_MS
 #define NANORTC_ICE_CHECK_TIMEOUT_MS 5000
 #endif
@@ -1410,6 +1415,10 @@ typedef enum {
 
 #if NANORTC_ICE_MAX_PENDING_CHECKS > 16
 #error "NANORTC_ICE_MAX_PENDING_CHECKS must be <= 16 (each slot uses ~20 B of nano_ice_t)"
+#endif
+
+#if NANORTC_ICE_RTO_MS < 500u || NANORTC_ICE_RTO_MS > 0x7fffffffu
+#error "NANORTC_ICE_RTO_MS must be between 500 and 2147483647 ms"
 #endif
 
 #if NANORTC_ICE_CHECK_TIMEOUT_MS < NANORTC_ICE_CHECK_INTERVAL_MS
