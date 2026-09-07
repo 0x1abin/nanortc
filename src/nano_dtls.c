@@ -15,7 +15,6 @@
  */
 
 #include "nano_dtls.h"
-#include "nano_log.h"
 #include "nanortc_crypto.h"
 #include "nanortc.h"
 #include <string.h>
@@ -65,14 +64,69 @@ static int bio_recv_cb(void *userdata, uint8_t *buf, size_t buf_len)
  * Public API
  * ---------------------------------------------------------------- */
 
+void dtls_set_time(nano_dtls_t *dtls, uint32_t now_ms)
+{
+    dtls->now_ms = now_ms;
+    if (dtls->crypto_ctx)
+        dtls->crypto->dtls_set_time(dtls->crypto_ctx, now_ms);
+}
+
+static int dtls_handshake_result(nano_dtls_t *dtls, int rc)
+{
+    if (rc < 0) {
+        dtls->state = NANORTC_DTLS_STATE_ERROR;
+        return NANORTC_ERR_CRYPTO;
+    }
+    dtls->timeout_ms = dtls->crypto->dtls_next_timeout(dtls->crypto_ctx);
+    dtls->timeout_observed_ms = dtls->now_ms;
+    if (rc == 0) {
+        dtls->state = NANORTC_DTLS_STATE_ESTABLISHED;
+        dtls->timeout_ms = UINT32_MAX;
+        if (dtls->crypto->dtls_export_keying_material(
+                dtls->crypto_ctx, "EXTRACTOR-dtls_srtp", sizeof("EXTRACTOR-dtls_srtp") - 1,
+                dtls->keying_material, sizeof(dtls->keying_material)) == 0)
+            dtls->keying_material_ready = 1;
+    }
+    return NANORTC_OK;
+}
+
+uint32_t dtls_next_timeout_ms(const nano_dtls_t *dtls, uint32_t now_ms)
+{
+    if (dtls->state != NANORTC_DTLS_STATE_HANDSHAKING || dtls->timeout_ms == UINT32_MAX)
+        return UINT32_MAX;
+    uint32_t elapsed = now_ms - dtls->timeout_observed_ms;
+    return elapsed >= dtls->timeout_ms ? 0 : dtls->timeout_ms - elapsed;
+}
+
+int dtls_handle_timeout(nano_dtls_t *dtls, uint32_t now_ms)
+{
+    dtls_set_time(dtls, now_ms);
+    if (dtls->state != NANORTC_DTLS_STATE_HANDSHAKING || !dtls->crypto_ctx)
+        return NANORTC_OK;
+    if (dtls_next_timeout_ms(dtls, now_ms) != 0)
+        return NANORTC_OK;
+    return dtls_handshake_result(dtls, dtls->crypto->dtls_handle_timeout(dtls->crypto_ctx));
+}
+
+int dtls_validate_provider(const nanortc_crypto_provider_t *crypto)
+{
+    if (!crypto || !crypto->dtls_ctx_new || !crypto->dtls_set_bio || !crypto->dtls_handshake ||
+        !crypto->dtls_encrypt || !crypto->dtls_decrypt || !crypto->dtls_export_keying_material ||
+        !crypto->dtls_get_fingerprint || !crypto->dtls_free || !crypto->dtls_set_time ||
+        !crypto->dtls_next_timeout || !crypto->dtls_handle_timeout)
+        return NANORTC_ERR_INVALID_PARAM;
+    return NANORTC_OK;
+}
+
 int dtls_init(nano_dtls_t *dtls, const nanortc_crypto_provider_t *crypto, int is_server)
 {
-    if (!dtls || !crypto || !crypto->dtls_ctx_new) {
+    if (!dtls || dtls_validate_provider(crypto) != NANORTC_OK) {
         return NANORTC_ERR_INVALID_PARAM;
     }
 
     memset(dtls, 0, sizeof(*dtls));
     dtls->state = NANORTC_DTLS_STATE_INIT;
+    dtls->timeout_ms = UINT32_MAX;
     dtls->crypto = crypto;
     dtls->is_server = is_server;
 
@@ -112,18 +166,7 @@ int dtls_start(nano_dtls_t *dtls)
 
     /* Drive the handshake — for client, this generates ClientHello */
     int rc = dtls->crypto->dtls_handshake((nanortc_crypto_dtls_ctx_t *)dtls->crypto_ctx);
-    if (rc < 0) {
-        dtls->state = NANORTC_DTLS_STATE_ERROR;
-        return NANORTC_ERR_CRYPTO;
-    }
-    /* rc == 0: handshake done (unlikely on first call)
-     * rc == 1: WANT_READ — ClientHello is in out_buf, waiting for ServerHello */
-
-    if (rc == 0) {
-        dtls->state = NANORTC_DTLS_STATE_ESTABLISHED;
-    }
-
-    return NANORTC_OK;
+    return dtls_handshake_result(dtls, rc);
 }
 
 /*
@@ -265,26 +308,7 @@ int dtls_handle_data(nano_dtls_t *dtls, const uint8_t *data, size_t len)
         }
 
         int rc = dtls->crypto->dtls_handshake(ctx);
-        if (rc < 0) {
-            NANORTC_LOGW("DTLS", "handshake rejected by crypto backend");
-            dtls->state = NANORTC_DTLS_STATE_ERROR;
-            return NANORTC_ERR_CRYPTO;
-        }
-        if (rc == 0) {
-            /* Handshake complete */
-            dtls->state = NANORTC_DTLS_STATE_ESTABLISHED;
-
-            /* Export keying material (RFC 5764) */
-            if (dtls->crypto->dtls_export_keying_material) {
-                int km_rc = dtls->crypto->dtls_export_keying_material(
-                    ctx, "EXTRACTOR-dtls_srtp", sizeof("EXTRACTOR-dtls_srtp") - 1,
-                    dtls->keying_material, sizeof(dtls->keying_material));
-                if (km_rc == 0) {
-                    dtls->keying_material_ready = 1;
-                }
-            }
-        }
-        return NANORTC_OK;
+        return dtls_handshake_result(dtls, rc);
 
     } else if (dtls->state == NANORTC_DTLS_STATE_ESTABLISHED) {
         /* Application data: decrypt */

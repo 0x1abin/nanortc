@@ -22,7 +22,7 @@ TEST(test_dc_init)
     nano_dc_t dc;
     ASSERT_OK(dc_init(&dc));
     ASSERT_EQ(dc.channel_count, 0);
-    ASSERT_FALSE(dc.has_output);
+    ASSERT_FALSE(dc_has_pending_output(&dc));
 }
 
 TEST(test_dc_init_null)
@@ -41,7 +41,7 @@ TEST(test_dc_open_reliable_ordered)
 
     ASSERT_OK(dc_open(&dc, 0, "test", true, 0));
     ASSERT_EQ(dc.channel_count, 1);
-    ASSERT_TRUE(dc.has_output);
+    ASSERT_TRUE(dc_has_pending_output(&dc));
     ASSERT_EQ(dc.channels[0].state, NANORTC_DC_STATE_OPENING);
     ASSERT_TRUE(dc.channels[0].ordered);
 
@@ -49,7 +49,8 @@ TEST(test_dc_open_reliable_ordered)
     uint8_t buf[256];
     size_t out_len = 0;
     uint16_t stream = 0;
-    ASSERT_OK(dc_poll_output(&dc, buf, sizeof(buf), &out_len, &stream));
+    ASSERT_OK(dc_peek_output(&dc, buf, sizeof(buf), &out_len, &stream));
+    dc_commit_output(&dc, stream);
     ASSERT_EQ(stream, 0);
     ASSERT_TRUE(out_len >= 12);
     ASSERT_EQ(buf[0], DCEP_DATA_CHANNEL_OPEN);
@@ -67,7 +68,8 @@ TEST(test_dc_open_unordered)
     uint8_t buf[256];
     size_t out_len = 0;
     uint16_t stream = 0;
-    ASSERT_OK(dc_poll_output(&dc, buf, sizeof(buf), &out_len, &stream));
+    ASSERT_OK(dc_peek_output(&dc, buf, sizeof(buf), &out_len, &stream));
+    dc_commit_output(&dc, stream);
     ASSERT_EQ(buf[1], DCEP_CHANNEL_RELIABLE_UNORDERED);
 }
 
@@ -81,7 +83,8 @@ TEST(test_dc_open_rexmit)
     uint8_t buf[256];
     size_t out_len = 0;
     uint16_t stream = 0;
-    ASSERT_OK(dc_poll_output(&dc, buf, sizeof(buf), &out_len, &stream));
+    ASSERT_OK(dc_peek_output(&dc, buf, sizeof(buf), &out_len, &stream));
+    dc_commit_output(&dc, stream);
     ASSERT_EQ(buf[1], DCEP_CHANNEL_REXMIT);
     /* Reliability param at bytes 4-7 = 3 */
     uint32_t rel = (uint32_t)buf[4] << 24 | (uint32_t)buf[5] << 16 | (uint32_t)buf[6] << 8 | buf[7];
@@ -98,7 +101,8 @@ TEST(test_dc_open_rexmit_unordered)
     uint8_t buf[256];
     size_t out_len = 0;
     uint16_t stream = 0;
-    ASSERT_OK(dc_poll_output(&dc, buf, sizeof(buf), &out_len, &stream));
+    ASSERT_OK(dc_peek_output(&dc, buf, sizeof(buf), &out_len, &stream));
+    dc_commit_output(&dc, stream);
     ASSERT_EQ(buf[1], DCEP_CHANNEL_REXMIT_UNORDERED);
 }
 
@@ -122,7 +126,8 @@ TEST(test_dc_open_max_channels)
         uint8_t buf[256];
         size_t out_len = 0;
         uint16_t stream = 0;
-        dc_poll_output(&dc, buf, sizeof(buf), &out_len, &stream);
+        dc_peek_output(&dc, buf, sizeof(buf), &out_len, &stream);
+        dc_commit_output(&dc, stream);
     }
 
     /* Next should fail */
@@ -135,64 +140,69 @@ TEST(test_dc_open_max_channels)
 
 TEST(test_dc_handle_open)
 {
+    bool opened;
     nano_dc_t dc;
     dc_init(&dc);
 
     /* Build a valid DCEP OPEN: type=0x03, channel_type=RELIABLE(0x00),
      * priority=0, reliability=0, label="hello", protocol="" */
     uint8_t open_msg[] = {
-        0x03,                   /* DCEP_DATA_CHANNEL_OPEN */
-        0x00,                   /* channel type: RELIABLE */
-        0x00, 0x00,             /* priority */
-        0x00, 0x00, 0x00, 0x00, /* reliability param */
-        0x00, 0x05,             /* label length = 5 */
-        0x00, 0x00,             /* protocol length = 0 */
-        'h', 'e', 'l', 'l', 'o' /* label */
+        0x03,                       /* DCEP_DATA_CHANNEL_OPEN */
+        0x00,                       /* channel type: RELIABLE */
+        0x00, 0x00,                 /* priority */
+        0x00, 0x00, 0x00, 0x00,     /* reliability param */
+        0x00, 0x05,                 /* label length = 5 */
+        0x00, 0x00,                 /* protocol length = 0 */
+        'h',  'e',  'l',  'l',  'o' /* label */
     };
 
-    ASSERT_OK(dc_handle_message(&dc, 0, DCEP_PPID_CONTROL, open_msg, sizeof(open_msg)));
+    ASSERT_OK(dc_handle_message(&dc, 0, DCEP_PPID_CONTROL, open_msg, sizeof(open_msg), &opened));
     ASSERT_EQ(dc.channel_count, 1);
     ASSERT_EQ(dc.channels[0].state, NANORTC_DC_STATE_OPEN);
-    ASSERT_TRUE(dc.has_output);
-    ASSERT_TRUE(dc.last_was_open);
+    ASSERT_TRUE(dc_has_pending_output(&dc));
+    ASSERT_TRUE(opened);
 
     /* Output should be DCEP ACK (0x02) */
     uint8_t buf[256];
     size_t out_len = 0;
     uint16_t stream = 0;
-    ASSERT_OK(dc_poll_output(&dc, buf, sizeof(buf), &out_len, &stream));
+    ASSERT_OK(dc_peek_output(&dc, buf, sizeof(buf), &out_len, &stream));
+    dc_commit_output(&dc, stream);
     ASSERT_EQ(out_len, 1);
     ASSERT_EQ(buf[0], DCEP_DATA_CHANNEL_ACK);
 }
 
 TEST(test_dc_handle_open_idempotent)
 {
+    bool opened;
     nano_dc_t dc;
     dc_init(&dc);
 
-    uint8_t open_msg[] = {0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                          0x00, 0x02, 0x00, 0x00, 'h', 'i'};
+    uint8_t open_msg[] = {0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                          0x00, 0x00, 0x02, 0x00, 0x00, 'h',  'i'};
 
     /* First OPEN — creates channel */
-    ASSERT_OK(dc_handle_message(&dc, 0, DCEP_PPID_CONTROL, open_msg, sizeof(open_msg)));
+    ASSERT_OK(dc_handle_message(&dc, 0, DCEP_PPID_CONTROL, open_msg, sizeof(open_msg), &opened));
     ASSERT_EQ(dc.channel_count, 1);
-    ASSERT_TRUE(dc.last_was_open);
+    ASSERT_TRUE(opened);
 
     /* Drain output */
     uint8_t buf[256];
     size_t out_len = 0;
     uint16_t stream = 0;
-    dc_poll_output(&dc, buf, sizeof(buf), &out_len, &stream);
+    dc_peek_output(&dc, buf, sizeof(buf), &out_len, &stream);
+    dc_commit_output(&dc, stream);
 
     /* Second OPEN (retransmit) — same stream, should re-ACK, NOT allocate new channel */
-    ASSERT_OK(dc_handle_message(&dc, 0, DCEP_PPID_CONTROL, open_msg, sizeof(open_msg)));
-    ASSERT_EQ(dc.channel_count, 1); /* Still 1 */
-    ASSERT_FALSE(dc.last_was_open); /* Not a new open */
-    ASSERT_TRUE(dc.has_output);     /* Re-ACK queued */
+    ASSERT_OK(dc_handle_message(&dc, 0, DCEP_PPID_CONTROL, open_msg, sizeof(open_msg), &opened));
+    ASSERT_EQ(dc.channel_count, 1);          /* Still 1 */
+    ASSERT_FALSE(opened);                    /* Not a new open */
+    ASSERT_TRUE(dc_has_pending_output(&dc)); /* Re-ACK queued */
 }
 
 TEST(test_dc_handle_ack)
 {
+    bool opened;
     nano_dc_t dc;
     dc_init(&dc);
 
@@ -202,115 +212,54 @@ TEST(test_dc_handle_ack)
 
     /* Simulate receiving ACK */
     uint8_t ack_msg[] = {DCEP_DATA_CHANNEL_ACK};
-    ASSERT_OK(dc_handle_message(&dc, 0, DCEP_PPID_CONTROL, ack_msg, sizeof(ack_msg)));
+    ASSERT_OK(dc_handle_message(&dc, 0, DCEP_PPID_CONTROL, ack_msg, sizeof(ack_msg), &opened));
     ASSERT_EQ(dc.channels[0].state, NANORTC_DC_STATE_OPEN);
 }
 
 TEST(test_dc_handle_open_malformed)
 {
+    bool opened;
     nano_dc_t dc;
     dc_init(&dc);
 
     /* Too short */
     uint8_t short_msg[] = {0x03, 0x00};
-    ASSERT_FAIL(dc_handle_message(&dc, 0, DCEP_PPID_CONTROL, short_msg, sizeof(short_msg)));
+    ASSERT_FAIL(
+        dc_handle_message(&dc, 0, DCEP_PPID_CONTROL, short_msg, sizeof(short_msg), &opened));
 
     /* Empty DCEP control */
-    ASSERT_FAIL(dc_handle_message(&dc, 0, DCEP_PPID_CONTROL, short_msg, 0));
+    ASSERT_FAIL(dc_handle_message(&dc, 0, DCEP_PPID_CONTROL, short_msg, 0, &opened));
 
     /* Unknown message type */
     uint8_t unknown[] = {0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
-    ASSERT_FAIL(dc_handle_message(&dc, 0, DCEP_PPID_CONTROL, unknown, sizeof(unknown)));
+    ASSERT_FAIL(dc_handle_message(&dc, 0, DCEP_PPID_CONTROL, unknown, sizeof(unknown), &opened));
 
     /* Label length exceeds buffer */
-    uint8_t bad_len[] = {0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                         0xFF, 0xFF, 0x00, 0x00}; /* label_len=65535 but only 12 bytes */
-    ASSERT_FAIL(dc_handle_message(&dc, 0, DCEP_PPID_CONTROL, bad_len, sizeof(bad_len)));
+    uint8_t bad_len[] = {0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                         0x00, 0xFF, 0xFF, 0x00, 0x00}; /* label_len=65535 but only 12 bytes */
+    ASSERT_FAIL(dc_handle_message(&dc, 0, DCEP_PPID_CONTROL, bad_len, sizeof(bad_len), &opened));
 }
 
 TEST(test_dc_handle_null)
 {
-    ASSERT_FAIL(dc_handle_message(NULL, 0, DCEP_PPID_CONTROL, (uint8_t[]){0x03}, 1));
+    bool opened;
+    ASSERT_FAIL(dc_handle_message(NULL, 0, DCEP_PPID_CONTROL, (uint8_t[]){0x03}, 1, &opened));
 }
 
 TEST(test_dc_handle_data_ppid)
 {
+    bool opened;
     nano_dc_t dc;
     dc_init(&dc);
-    ASSERT_OK(dc_open(&dc, 0, "data", true, 0));
-    dc.channels[0].state = NANORTC_DC_STATE_OPEN;
 
     /* Data PPIDs should return OK without allocating channels */
     uint8_t data[] = {'h', 'e', 'l', 'l', 'o'};
-    ASSERT_OK(dc_handle_message(&dc, 0, DCEP_PPID_STRING, data, sizeof(data)));
-    ASSERT_OK(dc_handle_message(&dc, 0, DCEP_PPID_BINARY, data, sizeof(data)));
-    ASSERT_EQ(dc_handle_message(&dc, 2, DCEP_PPID_STRING, data, sizeof(data)),
-              NANORTC_ERR_PROTOCOL);
-}
-
-TEST(test_dc_reassembles_legacy_string_partial_ppid)
-{
-    nano_dc_t dc;
-    dc_init(&dc);
-    ASSERT_OK(dc_open(&dc, 0, "data", false, 0));
-    dc.channels[0].state = NANORTC_DC_STATE_OPEN;
-
-    static const uint8_t prefix[] = "{\"v\":1,\"type\":\"h";
-    static const uint8_t suffix[] = "eartbeat\",\"id\":614}";
-    static const uint8_t expected[] = "{\"v\":1,\"type\":\"heartbeat\",\"id\":614}";
-    ASSERT_OK(dc_handle_message(&dc, 0, DCEP_PPID_STRING_PARTIAL,
-                                prefix, sizeof(prefix) - 1));
-    ASSERT_FALSE(dc.has_delivered);
-    ASSERT_TRUE(dc.in_active);
-    ASSERT_OK(dc_handle_message(&dc, 0, DCEP_PPID_STRING,
-                                suffix, sizeof(suffix) - 1));
-    ASSERT_TRUE(dc.has_delivered);
-    ASSERT_FALSE(dc.delivered_binary);
-    ASSERT_EQ(dc.delivered_len, sizeof(expected) - 1);
-    ASSERT_MEM_EQ(dc.delivered_data, expected, sizeof(expected) - 1);
-}
-
-TEST(test_dc_partial_ppid_rejects_type_change_and_overflow)
-{
-    nano_dc_t dc;
-    dc_init(&dc);
-    ASSERT_OK(dc_open(&dc, 0, "data", false, 0));
-    dc.channels[0].state = NANORTC_DC_STATE_OPEN;
-    static const uint8_t fragment[] = "part";
-    ASSERT_OK(dc_handle_message(&dc, 0, DCEP_PPID_STRING_PARTIAL,
-                                fragment, sizeof(fragment) - 1));
-    ASSERT_EQ(dc_handle_message(&dc, 0, DCEP_PPID_BINARY,
-                                fragment, sizeof(fragment) - 1), NANORTC_ERR_PROTOCOL);
-    ASSERT_FALSE(dc.in_active);
-
-    uint8_t oversized[NANORTC_SCTP_REASSEMBLY_BUF_SIZE];
-    memset(oversized, 'x', sizeof(oversized));
-    ASSERT_OK(dc_handle_message(&dc, 0, DCEP_PPID_STRING_PARTIAL,
-                                oversized, sizeof(oversized)));
-    ASSERT_EQ(dc_handle_message(&dc, 0, DCEP_PPID_STRING_PARTIAL, fragment, 1),
-              NANORTC_ERR_BUFFER_TOO_SMALL);
-    ASSERT_FALSE(dc.in_active);
-}
-
-TEST(test_dc_handle_pr_unordered_protocol)
-{
-    nano_dc_t dc;
-    dc_init(&dc);
-    static const uint8_t open_msg[] = {
-        0x03, 0x81, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x10, 0x00, 0x10,
-        'h', 'u', 'i', 'n', 'a', '-', 'c', 'o', 'n', 't', 'r', 'o', 'l', '-', 'v', '1',
-        'h', 'u', 'i', 'n', 'a', '.', 'c', 'o', 'n', 't', 'r', 'o', 'l', '.', 'v', '1',
-    };
-    ASSERT_OK(dc_handle_message(&dc, 0, DCEP_PPID_CONTROL, open_msg, sizeof(open_msg)));
-    ASSERT_FALSE(dc.channels[0].ordered);
-    ASSERT_TRUE(dc.channels[0].partial_reliability);
-    ASSERT_EQ(dc.channels[0].max_retransmits, 0u);
-    ASSERT_TRUE(strcmp(dc.channels[0].protocol, "huina.control.v1") == 0);
+    ASSERT_OK(dc_handle_message(&dc, 0, DCEP_PPID_STRING, data, sizeof(data), &opened));
+    ASSERT_OK(dc_handle_message(&dc, 0, DCEP_PPID_BINARY, data, sizeof(data), &opened));
 }
 
 /* ================================================================
- * dc_poll_output edge cases
+ * dc_peek_output edge cases
  * ================================================================ */
 
 TEST(test_dc_poll_no_output)
@@ -321,7 +270,7 @@ TEST(test_dc_poll_no_output)
     uint8_t buf[256];
     size_t out_len = 0;
     uint16_t stream = 0;
-    ASSERT_FAIL(dc_poll_output(&dc, buf, sizeof(buf), &out_len, &stream));
+    ASSERT_FAIL(dc_peek_output(&dc, buf, sizeof(buf), &out_len, &stream));
 }
 
 TEST(test_dc_poll_null_params)
@@ -332,10 +281,10 @@ TEST(test_dc_poll_null_params)
     size_t out_len = 0;
     uint16_t stream = 0;
 
-    ASSERT_FAIL(dc_poll_output(NULL, buf, sizeof(buf), &out_len, &stream));
-    ASSERT_FAIL(dc_poll_output(&dc, NULL, sizeof(buf), &out_len, &stream));
-    ASSERT_FAIL(dc_poll_output(&dc, buf, sizeof(buf), NULL, &stream));
-    ASSERT_FAIL(dc_poll_output(&dc, buf, sizeof(buf), &out_len, NULL));
+    ASSERT_FAIL(dc_peek_output(NULL, buf, sizeof(buf), &out_len, &stream));
+    ASSERT_FAIL(dc_peek_output(&dc, NULL, sizeof(buf), &out_len, &stream));
+    ASSERT_FAIL(dc_peek_output(&dc, buf, sizeof(buf), NULL, &stream));
+    ASSERT_FAIL(dc_peek_output(&dc, buf, sizeof(buf), &out_len, NULL));
 }
 
 TEST(test_dc_poll_buffer_too_small)
@@ -347,14 +296,72 @@ TEST(test_dc_poll_buffer_too_small)
     uint8_t buf[1]; /* Too small for DCEP OPEN */
     size_t out_len = 0;
     uint16_t stream = 0;
-    ASSERT_FAIL(dc_poll_output(&dc, buf, sizeof(buf), &out_len, &stream));
+    ASSERT_FAIL(dc_peek_output(&dc, buf, sizeof(buf), &out_len, &stream));
 }
 
 /* ================================================================
  * Test runner
  * ================================================================ */
 
+TEST(test_dcep_multiple_pending_opens_survive_short_poll)
+{
+    nano_dc_t dc;
+    dc_init(&dc);
+    ASSERT_OK(dc_open(&dc, 0, "first", true, 0));
+    ASSERT_OK(dc_open(&dc, 2, "second", false, 3));
+    uint8_t packet[NANORTC_DC_OUT_BUF_SIZE];
+    size_t len;
+    uint16_t sid;
+    nano_dc_t before = dc;
+    ASSERT_EQ(dc_peek_output(&dc, packet, 1, &len, &sid), NANORTC_ERR_BUFFER_TOO_SMALL);
+    ASSERT_MEM_EQ(&before, &dc, sizeof(dc));
+    ASSERT_EQ(dc_peek_output(&dc, packet, sizeof(packet), &len, &sid), NANORTC_OK);
+    ASSERT_MEM_EQ(&before, &dc, sizeof(dc));
+    ASSERT_OK(dc_peek_output(&dc, packet, sizeof(packet), &len, &sid));
+    dc_commit_output(&dc, sid);
+    ASSERT_EQ(sid, 0);
+    ASSERT_MEM_EQ(packet + 12, "first", 5);
+    ASSERT_OK(dc_peek_output(&dc, packet, sizeof(packet), &len, &sid));
+    dc_commit_output(&dc, sid);
+    ASSERT_EQ(sid, 2);
+    ASSERT_MEM_EQ(packet + 12, "second", 6);
+    ASSERT_EQ(packet[1], DCEP_CHANNEL_REXMIT_UNORDERED);
+    ASSERT_EQ(nanortc_read_u32be(packet + 4), 3u);
+    ASSERT_EQ(dc_peek_output(&dc, packet, sizeof(packet), &len, &sid), NANORTC_ERR_NO_DATA);
+}
+
+TEST(test_dc_zero_retry_protocol_metadata)
+{
+    nano_dc_t dc;
+    ASSERT_OK(dc_init(&dc));
+    /* RFC 8832 §5.1 independent OPEN: unordered REXMIT=0, label x, protocol ctrl. */
+    const uint8_t wire[] = {3, 0x81, 0, 0, 0, 0, 0, 0, 0, 1, 0, 4, 'x', 'c', 't', 'r', 'l'};
+    bool opened;
+    ASSERT_OK(dc_handle_message(&dc, 0, DCEP_PPID_CONTROL, wire, sizeof(wire), &opened));
+    ASSERT_TRUE(opened);
+    ASSERT_FALSE(dc.channels[0].ordered);
+    ASSERT_EQ(dc.channels[0].channel_type, DCEP_CHANNEL_REXMIT_UNORDERED);
+    ASSERT_EQ(dc.channels[0].max_retransmits, 0);
+    ASSERT_TRUE(strcmp(dc.channels[0].protocol, "ctrl") == 0);
+    dc_init(&dc);
+    ASSERT_OK(dc_open_options(&dc, 0, "x", "ctrl", false, true, 0));
+    uint8_t packet[128];
+    size_t len;
+    uint16_t stream;
+    ASSERT_OK(dc_peek_output(&dc, packet, sizeof(packet), &len, &stream));
+    ASSERT_EQ(len, sizeof(wire));
+    ASSERT_MEM_EQ(packet, wire, sizeof(wire));
+    ASSERT_TRUE(dc_has_pending_output(&dc));
+    char too_long[NANORTC_DC_LABEL_SIZE + 1];
+    memset(too_long, 'p', sizeof(too_long));
+    too_long[sizeof(too_long) - 1] = 0;
+    nano_dc_t before = dc;
+    ASSERT_EQ(dc_open_options(&dc, 2, "y", too_long, true, false, 0), NANORTC_ERR_BUFFER_TOO_SMALL);
+    ASSERT_MEM_EQ(&dc, &before, sizeof(dc));
+}
+
 TEST_MAIN_BEGIN("test_datachannel")
+RUN(test_dcep_multiple_pending_opens_survive_short_poll);
 /* Init */
 RUN(test_dc_init);
 RUN(test_dc_init_null);
@@ -372,11 +379,9 @@ RUN(test_dc_handle_ack);
 RUN(test_dc_handle_open_malformed);
 RUN(test_dc_handle_null);
 RUN(test_dc_handle_data_ppid);
-RUN(test_dc_reassembles_legacy_string_partial_ppid);
-RUN(test_dc_partial_ppid_rejects_type_change_and_overflow);
-RUN(test_dc_handle_pr_unordered_protocol);
 /* Poll output */
 RUN(test_dc_poll_no_output);
 RUN(test_dc_poll_null_params);
 RUN(test_dc_poll_buffer_too_small);
+RUN(test_dc_zero_retry_protocol_metadata);
 TEST_MAIN_END

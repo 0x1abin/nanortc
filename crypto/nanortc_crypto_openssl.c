@@ -18,6 +18,7 @@
 #include <openssl/ec.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/time.h>
 
 /* ---- HMAC-SHA1 (for STUN MESSAGE-INTEGRITY, RFC 8489 §14.5) ---- */
 
@@ -357,6 +358,30 @@ static int ossl_dtls_handshake(nanortc_crypto_dtls_ctx_t *ctx)
     return -1; /* Error */
 }
 
+/* OpenSSL 3.0 owns its clock; expose its relative timer without promising
+ * virtual-time replay. RFC 6347 §4.2.4: a lost flight needs explicit ticking. */
+static void ossl_dtls_set_time(nanortc_crypto_dtls_ctx_t *ctx, uint32_t now_ms)
+{
+    (void)ctx;
+    (void)now_ms;
+}
+
+static uint32_t ossl_dtls_next_timeout(nanortc_crypto_dtls_ctx_t *ctx)
+{
+    struct timeval tv;
+    if (!DTLSv1_get_timeout(ctx->ssl, &tv))
+        return UINT32_MAX;
+    uint64_t ms = (uint64_t)tv.tv_sec * 1000u + ((uint64_t)tv.tv_usec + 999u) / 1000u;
+    return ms > UINT32_C(0x7fffffff) ? UINT32_C(0x7fffffff) : (uint32_t)ms;
+}
+
+static int ossl_dtls_handle_timeout(nanortc_crypto_dtls_ctx_t *ctx)
+{
+    int rc = DTLSv1_handle_timeout(ctx->ssl);
+    ossl_drain_bio_out(ctx);
+    return rc < 0 ? -1 : ossl_dtls_handshake(ctx);
+}
+
 static int ossl_dtls_encrypt(nanortc_crypto_dtls_ctx_t *ctx, const uint8_t *in, size_t in_len,
                              uint8_t *out, size_t *out_len)
 {
@@ -521,6 +546,9 @@ static const nanortc_crypto_provider_t openssl_provider = {
     .dtls_ctx_new = ossl_dtls_ctx_new,
     .dtls_set_bio = ossl_dtls_set_bio,
     .dtls_handshake = ossl_dtls_handshake,
+    .dtls_set_time = ossl_dtls_set_time,
+    .dtls_next_timeout = ossl_dtls_next_timeout,
+    .dtls_handle_timeout = ossl_dtls_handle_timeout,
     .dtls_encrypt = ossl_dtls_encrypt,
     .dtls_decrypt = ossl_dtls_decrypt,
     .dtls_export_keying_material = ossl_dtls_export_keying_material,

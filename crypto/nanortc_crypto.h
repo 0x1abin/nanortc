@@ -54,6 +54,12 @@ struct nanortc_crypto_provider {
 
     int (*dtls_set_bio)(nanortc_crypto_dtls_ctx_t *ctx, void *userdata,
                         nanortc_dtls_send_fn send_cb, nanortc_dtls_recv_fn recv_cb);
+    /* Timer surface: set caller time before every DTLS operation. UINT32_MAX
+     * means no armed timer. handle_timeout returns handshake 0/done, 1/wait,
+     * or a negative failure, and may produce BIO output. */
+    void (*dtls_set_time)(nanortc_crypto_dtls_ctx_t *ctx, uint32_t now_ms);
+    uint32_t (*dtls_next_timeout)(nanortc_crypto_dtls_ctx_t *ctx);
+    int (*dtls_handle_timeout)(nanortc_crypto_dtls_ctx_t *ctx);
     int (*dtls_handshake)(nanortc_crypto_dtls_ctx_t *ctx);
     int (*dtls_encrypt)(nanortc_crypto_dtls_ctx_t *ctx, const uint8_t *in, size_t in_len,
                         uint8_t *out, size_t *out_len);

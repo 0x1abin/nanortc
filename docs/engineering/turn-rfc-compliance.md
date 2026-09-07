@@ -3,105 +3,76 @@
 This document audits the NanoRTC TURN client implementation ([src/nano_turn.c](../../src/nano_turn.c), [src/nano_turn.h](../../src/nano_turn.h)) against:
 
 - **RFC 5766** — Traversal Using Relays around NAT (TURN)
-- **RFC 8656** — Traversal Using Relays around NAT (TURN-bis), updates 5766
+- **RFC 8656** — Traversal Using Relays around NAT (TURN-bis), obsoletes 5766 and 6156
 - **RFC 8489** — Session Traversal Utilities for NAT (STUN), the TURN authentication base
 - **RFC 7983** — Multiplexing Scheme Updates for DTLS-SRTP (ChannelData demux)
 
 NanoRTC targets the WebRTC-relevant TURN subset: UDP transport, long-term credential authentication, ChannelBind for low-overhead relaying. Optional TURN features (TCP/TLS transport, EVEN-PORT, address-family negotiation) are out of scope.
 
-## Compliance Matrix
+## Current implementation and limits
 
-### Allocation
+The matrix covers the implemented UDP subset, not full RFC 8656 compliance.
+Credentials use legacy MD5 key derivation and HMAC-SHA1 MESSAGE-INTEGRITY.
+SHA-256, PASSWORD-ALGORITHMS negotiation and USERHASH are not implemented.
 
-| RFC §                      | Requirement                                                        | Status | Implementation |
-|----------------------------|--------------------------------------------------------------------|--------|----------------|
-| 5766 §6 / 8656 §7          | Allocate Request: STUN method 0x003                                | OK     | [nano_turn.c:218](../../src/nano_turn.c) |
-| 5766 §6 / 8656 §7          | Allocate carries REQUESTED-TRANSPORT (UDP=17)                      | OK     | [nano_turn.c:221-223](../../src/nano_turn.c) |
-| 5766 §6 / 8656 §7          | Allocate carries LIFETIME (default 600 s)                          | OK     | [nano_turn.c:225-228](../../src/nano_turn.c) |
-| 5766 §6.2 / 8656 §7.2      | First Allocate is unauthenticated                                  | OK     | [nano_turn.c:240-244](../../src/nano_turn.c) |
-| 5766 §6.2 / 8656 §7.2      | On 401: extract REALM + NONCE, derive long-term key, retry         | OK     | [nano_turn.c:293-323](../../src/nano_turn.c) |
-| 5766 §6.3 / 8656 §7.3      | Authenticated Allocate adds USERNAME / REALM / NONCE / MI          | OK     | [nano_turn.c:230-238](../../src/nano_turn.c) |
-| 5766 §6.3 / 8656 §7.3      | Extract XOR-RELAYED-ADDRESS from success response                  | OK     | [nano_turn.c:276-290](../../src/nano_turn.c) |
-| 5766 §6.3 / 8656 §7.3      | Extract LIFETIME from success response                             | OK     | [nano_turn.c:286](../../src/nano_turn.c) |
+| RFC sections | Implemented behavior | Owning functions |
+|---|---|---|
+| 5766 §6 / 8656 §7 | Allocate, UDP REQUESTED-TRANSPORT, LIFETIME, 401 REALM/NONCE challenge, relay address extraction | `turn_start_allocate`, `turn_handle_response` |
+| 5766 §7 / 8656 §8 | Authenticated Refresh before expiry; explicit LIFETIME=0 deallocation | `turn_generate_refresh`, `turn_deallocate` |
+| 5766 §§8–9 / 8656 §§9–10 | IP-scoped permissions; five-minute lifetime, four-minute refresh; independent pending requests and peer-scoped rejection/backoff | `turn_create_permission`, `turn_can_create_permission`, `turn_peer_is_ready` |
+| 5766 §10 / 8656 §11 | Send Indication without MI; Data Indication peer/payload extraction | `turn_wrap_send`, `turn_unwrap_data` |
+| 5766 §11 / 8656 §12 | ChannelBind keyed by peer endpoint, channel range 0x4000–0x4FFE, ten-minute binding refreshed at nine minutes; ChannelData encode/decode | `turn_channel_bind`, `turn_can_bind_channel`, `turn_wrap_channel_data`, `turn_unwrap_channel_data` |
+| 8489 §§5, 6.2.1 | Same bytes/ID for retransmission, bounded exponential backoff; changed nonce retires IDs before rebuilding requests | `turn_store_nonce`, `turn_generate_retransmit` |
+| 8489 §§9.2.2, 9.2.5, 14.5, 14.7 | Legacy key derivation; validate response MI before error handling, discard invalid UDP responses; verify FINGERPRINT when present | `turn_derive_key`, `turn_handle_response` |
+| 8656 §§8–12 | Shared task/deadline selection; outstanding requests wait for RTO instead of expired refresh deadlines | `turn_next_work`, `turn_poll_output`, `turn_next_timeout_ms` |
+| 7983 §3 | STUN/ChannelData demultiplexing | RTC receive path and `turn_is_channel_data` |
 
-### Refresh
+Implementation: [nano_turn.c](../../src/nano_turn.c),
+[nano_turn.h](../../src/nano_turn.h), [nano_rtc.c](../../src/nano_rtc.c).
+Authentication rules are checked against
+[RFC 8489 §9.2.5](https://www.rfc-editor.org/rfc/rfc8489.html#section-9.2.5);
+TURN operation/attribute references use the
+[RFC 8656 section numbering](https://www.rfc-editor.org/rfc/rfc8656.html#section-7).
 
-| RFC §                | Requirement                                            | Status | Implementation |
-|----------------------|--------------------------------------------------------|--------|----------------|
-| 5766 §7 / 8656 §6    | Refresh Request: STUN method 0x004                     | OK     | [nano_turn.c:439](../../src/nano_turn.c) |
-| 5766 §7 / 8656 §6    | Refresh authenticated (USERNAME/REALM/NONCE/MI)        | OK     | [nano_turn.c:447-454](../../src/nano_turn.c) |
-| 5766 §7 / 8656 §6    | Update lifetime from success response                  | OK     | [nano_turn.c:347-350](../../src/nano_turn.c) |
-| 5766 §7 / 8656 §6    | LIFETIME=0 ⇒ explicit deallocation                     | OK     | [nano_turn.c](../../src/nano_turn.c) — added by F3 |
-| 5766 §7 / 8656 §6    | Pre-emptive refresh before lifetime expiry             | OK     | [nano_turn.c:458-460](../../src/nano_turn.c) |
-| 5766 §7 / 8489 §9.2  | Handle 438 Stale Nonce, refresh nonce, retry           | OK     | [nano_turn.c:325-339, 352-362](../../src/nano_turn.c) |
+### Deliberate omissions
 
-### CreatePermission
+| RFC sections | Feature | Current boundary |
+|---|---|---|
+| 8656 §§18.7, 18.10 | EVEN-PORT / RESERVATION-TOKEN | No paired relay-port reservation |
+| 8656 §§18.6, 18.11 | REQUESTED-ADDRESS-FAMILY / ADDITIONAL-ADDRESS-FAMILY | No relay address-family negotiation; IPv4 allocation |
+| 8656 §18.9 | DONT-FRAGMENT | No requested DF control |
+| RFC 6062 | TCP allocations | Peer leg is UDP |
+| 8489 §6.2 | TCP/TLS/DTLS client-server transport | Client-server TURN transport is UDP |
+| RFC 7635 | OAuth third-party authorization | Long-term credentials only |
 
-| RFC §                | Requirement                                            | Status | Implementation |
-|----------------------|--------------------------------------------------------|--------|----------------|
-| 5766 §9 / 8656 §9    | CreatePermission method 0x008                          | OK     | [nano_turn.c:488](../../src/nano_turn.c) |
-| 5766 §9 / 8656 §9    | Carries XOR-PEER-ADDRESS                               | OK     | [nano_turn.c:491-493](../../src/nano_turn.c) |
-| 5766 §9 / 8656 §9    | Authenticated (USERNAME/REALM/NONCE/MI)                | OK     | [nano_turn.c:495-502](../../src/nano_turn.c) |
-| 5766 §9 / 8656 §9    | Permission lifetime 5 min, refresh @ 4 min             | OK     | [nano_turn.c:801-837](../../src/nano_turn.c) |
-| 5766 §9 / 8656 §9    | Per-permission txid tracked & validated on response    | OK     | [nano_turn.c](../../src/nano_turn.c) — added by F1 |
+## Transport convergence (Sep 2026)
 
-### Send / Data Indications
+Reviewing PRs #72, #73, #75, #76, #78 and the uncommitted hardening work
+reproduced three failures: a Refresh waiting another 400 ms returned timeout 0;
+a concurrent request reused its ID after a shared nonce change altered its
+bytes; and an unsigned 437 matching an authenticated transaction failed the
+allocation. The first caused event-loop spinning, the second violated transaction
+identity, and the third dispatched an unauthenticated error.
 
-| RFC §                | Requirement                                            | Status | Implementation |
-|----------------------|--------------------------------------------------------|--------|----------------|
-| 5766 §10 / 8656 §10  | Send Indication method 0x016                           | OK     | [nano_turn.c:553](../../src/nano_turn.c) |
-| 5766 §10 / 8656 §10  | Send Indication: XOR-PEER-ADDRESS + DATA only          | OK     | [nano_turn.c:557-561](../../src/nano_turn.c) |
-| 5766 §10.1 / 8656 §10.1 | Send Indication MUST NOT carry MESSAGE-INTEGRITY    | OK     | [nano_turn.c:534-565](../../src/nano_turn.c) (no MI write) |
-| 5766 §10.2 / 8656 §10.2 | Data Indication unwrap: peer addr + payload         | OK     | [nano_turn.c:568-595](../../src/nano_turn.c) |
+TURN now owns the task selector used by both output and timeout queries. RTC
+retains candidate order and output-slot admission, and asks TURN about peer
+readiness instead of inspecting permission/channel internals. Existing bounded
+fan-out, peer-specific failures and retry backoff remain in place.
 
-### ChannelBind / ChannelData
+Authentication precedes error dispatch. For authenticated transactions only
+401/438 challenges may omit MI; if MI is supplied it must validate. Other UDP
+responses with missing/invalid MI are discarded without changing live state.
+A nonce challenge marks affected requests for reauthentication, ignores their
+old responses and generates a new ID on the next send. Only the challenged
+request becomes immediately due; concurrent deadlines and all transmission
+budgets remain intact. Continuous 438 is bounded. Failed encoding or RNG does
+not commit a replacement ID or consume a transmission.
 
-| RFC §                | Requirement                                            | Status | Implementation |
-|----------------------|--------------------------------------------------------|--------|----------------|
-| 5766 §11 / 8656 §11  | ChannelBind method 0x009                               | OK     | [nano_turn.c:670](../../src/nano_turn.c) |
-| 5766 §11 / 8656 §12  | Channel number range 0x4000–0x4FFE (8656 narrowing)    | OK     | [nano_turn.c](../../src/nano_turn.c) — tightened by F2 |
-| 5766 §11 / 8656 §11  | CHANNEL-NUMBER attribute (4 bytes: 2B channel + 2B RFFU) | OK   | [nano_turn.c:673-678](../../src/nano_turn.c) |
-| 5766 §11 / 8656 §11  | XOR-PEER-ADDRESS                                       | OK     | [nano_turn.c:681-682](../../src/nano_turn.c) |
-| 5766 §11 / 8656 §11  | Authenticated (USERNAME/REALM/NONCE/MI)                | OK     | [nano_turn.c:684-691](../../src/nano_turn.c) |
-| 5766 §11 / 8656 §11  | Per-channel txid tracked, response matched by txid     | OK     | [nano_turn.c:386-393, 664](../../src/nano_turn.c) |
-| 5766 §11 / 8656 §11  | Channel binding lifetime 10 min, refresh @ 9 min       | OK     | [nano_turn.c:839-872](../../src/nano_turn.c) |
-| 5766 §11.4 / 8656 §12.4 | ChannelData framing: 4-byte header + payload + 4-byte align padding | OK | [nano_turn.c:698-745](../../src/nano_turn.c) |
+No request packet cache was added. See [design-hardening.md](design-hardening.md)
+for final CI, fuzz, browser and memory results. External TURN was **not rerun**
+for this revision; the network evidence below is historical.
 
-### STUN base / Long-term credentials
-
-| RFC §                | Requirement                                            | Status | Implementation |
-|----------------------|--------------------------------------------------------|--------|----------------|
-| 8489 §9.2.2          | key = MD5(username ":" realm ":" password)             | OK     | [nano_turn.c:125-151](../../src/nano_turn.c) |
-| 8489 §14.5           | MESSAGE-INTEGRITY = HMAC-SHA1(key, message)            | OK     | [nano_turn.c:97-118](../../src/nano_turn.c) |
-| 8489 §14.5           | MESSAGE-INTEGRITY computed over header with adjusted length field | OK | [nano_turn.c:103-116](../../src/nano_turn.c) |
-| 8489 §6.2.1          | UDP request retransmission keeps the transaction ID and backs off exponentially | OK | Allocate, Refresh, CreatePermission, and ChannelBind retain bounded transaction metadata and rebuild the identical request without a packet cache |
-| 8489 §9.2.4          | Authenticate long-term-credential success responses          | OK     | Authenticated success requires valid MESSAGE-INTEGRITY; FINGERPRINT is verified whenever present |
-| 8489 §9.2            | Repeated authentication failure terminates                   | OK     | A second 401 after an authenticated Allocate transitions to `NANORTC_TURN_FAILED`; 438 replaces NONCE and starts a new bounded transaction |
-
-### Demultiplexing
-
-| RFC §        | Requirement                                                                | Status | Implementation |
-|--------------|----------------------------------------------------------------------------|--------|----------------|
-| 7983 §3      | First-byte demux: STUN [0x00–0x03], ChannelData [0x40–0x7F], DTLS [0x14–0x3F], RTP [0x80–0xBF] | OK | [nano_rtc.c:919-944](../../src/nano_rtc.c), [nano_turn.c:206](../../src/nano_turn.c) |
-| 7983 §3      | ChannelData detection by first nibble (0x4 / 0x7)                          | OK     | [nano_turn.c:206](../../src/nano_turn.c) |
-
-## Out-of-scope features (deliberate non-implementation)
-
-These RFC features are not relevant to the WebRTC TURN profile NanoRTC targets. They are documented here so readers know they are intentional gaps, not oversights.
-
-| RFC §                          | Feature                                                                | Why out of scope |
-|--------------------------------|------------------------------------------------------------------------|------------------|
-| 5766 §14.6 / 8656 §14.5        | EVEN-PORT (request even-numbered relay port)                           | RTP-pair allocation; WebRTC does not require it |
-| 5766 §14.9 / 8656 §14.7        | RESERVATION-TOKEN (reserve port pair across two allocations)           | Used with EVEN-PORT |
-| 8656 §14.7                     | REQUESTED-ADDRESS-FAMILY (choose IPv4 vs IPv6 relay)                   | NanoRTC currently allocates IPv4 only |
-| 8656 §14.8                     | ADDITIONAL-ADDRESS-FAMILY (dual-stack relay)                           | Same as above |
-| 5766 §14.8                     | DONT-FRAGMENT (set IP DF bit on relayed datagrams)                     | Optional; UDP fragmentation generally tolerated |
-| RFC 6062                       | TURN extensions for TCP allocations (server↔peer over TCP)             | NanoRTC peer leg is UDP only |
-| RFC 6156                       | TURN over IPv6 (client↔server leg over IPv6)                           | Possible future work, see also IPv6 feature flag |
-| RFC 7635                       | TURN OAuth third-party auth                                            | Long-term credentials cover the common case |
-| RFC 8489 §6.2.2                | TLS / DTLS transport for client↔server (TURN-S)                        | Possible future work for hostile-network operation |
-
-## Review findings (fixed in this hardening pass)
+## Historical review findings (F1–F5)
 
 | ID  | Risk    | Issue                                                                                                | Fix |
 |-----|---------|------------------------------------------------------------------------------------------------------|-----|
@@ -142,7 +113,8 @@ The TURN client now treats each UDP request as an RFC 8489 transaction rather
 than as a one-shot datagram. Allocate/Refresh keep one allocation-wide
 transaction, while each permission and channel retains its own transaction ID,
 transmission count, and deadline; its exponential RTO is derived from that
-count. Retransmission reconstructs the request with the same transaction ID, so
+count. Retransmission with unchanged authentication reconstructs the same request/ID;
+the Sep 2026 convergence above retires IDs when the shared nonce changes. Thus
 the state cost stays bounded and no maximum-size packet cache is embedded in
 `nanortc_t`. The defaults are configurable through `NANORTC_TURN_RTO_MS` and
 `NANORTC_TURN_MAX_TRANSMISSIONS`.
@@ -154,8 +126,8 @@ Additional correctness changes in this pass:
 - Permission retransmit exhaustion enters a bounded retry delay instead of
   failing the allocation. Peer-specific 403/443 rejections are terminal only
   for that peer in the current ICE generation; 508 uses the maximum TURN RTO
-  before retry. Errors 400/437/441 and other unrecoverable responses fail the
-  allocation with a protocol error.
+  before retry. Authenticated errors 400/437/441 and other unrecoverable
+  responses fail the allocation with a protocol error.
 - Unknown or completed response transaction IDs are ignored as late/duplicate
   datagrams, as required by RFC 8489, without mutating live TURN state.
 - ChannelBind is initiated after a relayed pair is selected and its permission
@@ -200,7 +172,7 @@ The complementary direction (libdatachannel-as-relay-client, nanortc
 receiving) is covered by `test_interop_turn_relay.c` in the same
 job-less interop suite.
 
-## Verification gap addressed
+## Historical verification gap addressed
 
 Before this review, [tests/interop/test_interop_turn.c](../../tests/interop/test_interop_turn.c) ran libdatachannel and nanortc on the same host and let them connect over host candidates. The TURN allocation succeeded but **no relayed datagram was ever sent**. ChannelBind, ChannelData, Send Indication, and Data Indication code paths were not exercised by any end-to-end test.
 
@@ -210,13 +182,17 @@ The new [tests/interop/test_interop_turn_relay.c](../../tests/interop/test_inter
 
 | Test                                              | RFC § covered                  | Layer       |
 |---------------------------------------------------|--------------------------------|-------------|
+| `test_turn_refresh_selector_waits_for_response` | 8489 §6.2.1, 8656 §8 | Unit |
+| `test_turn_untrusted_errors_preserve_transaction` | 8489 §9.2.5 | Unit |
+| `test_turn_nonce_rotation_restarts_concurrent_requests` | 8489 §§5, 9.2.5 | Unit |
+| `test_turn_repeated_438_is_bounded` | bounded authentication retry policy | Unit |
 | `test_turn_channel_number_range`                  | 5766 §11.1, 8656 §12           | Unit        |
 | `test_turn_channel_data_padding`                  | 5766 §11.5, 8656 §12.4         | Unit        |
-| `test_turn_send_indication_no_integrity`          | 5766 §10.1, 8656 §10.1         | Unit        |
-| `test_turn_create_permission_has_integrity`       | 5766 §9, 8656 §9, 8489 §14.5   | Unit        |
-| `test_turn_channel_bind_has_integrity`            | 5766 §11.2, 8656 §11.2         | Unit        |
-| `test_turn_refresh_zero_lifetime_deallocate`      | 5766 §7, 8656 §6               | Unit        |
-| `test_turn_create_permission_foreign_txid_ignored` | 5766 §9, 8489 §6.3.1          | Unit        |
+| `test_turn_send_indication_no_integrity`          | 5766 §10.1, 8656 §11.1         | Unit        |
+| `test_turn_create_permission_has_integrity`       | 5766 §9, 8656 §10, 8489 §14.5   | Unit        |
+| `test_turn_channel_bind_has_integrity`            | 5766 §11.1, 8656 §12.1         | Unit        |
+| `test_turn_refresh_zero_lifetime_deallocate`      | 5766 §7, 8656 §8               | Unit        |
+| `test_turn_create_permission_foreign_txid_ignored` | 5766 §9, 8489 §§5, 6.3          | Unit        |
 | `test_turn_permission_508_defers_retry`          | 8656 §10.2, §19             | Unit        |
 | `test_turn_permission_unrecoverable_error_fails_allocation` | 8656 §10.2, §19 | Unit |
 | `test_e2e_turn_permission_capacity_covers_remote_candidates` | dense trickle ICE | End-to-end |

@@ -82,15 +82,6 @@
 #define NANORTC_SCTP_RECV_GAP_BUF_SIZE CONFIG_NANORTC_SCTP_RECV_GAP_BUF_SIZE
 #endif
 
-#if defined(CONFIG_NANORTC_SCTP_REASSEMBLY_BUF_SIZE) && \
-    !defined(NANORTC_SCTP_REASSEMBLY_BUF_SIZE)
-#define NANORTC_SCTP_REASSEMBLY_BUF_SIZE CONFIG_NANORTC_SCTP_REASSEMBLY_BUF_SIZE
-#endif
-
-#if defined(CONFIG_NANORTC_DC_EVENT_SLOTS) && !defined(NANORTC_DC_EVENT_SLOTS)
-#define NANORTC_DC_EVENT_SLOTS CONFIG_NANORTC_DC_EVENT_SLOTS
-#endif
-
 #if defined(CONFIG_NANORTC_SCTP_MAX_SEND_QUEUE) && !defined(NANORTC_SCTP_MAX_SEND_QUEUE)
 #define NANORTC_SCTP_MAX_SEND_QUEUE CONFIG_NANORTC_SCTP_MAX_SEND_QUEUE
 #endif
@@ -543,6 +534,12 @@
 #define NANORTC_SCTP_RECV_BUF_SIZE 4096
 #endif
 
+/* Bounded SCTP user message capacity, advertised in SDP (RFC 8841 §6).
+ * Smaller target profiles may trim the receive pool; advertise that limit. */
+#ifndef NANORTC_SCTP_MAX_MESSAGE_SIZE
+#define NANORTC_SCTP_MAX_MESSAGE_SIZE NANORTC_SCTP_RECV_BUF_SIZE
+#endif
+
 /* Maximum SCTP packet size over DTLS */
 #ifndef NANORTC_SCTP_MTU
 #define NANORTC_SCTP_MTU 1200
@@ -567,20 +564,6 @@
 /* Receive gap buffer size (bytes) for storing out-of-order DATA chunk payloads. */
 #ifndef NANORTC_SCTP_RECV_GAP_BUF_SIZE
 #define NANORTC_SCTP_RECV_GAP_BUF_SIZE 4096
-#endif
-
-/* Maximum reassembled DataChannel user-message size. Huina control protocol
- * messages are capped at 768 bytes; keeping this separate from the 4 KiB SCTP
- * receive window avoids permanently adding another 4 KiB to nanortc_t. */
-#ifndef NANORTC_SCTP_REASSEMBLY_BUF_SIZE
-#define NANORTC_SCTP_REASSEMBLY_BUF_SIZE 768
-#endif
-
-/* Owned payload slots for queued DataChannel receive events. The SDK drains
- * multiple UDP packets before polling outputs, so borrowed DTLS pointers are
- * not stable enough for events awaiting dispatch. */
-#ifndef NANORTC_DC_EVENT_SLOTS
-#define NANORTC_DC_EVENT_SLOTS 4
 #endif
 
 /* State cookie maximum size (bytes) */
@@ -1411,20 +1394,6 @@ typedef enum {
 #error \
     "NANORTC_SCTP_RECV_GAP_BUF_SIZE must be <= 65535 (uint16_t offsets in nano_sctp_t.recv_gap_buf_used)"
 #endif
-
-#if NANORTC_SCTP_REASSEMBLY_BUF_SIZE < 1 || \
-    NANORTC_SCTP_REASSEMBLY_BUF_SIZE >= NANORTC_SCTP_RECV_GAP_BUF_SIZE
-#error \
-    "NANORTC_SCTP_REASSEMBLY_BUF_SIZE must be positive and smaller than NANORTC_SCTP_RECV_GAP_BUF_SIZE"
-#endif
-
-#if NANORTC_DC_EVENT_SLOTS < 1 || NANORTC_DC_EVENT_SLOTS > 32 || \
-    (NANORTC_DC_EVENT_SLOTS & (NANORTC_DC_EVENT_SLOTS - 1)) != 0
-#error "NANORTC_DC_EVENT_SLOTS must be a power of two in 1..32"
-#endif
-#if NANORTC_DC_EVENT_SLOTS > NANORTC_OUT_QUEUE_SIZE
-#error "NANORTC_DC_EVENT_SLOTS must not exceed NANORTC_OUT_QUEUE_SIZE"
-#endif
 #endif /* NANORTC_FEATURE_DATACHANNEL */
 
 #if NANORTC_SDP_MIN_BUF_SIZE < 128
@@ -1461,6 +1430,37 @@ typedef enum {
  * to build if the map is configured past the representable range. */
 #if NANORTC_MAX_SSRC_MAP > 127
 #error "NANORTC_MAX_SSRC_MAP must be <= 127 (nano_srtp_t uses int8_t SSRC cache indices)"
+#endif
+
+#if NANORTC_SCTP_MAX_MESSAGE_SIZE < 1 ||                              \
+    NANORTC_SCTP_MAX_MESSAGE_SIZE > NANORTC_SCTP_RECV_BUF_SIZE ||     \
+    NANORTC_SCTP_MAX_MESSAGE_SIZE > NANORTC_SCTP_RECV_GAP_BUF_SIZE || \
+    NANORTC_SCTP_MAX_MESSAGE_SIZE > 65535
+#error "SCTP message size must fit the receive storage and uint16_t offsets"
+#endif
+#if NANORTC_SCTP_MTU < 128 || NANORTC_SCTP_MTU > NANORTC_DTLS_BUF_SIZE - 64
+#error "SCTP MTU must fit a DTLS record and the fixed control packets"
+#endif
+#if NANORTC_SCTP_COOKIE_SIZE > NANORTC_SCTP_MTU - 36
+#error "SCTP cookie must fit the configured MTU"
+#endif
+/* Metadata only: connection states + per-track/per-channel notifications. */
+#define NANORTC_PENDING_EVENT_SLOTS                                    \
+    (3 + 3 * NANORTC_MAX_MEDIA_TRACKS * NANORTC_HAVE_MEDIA_TRANSPORT + \
+     2 * NANORTC_MAX_DATACHANNELS * NANORTC_FEATURE_DATACHANNEL + 2 * NANORTC_FEATURE_VIDEO)
+
+#if 28u + 4u * NANORTC_SCTP_MAX_GAP_BLOCKS > NANORTC_SCTP_MTU
+#error "SCTP MTU must fit the configured SACK gap blocks"
+#endif
+#if 20u + 4u * NANORTC_MAX_DATACHANNELS > NANORTC_SCTP_MTU
+#error "SCTP MTU must fit Forward TSN stream entries"
+#endif
+#if NANORTC_PENDING_EVENT_SLOTS > 255
+#error "Pending event count must fit uint8_t"
+#endif
+
+#if NANORTC_DC_LABEL_SIZE < 1 || 2u * NANORTC_DC_LABEL_SIZE + 10u > NANORTC_DC_OUT_BUF_SIZE
+#error "DCEP output must fit the configured label and OPEN header"
 #endif
 
 #endif /* NANORTC_CONFIG_H_ */

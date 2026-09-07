@@ -176,9 +176,48 @@ nanortc_poll_output(rtc, &out)
   │     (if ICE selected pair is RELAY and TURN is allocated: lazy wrap into
   │      ChannelData/Send indication using rtc->turn_buf, dest rewritten to
   │      TURN server; otherwise dest = peer directly)
-  ├── NANORTC_OUTPUT_EVENT    → caller processes event
-  └── NANORTC_OUTPUT_TIMEOUT  → caller sets select() timeout
+  └── NANORTC_OUTPUT_EVENT    → caller processes event
+
+nanortc_next_timeout_ms(rtc, now_ms, &wait_ms) → caller sets select() timeout
 ```
+
+**Bounded ownership.** SCTP copies inbound chunks into its receive pool and
+releases complete messages one at a time during polling; incomplete B/E fragments
+are never delivered. Contiguous acknowledged fragments are merged in place, so
+small peer fragments do not consume one descriptor each for the whole message.
+One fragment-identity predicate drives bounded iterative merging and delivery.
+SCTP returns a caller-owned message view; RTC emits it directly as a DataChannel
+event. DCEP keeps only per-channel pending state: peek into caller scratch and
+commit only after SCTP admission, with no global output cache. Protocol and
+retry metadata remain per channel and are exposed on OPEN events. Explicit
+`partial_reliability=true` distinguishes zero retries from the reliable default;
+timeout and gap-SACK policies share whole-message abandonment.
+Sends reserve the complete message and all fragment descriptors before committing.
+The SDP receive limit is `NANORTC_SCTP_MAX_MESSAGE_SIZE` (host default 4096 B,
+trimmed to the receive-pool limit by ESP profiles); sends also honor the peer's
+`max-message-size`. Permanent size errors differ from temporary `WOULD_BLOCK`.
+
+Candidates retain their source identity and format their strings only on poll.
+When the output ring fills, scalar notifications are retained and coalesced by
+event type and track/channel; repeated state updates keep their latest snapshot.
+DataChannel payloads remain in the SCTP receive pool until polled; realtime
+media follows its track admission/playout policy. Public pointers
+are still valid only until the next state mutation on that instance.
+
+**TURN responsibilities.** TURN output and timeout queries share one task
+selector; an outstanding request contributes its retransmission deadline, not
+an expired refresh deadline. RTC selects candidate order and reserves TX slots;
+TURN owns permission/channel readiness and retry/backoff. Response authentication
+precedes error dispatch. Nonce rotation retires affected transaction IDs while
+preserving retry budgets and concurrent deadlines. Polling drains producers
+iteratively, preserving output priority and borrowed-pointer lifetime.
+
+**Clock and logging.** DTLS providers expose set-time, next-timeout and
+handle-timeout operations. mbedTLS runs retransmissions from the caller clock;
+OpenSSL 3.0 exposes its internal real-clock deadline through the adapter. Timer
+and packet paths share handshake completion/key-export handling. Audio jitter
+playout participates in the deadline query. Logs use `rtc->config.log` explicitly;
+stateless codecs have no ambient callback or mutable singleton.
 
 **Send pacing (video).** Video RTP egress is metered by a Sans-I/O leaky token
 bucket (`NANORTC_FEATURE_VIDEO_PACING`, default on). A multi-fragment IDR is

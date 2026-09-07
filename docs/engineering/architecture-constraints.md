@@ -26,11 +26,12 @@ Note: `memset`, `memcpy`, `memmove` from `<string.h>` are allowed.
 
 ## 3. Feature Flag Build Matrix
 
-All six feature combinations must compile and pass tests:
+All seven feature combinations must compile and pass tests:
 ```bash
 # DATA:       DC=ON  AUDIO=OFF VIDEO=OFF
 # AUDIO:      DC=ON  AUDIO=ON  VIDEO=OFF
 # MEDIA:      DC=ON  AUDIO=ON  VIDEO=ON
+# MEDIA_H265: DC=ON  AUDIO=ON  VIDEO=ON H265=ON
 # AUDIO_ONLY: DC=OFF AUDIO=ON  VIDEO=OFF
 # MEDIA_ONLY: DC=OFF AUDIO=ON  VIDEO=ON
 # CORE_ONLY:  DC=OFF AUDIO=OFF VIDEO=OFF
@@ -57,8 +58,9 @@ nm -g libnanortc.a | grep ' T ' | awk '{print $3}' | grep -v '^_' | grep -vE "^(
 
 ```bash
 # Must return empty (no non-const globals in src/)
-nm libnanortc.a | grep ' [BD] ' | grep -v '__' | grep -v 'crc32c_table'
-# Only const tables (like CRC lookup) are acceptable
+bash scripts/check-mutable-state.sh libnanortc.a
+# Checks both local b/d and exported B/D symbols in core objects.
+# Crypto provider objects are outside the Sans I/O core.
 ```
 
 ## 7. No Unbounded String Functions

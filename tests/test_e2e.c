@@ -939,16 +939,16 @@ TEST(test_e2e_ice_loopback)
     size_t saved_req_len = out.transmit.len;
     memcpy(saved_req, out.transmit.data, saved_req_len);
 
-    /* Drain the ICE_STATE_CHANGE event (CHECKING) + TIMEOUT from handle_timeout */
+    /* Drain the state event; deadlines are queried separately. */
     nanortc_output_t ice_chg;
     ASSERT_OK(nanortc_poll_output(&offerer, &ice_chg));
     ASSERT_EQ(ice_chg.type, NANORTC_OUTPUT_EVENT);
     ASSERT_EQ(ice_chg.event.type, NANORTC_EV_ICE_STATE_CHANGE);
     ASSERT_EQ(ice_chg.event.ice_state, (uint16_t)NANORTC_ICE_STATE_CHECKING);
 
-    nanortc_output_t tout;
-    ASSERT_OK(nanortc_poll_output(&offerer, &tout));
-    ASSERT_EQ(tout.type, NANORTC_OUTPUT_TIMEOUT);
+    uint32_t timeout_ms;
+    ASSERT_OK(nanortc_next_timeout_ms(&offerer, now_ms, &timeout_ms));
+    ASSERT_TRUE(timeout_ms < 1000u);
 
     /* Feed the STUN request into the answerer */
     nanortc_addr_t offerer_addr;
@@ -1797,8 +1797,50 @@ TEST(test_e2e_datachannel_send_recv)
 }
 
 /*
- * E2E: Create multiple DataChannels on the same connection.
+ * Text API: preserve explicit lengths and wire PPIDs without reading a terminator.
  */
+TEST(test_e2e_datachannel_text_length)
+{
+    nanortc_t rtc;
+    nanortc_config_t cfg = e2e_default_config();
+    ASSERT_OK(nanortc_init(&rtc, &cfg));
+    int sid = nanortc_create_datachannel(&rtc, "text", NULL);
+    ASSERT_TRUE(sid >= 0);
+    rtc.state = NANORTC_STATE_CONNECTED;
+    rtc.sctp.state = NANORTC_SCTP_STATE_ESTABLISHED;
+    rtc.datachannel.channels[0].state = NANORTC_DC_STATE_OPEN;
+
+    const char raw[] = {'x', 'y', 'z'};
+    const char embedded[] = {'a', '\0', 'b'};
+    const char *payloads[] = {raw, embedded, raw};
+    const size_t lengths[] = {sizeof(raw), sizeof(embedded), 0};
+    for (size_t i = 0; i < sizeof(lengths) / sizeof(lengths[0]); i++) {
+        ASSERT_OK(nanortc_datachannel_send_text(&rtc, (uint16_t)sid, payloads[i], lengths[i]));
+        uint8_t packet[NANORTC_SCTP_MTU];
+        size_t len = 0;
+        ASSERT_OK(nsctp_poll_output(&rtc.sctp, packet, sizeof(packet), &len));
+        /* RFC 9260 §3.3.1: 12-byte common + 16-byte DATA header.
+         * RFC 8831 §6.6: PPID 51 text; empty text uses PPID 56 + one byte. */
+        ASSERT_EQ(len, 32);
+        ASSERT_EQ(packet[12], 0);
+        ASSERT_EQ(packet[13], 3); /* B|E */
+        ASSERT_EQ(packet[14], 0);
+        ASSERT_EQ(packet[15], 16 + (lengths[i] ? lengths[i] : 1));
+        ASSERT_EQ(packet[24], 0);
+        ASSERT_EQ(packet[25], 0);
+        ASSERT_EQ(packet[26], 0);
+        ASSERT_EQ(packet[27], lengths[i] ? 51 : 56);
+        ASSERT_EQ(memcmp(packet + 28, payloads[i], lengths[i]), 0);
+        if (!lengths[i])
+            ASSERT_EQ(packet[28], 0);
+    }
+    ASSERT_EQ(nanortc_datachannel_send_text(NULL, 0, raw, sizeof(raw)), NANORTC_ERR_INVALID_PARAM);
+    ASSERT_EQ(nanortc_datachannel_send_text(&rtc, (uint16_t)sid, NULL, 0),
+              NANORTC_ERR_INVALID_PARAM);
+    nanortc_destroy(&rtc);
+}
+
+/* E2E: Create multiple DataChannels on the same connection. */
 TEST(test_e2e_multi_channel_create)
 {
     nanortc_t rtc;
@@ -5180,7 +5222,111 @@ TEST(test_e2e_simple_binding_request)
 
 /* ---- Runner ---- */
 
+#ifndef NANORTC_LOG_DISABLED
+static void count_instance_log(const nanortc_log_message_t *msg, void *ctx)
+{
+    (void)msg;
+    (*(unsigned *)ctx)++;
+}
+TEST(test_instance_logs_survive_another_instances_lifecycle)
+{
+    nanortc_t a, b;
+    unsigned a_count = 0, b_count = 0;
+    nanortc_config_t cfg = e2e_default_config();
+    cfg.log.level = NANORTC_LOG_TRACE;
+    cfg.log.callback = count_instance_log;
+    cfg.log.user_data = &a_count;
+    ASSERT_OK(nanortc_init(&a, &cfg));
+    cfg.log.user_data = &b_count;
+    ASSERT_OK(nanortc_init(&b, &cfg));
+    a_count = b_count = 0;
+    nanortc_destroy(&a);
+    ASSERT_TRUE(a_count > 0);
+    ASSERT_EQ(b_count, 0u);
+    nanortc_destroy(&b);
+    ASSERT_TRUE(b_count > 0);
+    /* Destroy B first this time: A's callback must remain installed. */
+    cfg.log.user_data = &a_count;
+    ASSERT_OK(nanortc_init(&a, &cfg));
+    cfg.log.user_data = &b_count;
+    ASSERT_OK(nanortc_init(&b, &cfg));
+    nanortc_destroy(&b);
+    a_count = b_count = 0;
+    nanortc_destroy(&a);
+    ASSERT_TRUE(a_count > 0);
+    ASSERT_EQ(b_count, 0u);
+}
+#endif
+#if NANORTC_FEATURE_VIDEO
+TEST(test_nack_matches_media_ssrc_as_well_as_sequence)
+{
+    nanortc_t sender, receiver;
+    ASSERT_OK(e2e_init_direct_srtp_endpoint(&sender, 1));
+    ASSERT_OK(e2e_init_direct_srtp_endpoint(&receiver, 0));
+    for (uint8_t i = 0; i < 2; i++) {
+        receiver.pkt_ring_meta[i].seq = 77;
+        receiver.pkt_ring_meta[i].len = 13;
+        memset(receiver.pkt_ring[i], 0, 13);
+        receiver.pkt_ring[i][0] = 0x80;
+        nanortc_write_u16be(receiver.pkt_ring[i] + 2, 77);
+        nanortc_write_u32be(receiver.pkt_ring[i] + 8, 0x11223344u + i);
+        receiver.pkt_ring[i][12] = 0xA0 + i;
+    }
+    /* RFC 4585 §6.2.1: FMT=1, RTPFB=205, one PID and no BLP. */
+    uint8_t nack[64] = {0x81, 205, 0, 3, 0, 0, 0, 9, 0x11, 0x22, 0x33, 0x45, 0, 77, 0, 0};
+    size_t n;
+    ASSERT_OK(nano_srtp_protect_rtcp(&sender.srtp, nack, 16, &n));
+    nanortc_input_t input = {.data = nack, .len = n, .src = {.family = 4, .port = 5000}};
+    ASSERT_OK(nanortc_handle_input(&receiver, &input));
+    nanortc_output_t out;
+    unsigned matches = 0;
+    while (nanortc_poll_output(&receiver, &out) == NANORTC_OK) {
+        if (out.type == NANORTC_OUTPUT_TRANSMIT && out.transmit.len == 13) {
+            ASSERT_EQ(out.transmit.data[12], 0xA1);
+            matches++;
+        }
+    }
+    ASSERT_EQ(matches, 1u);
+    nanortc_destroy(&sender);
+    nanortc_destroy(&receiver);
+}
+#endif
+
+#if NANORTC_FEATURE_DATACHANNEL && NANORTC_FEATURE_DC_RELIABLE
+TEST(test_e2e_dc_explicit_zero_retry_policy)
+{
+    nanortc_t rtc;
+    nanortc_config_t cfg = e2e_default_config();
+    ASSERT_OK(nanortc_init(&rtc, &cfg));
+    nanortc_datachannel_options_t options = {0};
+    options.unordered = true;
+    options.partial_reliability = true;
+    options.protocol = "control.v1";
+    int sid = nanortc_create_datachannel(&rtc, "control", &options);
+    ASSERT_TRUE(sid >= 0);
+    nano_dc_channel_t *ch = dc_find_channel(&rtc.datachannel, (uint16_t)sid);
+    ASSERT_EQ(ch->channel_type, DCEP_CHANNEL_REXMIT_UNORDERED);
+    ASSERT_TRUE(strcmp(ch->protocol, "control.v1") == 0);
+    rtc.state = NANORTC_STATE_CONNECTED;
+    rtc.sctp.state = NANORTC_SCTP_STATE_ESTABLISHED;
+    ch->state = NANORTC_DC_STATE_OPEN;
+    ASSERT_EQ(nanortc_datachannel_send_string(&rtc, (uint16_t)sid, "neutral"),
+              NANORTC_ERR_NOT_IMPLEMENTED);
+    rtc.sctp.peer_forward_tsn = true;
+    ASSERT_OK(nanortc_datachannel_send_string(&rtc, (uint16_t)sid, "neutral"));
+    ASSERT_EQ(rtc.sctp.send_queue[0].max_retransmits, 0);
+    ASSERT_TRUE(rtc.sctp.send_queue[0].flags & SCTP_DATA_FLAG_UNORDERED);
+    nanortc_destroy(&rtc);
+}
+#endif
+
 TEST_MAIN_BEGIN("nanortc E2E tests")
+#ifndef NANORTC_LOG_DISABLED
+RUN(test_instance_logs_survive_another_instances_lifecycle);
+#endif
+#if NANORTC_FEATURE_VIDEO
+RUN(test_nack_matches_media_ssrc_as_well_as_sequence);
+#endif
 RUN(test_e2e_init_pair);
 RUN(test_e2e_init_rng_failure_clears_partial_state);
 RUN(test_e2e_negotiation_rng_failure_is_transactional);
@@ -5221,6 +5367,7 @@ RUN(test_e2e_accept_answer_state_guard);
 /* E2E DataChannel message exchange */
 #if NANORTC_FEATURE_DATACHANNEL
 RUN(test_e2e_datachannel_send_recv);
+RUN(test_e2e_datachannel_text_length);
 RUN(test_e2e_multi_channel_create);
 RUN(test_e2e_datachannel_offerer_initiated);
 #endif
@@ -5314,5 +5461,8 @@ RUN(test_e2e_turn_permission_capacity_covers_remote_candidates);
 RUN(test_e2e_turn_permission_table_full_does_not_freeze_ice);
 RUN(test_e2e_turn_relay_wrapping);
 RUN(test_e2e_channeldata_inbound);
+#endif
+#if NANORTC_FEATURE_DATACHANNEL && NANORTC_FEATURE_DC_RELIABLE
+RUN(test_e2e_dc_explicit_zero_retry_policy);
 #endif
 TEST_MAIN_END

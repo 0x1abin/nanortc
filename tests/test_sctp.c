@@ -12,6 +12,7 @@
 
 #if !NANORTC_FEATURE_DATACHANNEL
 /* SCTP tests require DataChannel feature */
+
 TEST_MAIN_BEGIN("nanortc SCTP tests (skipped — DC disabled)")
 TEST_MAIN_END
 #else
@@ -20,6 +21,17 @@ TEST_MAIN_END
 #include "nano_crc32c.h"
 #include "nano_test_config.h"
 #include <string.h>
+
+/* These legacy codec tests inspect one delivered message after each receive.
+ * Production uses nsctp_handle_data + nsctp_poll_delivery independently. */
+static int receive_and_poll(nano_sctp_t *s, const uint8_t *p, size_t n, nano_sctp_message_t *view)
+{
+    nano_sctp_message_t ignored;
+    int rc = nsctp_handle_data(s, p, n);
+    if (rc == NANORTC_OK)
+        (void)nsctp_poll_delivery(s, view ? view : &ignored);
+    return rc;
+}
 
 static int rng_call_count;
 static int rng_fail_at;
@@ -98,8 +110,8 @@ TEST(test_checksum_roundtrip)
     memset(pkt, 0, sizeof(pkt));
 
     size_t pos = nsctp_encode_header(pkt, 5000, 5000, 0);
-    pos += nsctp_encode_init(pkt + pos, SCTP_CHUNK_INIT, 0xAABBCCDD, 0x100000, 0xFFFF, 0xFFFF, 1234,
-                             NULL, 0);
+    pos += nsctp_encode_init(pkt + pos, sizeof(pkt) - pos, SCTP_CHUNK_INIT, 0xAABBCCDD, 0x100000,
+                             0xFFFF, 0xFFFF, 1234, NULL, 0);
     nsctp_finalize_checksum(pkt, pos);
 
     ASSERT_OK(nsctp_verify_checksum(pkt, pos));
@@ -111,8 +123,8 @@ TEST(test_checksum_corruption)
     memset(pkt, 0, sizeof(pkt));
 
     size_t pos = nsctp_encode_header(pkt, 5000, 5000, 0);
-    pos += nsctp_encode_init(pkt + pos, SCTP_CHUNK_INIT, 0xAABBCCDD, 0x100000, 0xFFFF, 0xFFFF, 1234,
-                             NULL, 0);
+    pos += nsctp_encode_init(pkt + pos, sizeof(pkt) - pos, SCTP_CHUNK_INIT, 0xAABBCCDD, 0x100000,
+                             0xFFFF, 0xFFFF, 1234, NULL, 0);
     nsctp_finalize_checksum(pkt, pos);
 
     /* Corrupt one byte */
@@ -123,7 +135,8 @@ TEST(test_checksum_corruption)
 TEST(test_encode_parse_init_roundtrip)
 {
     uint8_t chunk[64];
-    size_t n = nsctp_encode_init(chunk, SCTP_CHUNK_INIT, 0x12345678, 0x100000, 10, 10, 42, NULL, 0);
+    size_t n = nsctp_encode_init(chunk, sizeof(chunk), SCTP_CHUNK_INIT, 0x12345678, 0x100000, 10,
+                                 10, 42, NULL, 0);
 
     ASSERT_EQ(chunk[0], SCTP_CHUNK_INIT);
     ASSERT_TRUE(n >= 20); /* 4 hdr + 16 body */
@@ -137,15 +150,14 @@ TEST(test_encode_parse_init_roundtrip)
     ASSERT_EQ(init.initial_tsn, 42u);
     ASSERT(init.cookie == NULL);
     ASSERT_EQ(init.cookie_len, 0);
-    ASSERT_TRUE(init.forward_tsn_supported);
 }
 
 TEST(test_encode_parse_init_ack_with_cookie)
 {
     uint8_t chunk[64];
     uint8_t cookie[] = {0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03, 0x04};
-    size_t n = nsctp_encode_init(chunk, SCTP_CHUNK_INIT_ACK, 0xABCD0001, 0x100000, 0xFFFF, 0xFFFF,
-                                 100, cookie, sizeof(cookie));
+    size_t n = nsctp_encode_init(chunk, sizeof(chunk), SCTP_CHUNK_INIT_ACK, 0xABCD0001, 0x100000,
+                                 0xFFFF, 0xFFFF, 100, cookie, sizeof(cookie));
 
     ASSERT_EQ(chunk[0], SCTP_CHUNK_INIT_ACK);
 
@@ -156,7 +168,6 @@ TEST(test_encode_parse_init_ack_with_cookie)
     ASSERT_TRUE(init.cookie != NULL);
     ASSERT_EQ(init.cookie_len, sizeof(cookie));
     ASSERT_MEM_EQ(init.cookie, cookie, sizeof(cookie));
-    ASSERT_TRUE(init.forward_tsn_supported);
 }
 
 TEST(test_encode_parse_data_roundtrip)
@@ -165,7 +176,8 @@ TEST(test_encode_parse_data_roundtrip)
     uint8_t payload[] = "Hello, SCTP!";
     uint8_t flags = SCTP_DATA_FLAG_BEGIN | SCTP_DATA_FLAG_END; /* 0x03 */
 
-    size_t n = nsctp_encode_data(chunk, 42, 0, 1, 51, flags, payload, sizeof(payload) - 1);
+    size_t n =
+        nsctp_encode_data(chunk, sizeof(chunk), 42, 0, 1, 51, flags, payload, sizeof(payload) - 1);
 
     nsctp_data_t data;
     ASSERT_OK(nsctp_parse_data(chunk, n, &data));
@@ -181,7 +193,7 @@ TEST(test_encode_parse_data_roundtrip)
 TEST(test_encode_parse_data_empty_payload)
 {
     uint8_t chunk[32];
-    size_t n = nsctp_encode_data(chunk, 1, 0, 0, 56, 0x03, NULL, 0);
+    size_t n = nsctp_encode_data(chunk, sizeof(chunk), 1, 0, 0, 56, 0x03, NULL, 0);
 
     nsctp_data_t data;
     ASSERT_OK(nsctp_parse_data(chunk, n, &data));
@@ -222,7 +234,7 @@ TEST(test_encode_cookie_echo_roundtrip)
     uint8_t buf[32];
     uint8_t cookie[] = {0x01, 0x02, 0x03, 0x04};
 
-    size_t n = nsctp_encode_cookie_echo(buf, cookie, sizeof(cookie));
+    size_t n = nsctp_encode_cookie_echo(buf, sizeof(buf), cookie, sizeof(cookie));
     ASSERT_EQ(buf[0], SCTP_CHUNK_COOKIE_ECHO);
     ASSERT_TRUE(n >= 8); /* 4 hdr + 4 cookie */
 
@@ -243,7 +255,7 @@ TEST(test_encode_heartbeat_roundtrip)
     uint8_t buf[32];
     uint8_t nonce[] = {0xAA, 0xBB, 0xCC, 0xDD};
 
-    size_t n = nsctp_encode_heartbeat(buf, nonce, sizeof(nonce));
+    size_t n = nsctp_encode_heartbeat(buf, sizeof(buf), nonce, sizeof(nonce));
     ASSERT_EQ(buf[0], SCTP_CHUNK_HEARTBEAT);
     ASSERT_TRUE(n >= 12); /* 4 chunk hdr + 4 param hdr + 4 nonce */
 
@@ -259,7 +271,7 @@ TEST(test_encode_heartbeat_ack)
 {
     uint8_t buf[32];
     uint8_t nonce[] = {0x11, 0x22};
-    size_t n = nsctp_encode_heartbeat_ack(buf, nonce, sizeof(nonce));
+    size_t n = nsctp_encode_heartbeat_ack(buf, sizeof(buf), nonce, sizeof(nonce));
     ASSERT_EQ(buf[0], SCTP_CHUNK_HEARTBEAT_ACK);
     ASSERT_TRUE(n > 0);
 }
@@ -301,12 +313,12 @@ TEST(test_handle_data_init_packet)
     memset(pkt, 0, sizeof(pkt));
 
     uint8_t chunk[32];
-    size_t clen = nsctp_encode_init(chunk, SCTP_CHUNK_INIT, 0xAABBCCDD, 0x100000, 0xFFFF, 0xFFFF,
-                                    100, NULL, 0);
+    size_t clen = nsctp_encode_init(chunk, sizeof(chunk), SCTP_CHUNK_INIT, 0xAABBCCDD, 0x100000,
+                                    0xFFFF, 0xFFFF, 100, NULL, 0);
     size_t plen = build_sctp_packet(pkt, 5000, 5000, 0, chunk, clen);
 
     /* Should parse without error (FSM not yet implemented) */
-    ASSERT_OK(nsctp_handle_data(&sctp, pkt, plen));
+    ASSERT_OK(receive_and_poll(&sctp, pkt, plen, NULL));
 }
 
 TEST(test_handle_data_checksum_fail)
@@ -318,13 +330,13 @@ TEST(test_handle_data_checksum_fail)
     memset(pkt, 0, sizeof(pkt));
 
     uint8_t chunk[32];
-    size_t clen =
-        nsctp_encode_init(chunk, SCTP_CHUNK_INIT, 0x11111111, 0x100000, 0xFFFF, 0xFFFF, 1, NULL, 0);
+    size_t clen = nsctp_encode_init(chunk, sizeof(chunk), SCTP_CHUNK_INIT, 0x11111111, 0x100000,
+                                    0xFFFF, 0xFFFF, 1, NULL, 0);
     size_t plen = build_sctp_packet(pkt, 5000, 5000, 0, chunk, clen);
 
     /* Corrupt payload */
     pkt[20] ^= 0xFF;
-    ASSERT_FAIL(nsctp_handle_data(&sctp, pkt, plen));
+    ASSERT_FAIL(receive_and_poll(&sctp, pkt, plen, NULL));
 }
 
 TEST(test_handle_data_multi_chunk)
@@ -332,6 +344,7 @@ TEST(test_handle_data_multi_chunk)
     nano_sctp_t sctp;
     nsctp_init(&sctp);
 
+    sctp.state = NANORTC_SCTP_STATE_ESTABLISHED;
     /* Build a packet with DATA + padding then a SACK in the same packet */
     uint8_t pkt[128];
     memset(pkt, 0, sizeof(pkt));
@@ -340,14 +353,14 @@ TEST(test_handle_data_multi_chunk)
 
     /* DATA chunk */
     uint8_t payload[] = {0x48, 0x69}; /* "Hi" */
-    pos += nsctp_encode_data(pkt + pos, 1, 0, 0, 51, SCTP_DATA_FLAG_BEGIN | SCTP_DATA_FLAG_END,
-                             payload, sizeof(payload));
+    pos += nsctp_encode_data(pkt + pos, sizeof(pkt) - pos, 1, 0, 0, 51,
+                             SCTP_DATA_FLAG_BEGIN | SCTP_DATA_FLAG_END, payload, sizeof(payload));
 
     /* SACK chunk right after */
     pos += nsctp_encode_sack(pkt + pos, 1, 0x20000);
 
     nsctp_finalize_checksum(pkt, pos);
-    ASSERT_OK(nsctp_handle_data(&sctp, pkt, pos));
+    ASSERT_OK(receive_and_poll(&sctp, pkt, pos, NULL));
 }
 
 TEST(test_handle_data_too_short)
@@ -356,7 +369,7 @@ TEST(test_handle_data_too_short)
     nsctp_init(&sctp);
 
     uint8_t pkt[4] = {0};
-    ASSERT_FAIL(nsctp_handle_data(&sctp, pkt, 4));
+    ASSERT_FAIL(receive_and_poll(&sctp, pkt, 4, NULL));
 }
 
 TEST(test_handle_data_abort)
@@ -376,7 +389,7 @@ TEST(test_handle_data_abort)
     pos += 4;
 
     nsctp_finalize_checksum(pkt, pos);
-    ASSERT_OK(nsctp_handle_data(&sctp, pkt, pos));
+    ASSERT_OK(receive_and_poll(&sctp, pkt, pos, NULL));
     ASSERT_EQ(sctp.state, NANORTC_SCTP_STATE_CLOSED);
 }
 
@@ -440,7 +453,7 @@ TEST(test_data_chunk_padding)
     /* Encode DATA with 3-byte payload — should pad to 4 */
     uint8_t buf[32];
     uint8_t payload[] = {0x41, 0x42, 0x43}; /* "ABC" */
-    size_t n = nsctp_encode_data(buf, 1, 0, 0, 51, 0x03, payload, sizeof(payload));
+    size_t n = nsctp_encode_data(buf, sizeof(buf), 1, 0, 0, 51, 0x03, payload, sizeof(payload));
 
     /* chunk_len = 4+12+3 = 19, padded to 20 */
     ASSERT_EQ(n, 20u);
@@ -452,7 +465,7 @@ TEST(test_cookie_echo_padding)
 {
     uint8_t buf[16];
     uint8_t cookie[] = {0x01, 0x02, 0x03}; /* 3 bytes → pad to 4 */
-    size_t n = nsctp_encode_cookie_echo(buf, cookie, sizeof(cookie));
+    size_t n = nsctp_encode_cookie_echo(buf, sizeof(buf), cookie, sizeof(cookie));
 
     /* chunk_len = 4+3 = 7, padded to 8 */
     ASSERT_EQ(n, 8u);
@@ -491,14 +504,14 @@ TEST(test_sctp_logging_on_parse)
     uint8_t pkt[64];
     memset(pkt, 0, sizeof(pkt));
     uint8_t chunk[32];
-    size_t clen =
-        nsctp_encode_init(chunk, SCTP_CHUNK_INIT, 0x11111111, 0x100000, 0xFFFF, 0xFFFF, 1, NULL, 0);
+    size_t clen = nsctp_encode_init(chunk, sizeof(chunk), SCTP_CHUNK_INIT, 0x11111111, 0x100000,
+                                    0xFFFF, 0xFFFF, 1, NULL, 0);
     size_t plen = build_sctp_packet(pkt, 5000, 5000, 0, chunk, clen);
 
-    nsctp_handle_data(&rtc.sctp, pkt, plen);
+    receive_and_poll(&rtc.sctp, pkt, plen, NULL);
 
-    /* Should have logged at least one message (INIT received) */
-    ASSERT_TRUE(log_call_count > 0);
+    /* Parsing has no ambient logger; RTC owns instance diagnostics. */
+    ASSERT_EQ(log_call_count, 0);
 
     nanortc_destroy(&rtc);
 }
@@ -508,15 +521,15 @@ TEST(test_sctp_logging_on_parse)
  * ================================================================ */
 
 /** Helper: pump output from src to dst. Returns bytes transferred.
- *  Uses static buffer so delivered_data pointers remain valid after return. */
-static size_t pump(nano_sctp_t *src, nano_sctp_t *dst)
+ *  SCTP owns the received payload independently of this input buffer. */
+static size_t pump(nano_sctp_t *src, nano_sctp_t *dst, nano_sctp_message_t *view)
 {
-    static uint8_t buf[NANORTC_SCTP_MTU];
+    uint8_t buf[NANORTC_SCTP_MTU];
     size_t out_len = 0;
     size_t total = 0;
 
     while (nsctp_poll_output(src, buf, sizeof(buf), &out_len) == NANORTC_OK && out_len > 0) {
-        nsctp_handle_data(dst, buf, out_len);
+        receive_and_poll(dst, buf, out_len, view);
         total += out_len;
         out_len = 0;
     }
@@ -539,23 +552,24 @@ TEST(test_two_instance_handshake_server_client)
     ASSERT_EQ(client.state, NANORTC_SCTP_STATE_COOKIE_WAIT);
 
     /* INIT → Server → INIT-ACK */
-    pump(&client, &server);
+    pump(&client, &server, NULL);
 
     /* INIT-ACK → Client → COOKIE-ECHO */
-    pump(&server, &client);
+    pump(&server, &client, NULL);
     ASSERT_EQ(client.state, NANORTC_SCTP_STATE_COOKIE_ECHOED);
 
     /* COOKIE-ECHO → Server → COOKIE-ACK + ESTABLISHED */
-    pump(&client, &server);
+    pump(&client, &server, NULL);
     ASSERT_EQ(server.state, NANORTC_SCTP_STATE_ESTABLISHED);
 
     /* COOKIE-ACK → Client → ESTABLISHED */
-    pump(&server, &client);
+    pump(&server, &client, NULL);
     ASSERT_EQ(client.state, NANORTC_SCTP_STATE_ESTABLISHED);
 }
 
 TEST(test_two_instance_data_exchange)
 {
+    nano_sctp_message_t received;
     nano_sctp_t a, b;
     nsctp_init(&a);
     nsctp_init(&b);
@@ -566,10 +580,10 @@ TEST(test_two_instance_data_exchange)
 
     /* Handshake: a=client, b=server */
     ASSERT_OK(nsctp_start(&a));
-    pump(&a, &b); /* INIT */
-    pump(&b, &a); /* INIT-ACK */
-    pump(&a, &b); /* COOKIE-ECHO */
-    pump(&b, &a); /* COOKIE-ACK */
+    pump(&a, &b, &received); /* INIT */
+    pump(&b, &a, &received); /* INIT-ACK */
+    pump(&a, &b, &received); /* COOKIE-ECHO */
+    pump(&b, &a, &received); /* COOKIE-ACK */
     ASSERT_EQ(a.state, NANORTC_SCTP_STATE_ESTABLISHED);
     ASSERT_EQ(b.state, NANORTC_SCTP_STATE_ESTABLISHED);
 
@@ -578,16 +592,16 @@ TEST(test_two_instance_data_exchange)
     ASSERT_OK(nsctp_send(&a, 0, 51, msg, sizeof(msg) - 1));
 
     /* Pump DATA from A to B */
-    pump(&a, &b);
+    pump(&a, &b, &received);
 
     /* Verify B received the data */
-    ASSERT_TRUE(b.has_delivered);
-    ASSERT_EQ(b.delivered_len, sizeof(msg) - 1);
-    ASSERT_EQ(b.delivered_ppid, 51u);
-    ASSERT_MEM_EQ(b.delivered_data, msg, sizeof(msg) - 1);
+    ASSERT_TRUE((received.data != NULL));
+    ASSERT_EQ(received.len, sizeof(msg) - 1);
+    ASSERT_EQ(received.ppid, 51u);
+    ASSERT_MEM_EQ(received.data, msg, sizeof(msg) - 1);
 
     /* B should send SACK back */
-    pump(&b, &a);
+    pump(&b, &a, &received);
 
     /* A's send queue should be drained */
     /* (SACK was processed, entry acked) */
@@ -595,6 +609,7 @@ TEST(test_two_instance_data_exchange)
 
 TEST(test_two_instance_bidirectional)
 {
+    nano_sctp_message_t received;
     nano_sctp_t a, b;
     nsctp_init(&a);
     nsctp_init(&b);
@@ -605,30 +620,30 @@ TEST(test_two_instance_bidirectional)
 
     /* Handshake */
     ASSERT_OK(nsctp_start(&a));
-    pump(&a, &b);
-    pump(&b, &a);
-    pump(&a, &b);
-    pump(&b, &a);
+    pump(&a, &b, &received);
+    pump(&b, &a, &received);
+    pump(&a, &b, &received);
+    pump(&b, &a, &received);
     ASSERT_EQ(a.state, NANORTC_SCTP_STATE_ESTABLISHED);
     ASSERT_EQ(b.state, NANORTC_SCTP_STATE_ESTABLISHED);
 
     /* A → B */
     uint8_t msg1[] = "from A";
     ASSERT_OK(nsctp_send(&a, 0, 51, msg1, sizeof(msg1) - 1));
-    pump(&a, &b);
-    ASSERT_TRUE(b.has_delivered);
-    ASSERT_EQ(b.delivered_ppid, 51u);
-    ASSERT_MEM_EQ(b.delivered_data, msg1, sizeof(msg1) - 1);
-    pump(&b, &a); /* SACK */
+    pump(&a, &b, &received);
+    ASSERT_TRUE((received.data != NULL));
+    ASSERT_EQ(received.ppid, 51u);
+    ASSERT_MEM_EQ(received.data, msg1, sizeof(msg1) - 1);
+    pump(&b, &a, &received); /* SACK */
 
     /* B → A */
     uint8_t msg2[] = "from B";
     ASSERT_OK(nsctp_send(&b, 0, 53, msg2, sizeof(msg2) - 1));
-    pump(&b, &a);
-    ASSERT_TRUE(a.has_delivered);
-    ASSERT_EQ(a.delivered_ppid, 53u);
-    ASSERT_MEM_EQ(a.delivered_data, msg2, sizeof(msg2) - 1);
-    pump(&a, &b); /* SACK */
+    pump(&b, &a, &received);
+    ASSERT_TRUE((received.data != NULL));
+    ASSERT_EQ(received.ppid, 53u);
+    ASSERT_MEM_EQ(received.data, msg2, sizeof(msg2) - 1);
+    pump(&a, &b, &received); /* SACK */
 }
 
 TEST(test_send_before_established)
@@ -652,33 +667,21 @@ TEST(test_forward_tsn_advances)
 
     /* Handshake */
     ASSERT_OK(nsctp_start(&a));
-    pump(&a, &b);
-    pump(&b, &a);
-    pump(&a, &b);
-    pump(&b, &a);
+    pump(&a, &b, NULL);
+    pump(&b, &a, NULL);
+    pump(&a, &b, NULL);
+    pump(&b, &a, NULL);
 
-    /* Buffer the TSN after the skipped one, then verify FORWARD-TSN both
-     * advances and releases that now-contiguous DATA. */
+    /* Send FORWARD-TSN from A to B, advancing B's cumulative TSN */
     uint32_t old_tsn = b.cumulative_tsn;
-    uint8_t payload = 0x5a;
-    uint8_t data_pkt[64];
-    size_t data_pos = nsctp_encode_header(data_pkt, 5000, 5000, b.local_vtag);
-    data_pos += nsctp_encode_data(data_pkt + data_pos, old_tsn + 2, 0, 0, 53,
-                                  SCTP_DATA_FLAG_BEGIN | SCTP_DATA_FLAG_END,
-                                  &payload, 1);
-    nsctp_finalize_checksum(data_pkt, data_pos);
-    ASSERT_OK(nsctp_handle_data(&b, data_pkt, data_pos));
-    ASSERT_EQ(b.recv_gap_count, 1);
 
     uint8_t pkt[64];
     size_t pos = nsctp_encode_header(pkt, 5000, 5000, b.local_vtag);
-    pos += nsctp_encode_forward_tsn(pkt + pos, old_tsn + 1);
+    pos += nsctp_encode_forward_tsn(pkt + pos, old_tsn + 5);
     nsctp_finalize_checksum(pkt, pos);
 
-    nsctp_handle_data(&b, pkt, pos);
-    ASSERT_EQ(b.cumulative_tsn, old_tsn + 2);
-    ASSERT_OK(nsctp_poll_delivery(&b));
-    ASSERT_EQ(b.delivered_data[0], payload);
+    receive_and_poll(&b, pkt, pos, NULL);
+    ASSERT_EQ(b.cumulative_tsn, old_tsn + 5);
 }
 
 /* ================================================================
@@ -687,6 +690,7 @@ TEST(test_forward_tsn_advances)
 
 TEST(test_sack_drains_send_queue)
 {
+    nano_sctp_message_t received;
     nano_sctp_t a, b;
     nsctp_init(&a);
     nsctp_init(&b);
@@ -697,10 +701,10 @@ TEST(test_sack_drains_send_queue)
 
     /* Handshake */
     ASSERT_OK(nsctp_start(&a));
-    pump(&a, &b);
-    pump(&b, &a);
-    pump(&a, &b);
-    pump(&b, &a);
+    pump(&a, &b, &received);
+    pump(&b, &a, &received);
+    pump(&a, &b, &received);
+    pump(&b, &a, &received);
     ASSERT_EQ(a.state, NANORTC_SCTP_STATE_ESTABLISHED);
 
     /* Send multiple messages */
@@ -710,14 +714,14 @@ TEST(test_sack_drains_send_queue)
     ASSERT_OK(nsctp_send(&a, 0, 51, msg2, sizeof(msg2) - 1));
 
     /* Pump both DATA from A to B */
-    pump(&a, &b);
-    pump(&a, &b);
+    pump(&a, &b, &received);
+    pump(&a, &b, &received);
 
     /* B received the data */
-    ASSERT_TRUE(b.has_delivered);
+    ASSERT_TRUE((received.data != NULL));
 
     /* Pump SACK from B to A */
-    pump(&b, &a);
+    pump(&b, &a, &received);
 
     /* A's send queue entries should be acked */
     bool all_acked = true;
@@ -756,7 +760,7 @@ TEST(test_sctp_output_queue_multiple)
     ASSERT_TRUE(out_len > 0);
 
     /* Feed INIT to server — should queue INIT-ACK */
-    nsctp_handle_data(&b, buf, out_len);
+    receive_and_poll(&b, buf, out_len, NULL);
 
     /* Poll INIT-ACK from server */
     out_len = 0;
@@ -1051,7 +1055,8 @@ TEST(test_sctp_vtag_zero_init)
 
     /* Build INIT packet with vtag=0 (correct) */
     size_t pos = nsctp_encode_header(pkt, 5000, 5000, 0);
-    pos += nsctp_encode_init(pkt + pos, SCTP_CHUNK_INIT, 0x12345678, 0x10000, 10, 10, 1, NULL, 0);
+    pos += nsctp_encode_init(pkt + pos, sizeof(pkt) - pos, SCTP_CHUNK_INIT, 0x12345678, 0x10000, 10,
+                             10, 1, NULL, 0);
     nsctp_finalize_checksum(pkt, pos);
 
     /* Parse and verify header vtag is 0 */
@@ -1067,7 +1072,8 @@ TEST(test_sctp_data_unordered_flag)
     uint8_t payload[] = {0x01, 0x02};
     uint8_t flags = SCTP_DATA_FLAG_BEGIN | SCTP_DATA_FLAG_END | SCTP_DATA_FLAG_UNORDERED;
 
-    size_t n = nsctp_encode_data(chunk, 1, 0, 0, 52, flags, payload, sizeof(payload));
+    size_t n =
+        nsctp_encode_data(chunk, sizeof(chunk), 1, 0, 0, 52, flags, payload, sizeof(payload));
 
     nsctp_data_t data;
     ASSERT_OK(nsctp_parse_data(chunk, n, &data));
@@ -1116,7 +1122,7 @@ TEST(test_sctp_chunk_length_field)
 {
     uint8_t chunk[64];
     uint8_t payload[] = "test";
-    size_t n = nsctp_encode_data(chunk, 1, 0, 0, 50, 0x03, payload, 4);
+    size_t n = nsctp_encode_data(chunk, sizeof(chunk), 1, 0, 0, 50, 0x03, payload, 4);
 
     /* Chunk length field at bytes 2-3 should be 4(hdr) + 12(data fields) + 4(payload) = 20 */
     uint16_t chunk_len = nanortc_read_u16be(chunk + 2);
@@ -1134,8 +1140,8 @@ static size_t build_data_packet(uint8_t *pkt, uint32_t vtag, uint32_t tsn, uint1
                                 uint32_t ppid, const uint8_t *payload, uint16_t payload_len)
 {
     uint8_t chunk[256];
-    size_t clen =
-        nsctp_encode_data(chunk, tsn, stream_id, 0, ppid, 0x03 /* B|E */, payload, payload_len);
+    size_t clen = nsctp_encode_data(chunk, sizeof(chunk), tsn, stream_id, (uint16_t)(tsn - 101u),
+                                    ppid, 0x03 /* B|E */, payload, payload_len);
     return build_sctp_packet(pkt, 5000, 5000, vtag, chunk, clen);
 }
 
@@ -1153,6 +1159,7 @@ static void setup_established_sctp(nano_sctp_t *sctp)
 
 TEST(test_sctp_gap_single)
 {
+    nano_sctp_message_t received;
     /* Send TSN 101 (in-order) then TSN 103 (gap). TSN 103 should be buffered. */
     nano_sctp_t sctp;
     setup_established_sctp(&sctp);
@@ -1163,33 +1170,22 @@ TEST(test_sctp_gap_single)
 
     /* TSN 101: in-order → delivered immediately */
     size_t plen = build_data_packet(pkt, sctp.local_vtag, 101, 0, 51, msg1, 4);
-    ASSERT_OK(nsctp_handle_data(&sctp, pkt, plen));
-    ASSERT_TRUE(sctp.has_delivered);
+    ASSERT_OK(receive_and_poll(&sctp, pkt, plen, &received));
+    ASSERT_TRUE((received.data != NULL));
     ASSERT_EQ(sctp.cumulative_tsn, 101u);
-    ASSERT_EQ(sctp.delivered_len, 4);
+    ASSERT_EQ(received.len, 4);
 
     /* TSN 103: out-of-order → buffered in gap array */
     plen = build_data_packet(pkt, sctp.local_vtag, 103, 0, 51, msg3, 4);
-    ASSERT_OK(nsctp_handle_data(&sctp, pkt, plen));
-    ASSERT_FALSE(sctp.has_delivered);     /* not delivered yet */
-    ASSERT_EQ(sctp.cumulative_tsn, 101u); /* unchanged */
+    ASSERT_OK(receive_and_poll(&sctp, pkt, plen, &received));
+    ASSERT_FALSE((received.data != NULL)); /* not delivered yet */
+    ASSERT_EQ(sctp.cumulative_tsn, 101u);  /* unchanged */
     ASSERT_EQ(sctp.recv_gap_count, 1);
-
-    /* An unordered message beyond the same gap is delivered immediately. */
-    uint8_t msg5[] = "u";
-    size_t cpos = nsctp_encode_header(pkt, 5000, 5000, sctp.local_vtag);
-    cpos += nsctp_encode_data(pkt + cpos, 105, 0, 0, 51,
-                              SCTP_DATA_FLAG_BEGIN | SCTP_DATA_FLAG_END |
-                                  SCTP_DATA_FLAG_UNORDERED,
-                              msg5, 1);
-    nsctp_finalize_checksum(pkt, cpos);
-    ASSERT_OK(nsctp_handle_data(&sctp, pkt, cpos));
-    ASSERT_OK(nsctp_poll_delivery(&sctp));
-    ASSERT_EQ(sctp.delivered_data[0], (uint8_t)'u');
 }
 
 TEST(test_sctp_gap_fill)
 {
+    nano_sctp_message_t received;
     /* Send TSN 101, 103, then 102 (fills the gap). All three should be delivered in order. */
     nano_sctp_t sctp;
     setup_established_sctp(&sctp);
@@ -1199,29 +1195,29 @@ TEST(test_sctp_gap_fill)
 
     /* TSN 101 in-order */
     size_t plen = build_data_packet(pkt, sctp.local_vtag, 101, 0, 51, m1, 1);
-    ASSERT_OK(nsctp_handle_data(&sctp, pkt, plen));
-    ASSERT_TRUE(sctp.has_delivered);
+    ASSERT_OK(receive_and_poll(&sctp, pkt, plen, &received));
+    ASSERT_TRUE((received.data != NULL));
     ASSERT_EQ(sctp.cumulative_tsn, 101u);
 
     /* TSN 103 out-of-order (gap) */
     plen = build_data_packet(pkt, sctp.local_vtag, 103, 0, 51, m3, 1);
-    ASSERT_OK(nsctp_handle_data(&sctp, pkt, plen));
+    ASSERT_OK(receive_and_poll(&sctp, pkt, plen, &received));
     ASSERT_EQ(sctp.recv_gap_count, 1);
 
     /* TSN 102 fills the gap → cumulative_tsn should advance to 103 */
     plen = build_data_packet(pkt, sctp.local_vtag, 102, 0, 51, m2, 1);
-    ASSERT_OK(nsctp_handle_data(&sctp, pkt, plen));
+    ASSERT_OK(receive_and_poll(&sctp, pkt, plen, &received));
 
     /* TSN 102 delivered directly */
-    ASSERT_TRUE(sctp.has_delivered);
+    ASSERT_TRUE((received.data != NULL));
     ASSERT_EQ(sctp.cumulative_tsn, 103u); /* gap filled, advanced past 103 */
-    ASSERT_EQ(sctp.recv_gap_count, 0);
+    ASSERT_EQ(sctp.recv_gap_count, 2);
 
     /* TSN 103 should be in delivery queue */
-    ASSERT_OK(nsctp_poll_delivery(&sctp));
-    ASSERT_TRUE(sctp.has_delivered);
-    ASSERT_EQ(sctp.delivered_len, 1);
-    ASSERT_MEM_EQ(sctp.delivered_data, m3, 1);
+    ASSERT_OK(nsctp_poll_delivery(&sctp, &received));
+    ASSERT_TRUE((received.data != NULL));
+    ASSERT_EQ(received.len, 1);
+    ASSERT_MEM_EQ(received.data, m3, 1);
 }
 
 TEST(test_sctp_gap_multiple)
@@ -1235,15 +1231,15 @@ TEST(test_sctp_gap_multiple)
 
     /* TSN 101 in-order */
     size_t plen = build_data_packet(pkt, sctp.local_vtag, 101, 0, 51, m, 1);
-    ASSERT_OK(nsctp_handle_data(&sctp, pkt, plen));
+    ASSERT_OK(receive_and_poll(&sctp, pkt, plen, NULL));
 
     /* TSN 103 gap */
     plen = build_data_packet(pkt, sctp.local_vtag, 103, 0, 51, m, 1);
-    ASSERT_OK(nsctp_handle_data(&sctp, pkt, plen));
+    ASSERT_OK(receive_and_poll(&sctp, pkt, plen, NULL));
 
     /* TSN 105 gap */
     plen = build_data_packet(pkt, sctp.local_vtag, 105, 0, 51, m, 1);
-    ASSERT_OK(nsctp_handle_data(&sctp, pkt, plen));
+    ASSERT_OK(receive_and_poll(&sctp, pkt, plen, NULL));
 
     ASSERT_EQ(sctp.cumulative_tsn, 101u);
     ASSERT_EQ(sctp.recv_gap_count, 2);
@@ -1260,21 +1256,21 @@ TEST(test_sctp_gap_duplicate)
 
     /* TSN 101 in-order */
     size_t plen = build_data_packet(pkt, sctp.local_vtag, 101, 0, 51, m, 1);
-    ASSERT_OK(nsctp_handle_data(&sctp, pkt, plen));
+    ASSERT_OK(receive_and_poll(&sctp, pkt, plen, NULL));
     ASSERT_EQ(sctp.cumulative_tsn, 101u);
 
     /* TSN 101 again (duplicate) → ignored */
     plen = build_data_packet(pkt, sctp.local_vtag, 101, 0, 51, m, 1);
-    ASSERT_OK(nsctp_handle_data(&sctp, pkt, plen));
+    ASSERT_OK(receive_and_poll(&sctp, pkt, plen, NULL));
     ASSERT_EQ(sctp.cumulative_tsn, 101u); /* unchanged */
 
     /* TSN 103 gap, then 103 again */
     plen = build_data_packet(pkt, sctp.local_vtag, 103, 0, 51, m, 1);
-    ASSERT_OK(nsctp_handle_data(&sctp, pkt, plen));
+    ASSERT_OK(receive_and_poll(&sctp, pkt, plen, NULL));
     ASSERT_EQ(sctp.recv_gap_count, 1);
 
     plen = build_data_packet(pkt, sctp.local_vtag, 103, 0, 51, m, 1);
-    ASSERT_OK(nsctp_handle_data(&sctp, pkt, plen));
+    ASSERT_OK(receive_and_poll(&sctp, pkt, plen, NULL));
     ASSERT_EQ(sctp.recv_gap_count, 1); /* still 1, not 2 */
 }
 
@@ -1289,21 +1285,21 @@ TEST(test_sctp_gap_overflow)
 
     /* TSN 101 in-order */
     size_t plen = build_data_packet(pkt, sctp.local_vtag, 101, 0, 51, m, 1);
-    ASSERT_OK(nsctp_handle_data(&sctp, pkt, plen));
+    ASSERT_OK(receive_and_poll(&sctp, pkt, plen, NULL));
 
     /* Fill gap slots: TSN 103, 105, 107, ... up to max */
     for (uint8_t i = 0; i < NANORTC_SCTP_MAX_RECV_GAP; i++) {
         uint32_t tsn = 103 + i * 2; /* skip every other TSN */
         plen = build_data_packet(pkt, sctp.local_vtag, tsn, 0, 51, m, 1);
-        ASSERT_OK(nsctp_handle_data(&sctp, pkt, plen));
+        ASSERT_OK(receive_and_poll(&sctp, pkt, plen, NULL));
     }
-    ASSERT_EQ(sctp.recv_gap_count, NANORTC_SCTP_MAX_RECV_GAP);
+    ASSERT_EQ(sctp.recv_gap_count, NANORTC_SCTP_MAX_RECV_GAP - 1);
 
     /* One more out-of-order TSN — should not crash, just be dropped */
     uint32_t overflow_tsn = 103 + NANORTC_SCTP_MAX_RECV_GAP * 2;
     plen = build_data_packet(pkt, sctp.local_vtag, overflow_tsn, 0, 51, m, 1);
-    ASSERT_OK(nsctp_handle_data(&sctp, pkt, plen));            /* should not crash */
-    ASSERT_EQ(sctp.recv_gap_count, NANORTC_SCTP_MAX_RECV_GAP); /* still max */
+    ASSERT_OK(receive_and_poll(&sctp, pkt, plen, NULL));           /* should not crash */
+    ASSERT_EQ(sctp.recv_gap_count, NANORTC_SCTP_MAX_RECV_GAP - 1); /* still max */
 }
 
 TEST(test_sctp_sack_with_gaps)
@@ -1317,15 +1313,16 @@ TEST(test_sctp_sack_with_gaps)
 
     /* TSN 101 in-order */
     size_t plen = build_data_packet(pkt, sctp.local_vtag, 101, 0, 51, m, 1);
-    ASSERT_OK(nsctp_handle_data(&sctp, pkt, plen));
+    ASSERT_OK(receive_and_poll(&sctp, pkt, plen, NULL));
 
     /* TSN 103 gap */
     plen = build_data_packet(pkt, sctp.local_vtag, 103, 0, 51, m, 1);
-    ASSERT_OK(nsctp_handle_data(&sctp, pkt, plen));
+    ASSERT_OK(receive_and_poll(&sctp, pkt, plen, NULL));
 
     /* Encode SACK with gap blocks */
     uint8_t sack_buf[64];
-    size_t sack_len = nsctp_encode_sack_with_gaps(sack_buf, sctp.cumulative_tsn, 4096, &sctp);
+    size_t sack_len =
+        nsctp_encode_sack_with_gaps(sack_buf, sizeof(sack_buf), sctp.cumulative_tsn, 4096, &sctp);
 
     /* Parse the encoded SACK */
     ASSERT_EQ(sack_buf[0], SCTP_CHUNK_SACK);
@@ -1349,6 +1346,7 @@ TEST(test_sctp_sack_with_gaps)
 
 TEST(test_sctp_gap_fill_chain)
 {
+    nano_sctp_message_t received;
     /* TSN 101, 104, 103, 102 → filling gap delivers 102, 103, 104 in order */
     nano_sctp_t sctp;
     setup_established_sctp(&sctp);
@@ -1358,96 +1356,38 @@ TEST(test_sctp_gap_fill_chain)
 
     /* TSN 101 in-order */
     size_t plen = build_data_packet(pkt, sctp.local_vtag, 101, 0, 51, m1, 1);
-    ASSERT_OK(nsctp_handle_data(&sctp, pkt, plen));
+    ASSERT_OK(receive_and_poll(&sctp, pkt, plen, &received));
 
     /* TSN 104 out-of-order */
     plen = build_data_packet(pkt, sctp.local_vtag, 104, 0, 51, m4, 1);
-    ASSERT_OK(nsctp_handle_data(&sctp, pkt, plen));
+    ASSERT_OK(receive_and_poll(&sctp, pkt, plen, &received));
 
     /* TSN 103 out-of-order */
     plen = build_data_packet(pkt, sctp.local_vtag, 103, 0, 51, m3, 1);
-    ASSERT_OK(nsctp_handle_data(&sctp, pkt, plen));
+    ASSERT_OK(receive_and_poll(&sctp, pkt, plen, &received));
 
     ASSERT_EQ(sctp.recv_gap_count, 2);
     ASSERT_EQ(sctp.cumulative_tsn, 101u);
 
     /* TSN 102 fills the gap → should advance to 104 */
     plen = build_data_packet(pkt, sctp.local_vtag, 102, 0, 51, m2, 1);
-    ASSERT_OK(nsctp_handle_data(&sctp, pkt, plen));
+    ASSERT_OK(receive_and_poll(&sctp, pkt, plen, &received));
 
-    ASSERT_TRUE(sctp.has_delivered); /* TSN 102 delivered directly */
+    ASSERT_TRUE((received.data != NULL)); /* TSN 102 delivered directly */
     ASSERT_EQ(sctp.cumulative_tsn, 104u);
-    ASSERT_EQ(sctp.recv_gap_count, 0);
+    ASSERT_EQ(sctp.recv_gap_count, 3);
 
     /* Delivery queue should have TSN 103 and 104 */
-    ASSERT_OK(nsctp_poll_delivery(&sctp));
-    ASSERT_TRUE(sctp.has_delivered);
-    ASSERT_MEM_EQ(sctp.delivered_data, m3, 1); /* TSN 103 */
+    ASSERT_OK(nsctp_poll_delivery(&sctp, &received));
+    ASSERT_TRUE((received.data != NULL));
+    ASSERT_MEM_EQ(received.data, m3, 1); /* TSN 103 */
 
-    ASSERT_OK(nsctp_poll_delivery(&sctp));
-    ASSERT_TRUE(sctp.has_delivered);
-    ASSERT_MEM_EQ(sctp.delivered_data, m4, 1); /* TSN 104 */
+    ASSERT_OK(nsctp_poll_delivery(&sctp, &received));
+    ASSERT_TRUE((received.data != NULL));
+    ASSERT_MEM_EQ(received.data, m4, 1); /* TSN 104 */
 
     /* No more deliveries */
-    ASSERT_EQ(nsctp_poll_delivery(&sctp), NANORTC_ERR_WOULD_BLOCK);
-}
-
-TEST(test_sctp_reassembles_fragmented_unordered_message)
-{
-    nano_sctp_t sctp;
-    setup_established_sctp(&sctp);
-
-    static const uint8_t prefix[] = "{\"v\":1,\"type\":\"h";
-    static const uint8_t suffix[] = "eartbeat\",\"id\":614}";
-    static const uint8_t expected[] = "{\"v\":1,\"type\":\"heartbeat\",\"id\":614}";
-    uint8_t pkt[256];
-    size_t pos = nsctp_encode_header(pkt, 5000, 5000, sctp.local_vtag);
-    pos += nsctp_encode_data(pkt + pos, 101, 0, 0, 51,
-                             SCTP_DATA_FLAG_BEGIN | SCTP_DATA_FLAG_UNORDERED,
-                             prefix, sizeof(prefix) - 1);
-    nsctp_finalize_checksum(pkt, pos);
-    ASSERT_OK(nsctp_handle_data(&sctp, pkt, pos));
-    ASSERT_FALSE(sctp.has_delivered);
-
-    pos = nsctp_encode_header(pkt, 5000, 5000, sctp.local_vtag);
-    pos += nsctp_encode_data(pkt + pos, 102, 0, 0, 51,
-                             SCTP_DATA_FLAG_END | SCTP_DATA_FLAG_UNORDERED,
-                             suffix, sizeof(suffix) - 1);
-    nsctp_finalize_checksum(pkt, pos);
-    ASSERT_OK(nsctp_handle_data(&sctp, pkt, pos));
-    ASSERT_TRUE(sctp.has_delivered);
-    ASSERT_EQ(sctp.delivered_len, sizeof(expected) - 1);
-    ASSERT_MEM_EQ(sctp.delivered_data, expected, sizeof(expected) - 1);
-}
-
-TEST(test_sctp_reassembles_fragmented_unordered_message_past_gap)
-{
-    nano_sctp_t sctp;
-    setup_established_sctp(&sctp); /* TSN 101 remains missing */
-
-    static const uint8_t prefix[] = "{\"type\":\"h";
-    static const uint8_t suffix[] = "eartbeat\"}";
-    static const uint8_t expected[] = "{\"type\":\"heartbeat\"}";
-    uint8_t pkt[256];
-    size_t pos = nsctp_encode_header(pkt, 5000, 5000, sctp.local_vtag);
-    pos += nsctp_encode_data(pkt + pos, 102, 0, 0, 51,
-                             SCTP_DATA_FLAG_BEGIN | SCTP_DATA_FLAG_UNORDERED,
-                             prefix, sizeof(prefix) - 1);
-    nsctp_finalize_checksum(pkt, pos);
-    ASSERT_OK(nsctp_handle_data(&sctp, pkt, pos));
-    ASSERT_EQ(nsctp_poll_delivery(&sctp), NANORTC_ERR_WOULD_BLOCK);
-    ASSERT_FALSE(sctp.has_delivered);
-
-    pos = nsctp_encode_header(pkt, 5000, 5000, sctp.local_vtag);
-    pos += nsctp_encode_data(pkt + pos, 103, 0, 0, 51,
-                             SCTP_DATA_FLAG_END | SCTP_DATA_FLAG_UNORDERED,
-                             suffix, sizeof(suffix) - 1);
-    nsctp_finalize_checksum(pkt, pos);
-    ASSERT_OK(nsctp_handle_data(&sctp, pkt, pos));
-    ASSERT_OK(nsctp_poll_delivery(&sctp));
-    ASSERT_TRUE(sctp.has_delivered);
-    ASSERT_EQ(sctp.delivered_len, sizeof(expected) - 1);
-    ASSERT_MEM_EQ(sctp.delivered_data, expected, sizeof(expected) - 1);
+    ASSERT_EQ(nsctp_poll_delivery(&sctp, &received), NANORTC_ERR_WOULD_BLOCK);
 }
 
 /* ================================================================
@@ -1455,57 +1395,6 @@ TEST(test_sctp_reassembles_fragmented_unordered_message_past_gap)
  * ================================================================ */
 
 #if NANORTC_FEATURE_DC_RELIABLE
-TEST(test_sctp_zero_retransmit_emits_forward_tsn)
-{
-    nano_sctp_t sctp;
-    setup_established_sctp(&sctp);
-    sctp.next_tsn = 1;
-    sctp.peer_supports_forward_tsn = true;
-    const uint8_t payload[] = "drop";
-    ASSERT_OK(nsctp_send_ex(&sctp, 0, 53, payload, sizeof(payload) - 1,
-                            true, true, 0));
-    uint8_t packet[NANORTC_SCTP_MTU];
-    size_t packet_len = 0;
-    ASSERT_OK(nsctp_poll_output(&sctp, packet, sizeof(packet), &packet_len));
-    ASSERT_OK(nsctp_handle_timeout(&sctp, NANORTC_SCTP_RTO_INITIAL_MS));
-    ASSERT_OK(nsctp_poll_output(&sctp, packet, sizeof(packet), &packet_len));
-    ASSERT_EQ(packet[12], SCTP_CHUNK_FORWARD_TSN);
-    ASSERT_EQ(sctp.state, NANORTC_SCTP_STATE_ESTABLISHED);
-}
-
-TEST(test_sctp_gap_sack_fast_abandons_zero_retransmit)
-{
-    nano_sctp_t sctp;
-    setup_established_sctp(&sctp);
-    sctp.next_tsn = 1;
-    sctp.peer_supports_forward_tsn = true;
-    const uint8_t payload = 0x41;
-    uint8_t packet[NANORTC_SCTP_MTU];
-    size_t packet_len = 0;
-    for (int i = 0; i < 3; i++) {
-        ASSERT_OK(nsctp_send_ex(&sctp, 0, 53, &payload, 1, true, true, 0));
-        ASSERT_OK(nsctp_poll_output(&sctp, packet, sizeof(packet), &packet_len));
-    }
-
-    size_t pos = nsctp_encode_header(packet, 5000, 5000, sctp.local_vtag);
-    uint8_t *sack = packet + pos;
-    sack[0] = SCTP_CHUNK_SACK;
-    sack[1] = 0;
-    nanortc_write_u16be(sack + 2, 20);
-    nanortc_write_u32be(sack + 4, 0);
-    nanortc_write_u32be(sack + 8, 4096);
-    nanortc_write_u16be(sack + 12, 1);
-    nanortc_write_u16be(sack + 14, 0);
-    nanortc_write_u16be(sack + 16, 2);
-    nanortc_write_u16be(sack + 18, 3);
-    pos += 20;
-    nsctp_finalize_checksum(packet, pos);
-    ASSERT_OK(nsctp_handle_data(&sctp, packet, pos));
-    ASSERT_EQ(sctp.sq_head, sctp.sq_tail);
-    ASSERT_TRUE(sctp.forward_tsn_pending);
-    ASSERT_EQ(sctp.pending_forward_tsn, 1u);
-}
-
 TEST(test_sctp_timeout_sets_closed_flag)
 {
     /* Drive nsctp_handle_timeout through the full RTO ramp until
@@ -1585,7 +1474,7 @@ TEST(test_sctp_abort_does_not_set_failure_flag)
     pos += 4;
     nsctp_finalize_checksum(pkt, pos);
 
-    ASSERT_OK(nsctp_handle_data(&sctp, pkt, pos));
+    ASSERT_OK(receive_and_poll(&sctp, pkt, pos, NULL));
     ASSERT_EQ(sctp.state, NANORTC_SCTP_STATE_CLOSED);
     ASSERT_FALSE(sctp.closed_due_to_failure);
 }
@@ -1618,11 +1507,11 @@ TEST(test_sctp_server_init_rng_failure_is_transactional)
 
     uint8_t pkt[64];
     uint8_t chunk[32];
-    size_t clen = nsctp_encode_init(chunk, SCTP_CHUNK_INIT, 0xAABBCCDD, 0x100000, 0xFFFF, 0xFFFF,
-                                    100, NULL, 0);
+    size_t clen = nsctp_encode_init(chunk, sizeof(chunk), SCTP_CHUNK_INIT, 0xAABBCCDD, 0x100000,
+                                    0xFFFF, 0xFFFF, 100, NULL, 0);
     size_t plen = build_sctp_packet(pkt, 5000, 5000, 0, chunk, clen);
 
-    ASSERT_EQ(nsctp_handle_data(&sctp, pkt, plen), NANORTC_ERR_CRYPTO);
+    ASSERT_EQ(receive_and_poll(&sctp, pkt, plen, NULL), NANORTC_ERR_CRYPTO);
     ASSERT_EQ(sctp.local_vtag, 0u);
     ASSERT_EQ(sctp.next_tsn, 0u);
     ASSERT_EQ(sctp.remote_vtag, 0u);
@@ -1651,7 +1540,282 @@ TEST(test_sctp_heartbeat_rng_failure_is_transactional)
  * Test runner
  * ================================================================ */
 
+/* Independent DATA layout from RFC 9260 §3.3.1; only CRC uses the tested codec. */
+static size_t wire_data(uint8_t *p, uint32_t tsn, uint16_t sid, uint16_t ssn, uint8_t flags,
+                        const uint8_t *bytes, uint16_t len)
+{
+    size_t n = (16u + len + 3u) & ~3u;
+    memset(p, 0, n);
+    p[1] = flags;
+    nanortc_write_u16be(p + 2, 16u + len);
+    nanortc_write_u32be(p + 4, tsn);
+    nanortc_write_u16be(p + 8, sid);
+    nanortc_write_u16be(p + 10, ssn);
+    nanortc_write_u32be(p + 12, 53);
+    memcpy(p + 16, bytes, len);
+    return n;
+}
+
+TEST(test_sctp_capacity_and_fragmentation)
+{
+    nano_sctp_t s, before;
+    setup_established_sctp(&s);
+    uint8_t message[NANORTC_SCTP_MAX_MESSAGE_SIZE];
+    for (size_t i = 0; i < sizeof(message); i++)
+        message[i] = (uint8_t)i;
+    s.next_tsn = 101;
+    ASSERT_OK(nsctp_send_options(&s, 2, 53, message, sizeof(message), true, -1));
+    before = s;
+    uint8_t packet[NANORTC_SCTP_MTU + 8];
+    memset(packet, 0xA5, sizeof(packet));
+    size_t len = 123;
+    ASSERT_EQ(nsctp_poll_output(&s, packet, 16, &len), NANORTC_ERR_BUFFER_TOO_SMALL);
+    ASSERT_MEM_EQ(&s, &before, sizeof(s));
+    ASSERT_EQ(len, 123u);
+    for (size_t i = 0; i < sizeof(packet); i++)
+        ASSERT_EQ(packet[i], 0xA5);
+    size_t copied = 0;
+    uint32_t tsn = 101;
+    while (nsctp_poll_output(&s, packet, NANORTC_SCTP_MTU, &len) == NANORTC_OK) {
+        ASSERT_TRUE(len <= NANORTC_SCTP_MTU);
+        ASSERT_EQ(nanortc_read_u32be(packet + 16), tsn++);
+        ASSERT_EQ(nanortc_read_u16be(packet + 22), 0);
+        ASSERT_TRUE(packet[13] & SCTP_DATA_FLAG_UNORDERED);
+        ASSERT_EQ(!!(packet[13] & SCTP_DATA_FLAG_BEGIN), copied == 0);
+        size_t n = nanortc_read_u16be(packet + 14) - 16u;
+        ASSERT_MEM_EQ(packet + 28, message + copied, n);
+        copied += n;
+        ASSERT_EQ(!!(packet[13] & SCTP_DATA_FLAG_END), copied == sizeof(message));
+    }
+    ASSERT_EQ(copied, sizeof(message));
+    for (size_t i = NANORTC_SCTP_MTU; i < sizeof(packet); i++)
+        ASSERT_EQ(packet[i], 0xA5);
+    before = s;
+    ASSERT_EQ(nsctp_send(&s, 0, 53, message, sizeof(message) + 1), NANORTC_ERR_BUFFER_TOO_SMALL);
+    ASSERT_MEM_EQ(&s, &before, sizeof(s));
+    s.peer_max_message_size = 1;
+    ASSERT_EQ(nsctp_send(&s, 0, 53, message, 2), NANORTC_ERR_BUFFER_TOO_SMALL);
+}
+
+TEST(test_sctp_variable_encoders_leave_short_buffer_untouched)
+{
+    uint8_t b[64], expected[64], payload[64];
+    memset(b, 0xA5, sizeof(b));
+    memcpy(expected, b, sizeof(b));
+    memset(payload, 0xCC, sizeof(payload));
+    ASSERT_EQ(nsctp_encode_data(b, 16, 1, 0, 0, 53, 3, payload, 1), 0u);
+    ASSERT_EQ(nsctp_encode_cookie_echo(b, 8, payload, 8), 0u);
+    ASSERT_EQ(nsctp_encode_heartbeat(b, 8, payload, 1), 0u);
+    ASSERT_EQ(nsctp_encode_heartbeat_ack(b, 8, payload, 1), 0u);
+    ASSERT_EQ(nsctp_encode_init(b, 20, SCTP_CHUNK_INIT_ACK, 1, 1, 1, 1, 1, payload, 1), 0u);
+    ASSERT_MEM_EQ(b, expected, sizeof(b));
+}
+
+TEST(test_sctp_bundled_owned_messages_and_reassembly)
+{
+    nano_sctp_message_t received;
+    nano_sctp_t s;
+    setup_established_sctp(&s);
+    uint8_t packet[128] = {0};
+    size_t n = 12;
+    n += wire_data(packet + n, 101, 0, 0, 3, (const uint8_t *)"one", 3);
+    n += wire_data(packet + n, 102, 0, 1, 3, (const uint8_t *)"two", 3);
+    nsctp_finalize_checksum(packet, n);
+    ASSERT_OK(nsctp_handle_data(&s, packet, n));
+    memset(packet, 0xCC, sizeof(packet)); /* input lifetime ends before polling */
+    ASSERT_OK(nsctp_poll_delivery(&s, &received));
+    ASSERT_MEM_EQ(received.data, "one", 3);
+    ASSERT_OK(nsctp_poll_delivery(&s, &received));
+    ASSERT_MEM_EQ(received.data, "two", 3);
+    ASSERT_EQ(nsctp_poll_delivery(&s, &received), NANORTC_ERR_WOULD_BLOCK);
+    /* Reverse arrival of B/E fragments; duplicate END must not duplicate delivery. */
+    n = 12 + wire_data(packet + 12, 104, 0, 2, 1, (const uint8_t *)"def", 3);
+    nsctp_finalize_checksum(packet, n);
+    ASSERT_OK(nsctp_handle_data(&s, packet, n));
+    ASSERT_OK(nsctp_handle_data(&s, packet, n));
+    ASSERT_EQ(nsctp_poll_delivery(&s, &received), NANORTC_ERR_WOULD_BLOCK);
+    n = 12 + wire_data(packet + 12, 103, 0, 2, 2, (const uint8_t *)"abc", 3);
+    nsctp_finalize_checksum(packet, n);
+    ASSERT_OK(nsctp_handle_data(&s, packet, n));
+    ASSERT_OK(nsctp_poll_delivery(&s, &received));
+    ASSERT_EQ(received.len, 6);
+    ASSERT_MEM_EQ(received.data, "abcdef", 6);
+    ASSERT_EQ(nsctp_poll_delivery(&s, &received), NANORTC_ERR_WOULD_BLOCK);
+}
+
+TEST(test_sctp_many_small_fragments_and_stream_identity)
+{
+    nano_sctp_message_t received;
+    nano_sctp_t s;
+    setup_established_sctp(&s);
+    uint8_t packet[32] = {0};
+    for (uint32_t i = 0; i < 32; i++) {
+        uint8_t c = (uint8_t)i;
+        size_t n =
+            12 + wire_data(packet + 12, 101 + i, 0, 0, (i == 0 ? 2 : 0) | (i == 31 ? 1 : 0), &c, 1);
+        nsctp_finalize_checksum(packet, n);
+        ASSERT_OK(nsctp_handle_data(&s, packet, n));
+        if (i < 31)
+            ASSERT_EQ(nsctp_poll_delivery(&s, &received), NANORTC_ERR_WOULD_BLOCK);
+    }
+    ASSERT_OK(nsctp_poll_delivery(&s, &received));
+    ASSERT_EQ(received.len, 32);
+    for (uint8_t i = 0; i < 32; i++)
+        ASSERT_EQ(received.data[i], i);
+    /* SID 0 and MAX_DATACHANNELS used to alias the same SSN bucket. */
+    ASSERT_OK(nsctp_send(&s, 0, 53, (const uint8_t *)"a", 1));
+    ASSERT_OK(nsctp_send(&s, NANORTC_MAX_DATACHANNELS, 53, (const uint8_t *)"b", 1));
+    ASSERT_EQ(s.send_queue[0].ssn, 0);
+    ASSERT_EQ(s.send_queue[1].ssn, 0);
+}
+
+#if NANORTC_FEATURE_DC_RELIABLE
+TEST(test_sctp_partial_reliability_skips_whole_message_and_retries_forward)
+{
+    nano_sctp_message_t received;
+    nano_sctp_t s, r;
+    setup_established_sctp(&s);
+    setup_established_sctp(&r);
+    s.peer_forward_tsn = r.peer_forward_tsn = true;
+    s.next_tsn = 101;
+    uint8_t message[NANORTC_SCTP_MTU];
+    memset(message, 0x71, sizeof(message));
+    ASSERT_OK(nsctp_send_options(&s, 0, 53, message, sizeof(message), false, 0));
+    uint8_t packet[NANORTC_SCTP_MTU];
+    size_t len;
+    ASSERT_OK(nsctp_poll_output(&s, packet, sizeof(packet), &len));
+    ASSERT_OK(nsctp_handle_data(&r, packet, len)); /* BEGIN delivered, END lost */
+    ASSERT_EQ(nsctp_poll_delivery(&r, &received), NANORTC_ERR_WOULD_BLOCK);
+    ASSERT_OK(nsctp_handle_timeout(&s, s.rto_ms));
+    ASSERT_OK(nsctp_poll_output(&s, packet, sizeof(packet), &len));
+    ASSERT_EQ(packet[12], SCTP_CHUNK_FORWARD_TSN);
+    ASSERT_EQ(len, 24u);
+    ASSERT_EQ(nanortc_read_u32be(packet + 16), 102u);
+    ASSERT_OK(nsctp_handle_data(&r, packet, len));
+    ASSERT_EQ(r.recv_gap_count, 0);
+    ASSERT_EQ(r.recv_ssn[0], 1);
+    ASSERT_EQ(s.state, NANORTC_SCTP_STATE_ESTABLISHED);
+    ASSERT_OK(nsctp_handle_timeout(&s, s.now_ms + s.rto_ms));
+    ASSERT_OK(nsctp_poll_output(&s, packet, sizeof(packet), &len));
+    ASSERT_EQ(packet[12], SCTP_CHUNK_FORWARD_TSN); /* lost SACK */
+    while (nsctp_poll_output(&r, packet, sizeof(packet), &len) == NANORTC_OK)
+        ASSERT_OK(nsctp_handle_data(&s, packet, len));
+    ASSERT_EQ(s.sq_head, s.sq_tail);
+    ASSERT_EQ(s.send_buf_used, 0);
+    ASSERT_OK(nsctp_send(&s, 0, 53, (const uint8_t *)"next", 4));
+    ASSERT_OK(nsctp_poll_output(&s, packet, sizeof(packet), &len));
+    ASSERT_OK(nsctp_handle_data(&r, packet, len));
+    ASSERT_OK(nsctp_poll_delivery(&r, &received));
+    ASSERT_MEM_EQ(received.data, "next", 4);
+}
+#endif
+
+TEST(test_sctp_oversized_continuation_is_not_backpressure)
+{
+    nano_sctp_message_t received;
+    nano_sctp_t s;
+    setup_established_sctp(&s);
+    uint8_t packet[NANORTC_SCTP_MTU] = {0};
+    uint8_t bytes[NANORTC_SCTP_MTU - 28u];
+    memset(bytes, 0x41, sizeof(bytes));
+    size_t remaining = NANORTC_SCTP_MAX_MESSAGE_SIZE;
+    uint32_t tsn = 101;
+    while (remaining) {
+        uint16_t len = (uint16_t)(remaining < sizeof(bytes) ? remaining : sizeof(bytes));
+        size_t n = 12 + wire_data(packet + 12, tsn, 0, 0, tsn == 101 ? 2 : 0, bytes, len);
+        nsctp_finalize_checksum(packet, n);
+        ASSERT_OK(nsctp_handle_data(&s, packet, n));
+        remaining -= len;
+        tsn++;
+    }
+    size_t n = 12 + wire_data(packet + 12, tsn, 0, 0, 1, bytes, 1);
+    nsctp_finalize_checksum(packet, n);
+    ASSERT_EQ(nsctp_handle_data(&s, packet, n), NANORTC_ERR_BUFFER_TOO_SMALL);
+    ASSERT_EQ(nsctp_poll_delivery(&s, &received), NANORTC_ERR_WOULD_BLOCK);
+}
+
+TEST(test_sctp_fragment_identity_and_reserved_flags)
+{
+    nano_sctp_t s;
+    uint8_t packet[64] = {0};
+    nano_sctp_message_t message;
+    /* RFC 9260 §6.9: a continuation cannot change SID, SSN, PPID or U. */
+    for (unsigned field = 0; field < 4; field++) {
+        setup_established_sctp(&s);
+        size_t n = 12 + wire_data(packet + 12, 101, 0, 0, 2, (const uint8_t *)"a", 1);
+        nsctp_finalize_checksum(packet, n);
+        ASSERT_OK(nsctp_handle_data(&s, packet, n));
+        n = 12 + wire_data(packet + 12, 102, field == 0 ? 2 : 0, field == 1 ? 1 : 0,
+                           field == 3 ? 5 : 1, (const uint8_t *)"b", 1);
+        if (field == 2)
+            nanortc_write_u32be(packet + 24, 51);
+        nsctp_finalize_checksum(packet, n);
+        ASSERT_EQ(nsctp_handle_data(&s, packet, n), NANORTC_ERR_PROTOCOL);
+        ASSERT_EQ(s.cumulative_tsn, 101u);
+        ASSERT_EQ(s.recv_gap_buf_used, 1u);
+        ASSERT_EQ(nsctp_poll_delivery(&s, &message), NANORTC_ERR_WOULD_BLOCK);
+    }
+    /* Reserved DATA bits cannot emulate local Forward-TSN delivery state. */
+    setup_established_sctp(&s);
+    size_t n = 12 + wire_data(packet + 12, 101, 0, 1, 0x83, (const uint8_t *)"later", 5);
+    nsctp_finalize_checksum(packet, n);
+    ASSERT_OK(nsctp_handle_data(&s, packet, n));
+    ASSERT_EQ(nsctp_poll_delivery(&s, &message), NANORTC_ERR_WOULD_BLOCK);
+    n = 12 + wire_data(packet + 12, 102, 0, 0, 3, (const uint8_t *)"first", 5);
+    nsctp_finalize_checksum(packet, n);
+    ASSERT_OK(nsctp_handle_data(&s, packet, n));
+    ASSERT_OK(nsctp_poll_delivery(&s, &message));
+    ASSERT_MEM_EQ(message.data, "first", 5);
+    ASSERT_OK(nsctp_poll_delivery(&s, &message));
+    ASSERT_MEM_EQ(message.data, "later", 5);
+}
+
+#if NANORTC_FEATURE_DC_RELIABLE
+TEST(test_sctp_gap_sack_abandons_only_missing_zero_retry)
+{
+    nano_sctp_t s;
+    setup_established_sctp(&s);
+    s.peer_forward_tsn = true;
+    s.next_tsn = 101;
+    uint8_t packet[NANORTC_SCTP_MTU];
+    size_t len;
+    for (unsigned i = 0; i < 3; i++) {
+        ASSERT_OK(nsctp_send_options(&s, 0, 53, (const uint8_t *)"x", 1, true, 0));
+        ASSERT_OK(nsctp_poll_output(&s, packet, sizeof(packet), &len));
+    }
+    /* Independent SACK: cumulative 100, gap [2,3] ACKs 102/103 but not 101. */
+    uint8_t sack[32] = {0};
+    nsctp_encode_header(sack, s.remote_port, s.local_port, s.local_vtag);
+    const uint8_t chunk[] = {3, 0, 0, 20, 0, 0, 0, 100, 0, 0, 16, 0, 0, 1, 0, 0, 0, 2, 0, 3};
+    memcpy(sack + 12, chunk, sizeof(chunk));
+    nsctp_finalize_checksum(sack, sizeof(sack));
+    ASSERT_OK(nsctp_handle_data(&s, sack, sizeof(sack)));
+    ASSERT_TRUE(s.send_queue[0].abandoned);
+    ASSERT_FALSE(s.send_queue[1].abandoned);
+    ASSERT_FALSE(s.send_queue[2].abandoned);
+    ASSERT_FALSE(s.send_queue[1].acked); /* gap ACK can be reneged */
+    ASSERT_OK(nsctp_poll_output(&s, packet, sizeof(packet), &len));
+    ASSERT_EQ(packet[12], SCTP_CHUNK_FORWARD_TSN);
+    ASSERT_EQ(nanortc_read_u32be(packet + 16), 101);
+    nano_sctp_t before = s;
+    sack[25] = 2; /* declares a second missing gap block */
+    nsctp_finalize_checksum(sack, sizeof(sack));
+    ASSERT_EQ(nsctp_handle_data(&s, sack, sizeof(sack)), NANORTC_ERR_PARSE);
+    ASSERT_EQ(s.sq_head, before.sq_head);
+    ASSERT_MEM_EQ(s.send_queue, before.send_queue, sizeof(s.send_queue));
+}
+#endif
+
 TEST_MAIN_BEGIN("test_sctp")
+RUN(test_sctp_fragment_identity_and_reserved_flags);
+RUN(test_sctp_oversized_continuation_is_not_backpressure);
+RUN(test_sctp_capacity_and_fragmentation);
+RUN(test_sctp_variable_encoders_leave_short_buffer_untouched);
+RUN(test_sctp_bundled_owned_messages_and_reassembly);
+RUN(test_sctp_many_small_fragments_and_stream_identity);
+#if NANORTC_FEATURE_DC_RELIABLE
+RUN(test_sctp_partial_reliability_skips_whole_message_and_retries_forward);
+#endif
 /* Parser tests */
 RUN(test_parse_header_basic);
 RUN(test_parse_header_too_short);
@@ -1716,17 +1880,16 @@ RUN(test_sctp_gap_duplicate);
 RUN(test_sctp_gap_overflow);
 RUN(test_sctp_sack_with_gaps);
 RUN(test_sctp_gap_fill_chain);
-RUN(test_sctp_reassembles_fragmented_unordered_message);
-RUN(test_sctp_reassembles_fragmented_unordered_message_past_gap);
 /* Connection-failure event propagation (Phase 8 PR-2) */
 #if NANORTC_FEATURE_DC_RELIABLE
-RUN(test_sctp_zero_retransmit_emits_forward_tsn);
-RUN(test_sctp_gap_sack_fast_abandons_zero_retransmit);
 RUN(test_sctp_timeout_sets_closed_flag);
 #endif
 RUN(test_sctp_abort_does_not_set_failure_flag);
 RUN(test_sctp_start_rng_failure_is_transactional);
 RUN(test_sctp_server_init_rng_failure_is_transactional);
 RUN(test_sctp_heartbeat_rng_failure_is_transactional);
+#if NANORTC_FEATURE_DC_RELIABLE
+RUN(test_sctp_gap_sack_abandons_only_missing_zero_retry);
+#endif
 TEST_MAIN_END
 #endif /* NANORTC_FEATURE_DATACHANNEL */

@@ -13,6 +13,9 @@
 #include "nano_test.h"
 #include "nano_test_config.h"
 #include <string.h>
+#if defined(NANORTC_CRYPTO_OPENSSL)
+#include <time.h>
+#endif
 
 /* ----------------------------------------------------------------
  * Init tests
@@ -547,8 +550,8 @@ TEST(test_dtls_chlo_reassemble_rejects_malformed)
 
     /* total larger than app_buf capacity → drop. */
     uint8_t buf[4096];
-    size_t n = chlo_build_fragment(buf, sizeof(buf), 0, 0, NANORTC_DTLS_BUF_SIZE + 16,
-                                   0, 512, 0xD0);
+    size_t n =
+        chlo_build_fragment(buf, sizeof(buf), 0, 0, NANORTC_DTLS_BUF_SIZE + 16, 0, 512, 0xD0);
     ASSERT_TRUE(dtls_try_reassemble_chlo(&dtls, buf, n) < 0);
 
     /* frag_off + frag_len > total → drop. */
@@ -562,7 +565,49 @@ TEST(test_dtls_chlo_reassemble_rejects_malformed)
  * Test main
  * ---------------------------------------------------------------- */
 
+TEST(test_dtls_lost_client_flight_retransmits_on_caller_clock)
+{
+    nano_dtls_t client, server;
+    ASSERT_OK(dtls_init(&client, nano_test_crypto(), 0));
+    ASSERT_OK(dtls_init(&server, nano_test_crypto(), 1));
+    dtls_set_time(&client, 100);
+    dtls_set_time(&server, 100);
+    ASSERT_OK(dtls_start(&client));
+    uint8_t packet[NANORTC_DTLS_BUF_SIZE];
+    size_t n;
+    ASSERT_OK(dtls_poll_output(&client, packet, sizeof(packet), &n)); /* lose first flight */
+    uint32_t wait = dtls_next_timeout_ms(&client, 100);
+    ASSERT_TRUE(wait > 0 && wait < 60000u);
+    ASSERT_OK(dtls_handle_timeout(&client, 100 + wait - 1));
+    ASSERT_EQ(dtls_poll_output(&client, packet, sizeof(packet), &n), NANORTC_ERR_NO_DATA);
+#if defined(NANORTC_CRYPTO_OPENSSL)
+    /* OpenSSL 3.0 retains its internal real clock; only this backend needs wall time. */
+    struct timespec delay = {.tv_sec = (time_t)(wait / 1000u),
+                             .tv_nsec = (long)(wait % 1000u + 1u) * 1000000L};
+    if (delay.tv_nsec >= 1000000000L) {
+        delay.tv_sec++;
+        delay.tv_nsec -= 1000000000L;
+    }
+    nanosleep(&delay, NULL);
+#endif
+    ASSERT_OK(dtls_handle_timeout(&client, 100 + wait));
+    ASSERT_OK(dtls_poll_output(&client, packet, sizeof(packet), &n));
+    ASSERT_TRUE(n > 0);
+    dtls_set_time(&server, 100 + wait);
+    ASSERT_OK(dtls_handle_data(&server, packet, n));
+    for (int i = 0; i < 20; i++) {
+        dtls_relay(&server, &client);
+        dtls_relay(&client, &server);
+    }
+    ASSERT_EQ(client.state, NANORTC_DTLS_STATE_ESTABLISHED);
+    ASSERT_EQ(server.state, NANORTC_DTLS_STATE_ESTABLISHED);
+    ASSERT_TRUE(client.keying_material_ready);
+    dtls_destroy(&client);
+    dtls_destroy(&server);
+}
+
 TEST_MAIN_BEGIN("test_dtls")
+RUN(test_dtls_lost_client_flight_retransmits_on_caller_clock);
 RUN(test_dtls_init_server);
 RUN(test_dtls_init_client);
 RUN(test_dtls_init_null_params);

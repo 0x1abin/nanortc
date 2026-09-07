@@ -45,6 +45,14 @@ enum {
 /** MD5 output size used by the long-term credential mechanism. */
 #define NANORTC_TURN_HMAC_KEY_SIZE 16
 
+/** A pending request either waits for its response or needs a new nonce/txid. */
+typedef uint8_t nano_turn_request_state_t;
+enum {
+    NANORTC_TURN_REQUEST_NONE,
+    NANORTC_TURN_REQUEST_WAITING,
+    NANORTC_TURN_REQUEST_REAUTH,
+};
+
 typedef struct nano_turn_permission {
     uint8_t addr[NANORTC_ADDR_SIZE];
     /** Retry deadline while pending; refresh deadline while active. */
@@ -53,7 +61,7 @@ typedef struct nano_turn_permission {
     uint16_t port;
     uint8_t family;
     bool active;
-    bool pending;
+    nano_turn_request_state_t pending;
     uint8_t transmissions;
     bool terminal; /**< Server rejected this peer for the current ICE generation. */
 } nano_turn_permission_t;
@@ -96,6 +104,7 @@ typedef struct nano_turn {
     nano_turn_txn_t transaction;
     bool transaction_authenticated;
     uint8_t transaction_transmissions;
+    bool transaction_reauth;
 
     uint32_t lifetime_s;
     uint32_t refresh_at_ms; /**< When to send next Refresh. */
@@ -118,7 +127,7 @@ typedef struct nano_turn {
         uint16_t channel; /**< 0x4000-0x4FFE (RFC 8656 §12). */
         uint8_t family;
         bool bound; /**< True after ChannelBind success response. */
-        bool pending;
+        nano_turn_request_state_t pending;
         uint8_t transmissions;
     } channels[NANORTC_TURN_MAX_CHANNELS];
 } nano_turn_t;
@@ -246,33 +255,19 @@ bool turn_find_peer_for_channel(const nano_turn_t *turn, uint16_t channel, uint8
 /** RFC 7983 §3: detect ChannelData by first byte (0x40-0x4F). */
 bool turn_is_channel_data(const uint8_t *data, size_t len);
 
-/**
- * Generate a permission refresh for active permissions (RFC 5766 §8).
- * Returns NANORTC_OK with *out_len=0 if not time yet.
- */
-int turn_generate_permission_refresh(nano_turn_t *turn, uint32_t now_ms,
-                                     const nanortc_crypto_provider_t *crypto, uint8_t *buf,
-                                     size_t buf_len, size_t *out_len);
+/** Generate at most one due allocation/peer request, using the deadline selector. */
+int turn_poll_output(nano_turn_t *turn, uint32_t now_ms, const nanortc_crypto_provider_t *crypto,
+                     uint8_t *buf, size_t buf_len, size_t *out_len);
 
-/**
- * Generate a ChannelBind refresh for bound channels (RFC 5766 §11).
- * Returns NANORTC_OK with *out_len=0 if not time yet.
- */
-/**
- * Compute milliseconds until TURN needs the timer wheel to fire.
- * Considers Allocate retry, periodic Refresh, periodic CreatePermission
- * refresh, and per-channel ChannelBind refresh deadlines. Returns
- * UINT32_MAX when no deadline is currently armed (e.g., not configured,
- * or in IDLE/CHALLENGED states where fire-on-next-tick is the rule).
- *
- * Pure const reader — used by the library's own Sans-I/O timeout
- * aggregator to let event loops sleep up to the next deadline.
- */
+/** Same selection as turn_poll_output; UINT32_MAX when no work is pending. */
 uint32_t turn_next_timeout_ms(const nano_turn_t *turn, uint32_t now_ms);
 
-int turn_generate_channel_refresh(nano_turn_t *turn, uint32_t now_ms,
-                                  const nanortc_crypto_provider_t *crypto, uint8_t *buf,
-                                  size_t buf_len, size_t *out_len);
+/** Peer IP permissions (RFC 8656 §9), including bounded-table ICE progress. */
+bool turn_can_create_permission(const nano_turn_t *turn, const uint8_t *addr, uint8_t family,
+                                uint32_t now_ms);
+bool turn_peer_is_ready(const nano_turn_t *turn, const uint8_t *addr, uint8_t family);
+bool turn_can_bind_channel(const nano_turn_t *turn, const uint8_t *addr, uint8_t family,
+                           uint16_t port);
 
 /** Rebuild and emit one due TURN request retransmission (RFC 8489 §6.2.1). */
 int turn_generate_retransmit(nano_turn_t *turn, uint32_t now_ms,

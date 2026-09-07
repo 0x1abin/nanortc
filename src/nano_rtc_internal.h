@@ -30,12 +30,6 @@ extern "C" {
  */
 int nano_rtc_emit_event_full(nanortc_t *rtc, const nanortc_event_t *event);
 
-#if NANORTC_FEATURE_DATACHANNEL
-/** Copy and enqueue one DataChannel receive event into owned payload storage. */
-int nano_rtc_enqueue_datachannel_event(nanortc_t *rtc, uint16_t stream_id,
-                                       const uint8_t *data, size_t len, bool binary);
-#endif
-
 /**
  * Format an RFC 8839 §5.1 SDP candidate line ("candidate:<f> 1 UDP <p>
  * <ip> <port> typ <type>") into @p buf and NUL-terminate. Defined in
@@ -49,13 +43,8 @@ size_t nano_rtc_build_candidate_str(char *buf, uint16_t foundation, uint32_t pri
                                     const char *ip, size_t ip_len, uint16_t port, const char *type,
                                     size_t type_len);
 
-/**
- * Emit a NANORTC_EV_ICE_CANDIDATE event carrying the trickle string.
- * Caller owns the lifetime of @p candidate_str through the next
- * nanortc_poll_output() call (matches the pointer-lifetime contract on
- * `nanortc_output_t`). Defined in nano_rtc_negotiate.c.
- */
-void nano_rtc_emit_ice_candidate(nanortc_t *rtc, const char *candidate_str);
+/* Produce one retained candidate identity into caller-visible scratch. */
+int nano_rtc_candidate_produce(nanortc_t *rtc, nanortc_output_t *out);
 
 /**
  * Cache the local DTLS fingerprint with the "sha-256 " prefix into

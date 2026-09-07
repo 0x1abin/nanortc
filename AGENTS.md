@@ -50,7 +50,7 @@ int  nanortc_init        (nanortc_t *rtc, const nanortc_config_t *cfg);
 void nanortc_destroy     (nanortc_t *rtc);
 
 int  nanortc_handle_input(nanortc_t *rtc, const nanortc_input_t  *in);   // in:  {now_ms, data, len, src, dst}
-int  nanortc_poll_output (nanortc_t *rtc,       nanortc_output_t *out);  // out.type ∈ {TRANSMIT, EVENT, TIMEOUT}
+int  nanortc_poll_output (nanortc_t *rtc,       nanortc_output_t *out);  // out.type ∈ {TRANSMIT, EVENT}
 ```
 
 Returns `0 = NANORTC_OK`, negative = `NANORTC_ERR_*`. `nanortc_input_t` with `data=NULL, len=0, src.family=0` is a pure timer tick — only `now_ms` required.

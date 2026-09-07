@@ -85,6 +85,7 @@ typedef struct nano_sdp {
     char remote_ufrag[NANORTC_ICE_REMOTE_UFRAG_SIZE];
     char remote_pwd[NANORTC_ICE_REMOTE_PWD_SIZE];
     char remote_fingerprint[NANORTC_SDP_FINGERPRINT_SIZE]; /* "sha-256 AA:BB:CC:..." */
+    uint32_t remote_max_message_size;
     uint16_t remote_sctp_port;
     nano_sdp_setup_t remote_setup;
 
