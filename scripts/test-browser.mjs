@@ -113,7 +113,7 @@ async function exercise(nanoRole, peerId, withMedia) {
   try {
     if (nanoRole === 'answer') {
       attach(pc.createDataChannel('reliable'));
-      attach(pc.createDataChannel('unordered', {ordered: false, maxRetransmits: 2}));
+      attach(pc.createDataChannel('unordered', {ordered: false, maxRetransmits: 0, protocol: 'control.v1'}));
       if (withMedia) {
         pc.addTransceiver('audio', {direction: 'recvonly'});
         pc.addTransceiver('video', {direction: 'recvonly'});
@@ -124,7 +124,7 @@ async function exercise(nanoRole, peerId, withMedia) {
       if (signalingError) throw Error(signalingError);
       return channels.length && channels[0].channel.readyState === 'open';
     }, 'DataChannel open');
-    if (nanoRole === 'offer') attach(pc.createDataChannel('unordered', {ordered: false, maxRetransmits: 2}));
+    if (nanoRole === 'offer') attach(pc.createDataChannel('unordered', {ordered: false, maxRetransmits: 0, protocol: 'control.v1'}));
     await until(() => channels.length === 2 && channels.every(s => s.channel.readyState === 'open' && s.messages.includes('hello')), 'both channel greetings');
     let echoed = 0;
     for (const state of channels) {

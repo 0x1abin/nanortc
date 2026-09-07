@@ -836,8 +836,13 @@ static int rtc_deliver_sctp_to_dc(nanortc_t *rtc, const nano_sctp_message_t *mes
     if (message->ppid == DCEP_PPID_CONTROL) {
         event->type = NANORTC_EV_DATACHANNEL_OPEN;
         event->datachannel_open.id = message->stream_id;
-        event->datachannel_open.label =
-            dc_find_channel(&rtc->datachannel, message->stream_id)->label;
+        const nano_dc_channel_t *ch = dc_find_channel(&rtc->datachannel, message->stream_id);
+        event->datachannel_open.label = ch->label;
+        event->datachannel_open.protocol = ch->protocol;
+        event->datachannel_open.ordered = ch->ordered;
+        event->datachannel_open.partial_reliability =
+            (ch->channel_type & 0x7f) == DCEP_CHANNEL_REXMIT;
+        event->datachannel_open.max_retransmits = ch->max_retransmits;
     } else {
         event->type = NANORTC_EV_DATACHANNEL_DATA;
         event->datachannel_data.id = message->stream_id;
@@ -1798,9 +1803,8 @@ int nanortc_create_datachannel(nanortc_t *rtc, const char *label,
         return NANORTC_ERR_INVALID_PARAM;
     }
 
-    if (options && options->protocol && options->protocol[0])
-        return NANORTC_ERR_NOT_IMPLEMENTED;
-    if (options && options->max_retransmits && !NANORTC_FEATURE_DC_RELIABLE)
+    bool partial = options && (options->partial_reliability || options->max_retransmits != 0);
+    if (partial && !NANORTC_FEATURE_DC_RELIABLE)
         return NANORTC_ERR_NOT_IMPLEMENTED;
 
     /* Ensure DC m-line is registered in SDP */
@@ -1814,7 +1818,8 @@ int nanortc_create_datachannel(nanortc_t *rtc, const char *label,
     uint16_t max_rexmit = options ? options->max_retransmits : 0;
 
     uint16_t sid = rtc_alloc_stream_id(rtc);
-    int rc = dc_open(&rtc->datachannel, sid, label, ordered, max_rexmit);
+    int rc = dc_open_options(&rtc->datachannel, sid, label, options ? options->protocol : NULL,
+                             ordered, partial, max_rexmit);
     if (rc != NANORTC_OK) {
         return rc;
     }

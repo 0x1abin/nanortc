@@ -12,6 +12,7 @@
 
 #if !NANORTC_FEATURE_DATACHANNEL
 /* SCTP tests require DataChannel feature */
+
 TEST_MAIN_BEGIN("nanortc SCTP tests (skipped — DC disabled)")
 TEST_MAIN_END
 #else
@@ -1769,6 +1770,42 @@ TEST(test_sctp_fragment_identity_and_reserved_flags)
     ASSERT_MEM_EQ(message.data, "later", 5);
 }
 
+#if NANORTC_FEATURE_DC_RELIABLE
+TEST(test_sctp_gap_sack_abandons_only_missing_zero_retry)
+{
+    nano_sctp_t s;
+    setup_established_sctp(&s);
+    s.peer_forward_tsn = true;
+    s.next_tsn = 101;
+    uint8_t packet[NANORTC_SCTP_MTU];
+    size_t len;
+    for (unsigned i = 0; i < 3; i++) {
+        ASSERT_OK(nsctp_send_options(&s, 0, 53, (const uint8_t *)"x", 1, true, 0));
+        ASSERT_OK(nsctp_poll_output(&s, packet, sizeof(packet), &len));
+    }
+    /* Independent SACK: cumulative 100, gap [2,3] ACKs 102/103 but not 101. */
+    uint8_t sack[32] = {0};
+    nsctp_encode_header(sack, s.remote_port, s.local_port, s.local_vtag);
+    const uint8_t chunk[] = {3, 0, 0, 20, 0, 0, 0, 100, 0, 0, 16, 0, 0, 1, 0, 0, 0, 2, 0, 3};
+    memcpy(sack + 12, chunk, sizeof(chunk));
+    nsctp_finalize_checksum(sack, sizeof(sack));
+    ASSERT_OK(nsctp_handle_data(&s, sack, sizeof(sack)));
+    ASSERT_TRUE(s.send_queue[0].abandoned);
+    ASSERT_FALSE(s.send_queue[1].abandoned);
+    ASSERT_FALSE(s.send_queue[2].abandoned);
+    ASSERT_FALSE(s.send_queue[1].acked); /* gap ACK can be reneged */
+    ASSERT_OK(nsctp_poll_output(&s, packet, sizeof(packet), &len));
+    ASSERT_EQ(packet[12], SCTP_CHUNK_FORWARD_TSN);
+    ASSERT_EQ(nanortc_read_u32be(packet + 16), 101);
+    nano_sctp_t before = s;
+    sack[25] = 2; /* declares a second missing gap block */
+    nsctp_finalize_checksum(sack, sizeof(sack));
+    ASSERT_EQ(nsctp_handle_data(&s, sack, sizeof(sack)), NANORTC_ERR_PARSE);
+    ASSERT_EQ(s.sq_head, before.sq_head);
+    ASSERT_MEM_EQ(s.send_queue, before.send_queue, sizeof(s.send_queue));
+}
+#endif
+
 TEST_MAIN_BEGIN("test_sctp")
 RUN(test_sctp_fragment_identity_and_reserved_flags);
 RUN(test_sctp_oversized_continuation_is_not_backpressure);
@@ -1851,5 +1888,8 @@ RUN(test_sctp_abort_does_not_set_failure_flag);
 RUN(test_sctp_start_rng_failure_is_transactional);
 RUN(test_sctp_server_init_rng_failure_is_transactional);
 RUN(test_sctp_heartbeat_rng_failure_is_transactional);
+#if NANORTC_FEATURE_DC_RELIABLE
+RUN(test_sctp_gap_sack_abandons_only_missing_zero_retry);
+#endif
 TEST_MAIN_END
 #endif /* NANORTC_FEATURE_DATACHANNEL */

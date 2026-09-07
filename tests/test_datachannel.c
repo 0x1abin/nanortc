@@ -330,6 +330,36 @@ TEST(test_dcep_multiple_pending_opens_survive_short_poll)
     ASSERT_EQ(dc_peek_output(&dc, packet, sizeof(packet), &len, &sid), NANORTC_ERR_NO_DATA);
 }
 
+TEST(test_dc_zero_retry_protocol_metadata)
+{
+    nano_dc_t dc;
+    ASSERT_OK(dc_init(&dc));
+    /* RFC 8832 §5.1 independent OPEN: unordered REXMIT=0, label x, protocol ctrl. */
+    const uint8_t wire[] = {3, 0x81, 0, 0, 0, 0, 0, 0, 0, 1, 0, 4, 'x', 'c', 't', 'r', 'l'};
+    bool opened;
+    ASSERT_OK(dc_handle_message(&dc, 0, DCEP_PPID_CONTROL, wire, sizeof(wire), &opened));
+    ASSERT_TRUE(opened);
+    ASSERT_FALSE(dc.channels[0].ordered);
+    ASSERT_EQ(dc.channels[0].channel_type, DCEP_CHANNEL_REXMIT_UNORDERED);
+    ASSERT_EQ(dc.channels[0].max_retransmits, 0);
+    ASSERT_TRUE(strcmp(dc.channels[0].protocol, "ctrl") == 0);
+    dc_init(&dc);
+    ASSERT_OK(dc_open_options(&dc, 0, "x", "ctrl", false, true, 0));
+    uint8_t packet[128];
+    size_t len;
+    uint16_t stream;
+    ASSERT_OK(dc_peek_output(&dc, packet, sizeof(packet), &len, &stream));
+    ASSERT_EQ(len, sizeof(wire));
+    ASSERT_MEM_EQ(packet, wire, sizeof(wire));
+    ASSERT_TRUE(dc_has_pending_output(&dc));
+    char too_long[NANORTC_DC_LABEL_SIZE + 1];
+    memset(too_long, 'p', sizeof(too_long));
+    too_long[sizeof(too_long) - 1] = 0;
+    nano_dc_t before = dc;
+    ASSERT_EQ(dc_open_options(&dc, 2, "y", too_long, true, false, 0), NANORTC_ERR_BUFFER_TOO_SMALL);
+    ASSERT_MEM_EQ(&dc, &before, sizeof(dc));
+}
+
 TEST_MAIN_BEGIN("test_datachannel")
 RUN(test_dcep_multiple_pending_opens_survive_short_poll);
 /* Init */
@@ -353,4 +383,5 @@ RUN(test_dc_handle_data_ppid);
 RUN(test_dc_poll_no_output);
 RUN(test_dc_poll_null_params);
 RUN(test_dc_poll_buffer_too_small);
+RUN(test_dc_zero_retry_protocol_metadata);
 TEST_MAIN_END

@@ -343,7 +343,8 @@ SHUTDOWN 完整状态机、拥塞窗口及 gap SACK 驱动的快速重传仍是�
 - DATA_CHANNEL_ACK 响应
 - 通道类型映射：可靠、按最大重传次数部分可靠；最大生命周期类型明确返回 NOT_IMPLEMENTED
 - 每个通道保留待发送 OPEN/ACK：查看消息并写入调用方 scratch，SCTP 接纳后确认；无全局输出暂存状态
-- 本地创建非空 sub-protocol 暂返回 NOT_IMPLEMENTED；收到的 OPEN 中协议字段可解析，但当前 API 不暴露或协商该字段
+- 保留有界 sub-protocol，并在 OPEN 事件中暴露协议、顺序与重传参数；过长协议名返回 BUFFER_TOO_SMALL
+- 默认零初始化仍为可靠传输；显式 `partial_reliability=true, max_retransmits=0` 请求零重传
 - 有序 vs 无序交付（映射到 SCTP 流参数）
 - 字符串 vs 二进制消息类型（PPID: 51 为字符串, 53 为二进制）
 - 多个 DataChannel 使用不同 SCTP stream ID 并发

@@ -1459,7 +1459,7 @@ typedef enum {
 #error "Pending event count must fit uint8_t"
 #endif
 
-#if NANORTC_DC_LABEL_SIZE < 1 || NANORTC_DC_LABEL_SIZE + 11u > NANORTC_DC_OUT_BUF_SIZE
+#if NANORTC_DC_LABEL_SIZE < 1 || 2u * NANORTC_DC_LABEL_SIZE + 10u > NANORTC_DC_OUT_BUF_SIZE
 #error "DCEP output must fit the configured label and OPEN header"
 #endif
 

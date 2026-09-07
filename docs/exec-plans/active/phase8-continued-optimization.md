@@ -11,7 +11,9 @@ supersedes the memory snapshots and interface assumptions below for current
 SCTP/DCEP ownership, TURN scheduling, provider timers and output polling. All
 seven P4 profiles and four SDK examples were rebuilt with ESP-IDF 5.5.4; host
 size ceilings remain unchanged. This does not reopen the independent pending
-Phase 8 work or claim hardware validation.
+Phase 8 work or claim hardware validation. The subsequent
+[zero-retransmission integration](../../engineering/datachannel-zero-retransmit.md)
+keeps this ownership model while adding explicit channel policy and metadata.
 
 ## Context
 

@@ -71,9 +71,10 @@ typedef enum {
 } nano_dc_state_t;
 
 typedef struct nano_dc_channel {
-    nano_dc_state_t state;
+    uint8_t state; /* nano_dc_state_t; three states fit in one byte */
     uint16_t stream_id;
     char label[NANORTC_DC_LABEL_SIZE];
+    char protocol[NANORTC_DC_LABEL_SIZE];
     uint8_t channel_type;
     bool ordered;
     uint16_t max_retransmits;
@@ -126,6 +127,10 @@ int dc_handle_message(nano_dc_t *dc, uint16_t stream_id, uint32_t ppid, const ui
  */
 int dc_open(nano_dc_t *dc, uint16_t stream_id, const char *label, bool ordered,
             uint16_t max_retransmits);
+
+/** Extended local policy; zero retries is distinct from reliable delivery. */
+int dc_open_options(nano_dc_t *dc, uint16_t stream_id, const char *label, const char *protocol,
+                    bool ordered, bool partial_reliability, uint16_t max_retransmits);
 
 /** Encode pending DCEP without consuming it. Commit only after SCTP accepts it. */
 int dc_peek_output(const nano_dc_t *dc, uint8_t *buf, size_t buf_len, size_t *out_len,

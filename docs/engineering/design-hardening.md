@@ -5,6 +5,10 @@ the follow-up review of uncommitted work and merged PRs #72, #73, #75, #76 and #
 This is a source/ABI-breaking update; rebuild applications and custom crypto
 providers together with the library.
 
+This record describes the #82 snapshot. The subsequent #79 integration and
+its additional API/state changes are recorded in
+[datachannel-zero-retransmit.md](datachannel-zero-retransmit.md).
+
 ## Review and convergence
 
 The review found duplicated state and decisions in TURN scheduling, DCEP

@@ -8,7 +8,7 @@ DCEP uses bounded caller scratch instead of an embedded output copy; SCTP
 returns a caller-owned message view without retaining a delivery pointer.
 
 The ESP32-P4 table below was measured on **2026-09-07**, including the owned
-transient TX ring and design-hardening changes: RISC-V HP, ESP-IDF **5.5.4**,
+transient TX ring, design hardening and #79 protocol/policy integration: RISC-V HP, ESP-IDF **5.5.4**,
 GCC **14.2.0**, mbedTLS **3.6.5**, `-Os` via
 `CONFIG_COMPILER_OPTIMIZATION_SIZE=y`. All seven profiles compiled and linked.
 These are cross-compiled archive/ELF measurements, not on-device heap or stack
@@ -45,17 +45,37 @@ These guards catch accidental structural growth. They do not replace target
 measurements: pointer width, Kconfig buffer trims, crypto backend, and enabled
 media recovery features all change the actual footprint.
 
+## Current host state (after #79)
+
+Release/OpenSSL, x86_64 defaults; code + read-only data uses GNU `size`.
+The #82-only snapshot remains in the historical hardening record.
+
+| Profile | State bytes | Archive code + read-only data bytes |
+|---|---:|---:|
+| CORE_ONLY | 20,640 | 88,872 |
+| DATA | 35,760 | 126,642 |
+| AUDIO_ONLY | 46,400 | 114,897 |
+| AUDIO | 61,512 | 152,307 |
+| MEDIA_ONLY | 102,472 | 127,401 |
+| MEDIA | 117,592 | 165,419 |
+| MEDIA_H265 | 118,632 | 173,195 |
+
+Protocol names use existing label-size bounds; one-byte channel state avoids
+raising the 600-byte DCEP ceiling. Compared with #82, host DataChannel profiles
+add 240 B; P4 DATA/AUDIO add 64 B and MEDIA/MEDIA_H265 add 56 B. Other profiles
+are unchanged. No state ceiling was increased.
+
 ## Configuration Matrix
 
 | Configuration | Archive code + read-only data (bytes) | `sizeof(nanortc_t)` (bytes) | Notes |
 |---|---|---|---|
 | `CORE_ONLY` | 35,563 | 14,552 | ICE + DTLS + SDP + STUN + TURN |
-| `DATA` | 49,027 | 24,016 | Adds SCTP + DCEP |
+| `DATA` | 49,753 | 24,080 | Adds SCTP + DCEP |
 | `AUDIO_ONLY` | 48,561 | 24,328 | Audio without DataChannel |
-| `AUDIO` | 61,985 | 33,792 | DataChannel + audio |
+| `AUDIO` | 62,709 | 33,856 | DataChannel + audio |
 | `MEDIA_ONLY` | 54,728 | 60,584 | Audio + video without DataChannel |
-| `MEDIA` | 68,116 | 70,056 | DataChannel + audio + video |
-| `MEDIA_H265` | 72,286 | 71,096 | MEDIA + H.265 |
+| `MEDIA` | 68,840 | 70,112 | DataChannel + audio + video |
+| `MEDIA_H265` | 73,034 | 71,152 | MEDIA + H.265 |
 
 Archive size is GNU `size`'s `text` column summed across `libnanortc.a` members:
 code **and read-only data**, including the mbedTLS adapter but excluding mbedTLS

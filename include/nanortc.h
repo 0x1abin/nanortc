@@ -382,8 +382,12 @@ typedef struct {
 
 /** @brief Data for NANORTC_EV_DATACHANNEL_OPEN. */
 typedef struct {
-    uint16_t id;       /**< SCTP stream ID. */
-    const char *label; /**< Channel label (valid until next state mutation). */
+    uint16_t id;              /**< SCTP stream ID. */
+    const char *label;        /**< Channel label (valid until next state mutation). */
+    const char *protocol;     /**< DCEP sub-protocol; same lifetime as label. */
+    bool ordered;             /**< True for ordered delivery. */
+    bool partial_reliability; /**< Retransmit-limited channel, including zero retries. */
+    uint32_t max_retransmits; /**< Meaningful when partial_reliability is true. */
 } nanortc_ev_datachannel_open_t;
 
 /** @brief Data for NANORTC_EV_DATACHANNEL_DATA. */
@@ -1127,9 +1131,10 @@ NANORTC_API uint16_t nanortc_output_free_slots(const nanortc_t *rtc);
 /** @brief Optional DataChannel parameters for nanortc_create_datachannel().
  *  Pass NULL for defaults (reliable, ordered). Zero-initialized struct also gives defaults. */
 typedef struct nanortc_datachannel_options {
-    const char *protocol;     /**< NULL/empty supported; nonempty returns NOT_IMPLEMENTED. */
+    const char *protocol;     /**< Sub-protocol; shorter than NANORTC_DC_LABEL_SIZE. */
     bool unordered;           /**< Set true for unordered delivery (default: false = ordered). */
-    uint16_t max_retransmits; /**< Max retransmit count (0 = reliable). */
+    uint16_t max_retransmits; /**< Max retries; 0 = reliable unless partial_reliability. */
+    bool partial_reliability; /**< Explicit retry policy: true with 0 sends once, never retries. */
 } nanortc_datachannel_options_t;
 
 #endif

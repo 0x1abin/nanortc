@@ -188,7 +188,10 @@ small peer fragments do not consume one descriptor each for the whole message.
 One fragment-identity predicate drives bounded iterative merging and delivery.
 SCTP returns a caller-owned message view; RTC emits it directly as a DataChannel
 event. DCEP keeps only per-channel pending state: peek into caller scratch and
-commit only after SCTP admission, with no global output cache.
+commit only after SCTP admission, with no global output cache. Protocol and
+retry metadata remain per channel and are exposed on OPEN events. Explicit
+`partial_reliability=true` distinguishes zero retries from the reliable default;
+timeout and gap-SACK policies share whole-message abandonment.
 Sends reserve the complete message and all fragment descriptors before committing.
 The SDP receive limit is `NANORTC_SCTP_MAX_MESSAGE_SIZE` (host default 4096 B,
 trimmed to the receive-pool limit by ESP profiles); sends also honor the peer's

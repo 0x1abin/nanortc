@@ -5292,6 +5292,34 @@ TEST(test_nack_matches_media_ssrc_as_well_as_sequence)
 }
 #endif
 
+#if NANORTC_FEATURE_DATACHANNEL && NANORTC_FEATURE_DC_RELIABLE
+TEST(test_e2e_dc_explicit_zero_retry_policy)
+{
+    nanortc_t rtc;
+    nanortc_config_t cfg = e2e_default_config();
+    ASSERT_OK(nanortc_init(&rtc, &cfg));
+    nanortc_datachannel_options_t options = {0};
+    options.unordered = true;
+    options.partial_reliability = true;
+    options.protocol = "control.v1";
+    int sid = nanortc_create_datachannel(&rtc, "control", &options);
+    ASSERT_TRUE(sid >= 0);
+    nano_dc_channel_t *ch = dc_find_channel(&rtc.datachannel, (uint16_t)sid);
+    ASSERT_EQ(ch->channel_type, DCEP_CHANNEL_REXMIT_UNORDERED);
+    ASSERT_TRUE(strcmp(ch->protocol, "control.v1") == 0);
+    rtc.state = NANORTC_STATE_CONNECTED;
+    rtc.sctp.state = NANORTC_SCTP_STATE_ESTABLISHED;
+    ch->state = NANORTC_DC_STATE_OPEN;
+    ASSERT_EQ(nanortc_datachannel_send_string(&rtc, (uint16_t)sid, "neutral"),
+              NANORTC_ERR_NOT_IMPLEMENTED);
+    rtc.sctp.peer_forward_tsn = true;
+    ASSERT_OK(nanortc_datachannel_send_string(&rtc, (uint16_t)sid, "neutral"));
+    ASSERT_EQ(rtc.sctp.send_queue[0].max_retransmits, 0);
+    ASSERT_TRUE(rtc.sctp.send_queue[0].flags & SCTP_DATA_FLAG_UNORDERED);
+    nanortc_destroy(&rtc);
+}
+#endif
+
 TEST_MAIN_BEGIN("nanortc E2E tests")
 #ifndef NANORTC_LOG_DISABLED
 RUN(test_instance_logs_survive_another_instances_lifecycle);
@@ -5433,5 +5461,8 @@ RUN(test_e2e_turn_permission_capacity_covers_remote_candidates);
 RUN(test_e2e_turn_permission_table_full_does_not_freeze_ice);
 RUN(test_e2e_turn_relay_wrapping);
 RUN(test_e2e_channeldata_inbound);
+#endif
+#if NANORTC_FEATURE_DATACHANNEL && NANORTC_FEATURE_DC_RELIABLE
+RUN(test_e2e_dc_explicit_zero_retry_policy);
 #endif
 TEST_MAIN_END

@@ -969,12 +969,77 @@ static int nsctp_handle_data_chunk(nano_sctp_t *sctp, const uint8_t *chunk, size
     return nsctp_rx_merge(sctp);
 }
 
+#if NANORTC_FEATURE_DC_RELIABLE
+static bool nsctp_gap_acked(const uint8_t *chunk, uint16_t count, int32_t offset)
+{
+    if (offset <= 0 || offset > UINT16_MAX)
+        return false;
+    for (uint16_t i = 0; i < count; i++) {
+        const uint8_t *gap = chunk + SCTP_CHUNK_HDR_SIZE + SCTP_SACK_MIN_SIZE + 4u * i;
+        if (offset >= nanortc_read_u16be(gap) && offset <= nanortc_read_u16be(gap + 2))
+            return true;
+    }
+    return false;
+}
+
+static void nsctp_abandon_message(nano_sctp_t *sctp, uint8_t index)
+{
+    /* RFC 3758 §3.5 A3: abandonment always covers the whole user message. */
+    uint8_t first = index;
+    while (
+        first != sctp->sq_head &&
+        !(sctp->send_queue[first & (NANORTC_SCTP_MAX_SEND_QUEUE - 1)].flags & SCTP_DATA_FLAG_BEGIN))
+        first--;
+    for (uint8_t j = first; j != sctp->sq_tail; j++) {
+        nsctp_send_entry_t *part = &sctp->send_queue[j & (NANORTC_SCTP_MAX_SEND_QUEUE - 1)];
+        part->abandoned = true;
+        if (part->flags & SCTP_DATA_FLAG_END)
+            break;
+    }
+    sctp->forward_pending = true;
+}
+#endif
+
 static int nsctp_handle_sack_chunk(nano_sctp_t *sctp, const uint8_t *chunk, size_t clen)
 {
     nsctp_sack_t sack;
     if (nsctp_parse_sack(chunk, clen, &sack) != NANORTC_OK) {
         return NANORTC_ERR_PARSE;
     }
+
+    /* RFC 9260 §3.3.4: validate gap/duplicate lists before reading or acting. */
+    size_t blocks = (clen - SCTP_CHUNK_HDR_SIZE - SCTP_SACK_MIN_SIZE) / 4u;
+    if (sack.num_gap_blocks > blocks || sack.num_dup_tsns > blocks - sack.num_gap_blocks)
+        return NANORTC_ERR_PARSE;
+    uint16_t previous_end = 0;
+    for (uint16_t i = 0; i < sack.num_gap_blocks; i++) {
+        const uint8_t *gap = chunk + SCTP_CHUNK_HDR_SIZE + SCTP_SACK_MIN_SIZE + 4u * i;
+        uint16_t start = nanortc_read_u16be(gap), end = nanortc_read_u16be(gap + 2);
+        if (start <= previous_end || end < start)
+            return NANORTC_ERR_PARSE;
+        previous_end = end;
+    }
+#if NANORTC_FEATURE_DC_RELIABLE
+    /* RFC 3758 §3.1 permits application-specific abandonment policies. For
+     * zero retries, a later gap-ACKed in-flight TSN triggers early abandonment.
+     * Reordering can also cause a gap: this is a policy, not proof of loss.
+     * Gap ACKs do not free storage because the receiver may renege. */
+    uint32_t highest = sack.cumulative_tsn;
+    for (uint8_t i = sctp->sq_head; i != sctp->sq_tail; i++) {
+        const nsctp_send_entry_t *e = &sctp->send_queue[i & (NANORTC_SCTP_MAX_SEND_QUEUE - 1)];
+        int32_t offset = (int32_t)(e->tsn - sack.cumulative_tsn);
+        if (e->in_flight && (int32_t)(e->tsn - highest) > 0 &&
+            nsctp_gap_acked(chunk, sack.num_gap_blocks, offset))
+            highest = e->tsn;
+    }
+    for (uint8_t i = sctp->sq_head; i != sctp->sq_tail; i++) {
+        nsctp_send_entry_t *e = &sctp->send_queue[i & (NANORTC_SCTP_MAX_SEND_QUEUE - 1)];
+        if (e->in_flight && !e->acked && !e->abandoned && e->max_retransmits == 0 &&
+            (int32_t)(e->tsn - sack.cumulative_tsn) > 0 && (int32_t)(highest - e->tsn) > 0 &&
+            !nsctp_gap_acked(chunk, sack.num_gap_blocks, (int32_t)(e->tsn - sack.cumulative_tsn)))
+            nsctp_abandon_message(sctp, i);
+    }
+#endif
 
     /* Mark acked entries in send queue */
     uint8_t idx = sctp->sq_head;
@@ -1431,20 +1496,7 @@ int nsctp_handle_timeout(nano_sctp_t *sctp, uint32_t now_ms)
             uint32_t elapsed = nano_time_elapsed(now_ms, e->sent_at_ms);
             if (elapsed >= sctp->rto_ms) {
                 if (e->max_retransmits >= 0 && e->retransmit_count >= e->max_retransmits) {
-                    /* RFC 3758 §3.5 A3: abandon the entire fragmented message. */
-                    uint8_t first = idx;
-                    while (first != sctp->sq_head &&
-                           !(sctp->send_queue[first & (NANORTC_SCTP_MAX_SEND_QUEUE - 1)].flags &
-                             SCTP_DATA_FLAG_BEGIN))
-                        first--;
-                    for (uint8_t j = first; j != sctp->sq_tail; j++) {
-                        nsctp_send_entry_t *part =
-                            &sctp->send_queue[j & (NANORTC_SCTP_MAX_SEND_QUEUE - 1)];
-                        part->abandoned = true;
-                        if (part->flags & SCTP_DATA_FLAG_END)
-                            break;
-                    }
-                    sctp->forward_pending = true;
+                    nsctp_abandon_message(sctp, idx);
                     idx++;
                     continue;
                 }

@@ -168,7 +168,7 @@ up its processes. Chrome runs with `--no-sandbox` for this local test profile.
 No npm packages are needed. The harness passes `--host-only` to disable the
 C example's default ICE servers and exercise same-host connectivity.
 
-Each role checks two channels (ordered/reliable and unordered/limited-retry),
+Each role checks two channels (ordered/reliable and unordered/zero-retry with `control.v1` protocol),
 18 exact binary/text echoes including empty messages, 4096-byte messages,
 UTF-8 and embedded NUL characters. Media mode also requires decoded H.264 frames
 and received Opus samples via `getStats()`. Failures save process logs in the
