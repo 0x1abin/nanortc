@@ -8,6 +8,8 @@ NanoRTC is built by AI coding agents. Estimates use **agent sessions** (one focu
 
 ## Active Plans
 
+Issue #81 implementation and validation: [bidirectional ICE](engineering/issue-81-ice.md). Example portability is delivered separately.
+
 | Plan | Phase | Status | Effort | Target |
 |------|-------|--------|--------|--------|
 | [Phase 2: Audio](exec-plans/active/phase2-audio.md) | 2 | **Active** — Pending human verification of bidirectional audio + ESP32 intercom | 1 session | Bidirectional audio with browser |

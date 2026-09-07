@@ -1,5 +1,9 @@
 # Technical Debt Tracker
 
+Issue #81 supersedes the original TD-018 slot-eviction and aggressive-nomination
+behavior: live checks now retain their transaction IDs, both roles check, and
+nomination follows validation. See [the current ICE record](../engineering/issue-81-ice.md).
+
 Track known debt, prioritize by impact, pay down continuously.
 
 ## Active Debt
