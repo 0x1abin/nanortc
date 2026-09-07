@@ -30,16 +30,29 @@
 #include <string.h>
 #include <signal.h>
 #include <unistd.h>
+#if NANO_HAVE_GETIFADDRS
 #include <ifaddrs.h>
-#include <arpa/inet.h>
 #include <net/if.h>
+#endif
+#include <arpa/inet.h>
 
 typedef struct {
     int offer_mode;
     int media_connected; /* DTLS+SRTP ready for media */
     int audio_mid;
     int video_mid;
+    http_sig_t *sig;
 } app_ctx_t;
+
+/* One application-owned workspace; none of these large objects use the C stack. */
+typedef struct {
+    nanortc_t rtc;
+    char payload[HTTP_SIG_BUF_SIZE];
+    char sdp[HTTP_SIG_BUF_SIZE];
+#if NANORTC_FEATURE_VIDEO
+    uint8_t video_frame[NANORTC_MEDIA_MAX_FRAME_SIZE];
+#endif
+} app_workspace_t;
 
 static nano_run_loop_t loop;
 static volatile sig_atomic_t g_quit;
@@ -56,9 +69,25 @@ static void on_event(nanortc_t *rtc, const nanortc_event_t *evt, void *userdata)
     app_ctx_t *ctx = (app_ctx_t *)userdata;
 
     switch (evt->type) {
+    case NANORTC_EV_ICE_CANDIDATE:
+        fprintf(stderr, "[event] Local ICE candidate: %s\n", evt->ice_candidate.candidate_str);
+        if (http_sig_send(ctx->sig, "candidate", evt->ice_candidate.candidate_str, "candidate") < 0)
+            fprintf(stderr, "[sig] Failed to send local ICE candidate\n");
+        break;
+
     case NANORTC_EV_ICE_STATE_CHANGE:
         if (evt->ice_state == NANORTC_ICE_STATE_CONNECTED) {
-            fprintf(stderr, "[event] ICE connected\n");
+            char local[INET6_ADDRSTRLEN] = "?", remote[INET6_ADDRSTRLEN] = "?";
+            inet_ntop(rtc->ice.selected_local_family == 6 ? AF_INET6 : AF_INET,
+                      rtc->ice.selected_local_addr, local, sizeof(local));
+            inet_ntop(rtc->ice.selected_family == 6 ? AF_INET6 : AF_INET, rtc->ice.selected_addr,
+                      remote, sizeof(remote));
+            const char *type = rtc->ice.selected_local_type == NANORTC_ICE_CAND_RELAY   ? "relay"
+                               : rtc->ice.selected_local_type == NANORTC_ICE_CAND_SRFLX ? "srflx"
+                                                                                        : "host";
+            fprintf(stderr, "[event] ICE connected (%s): local %s:%u (%s), peer %s:%u\n",
+                    rtc->ice.is_controlling ? "controlling" : "controlled", local,
+                    rtc->ice.selected_local_port, type, remote, rtc->ice.selected_port);
         }
         break;
 
@@ -105,7 +134,7 @@ static void usage(const char *prog)
 {
     fprintf(stderr, "Usage: %s [options]\n", prog);
     fprintf(stderr, "  -p PORT        UDP port (default: 9999)\n");
-    fprintf(stderr, "  -b IP          Bind/candidate IP (default: auto-detect)\n");
+    fprintf(stderr, "  -b IP          Local candidate IP (default: auto-detect)\n");
     fprintf(stderr, "  -s HOST:PORT   Signaling server (default: localhost:8765)\n");
     fprintf(stderr, "  -a DIR         Opus frame directory for audio send\n");
     fprintf(stderr, "  -v DIR         Video frame directory for video send (H.264 or H.265)\n");
@@ -181,14 +210,14 @@ static int h265_extract_parameter_sets(const char *sample_dir, uint8_t *scratch,
  * Signaling: answer mode (CONTROLLED)
  *   Wait for offer → generate answer → send answer
  * ---------------------------------------------------------------- */
-static int do_answer_signaling(http_sig_t *sig, nanortc_t *rtc)
+static int do_answer_signaling(http_sig_t *sig, nanortc_t *rtc, app_workspace_t *work)
 {
     char type[32];
-    char payload[HTTP_SIG_BUF_SIZE];
+    char *payload = work->payload;
 
     fprintf(stderr, "Waiting for SDP offer...\n");
     while (!g_quit) {
-        int rc = http_sig_recv(sig, type, sizeof(type), payload, sizeof(payload), 2000);
+        int rc = http_sig_recv(sig, type, sizeof(type), payload, sizeof(work->payload), 2000);
         if (rc == -2)
             continue; /* timeout, retry */
         if (rc < 0) {
@@ -202,11 +231,13 @@ static int do_answer_signaling(http_sig_t *sig, nanortc_t *rtc)
         fprintf(stderr, "[sig] Ignoring '%s' (waiting for offer)\n", type);
     }
 
+    if (g_quit)
+        return -1;
     fprintf(stderr, "[sig] Got SDP offer (%zu bytes)\n", strlen(payload));
 
-    char answer[HTTP_SIG_BUF_SIZE];
+    char *answer = work->sdp;
     size_t answer_len = 0;
-    int rc = nanortc_accept_offer(rtc, payload, answer, sizeof(answer), &answer_len);
+    int rc = nanortc_accept_offer(rtc, payload, answer, sizeof(work->sdp), &answer_len);
     if (rc != NANORTC_OK) {
         fprintf(stderr, "nanortc_accept_offer failed: %d\n", rc);
         return rc;
@@ -226,10 +257,10 @@ static int do_answer_signaling(http_sig_t *sig, nanortc_t *rtc)
  * Signaling: offer mode (CONTROLLING)
  *   Generate offer → send offer → wait for answer
  * ---------------------------------------------------------------- */
-static int do_offer_signaling(http_sig_t *sig, nanortc_t *rtc)
+static int do_offer_signaling(http_sig_t *sig, nanortc_t *rtc, app_workspace_t *work)
 {
-    char offer[HTTP_SIG_BUF_SIZE];
-    int rc = nanortc_create_offer(rtc, offer, sizeof(offer), NULL);
+    char *offer = work->sdp;
+    int rc = nanortc_create_offer(rtc, offer, sizeof(work->sdp), NULL);
     if (rc < 0) {
         fprintf(stderr, "nanortc_create_offer failed: %d\n", rc);
         return rc;
@@ -243,11 +274,11 @@ static int do_offer_signaling(http_sig_t *sig, nanortc_t *rtc)
     fprintf(stderr, "[sig] Sent SDP offer\n");
 
     char type[32];
-    char payload[HTTP_SIG_BUF_SIZE];
+    char *payload = work->payload;
 
     fprintf(stderr, "Waiting for SDP answer...\n");
     while (!g_quit) {
-        rc = http_sig_recv(sig, type, sizeof(type), payload, sizeof(payload), 2000);
+        rc = http_sig_recv(sig, type, sizeof(type), payload, sizeof(work->payload), 2000);
         if (rc == -2)
             continue;
         if (rc < 0) {
@@ -263,6 +294,8 @@ static int do_offer_signaling(http_sig_t *sig, nanortc_t *rtc)
         }
     }
 
+    if (g_quit)
+        return -1;
     fprintf(stderr, "[sig] Got SDP answer (%zu bytes)\n", strlen(payload));
     rc = nanortc_accept_answer(rtc, payload);
     if (rc < 0) {
@@ -277,7 +310,7 @@ static int do_offer_signaling(http_sig_t *sig, nanortc_t *rtc)
  * ---------------------------------------------------------------- */
 static uint32_t last_poll_ms;
 
-static void poll_trickle_ice(http_sig_t *sig, nanortc_t *rtc)
+static void poll_trickle_ice(http_sig_t *sig, nanortc_t *rtc, app_workspace_t *work)
 {
     uint32_t now = nano_get_millis();
     if (now - last_poll_ms < 500)
@@ -285,9 +318,9 @@ static void poll_trickle_ice(http_sig_t *sig, nanortc_t *rtc)
     last_poll_ms = now;
 
     char type[32];
-    char payload[HTTP_SIG_BUF_SIZE];
+    char *payload = work->payload;
 
-    int rc = http_sig_recv(sig, type, sizeof(type), payload, sizeof(payload), 0);
+    int rc = http_sig_recv(sig, type, sizeof(type), payload, sizeof(work->payload), 0);
     if (rc == 0) {
         if (strcmp(type, "candidate") == 0 && payload[0] != '\0') {
             fprintf(stderr, "[sig] Trickle ICE: %.60s...\n", payload);
@@ -367,20 +400,75 @@ int main(int argc, char *argv[])
     if (!turn_pass)
         turn_pass = "peerjsp";
 
-    app_ctx_t app_ctx = {.offer_mode = offer_mode, .audio_mid = -1, .video_mid = -1};
+    /* 3. Auto-detect IP if not specified. Pick an IPv4 global address as the
+     *    primary bind_ip, and collect any IPv6 global addresses so they can be
+     *    added as extra candidates below (dual-stack). */
+#if NANORTC_FEATURE_IPV6
+    char v6_addrs[NANORTC_MAX_LOCAL_CANDIDATES][INET6_ADDRSTRLEN];
+    int v6_count = 0;
+#endif
+    if (bind_ip[0] == '\0') {
+#if NANO_HAVE_GETIFADDRS
+        struct ifaddrs *ifas, *ifa;
+        if (getifaddrs(&ifas) == 0) {
+            for (ifa = ifas; ifa; ifa = ifa->ifa_next) {
+                if (!ifa->ifa_addr)
+                    continue;
+                if ((ifa->ifa_flags & IFF_LOOPBACK) || !(ifa->ifa_flags & IFF_UP))
+                    continue;
+                if (ifa->ifa_addr->sa_family == AF_INET && bind_ip[0] == '\0') {
+                    struct sockaddr_in *sa = (struct sockaddr_in *)ifa->ifa_addr;
+                    inet_ntop(AF_INET, &sa->sin_addr, bind_ip, sizeof(bind_ip));
+                }
+#if NANORTC_FEATURE_IPV6
+                else if (ifa->ifa_addr->sa_family == AF_INET6 &&
+                         v6_count < NANORTC_MAX_LOCAL_CANDIDATES) {
+                    struct sockaddr_in6 *sa6 = (struct sockaddr_in6 *)ifa->ifa_addr;
+                    if (IN6_IS_ADDR_LINKLOCAL(&sa6->sin6_addr))
+                        continue;
+                    if (IN6_IS_ADDR_MULTICAST(&sa6->sin6_addr))
+                        continue;
+                    if (IN6_IS_ADDR_UNSPECIFIED(&sa6->sin6_addr))
+                        continue;
+                    inet_ntop(AF_INET6, &sa6->sin6_addr, v6_addrs[v6_count],
+                              sizeof(v6_addrs[v6_count]));
+                    v6_count++;
+                }
+#endif
+            }
+            freeifaddrs(ifas);
+        }
+#endif
+        if (bind_ip[0] == '\0') {
+            fprintf(
+                stderr,
+                "Cannot auto-detect a local IP; pass -b with the address reachable by the peer.\n");
+            return 1;
+        }
+    }
+
+    http_sig_t sig = {.peer_id = -1};
+    app_ctx_t app_ctx = {.offer_mode = offer_mode, .audio_mid = -1, .video_mid = -1, .sig = &sig};
+    app_workspace_t *work = calloc(1, sizeof(*work));
+    if (!work) {
+        fprintf(stderr, "Cannot allocate application workspace\n");
+        return 1;
+    }
+    nanortc_t *rtc = &work->rtc;
+    bool rtc_initialized = false, loop_initialized = false;
+    nano_media_source_t audio_src, video_src;
+    int has_audio_src = 0, has_video_src = 0;
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
 
     /* 1. Join signaling server */
-    http_sig_t sig;
     int rc = http_sig_join(&sig, sig_host, sig_port);
     if (rc < 0) {
         fprintf(stderr, "Failed to join signaling server %s:%u\n", sig_host, sig_port);
-        return 1;
+        goto cleanup;
     }
 
     /* 2. Init nanortc */
-    nanortc_t rtc;
     nanortc_config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
 
@@ -420,17 +508,17 @@ int main(int argc, char *argv[])
                 ice_server_count > 1 ? ice_servers[1].urls[0] : "(none)", turn_user);
     }
 
-    rc = nanortc_init(&rtc, &cfg);
+    rc = nanortc_init(rtc, &cfg);
     if (rc != NANORTC_OK) {
         fprintf(stderr, "nanortc_init failed: %d\n", rc);
-        http_sig_leave(&sig);
-        return 1;
+        goto cleanup;
     }
+    rtc_initialized = true;
 
 #if NANORTC_FEATURE_AUDIO
     if (audio_dir) {
         app_ctx.audio_mid =
-            nanortc_add_audio_track(&rtc, NANORTC_DIR_SENDONLY, NANORTC_CODEC_OPUS, 48000, 2);
+            nanortc_add_audio_track(rtc, NANORTC_DIR_SENDONLY, NANORTC_CODEC_OPUS, 48000, 2);
         if (app_ctx.audio_mid < 0)
             fprintf(stderr, "nanortc_add_audio_track failed: %d\n", app_ctx.audio_mid);
     }
@@ -446,10 +534,11 @@ int main(int argc, char *argv[])
 #else
         if (video_codec == 1) {
             fprintf(stderr, "H.265 requested but NANORTC_FEATURE_H265 is disabled\n");
-            return 1;
+            rc = -1;
+            goto cleanup;
         }
 #endif
-        app_ctx.video_mid = nanortc_add_video_track(&rtc, NANORTC_DIR_SENDONLY, codec);
+        app_ctx.video_mid = nanortc_add_video_track(rtc, NANORTC_DIR_SENDONLY, codec);
         if (app_ctx.video_mid < 0)
             fprintf(stderr, "nanortc_add_video_track failed: %d\n", app_ctx.video_mid);
 
@@ -458,14 +547,14 @@ int main(int argc, char *argv[])
          * sprop-* in the SDP fmtp so Chrome's decoder is configured before the
          * first IDR arrives (RFC 7798 §7.1). */
         if (codec == NANORTC_CODEC_H265 && app_ctx.video_mid >= 0) {
-            static uint8_t h265_scratch[NANORTC_MEDIA_MAX_FRAME_SIZE];
+            uint8_t *h265_scratch = work->video_frame;
             size_t vps_off = 0, vps_len = 0, sps_off = 0, sps_len = 0, pps_off = 0, pps_len = 0;
-            int erc =
-                h265_extract_parameter_sets(video_dir, h265_scratch, sizeof(h265_scratch), &vps_off,
-                                            &vps_len, &sps_off, &sps_len, &pps_off, &pps_len);
+            int erc = h265_extract_parameter_sets(video_dir, h265_scratch,
+                                                  sizeof(work->video_frame), &vps_off, &vps_len,
+                                                  &sps_off, &sps_len, &pps_off, &pps_len);
             if (erc == 0) {
                 int src = nanortc_video_set_h265_parameter_sets(
-                    &rtc, (uint8_t)app_ctx.video_mid, h265_scratch + vps_off, vps_len,
+                    rtc, (uint8_t)app_ctx.video_mid, h265_scratch + vps_off, vps_len,
                     h265_scratch + sps_off, sps_len, h265_scratch + pps_off, pps_len);
                 if (src != NANORTC_OK) {
                     fprintf(stderr, "nanortc_video_set_h265_parameter_sets failed: %d\n", src);
@@ -482,70 +571,28 @@ int main(int argc, char *argv[])
     }
 #endif
 
-    /* 3. Auto-detect IP if not specified. Pick an IPv4 global address as the
-     *    primary bind_ip, and collect any IPv6 global addresses so they can be
-     *    added as extra candidates below (dual-stack). */
-#if NANORTC_FEATURE_IPV6
-    char v6_addrs[NANORTC_MAX_LOCAL_CANDIDATES][INET6_ADDRSTRLEN];
-    int v6_count = 0;
-#endif
-    if (bind_ip[0] == '\0') {
-        struct ifaddrs *ifas, *ifa;
-        if (getifaddrs(&ifas) == 0) {
-            for (ifa = ifas; ifa; ifa = ifa->ifa_next) {
-                if (!ifa->ifa_addr)
-                    continue;
-                if (ifa->ifa_flags & IFF_LOOPBACK)
-                    continue;
-                if (ifa->ifa_addr->sa_family == AF_INET && bind_ip[0] == '\0') {
-                    struct sockaddr_in *sa = (struct sockaddr_in *)ifa->ifa_addr;
-                    inet_ntop(AF_INET, &sa->sin_addr, bind_ip, sizeof(bind_ip));
-                }
-#if NANORTC_FEATURE_IPV6
-                else if (ifa->ifa_addr->sa_family == AF_INET6 &&
-                         v6_count < NANORTC_MAX_LOCAL_CANDIDATES) {
-                    struct sockaddr_in6 *sa6 = (struct sockaddr_in6 *)ifa->ifa_addr;
-                    if (IN6_IS_ADDR_LINKLOCAL(&sa6->sin6_addr))
-                        continue;
-                    if (IN6_IS_ADDR_MULTICAST(&sa6->sin6_addr))
-                        continue;
-                    if (IN6_IS_ADDR_UNSPECIFIED(&sa6->sin6_addr))
-                        continue;
-                    inet_ntop(AF_INET6, &sa6->sin6_addr, v6_addrs[v6_count],
-                              sizeof(v6_addrs[v6_count]));
-                    v6_count++;
-                }
-#endif
-            }
-            freeifaddrs(ifas);
-        }
-        if (bind_ip[0] == '\0') {
-            memcpy(bind_ip, "127.0.0.1", 10);
-        }
-    }
-
     /* 4. Bind UDP socket, register real IP as candidate */
-    rc = nano_run_loop_init(&loop, &rtc, port);
+    rc = nano_run_loop_init(&loop, rtc, port);
     if (rc < 0) {
         fprintf(stderr, "Failed to bind UDP port %d\n", port);
-        http_sig_leave(&sig);
-        nanortc_destroy(&rtc);
-        return 1;
+        goto cleanup;
     }
-    /* Override 0.0.0.0 candidate with actual IP for SDP */
-    nanortc_add_local_candidate(&rtc, bind_ip, port);
+    loop_initialized = true;
+    rc = nanortc_add_local_candidate(rtc, bind_ip, port);
+    if (rc != NANORTC_OK) {
+        fprintf(stderr, "Invalid local candidate %s:%u: %s\n", bind_ip, port, nanortc_err_name(rc));
+        goto cleanup;
+    }
 #if NANORTC_FEATURE_IPV6
     /* Register additional IPv6 global addresses so peers can reach us dual-stack.
      * The underlying socket is AF_INET6 + IPV6_V6ONLY=0, so no extra bind needed. */
     for (int i = 0; i < v6_count; i++) {
-        nanortc_add_local_candidate(&rtc, v6_addrs[i], port);
+        nanortc_add_local_candidate(rtc, v6_addrs[i], port);
     }
 #endif
     nano_run_loop_set_event_cb(&loop, on_event, &app_ctx);
 
     /* Audio media source */
-    nano_media_source_t audio_src;
-    int has_audio_src = 0;
 #if NANORTC_FEATURE_AUDIO
     if (audio_dir) {
         if (nano_media_source_init(&audio_src, NANORTC_MEDIA_OPUS, audio_dir) == 0) {
@@ -558,8 +605,6 @@ int main(int argc, char *argv[])
 #endif
 
     /* Video media source */
-    nano_media_source_t video_src;
-    int has_video_src = 0;
 #if NANORTC_FEATURE_VIDEO
     if (video_dir) {
         nanortc_track_type_t media_type = NANORTC_MEDIA_H264;
@@ -587,7 +632,7 @@ int main(int argc, char *argv[])
      * DC module's output buffer and flushed to SCTP once the SCTP
      * association reaches the ESTABLISHED state. */
     if (offer_mode) {
-        int drc = nanortc_create_datachannel(&rtc, "test", NULL);
+        int drc = nanortc_create_datachannel(rtc, "test", NULL);
         if (drc >= 0) {
             fprintf(stderr, "[event] Created DataChannel 'test'\n");
         } else {
@@ -597,9 +642,9 @@ int main(int argc, char *argv[])
 
     /* 5. SDP exchange */
     if (offer_mode) {
-        rc = do_offer_signaling(&sig, &rtc);
+        rc = do_offer_signaling(&sig, rtc, work);
     } else {
-        rc = do_answer_signaling(&sig, &rtc);
+        rc = do_answer_signaling(&sig, rtc, work);
     }
     if (rc != 0) {
         goto cleanup;
@@ -614,8 +659,10 @@ int main(int argc, char *argv[])
     }
     loop.running = 1;
     while (loop.running) {
-        nano_run_loop_step(&loop);
-        poll_trickle_ice(&sig, &rtc);
+        rc = nano_run_loop_step(&loop);
+        if (rc < 0)
+            break;
+        poll_trickle_ice(&sig, rtc, work);
 
 #if NANORTC_FEATURE_AUDIO
         /* Send audio frames at 20ms intervals (drift-free epoch-based pacing) */
@@ -629,11 +676,11 @@ int main(int argc, char *argv[])
                                                  &frame_len, &ts_ms) != 0) {
                     break;
                 }
-                int send_rc = nanortc_send_audio(&rtc, (uint8_t)app_ctx.audio_mid, ts_ms, frame_buf,
+                int send_rc = nanortc_send_audio(rtc, (uint8_t)app_ctx.audio_mid, ts_ms, frame_buf,
                                                  frame_len);
                 if (send_rc == NANORTC_ERR_WOULD_BLOCK) {
                     nano_run_loop_drain(&loop);
-                    send_rc = nanortc_send_audio(&rtc, (uint8_t)app_ctx.audio_mid, ts_ms, frame_buf,
+                    send_rc = nanortc_send_audio(rtc, (uint8_t)app_ctx.audio_mid, ts_ms, frame_buf,
                                                  frame_len);
                 }
                 if (send_rc != NANORTC_OK) {
@@ -650,14 +697,14 @@ int main(int argc, char *argv[])
         if (has_video_src && app_ctx.media_connected) {
             uint32_t due = nano_media_pacer_due(&video_pacer, nano_get_millis());
             for (uint32_t i = 0; i < due; i++) {
-                uint8_t frame_buf[NANORTC_MEDIA_MAX_FRAME_SIZE];
+                uint8_t *frame_buf = work->video_frame;
                 size_t frame_len = 0;
                 uint32_t ts_ms = 0;
-                if (nano_media_source_next_frame(&video_src, frame_buf, sizeof(frame_buf),
+                if (nano_media_source_next_frame(&video_src, frame_buf, sizeof(work->video_frame),
                                                  &frame_len, &ts_ms) != 0) {
                     break;
                 }
-                nanortc_send_video(&rtc, (uint8_t)app_ctx.video_mid, nano_get_millis(), frame_buf,
+                nanortc_send_video(rtc, (uint8_t)app_ctx.video_mid, nano_get_millis(), frame_buf,
                                    frame_len);
                 nano_media_pacer_advance(&video_pacer);
             }
@@ -673,9 +720,12 @@ cleanup:
         nano_media_source_destroy(&video_src);
     }
     http_sig_leave(&sig);
-    nano_run_loop_destroy(&loop);
-    nanortc_destroy(&rtc);
+    if (loop_initialized)
+        nano_run_loop_destroy(&loop);
+    if (rtc_initialized)
+        nanortc_destroy(rtc);
+    free(work);
 
     fprintf(stderr, "Done.\n");
-    return 0;
+    return rc == 0 ? 0 : 1;
 }

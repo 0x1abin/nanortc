@@ -104,6 +104,13 @@ endif()
 # ---- Host build ----
 project(nanortc VERSION 0.1.0 LANGUAGES C)
 
+# Host example capability, also used by the interop event loop. The library
+# itself never includes platform headers. Cache override OFF tests the fallback.
+include(CheckSymbolExists)
+check_symbol_exists(getifaddrs "ifaddrs.h" NANO_HAVE_GETIFADDRS)
+add_compile_definitions(NANO_HAVE_GETIFADDRS=$<BOOL:${NANO_HAVE_GETIFADDRS}>)
+
+
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 # Feature flags (orthogonal)

@@ -93,6 +93,7 @@ async function exercise(nanoRole, peerId, withMedia) {
   };
   let polling = true;
   let signalingError;
+  let trickledCandidates = 0;
   const controller = new AbortController();
   const poll = (async () => {
     try {
@@ -106,6 +107,7 @@ async function exercise(nanoRole, peerId, withMedia) {
           if (message.type === 'offer') await local(await pc.createAnswer());
         } else if (message.type === 'candidate' && message.candidate) {
           await pc.addIceCandidate({candidate: message.candidate, sdpMid: '0', sdpMLineIndex: 0});
+          trickledCandidates++;
         }
       }
     } catch (error) { if (polling) signalingError = error.message; }
@@ -143,6 +145,10 @@ async function exercise(nanoRole, peerId, withMedia) {
         echoed++;
       }
     }
+    await until(() => {
+      if (signalingError) throw Error(signalingError);
+      return trickledCandidates > 0;
+    }, 'forwarded local ICE candidate');
     let inbound = [];
     if (withMedia) {
       await until(async () => {
@@ -151,7 +157,7 @@ async function exercise(nanoRole, peerId, withMedia) {
           inbound.some(s => s.kind === 'audio' && s.totalSamplesReceived > 0);
       }, 'decoded audio/video');
     }
-    return {nanoRole, echoed, maxMessageSize: pc.sctp.maxMessageSize, inbound: inbound.map(s => ({kind: s.kind, packetsReceived: s.packetsReceived, framesDecoded: s.framesDecoded, totalSamplesReceived: s.totalSamplesReceived}))};
+    return {nanoRole, echoed, trickledCandidates, maxMessageSize: pc.sctp.maxMessageSize, inbound: inbound.map(s => ({kind: s.kind, packetsReceived: s.packetsReceived, framesDecoded: s.framesDecoded, totalSamplesReceived: s.totalSamplesReceived}))};
   } finally {
     polling = false;
     controller.abort();
@@ -216,6 +222,7 @@ try {
     });
     const result = await evaluate(`(${exercise.toString()})(${JSON.stringify(role)}, ${peerId}, ${media})`);
     assert.equal(result.echoed, 18);
+    assert.ok(result.trickledCandidates > 0);
     assert.equal(result.maxMessageSize, 4096);
     console.log(JSON.stringify(result));
     await stop(peer);
@@ -230,5 +237,5 @@ try {
 } finally {
   socket?.close();
   for (const child of children.reverse()) await stop(child);
-  await rm(failed ? `${temp}/profile` : temp, {recursive: true, force: true});
+  await rm(failed ? `${temp}/profile` : temp, {recursive: true, force: true, maxRetries: 10, retryDelay: 100});
 }

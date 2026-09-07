@@ -352,3 +352,46 @@ The same signaling server and protocol work with the ESP32 DataChannel example.
 The ESP32 acts as answerer while the browser or Linux CLI acts as offerer.
 
 See [`../esp32_datachannel/README.md`](../esp32_datachannel/README.md) for setup instructions.
+
+
+## Local addresses, memory and portability (Issue #81)
+
+`-b` supplies the local ICE candidate address; the example binds a wildcard
+UDP socket on `-p`. Use an address reachable by the peer, for example
+`-b 192.168.1.20` for a different machine on the LAN. `-b 127.0.0.1 --host-only`
+is suitable when the browser is on this machine. A public STUN-mapped address
+is not a local bind address.
+
+CMake detects `getifaddrs`. If it is missing, build and run with an explicit
+`-b`; automatic discovery fails with a clear error rather than advertising
+loopback. To exercise this native fallback:
+
+```sh
+cmake -B build-portable -DNANORTC_BUILD_EXAMPLES=ON -DNANO_HAVE_GETIFADDRS=OFF
+cmake --build build-portable --target browser_interop
+./build-portable/examples/browser_interop/browser_interop --answer -b 127.0.0.1 --host-only
+```
+
+Non-CMake host integrations default to no interface enumeration; define
+`NANO_HAVE_GETIFADDRS=1` only when that API is available. UDP receive uses
+`MSG_DONTWAIT`, or `O_NONBLOCK` when the per-call flag is unavailable.
+A readiness race or `EINTR` still advances timers. Dedicated IPv4 sockets
+use IPv4 addresses even in a dual-stack build.
+
+The application allocates its RTC state, SDP/payload buffers and video scratch
+once and releases them on exit. Shared HTTP helpers allocate one bounded
+16 KiB buffer per call and release it on success and failure. The library
+remains Sans I/O and does not allocate these buffers. HTTP signaling remains
+a blocking reference implementation, not an asynchronous signaling transport.
+
+Local candidate events, including srflx discovered after SDP exchange, are
+forwarded over signaling. The log reports the ICE role, local candidates and
+selected transport addresses. This plumbing complements the separate ICE
+fix in [PR #83](https://github.com/0x1abin/nanortc/pull/83); the example changes
+alone do not fix controlled-side NAT traversal. STUN does not guarantee
+connectivity through all NATs; some topologies still need TURN.
+
+These changes have native checks, not WASI runtime certification. The reported
+out-of-bounds trap may involve C stack limits; raising linear-memory limits
+alone does not establish its cause. Confirm with the reporter's exact build and
+adaptation patch before attributing the receive behavior to wasi-libc.

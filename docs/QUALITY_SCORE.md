@@ -93,6 +93,15 @@ See [design-hardening validation](engineering/design-hardening.md) and the
 | Phase 3 complete | All modules at **B** or above ✓ |
 | Phase 4 complete | All modules at **A** ✓ (fuzz-tested, browser-verified, interop-verified, 80%+ coverage) |
 
+## Example I/O validation
+
+`test_example_io` and `test_example_io_fcntl` inject allocator/socket failures
+into the actual shared example helpers. They cover missing interface enumeration,
+nonblocking receive races and interrupted waits, timer progression, IPv4 socket
+conversion in dual-stack builds, and bounded HTTP buffer cleanup. This native
+coverage does not certify WASI runtime behavior. See the
+[Issue #81 example record](engineering/issue-81-examples.md).
+
 ## Phase 4 Summary
 
 All 18 library modules promoted from **B** to **A** grade:
