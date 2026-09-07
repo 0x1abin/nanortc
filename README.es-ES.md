@@ -1,6 +1,6 @@
 # NanoRTC
 
-English | [简体中文](README.zh-CN.md)
+[English](README.md) | [简体中文](README.zh-CN.md) | Español
 
 Una implementación de WebRTC en C puro y Sans I/O para RTOS y sistemas embebidos.
 
@@ -27,17 +27,11 @@ NanoRTC es una pila de protocolos WebRTC diseñada desde cero para microcontrola
 
 - **Flags de características ortogonales** — Incluye solo lo que necesites:
 
-| Configuración | Flash (.text) | RAM (sizeof) | Flags |
-|--------------|---------------|-------------|-------|
-| Solo Core | 29.0 KB | 10.2 KB | DC=OFF AUDIO=OFF VIDEO=OFF |
-| DataChannel | 38.8 KB | 19.4 KB | DC=ON |
-| Solo Audio | 40.8 KB | 20.6 KB | DC=OFF AUDIO=ON |
-| DataChannel + Audio | 50.6 KB | 29.9 KB | DC=ON AUDIO=ON |
-| Solo Media (sin DC) | 45.3 KB | 51.0 KB | DC=OFF AUDIO=ON VIDEO=ON |
-| Media completa | 55.0 KB | 60.3 KB | DC=ON AUDIO=ON VIDEO=ON |
-
-> Medido en ESP32-P4 (RISC-V HP), ESP-IDF 5.5 mbedTLS, `-Os` (`CONFIG_COMPILER_OPTIMIZATION_SIZE=y`). `sizeof(nanortc_t)` es la RAM total por conexión — sin asignación en heap. Las cifras de Flash cuentan solo el código de la biblioteca nanortc (`libnanortc.a` .text); mbedTLS y lwIP son independientes y normalmente se comparten con el resto del firmware.
-> Los tamaños reflejan los valores predeterminados de Kconfig de ESP-IDF — tamaño de buffers/colas grado-IoT integrado, pila ICE completa intacta (relé TURN, descubrimiento srflx, candidatos de host IPv6, percepción TWCC/BWE, endurecimiento RFC 8445). Reprodúcelo con `./scripts/measure-sizes.sh --esp32 esp32p4`; ajústalo más a través de `idf.py menuconfig` o [`NANORTC_CONFIG_FILE`](docs/engineering/memory-profiles.md).
+Los siete perfiles y sus medidas actuales de código y estado están en
+[Perfiles de memoria](docs/engineering/memory-profiles.md). Las medidas de
+ESP32-P4 usan ESP-IDF 5.5.4 y `-Os`; no incluyen las asignaciones del proveedor
+criptográfico, los buffers de la aplicación ni las pilas de tareas. Para
+reproducirlas: `./scripts/measure-sizes.sh --esp32 esp32p4`.
 
 Cualquier combinación funciona: audio sin DataChannel, video sin audio, etc.
 
@@ -101,7 +95,10 @@ El bucle de eventos es simétrico: **vaciar salidas, alimentar entradas.** Tú p
 for (;;) {
     nanortc_output_t out;
     while (nanortc_poll_output(&rtc, &out) == NANORTC_OK)
-        handle_output(&out);              // enviar UDP, disparar evento de app, anotar próximo despertar
+        handle_output(&out);              // enviar UDP o procesar un evento
+
+    uint32_t wake_ms;
+    nanortc_next_timeout_ms(&rtc, now_ms(), &wake_ms);
 
     size_t len = recv_udp(fd, buf, sizeof buf, &src, wake_ms);
     nanortc_handle_input(&rtc, &(nanortc_input_t){
@@ -178,7 +175,11 @@ La estructura del repositorio está diseñada para la legibilidad de los agentes
 
 ## Contribuir
 
-NanoRTC está en desarrollo activo. La pila de protocolos central —DataChannel, Audio, Video/H.264/H.265, ICE+STUN+TURN con cumplimiento de RFC 8445, SRTP y percepción TWCC/BWE— está completa en código y verificada en interoperabilidad contra libdatachannel y Chromium. La Fase 8 de optimización continua y la Fase 9 de trabajo de percepción BWE están en curso; consulta [docs/PLANS.md](docs/PLANS.md) para el estado de la fase actual. Los 22 módulos de la biblioteca están en grado A —probados con fuzz, verificados en navegador, verificados en interoperabilidad con libdatachannel y con más del 80% de cobertura.
+NanoRTC está en desarrollo activo. Consulta [docs/PLANS.md](docs/PLANS.md)
+para el estado de los trabajos y [docs/QUALITY_SCORE.md](docs/QUALITY_SCORE.md)
+para los resultados y límites de cada módulo. SCTP implementa un subconjunto
+acotado; los resultados de interoperabilidad y compilación no implican
+compatibilidad completa ni validación de todas las plataformas.
 
 Las contribuciones son bienvenidas. Por favor, lee [AGENTS.md](AGENTS.md) para obtener instrucciones de construcción y reglas obligatorias antes de enviar cambios.
 
