@@ -16,6 +16,7 @@
 #include "nano_stun.h"
 #include "nano_sdp.h"
 #include "nano_dtls.h"
+#include "nano_rtc_internal.h"
 #include "nanortc_crypto.h"
 #include "nano_test.h"
 #include "nano_test_config.h"
@@ -655,9 +656,104 @@ static void test_api_ice_restart_no_dtls_safe(void)
  * Test runner
  * ---------------------------------------------------------------- */
 
+/* RFC 8839 §5.1 / §9.1: related addresses are mandatory for srflx/relay,
+ * omitted for host, and may be hidden with a same-family zero address + 9. */
+static void test_candidate_event_related_address(void)
+{
+    static const char *ips[] = {
+        "203.0.113.5",
+#if NANORTC_FEATURE_IPV6
+        "2001:db8::5",
+#endif
+    };
+    static const char *srflx_tails[] = {
+        " typ srflx raddr 0.0.0.0 rport 9",
+#if NANORTC_FEATURE_IPV6
+        " typ srflx raddr :: rport 9",
+#endif
+    };
+    static const char *relay_tails[] = {
+        " typ relay raddr 0.0.0.0 rport 9",
+#if NANORTC_FEATURE_IPV6
+        " typ relay raddr :: rport 9",
+#endif
+    };
+    for (size_t family = 0; family < sizeof(ips) / sizeof(ips[0]); family++) {
+        for (int host = 0; host <= 1; host++) {
+            nanortc_t rtc;
+            nanortc_config_t cfg = {0};
+            cfg.crypto = crypto();
+            ASSERT_OK(nanortc_init(&rtc, &cfg));
+            if (host) {
+                /* The host deliberately has a different family when available. */
+                size_t other = (family + 1) % (sizeof(ips) / sizeof(ips[0]));
+                ASSERT_OK(nanortc_add_local_candidate(&rtc, ips[other], 4000));
+            }
+            memcpy(rtc.sdp.srflx_candidate_ip, ips[family], strlen(ips[family]) + 1);
+            rtc.sdp.srflx_candidate_port = 5000;
+            rtc.srflx_candidate_pending = true;
+#if NANORTC_FEATURE_TURN
+            memcpy(rtc.sdp.relay_candidate_ip, ips[family], strlen(ips[family]) + 1);
+            rtc.sdp.relay_candidate_port = 6000;
+            rtc.relay_candidate_pending = true;
+#endif
+            nanortc_output_t out;
+            unsigned seen = 0;
+            while (nanortc_poll_output(&rtc, &out) == NANORTC_OK) {
+                if (out.type != NANORTC_OUTPUT_EVENT || out.event.type != NANORTC_EV_ICE_CANDIDATE)
+                    continue;
+                const char *tail = strstr(out.event.ice_candidate.candidate_str, " typ ");
+                TEST_ASSERT_NOT_NULL(tail);
+                if (seen == 0 && host)
+                    TEST_ASSERT_EQUAL_STRING(" typ host", tail);
+                else if (seen == (unsigned)host)
+                    TEST_ASSERT_EQUAL_STRING(srflx_tails[family], tail);
+                else
+                    TEST_ASSERT_EQUAL_STRING(relay_tails[family], tail);
+                seen++;
+            }
+            ASSERT_EQ(seen, (unsigned)host + 1u + NANORTC_FEATURE_TURN);
+            nanortc_destroy(&rtc);
+        }
+    }
+}
+
+static void test_candidate_string_capacity(void)
+{
+    /* Maximum printable IPv6 length, including an embedded IPv4 address.
+     * UINT32_MAX exercises storage capacity, not the RFC priority range. */
+    const char ip[] = "ffff:ffff:ffff:ffff:ffff:ffff:255.255.255.255";
+    const char *types[] = {"host", "srflx", "relay"};
+    const char *expected[] = {
+        "candidate:65535 1 UDP 4294967295 ffff:ffff:ffff:ffff:ffff:ffff:255.255.255.255 65535 typ "
+        "host",
+        "candidate:65535 1 UDP 4294967295 ffff:ffff:ffff:ffff:ffff:ffff:255.255.255.255 65535 typ "
+        "srflx raddr :: rport 9",
+        "candidate:65535 1 UDP 4294967295 ffff:ffff:ffff:ffff:ffff:ffff:255.255.255.255 65535 typ "
+        "relay raddr :: rport 9",
+    };
+    for (size_t i = 0; i < sizeof(types) / sizeof(types[0]); i++) {
+        unsigned char storage[ICE_CANDIDATE_STR_SIZE + 2];
+        memset(storage, 0xa5, sizeof(storage));
+        size_t len =
+            nano_rtc_build_candidate_str((char *)storage + 1, UINT16_MAX, UINT32_MAX, ip,
+                                         sizeof(ip) - 1, UINT16_MAX, types[i], strlen(types[i]));
+        ASSERT_TRUE(len < ICE_CANDIDATE_STR_SIZE);
+        ASSERT_EQ(len, strlen(expected[i]));
+        TEST_ASSERT_EQUAL_STRING(expected[i], (char *)storage + 1);
+        ASSERT_EQ(storage[0], 0xa5);
+        ASSERT_EQ(storage[len + 1], 0);
+        for (size_t j = len + 2; j < sizeof(storage); j++)
+            ASSERT_EQ(storage[j], 0xa5);
+    }
+}
+
 int main(void)
 {
     UNITY_BEGIN();
+
+    RUN_TEST(test_candidate_event_related_address);
+    RUN_TEST(test_candidate_string_capacity);
 
     /* Trickle ICE */
     RUN_TEST(test_trickle_no_candidates_waits);

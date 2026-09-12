@@ -4248,16 +4248,9 @@ TEST(test_e2e_srflx_discovery)
     while (nanortc_poll_output(&rtc, &out) == NANORTC_OK) {
         if (out.type == NANORTC_OUTPUT_EVENT && out.event.type == NANORTC_EV_ICE_CANDIDATE) {
             found_srflx_event = true;
-            /* Verify candidate string contains "typ srflx" */
+            /* RFC 8839 §5.1 / §9.1: check the actual discovered event. */
             const char *cstr = out.event.ice_candidate.candidate_str;
-            bool has_srflx = false;
-            for (size_t i = 0; cstr[i]; i++) {
-                if (cstr[i] == 's' && cstr[i + 1] == 'r' && cstr[i + 2] == 'f') {
-                    has_srflx = true;
-                    break;
-                }
-            }
-            ASSERT_TRUE(has_srflx);
+            TEST_ASSERT_EQUAL_STRING(" typ srflx raddr 0.0.0.0 rport 9", strstr(cstr, " typ "));
         }
     }
     ASSERT_TRUE(found_srflx_event);
@@ -4265,6 +4258,7 @@ TEST(test_e2e_srflx_discovery)
     nanortc_destroy(&rtc);
 }
 
+#if NANORTC_FEATURE_TURN
 TEST(test_e2e_shared_stun_turn_endpoint_demux)
 {
     nanortc_t rtc;
@@ -4309,6 +4303,7 @@ TEST(test_e2e_shared_stun_turn_endpoint_demux)
     ASSERT_EQ(rtc.turn.state, NANORTC_TURN_ALLOCATING);
     nanortc_destroy(&rtc);
 }
+#endif
 
 /* T: SRFLX retry — no response triggers retransmission */
 TEST(test_e2e_srflx_retry)
@@ -4772,13 +4767,8 @@ TEST(test_e2e_turn_allocation_lifecycle)
     while (nanortc_poll_output(&rtc, &out) == NANORTC_OK) {
         if (out.type == NANORTC_OUTPUT_EVENT && out.event.type == NANORTC_EV_ICE_CANDIDATE) {
             const char *cs = out.event.ice_candidate.candidate_str;
-            /* Check for "typ relay" */
-            for (size_t i = 0; cs[i]; i++) {
-                if (cs[i] == 'r' && cs[i + 1] == 'e' && cs[i + 2] == 'l' && cs[i + 3] == 'a') {
-                    found_relay_event = true;
-                    break;
-                }
-            }
+            TEST_ASSERT_EQUAL_STRING(" typ relay raddr 0.0.0.0 rport 9", strstr(cs, " typ "));
+            found_relay_event = true;
         }
     }
     ASSERT_TRUE(found_relay_event);
@@ -5371,7 +5361,9 @@ RUN(test_e2e_simple_binding_request);
 RUN(test_e2e_stun_server_config);
 RUN(test_e2e_srflx_rng_failure_does_not_commit_transaction);
 RUN(test_e2e_srflx_discovery);
+#if NANORTC_FEATURE_TURN
 RUN(test_e2e_shared_stun_turn_endpoint_demux);
+#endif
 RUN(test_e2e_srflx_retry);
 RUN(test_e2e_srflx_joins_local_candidates);
 RUN(test_e2e_srflx_priority_macro);

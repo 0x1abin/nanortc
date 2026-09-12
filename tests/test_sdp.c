@@ -1203,13 +1203,93 @@ TEST(test_sdp_generate_with_candidates)
     ASSERT_TRUE(strstr(buf, "192.168.1.100 4000 typ host") != NULL);
     /* Verify srflx candidate */
     ASSERT_TRUE(strstr(buf, "203.0.113.5 49152 typ srflx") != NULL);
-    ASSERT_TRUE(strstr(buf, "raddr 192.168.1.100 rport 4000") != NULL);
+    ASSERT_TRUE(strstr(buf, "typ srflx raddr 0.0.0.0 rport 9\r\n") != NULL);
     /* Verify relay candidate */
     ASSERT_TRUE(strstr(buf, "198.51.100.1 50000 typ relay") != NULL);
     /* Verify transport attrs */
     ASSERT_TRUE(strstr(buf, "a=ice-ufrag:user1234") != NULL);
     ASSERT_TRUE(strstr(buf, "a=fingerprint:sha-256 AA:BB:CC:DD") != NULL);
     ASSERT_TRUE(strstr(buf, "a=setup:actpass") != NULL);
+}
+
+/* RFC 8839 §5.1 / §9.1: check each output line independently of our parser.
+ * Mixed families ensure the candidate, rather than its host base, picks raddr. */
+TEST(test_sdp_candidate_related_addresses)
+{
+    const char *ips[] = {
+        "203.0.113.5",
+#if NANORTC_FEATURE_IPV6
+        "2001:db8::5",
+#endif
+    };
+    const char *srflx_tails[] = {
+        " typ srflx raddr 0.0.0.0 rport 9\r\n",
+#if NANORTC_FEATURE_IPV6
+        " typ srflx raddr :: rport 9\r\n",
+#endif
+    };
+    const char *relay_tails[] = {
+        " typ relay raddr 0.0.0.0 rport 9\r\n",
+#if NANORTC_FEATURE_IPV6
+        " typ relay raddr :: rport 9\r\n",
+#endif
+    };
+    size_t families = sizeof(ips) / sizeof(ips[0]);
+    for (size_t family = 0; family < families; family++) {
+        for (int host = 0; host <= 1; host++) {
+            nano_sdp_t sdp;
+            sdp_init(&sdp);
+            memcpy(sdp.local_ufrag, "abcd1234", 9);
+            memcpy(sdp.local_pwd, "password0123456789abcdef", 25);
+            sdp.has_datachannel = true;
+            sdp.local_sctp_port = 5000;
+            sdp.mid_count = 1;
+            size_t other = (family + 1) % families;
+            if (host) {
+                memcpy(sdp.local_candidates[0].addr, ips[other], strlen(ips[other]) + 1);
+                sdp.local_candidates[0].port = 4000;
+                sdp.local_candidate_count = 1;
+            }
+            memcpy(sdp.srflx_candidate_ip, ips[family], strlen(ips[family]) + 1);
+            sdp.srflx_candidate_port = 5000;
+            sdp.has_srflx_candidate = true;
+            memcpy(sdp.relay_candidate_ip, ips[other], strlen(ips[other]) + 1);
+            sdp.relay_candidate_port = 6000;
+            sdp.has_relay_candidate = true;
+
+            char buf[2048];
+            size_t len = 0;
+            ASSERT_OK(sdp_generate_answer(&sdp, buf, sizeof(buf), &len));
+            const char *line = buf;
+            unsigned seen = 0;
+            while ((line = strstr(line, "a=candidate:")) != NULL) {
+                const char *tail = strstr(line, " typ ");
+                const char *end = strstr(line, "\r\n");
+                TEST_ASSERT_NOT_NULL(tail);
+                TEST_ASSERT_NOT_NULL(end);
+                const char *expected = seen == 0 && host        ? " typ host\r\n"
+                                       : seen == (unsigned)host ? srflx_tails[family]
+                                                                : relay_tails[other];
+                ASSERT_EQ((size_t)(end + 2 - tail), strlen(expected));
+                TEST_ASSERT_EQUAL_MEMORY(expected, tail, strlen(expected));
+                seen++;
+                line = end + 2;
+            }
+            ASSERT_EQ(seen, (unsigned)host + 2u);
+
+            /* Exact capacity includes NUL; no writes beyond the supplied size. */
+            char tight[2048];
+            size_t actual = 0;
+            memset(tight, 0x5a, sizeof(tight));
+            ASSERT_OK(sdp_generate_answer(&sdp, tight, len + 1, &actual));
+            ASSERT_EQ(actual, len);
+            TEST_ASSERT_EQUAL_STRING(buf, tight);
+            ASSERT_EQ(tight[len + 1], 0x5a);
+            memset(tight, 0x5a, sizeof(tight));
+            ASSERT_EQ(sdp_generate_answer(&sdp, tight, len, &actual), NANORTC_ERR_BUFFER_TOO_SMALL);
+            ASSERT_EQ(tight[len], 0x5a);
+        }
+    }
 }
 
 #if NANORTC_FEATURE_VIDEO
@@ -1482,6 +1562,7 @@ RUN(test_sdp_parse_safari_offer);
 RUN(test_sdp_parse_minimal);
 RUN(test_sdp_generate_answer);
 RUN(test_sdp_generate_with_candidates);
+RUN(test_sdp_candidate_related_addresses);
 RUN(test_sdp_generate_overflow);
 RUN(test_sdp_roundtrip);
 RUN(test_sdp_parse_libdatachannel_offer);
