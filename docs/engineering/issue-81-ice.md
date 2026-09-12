@@ -1,6 +1,56 @@
-# Issue #81: bidirectional ICE checks
+# Issue #81: ICE checks and candidate signaling
 
 Issue: <https://github.com/0x1abin/nanortc/issues/81>
+
+## Firefox candidate serialization follow-up (2026-09-11)
+
+The reporter confirmed NAT traversal with Chromium after #83/#84, then isolated
+Firefox's remaining failure to missing `raddr`/`rport` in trickled srflx candidates.
+The shared trickle formatter also omitted these fields for relay candidates.
+Full SDP omitted them without a host candidate and otherwise used the first host
+address, which was not necessarily the srflx base or the TURN mapped address.
+
+Both output paths now consistently hide related addresses according to
+[RFC 8839 §5.1 and §9.1](https://www.rfc-editor.org/rfc/rfc8839.html#section-5.1):
+
+| Candidate | Related fields |
+|-----------|----------------|
+| host | Omitted |
+| IPv4 srflx / relay | `raddr 0.0.0.0 rport 9` |
+| IPv6 srflx / relay | `raddr :: rport 9` |
+
+The candidate's own address selects the family, independently of host candidates.
+This deliberately removes real related-address diagnostics from SDP; it does not
+hide separately advertised host candidates or alter the socket/base used by ICE.
+The reporter's `rport 0` workaround is replaced by the RFC's discard port `9`.
+Public APIs, structure sizes, candidate scratch capacity and output lifetimes
+are unchanged. No related-address state, configuration or allocation was added.
+
+Validation of this follow-up:
+
+- New RFC-derived output assertions failed on the old formatter and pass with
+  the fix. Tests inspect complete candidate tails in events and individual SDP
+  lines, including no-host and mixed-family cases. Maximum string arguments,
+  NUL termination, canaries and exact/one-byte-short SDP buffers are covered.
+- STUN discovery and TURN allocation E2E tests assert the actual event suffixes.
+  The existing shared STUN/TURN test now has its missing TURN feature guard so
+  TURN-disabled test builds compile.
+- Full local CI: **54/54** checks, including seven feature combinations with
+  OpenSSL and mbedTLS and local interoperability tests. Combined ASan/UBSan:
+  **34/34** suites. DATA with IPv6, TURN and ICE_SRFLX all disabled: **17/17**.
+- Firefox **155.0.1** accepted eight cases from actual library-generated output:
+  IPv4/IPv6 × srflx/relay × `addIceCandidate`/full SDP. Hidden address and port
+  values were also checked through `RTCIceCandidate`.
+- Firefox **155.0.1** and Chrome **147.0.7727.137**, using the OpenSSL browser
+  example, passed both roles with **18** DataChannel echoes per role, including
+  empty, 4096-byte, UTF-8 and embedded-NUL messages. Firefox reused the existing
+  browser exercise through a temporary localhost WebDriver harness; its binary
+  type check used an ArrayBuffer tag because WebDriver objects cross JS realms.
+
+These browser connections used local host candidates. Candidate parsing with
+documentation addresses does not validate their reachability. Real cross-NAT,
+external TURN, IPv6 connectivity and WASI runtime testing are not included in
+this follow-up. The earlier ICE implementation and validation are recorded below.
 
 ## Problem and behavior
 

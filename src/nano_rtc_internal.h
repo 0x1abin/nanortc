@@ -32,10 +32,11 @@ int nano_rtc_emit_event_full(nanortc_t *rtc, const nanortc_event_t *event);
 
 /**
  * Format an RFC 8839 §5.1 SDP candidate line ("candidate:<f> 1 UDP <p>
- * <ip> <port> typ <type>") into @p buf and NUL-terminate. Defined in
- * nano_rtc_negotiate.c; declared here so rtc_process_receive() (in
- * nano_rtc.c) can format trickle-style srflx and relay candidate strings
- * after STUN srflx discovery / TURN allocation.
+ * <ip> <port> typ <type>") into @p buf and NUL-terminate. srflx/relay
+ * include a hidden related address (0.0.0.0 or ::) and port 9 per §9.1.
+ * Used by nano_rtc_candidate_produce() when polling retained candidates.
+ * Caller supplies at least ICE_CANDIDATE_STR_SIZE bytes, ip_len less than
+ * NANORTC_IPV6_STR_SIZE, and type host/srflx/relay with its exact length.
  *
  * @return Length of the produced string (excluding the NUL terminator).
  */

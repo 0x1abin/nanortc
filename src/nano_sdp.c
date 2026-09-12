@@ -9,6 +9,7 @@
 #include "nano_sdp.h"
 #include "nano_ice.h"
 #include "nanortc.h"
+#include "nanortc_util.h"
 #include <string.h>
 
 /* ================================================================
@@ -637,6 +638,15 @@ static bool sdp_append_host_candidates(nano_sdp_t *sdp, char *buf, size_t buf_le
     return true;
 }
 
+/* RFC 8839 §5.1 / §9.1: srflx/relay require related fields even without a
+ * host candidate. Hide them with a same-family zero address and port 9. */
+static bool sdp_append_related_address(char *buf, size_t buf_len, size_t *pos, const char *ip)
+{
+    size_t len = nanortc_strnlen(ip, NANORTC_IPV6_STR_SIZE);
+    return sdp_append(buf, buf_len, pos,
+                      memchr(ip, ':', len) ? " raddr :: rport 9" : " raddr 0.0.0.0 rport 9");
+}
+
 /** Append server-reflexive ICE candidate (RFC 8839 §5.1).
  *  Priority matches what the ICE layer emits in the STUN PRIORITY attribute
  *  via ICE_SRFLX_PRIORITY(idx) (RFC 8445 §5.1.2.1: type_pref=100). The srflx
@@ -660,17 +670,8 @@ static bool sdp_append_srflx_candidate(nano_sdp_t *sdp, char *buf, size_t buf_le
         return false;
     if (!sdp_append(buf, buf_len, pos, " typ srflx"))
         return false;
-    /* raddr/rport from first host candidate (base) */
-    if (sdp->local_candidate_count > 0 && sdp->local_candidates[0].addr[0] != '\0') {
-        if (!sdp_append(buf, buf_len, pos, " raddr "))
-            return false;
-        if (!sdp_append(buf, buf_len, pos, sdp->local_candidates[0].addr))
-            return false;
-        if (!sdp_append(buf, buf_len, pos, " rport "))
-            return false;
-        if (!sdp_append_u16(buf, buf_len, pos, sdp->local_candidates[0].port))
-            return false;
-    }
+    if (!sdp_append_related_address(buf, buf_len, pos, sdp->srflx_candidate_ip))
+        return false;
     if (!sdp_append(buf, buf_len, pos, "\r\n"))
         return false;
     return true;
@@ -700,17 +701,8 @@ static bool sdp_append_relay_candidate(nano_sdp_t *sdp, char *buf, size_t buf_le
         return false;
     if (!sdp_append(buf, buf_len, pos, " typ relay"))
         return false;
-    /* raddr/rport from first host candidate (base, if available) */
-    if (sdp->local_candidate_count > 0 && sdp->local_candidates[0].addr[0] != '\0') {
-        if (!sdp_append(buf, buf_len, pos, " raddr "))
-            return false;
-        if (!sdp_append(buf, buf_len, pos, sdp->local_candidates[0].addr))
-            return false;
-        if (!sdp_append(buf, buf_len, pos, " rport "))
-            return false;
-        if (!sdp_append_u16(buf, buf_len, pos, sdp->local_candidates[0].port))
-            return false;
-    }
+    if (!sdp_append_related_address(buf, buf_len, pos, sdp->relay_candidate_ip))
+        return false;
     if (!sdp_append(buf, buf_len, pos, "\r\n"))
         return false;
     return true;

@@ -116,7 +116,7 @@ static bool candidate_token_u32(const candidate_token_t *token, uint32_t *value)
  * heap allocation or unbounded format calls — the safe-C policy bans
  * the entire `*printf`/`*scanf` family in `src/`, and the caller-
  * provided buffer carries its own size guarantee through the
- * NANORTC_HOST_CAND_STR_SIZE-style macros at the storage site.
+ * ICE_CANDIDATE_STR_SIZE macro at the storage site.
  * ---------------------------------------------------------------- */
 
 /** Append a base-10 unsigned integer to buf at *pos. Returns new pos. */
@@ -162,6 +162,15 @@ size_t nano_rtc_build_candidate_str(char *buf, uint16_t foundation, uint32_t pri
     pos = cand_append_u32(buf, pos, port);
     pos = cand_append(buf, pos, " typ ", 5);
     pos = cand_append(buf, pos, type, type_len);
+    /* RFC 8839 §5.1 / §9.1: retain mandatory related fields, but hide the
+     * base/mapped address using the candidate's family and discard port. */
+    if (type_len == 5 && (memcmp(type, "srflx", 5) == 0 || memcmp(type, "relay", 5) == 0)) {
+        if (memchr(ip, ':', ip_len))
+            pos = cand_append(buf, pos, " raddr :: rport 9", sizeof(" raddr :: rport 9") - 1);
+        else
+            pos = cand_append(buf, pos, " raddr 0.0.0.0 rport 9",
+                              sizeof(" raddr 0.0.0.0 rport 9") - 1);
+    }
     buf[pos] = '\0';
     return pos;
 }
