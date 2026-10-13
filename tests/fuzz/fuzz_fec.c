@@ -17,10 +17,11 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+#include <assert.h>
 
 #if NANORTC_FEATURE_VIDEO && NANORTC_FEATURE_VIDEO_FEC
 
-#define MAXP 8
+#define MAXP    8
 #define PKT_CAP 512
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
@@ -42,6 +43,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
             memset(store[i], (int)data[i % size], lens[i]);
             store[i][0] = 0x80;
             nanortc_write_u16be(store[i] + 2, (uint16_t)(base_seq + i));
+            nanortc_write_u32be(store[i] + 8, (data[0] & (1u << i)) ? 0x1234u : 0x5678u);
             pkts[i] = store[i];
         }
         fec_recover(data, size, 0x1234u, pkts, lens, 2, out, sizeof(out), &ol, &oseq);
@@ -59,6 +61,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
         store[i][0] = 0x80;
         store[i][1] = 96;
         nanortc_write_u16be(store[i] + 2, (uint16_t)(base + i)); /* contiguous, span < 16 */
+        nanortc_write_u32be(store[i] + 8, 0x1234u);
         pkts[i] = store[i];
     }
     uint8_t fec[PKT_CAP + 32];
@@ -76,7 +79,10 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
                 nr++;
             }
         }
-        fec_recover(fec, fl, 0x1234u, recv, rl, nr, out, sizeof(out), &ol, &oseq);
+        int rc = fec_recover(fec, fl, 0x1234u, recv, rl, nr, out, sizeof(out), &ol, &oseq);
+        assert(rc == NANORTC_OK);
+        assert(ol == lens[drop] && oseq == (uint16_t)(base + drop));
+        assert(memcmp(out, pkts[drop], ol) == 0);
     }
     return 0;
 }

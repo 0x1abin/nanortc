@@ -15,8 +15,8 @@
  *   - MSST / MSMT transmission    — RFC 7798 §4.1     (multi-session, conference use only)
  *   - DON reordering              — RFC 7798 §6.1     (first pass assumes decode order == rx order)
  *
- * The packetizer is callback-driven and holds no internal buffering, matching
- * the nano_h264.c pattern. The depacketizer holds a single reassembly buffer
+ * The packetizer offers a caller-buffer iterator and a callback convenience
+ * API. The depacketizer holds a single reassembly buffer
  * per track, sized via NANORTC_VIDEO_NAL_BUF_SIZE.
  *
  * SPDX-License-Identifier: MIT
@@ -135,6 +135,24 @@ typedef struct h265_nal_ref {
     const uint8_t *data;
     size_t len;
 } h265_nal_ref_t;
+
+/** Iterates one AU without a payload buffer. Keep NAL references and their
+ * contents stable until exhausted; scratch can be the final RTP payload slot. */
+typedef struct h265_packet_iter {
+    const h265_nal_ref_t *nals;
+    size_t nal_count;
+    size_t index;
+    size_t offset;
+    size_t mtu;
+} h265_packet_iter_t;
+
+int h265_packet_iter_init(h265_packet_iter_t *it, const h265_nal_ref_t *nals, size_t nal_count,
+                          size_t mtu);
+int h265_packet_iter_has_next(const h265_packet_iter_t *it);
+/** AP/FU payloads are written into scratch; a single NAL returns its source
+ * pointer. BUFFER_TOO_SMALL leaves the iterator unchanged for retry. */
+int h265_packet_iter_next(h265_packet_iter_t *it, uint8_t *scratch, size_t scratch_len,
+                          const uint8_t **payload, size_t *len, int *marker);
 
 /**
  * Callback invoked by the H.265 packetizer for each emitted RTP payload.

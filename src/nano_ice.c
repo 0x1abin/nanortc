@@ -176,7 +176,7 @@ static void ice_select_pair(nano_ice_t *ice, uint8_t local, uint8_t remote)
  * ponytail: bounded candidate/transaction tables; when full, the peer's next
  * retransmission retries admission. Never evict an active transaction. */
 static bool ice_trigger_check(nano_ice_t *ice, uint8_t local, const nanortc_addr_t *src,
-                              bool nominate)
+                              bool nominate, uint32_t priority)
 {
     if (ice->state == NANORTC_ICE_STATE_CONNECTED || ice->state == NANORTC_ICE_STATE_FAILED ||
         ice->state == NANORTC_ICE_STATE_DISCONNECTED)
@@ -206,6 +206,7 @@ static bool ice_trigger_check(nano_ice_t *ice, uint8_t local, const nanortc_addr
         c->family = src->family;
         c->port = src->port;
         c->type = NANORTC_ICE_CAND_PRFLX;
+        ice->remote_priorities[remote] = priority;
         ice->remote_candidate_count++;
     }
     nano_ice_pending_t *p = &ice->pending[slot];
@@ -332,7 +333,8 @@ int ice_handle_stun(nano_ice_t *ice, const uint8_t *data, size_t len, const nano
         } else if (resolved >= ice->local_candidate_count) {
             resolved = ice_find_local_idx_by_family(ice, src->family);
         }
-        if (!ice_trigger_check(ice, resolved, src, msg.use_candidate && !ice->is_controlling)) {
+        if (!ice_trigger_check(ice, resolved, src, msg.use_candidate && !ice->is_controlling,
+                               msg.priority)) {
             *resp_len = 0; /* Do not acknowledge a nomination we cannot retain. */
             return NANORTC_ERR_WOULD_BLOCK;
         }
@@ -348,6 +350,14 @@ int ice_handle_stun(nano_ice_t *ice, const uint8_t *data, size_t len, const nano
         /* Check if this is a consent check response */
         if (ice->consent_pending &&
             memcmp(msg.transaction_id, ice->consent_txid, STUN_TXID_SIZE) == 0) {
+            /* RFC 7675 §5.1: consent belongs to this exact transport path. */
+            if (src->family != ice->selected_family || src->port != ice->selected_port ||
+                memcmp(src->addr, ice->selected_addr, NANORTC_ADDR_SIZE) != 0 ||
+                via_turn != (ice->selected_local_type == NANORTC_ICE_CAND_RELAY) ||
+                (local_idx < ice->local_candidate_count &&
+                 ice_local_base_idx(ice, local_idx) !=
+                     ice_local_base_idx(ice, ice->selected_local_idx)))
+                return NANORTC_ERR_PROTOCOL;
             /* RFC 7675 §5.1 / RFC 8445 §7.1.3: a matching transaction ID is
              * not sufficient. Authenticate the response before allowing it
              * to extend consent. Keep consent_pending set on failure so a

@@ -79,6 +79,14 @@ typedef struct nano_ice_candidate {
     uint8_t type;   /* nano_ice_cand_type_t */
 } nano_ice_candidate_t;
 
+/** Related transport address from remote SDP, retained for diagnostics. */
+typedef struct {
+    uint8_t addr[NANORTC_ADDR_SIZE];
+    uint16_t port;
+    uint8_t family;
+    bool present;
+} nano_ice_related_t;
+
 /** Fixed-capacity transaction/trigger/valid-pair table (RFC 8445 §7).
  * Both roles keep transaction IDs until success, cancellation or timeout. */
 typedef struct nano_ice_pending {
@@ -130,6 +138,7 @@ typedef struct nano_ice {
 
     /* Remote candidates array (trickle ICE support) */
     nano_ice_candidate_t remote_candidates[NANORTC_MAX_ICE_CANDIDATES];
+    uint32_t remote_priorities[NANORTC_MAX_ICE_CANDIDATES];
     uint8_t remote_candidate_count;
 
     /* Ordinary candidate-pair iteration */

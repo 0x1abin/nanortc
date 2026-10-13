@@ -13,6 +13,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+#include <assert.h>
 
 #define FUZZ_TWCC_FRAME_CAP 512
 
@@ -37,7 +38,8 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 
     /* Exercise both the summary-only fast path and the callback path. */
     twcc_parse_feedback(data, size, &summary, NULL, NULL);
-    twcc_parse_feedback(data, size, &summary, fuzz_twcc_packet, &state);
+    int rc = twcc_parse_feedback(data, size, &summary, fuzz_twcc_packet, &state);
+    assert(rc == 0 || state.callbacks == 0);
 
     /* Also place the bytes behind a valid fixed TWCC header. This reaches the
      * chunk/delta parser immediately from an empty corpus while the direct call
@@ -57,7 +59,9 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
             framed[15] = (uint8_t)count;
             memcpy(framed + 20, data, size);
         }
-        twcc_parse_feedback(framed, framed_len, &summary, fuzz_twcc_packet, &state);
+        state.callbacks = 0;
+        rc = twcc_parse_feedback(framed, framed_len, &summary, fuzz_twcc_packet, &state);
+        assert(rc == 0 || state.callbacks == 0);
     }
 
     return (int)(state.checksum & 0u);

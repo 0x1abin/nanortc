@@ -34,8 +34,8 @@
  * Encode one ULPFEC packet (the FEC header + level-0 header + payload, i.e. the
  * bytes after the FEC packet's own RTP header) protecting @p count media RTP
  * packets. @p pkts[i] is a full plaintext RTP packet of length @p lens[i] (each
- * >= FEC_RTP_HDR). The packets' sequence numbers must span < 16. @count in
- * 1..FEC_MAX_GROUP.
+ * >= FEC_RTP_HDR). All packets must have the same SSRC and distinct sequence
+ * numbers spanning < 16. @count in 1..FEC_MAX_GROUP.
  *
  * @return NANORTC_OK with *out_len set, or NANORTC_ERR_INVALID_PARAM /
  * NANORTC_ERR_BUFFER_TOO_SMALL.
@@ -48,7 +48,8 @@ int fec_encode(const uint8_t *const *pkts, const uint16_t *lens, uint8_t count, 
  * FEC packet body (post-RTP-header, as produced by fec_encode). @p recv[] are
  * the received members of the same group (a subset; the codec finds the one
  * protected SN that is absent). @p media_ssrc is the SSRC to stamp on the
- * recovered RTP packet (ULPFEC does not carry it). Recovers exactly one loss;
+ * recovered RTP packet (ULPFEC does not carry it); received packets from other
+ * SSRCs are ignored. Recovers exactly one loss;
  * returns NANORTC_ERR_NO_DATA if zero or ≥2 protected members are missing.
  *
  * @return NANORTC_OK with the recovered full RTP packet in @p out (*out_len, and

@@ -6,6 +6,9 @@
 
 ---
 
+0.2.0 的破坏性 API、发送所有权、认证、生命周期和验收记录见
+[升级记录](../engineering/nanortc-02.md)。历史性能与浏览器结论不代表本版复验。
+
 ## 1. 项目概述
 
 ### 1.1 NanoRTC 是什么
@@ -66,19 +69,10 @@ CI 测试的 7 种 canonical 组合：
 | MEDIA_ONLY | OFF | ON | ON | OFF |
 | CORE_ONLY | OFF | OFF | OFF | OFF |
 
-当前资源占用以 `docs/engineering/memory-profiles.md` 为准。ESP32-P4 / ESP-IDF 5.5 / `-Os` Kconfig 默认值的代表性数据如下：
-
-| 组合 | Flash (.text) | `sizeof(nanortc_t)` |
-|------|---------------|----------------------|
-| CORE_ONLY | 29.0 KB | 10.2 KB |
-| DC only | 38.8 KB | 19.4 KB |
-| Audio only | 40.8 KB | 20.6 KB |
-| DC + Audio | 50.6 KB | 29.9 KB |
-| Media only | 45.3 KB | 51.0 KB |
-| DC + Audio + Video | 55.0 KB | 60.3 KB |
-| DC + Audio + Video + H265 (MEDIA_H265) | 待补测 | 待补测 |
-
-> MEDIA_H265 的具体数字依赖 Phase 3.5 完成 `nano_h265` 在 `nano_rtc` 的接线（见 [docs/PLANS.md](../PLANS.md) Phase 3.5 PR-2/PR-3），届时通过 `./scripts/measure-sizes.sh --esp32 esp32p4` 与其它行一并刷新到 `docs/engineering/memory-profiles.md`。结构上仅新增 `nano_h265` 与 `nano_base64` 两个静态 codec 模块，`sizeof(nanortc_t)` 与 `DC + Audio + Video` 一致。
+当前资源占用统一见 [memory-profiles.md](../engineering/memory-profiles.md)。
+0.2 新增实际发送记录与有界反馈历史，同时使用二进制候选和远端协商结果缩减重复状态。
+数字必须注明配置、目标 ABI、编译器和加密后端；`sizeof(nanortc_t)` 不含 provider heap、
+应用重试数据报和 RTOS 栈。H.265 已接入，参数集仍驻留于本地轨道且不复制进远端解析结果。
 
 ---
 
@@ -122,23 +116,26 @@ int  nanortc_init(nanortc_t *rtc, const nanortc_config_t *cfg);
 void nanortc_destroy(nanortc_t *rtc);
 
 // ---- SDP ----
-int  nanortc_accept_offer(nanortc_t *rtc, const char *offer,
+int  nanortc_accept_offer(nanortc_t *rtc, const char *offer, size_t offer_len,
                        char *answer_buf, size_t answer_buf_len,
                        size_t *out_len);
 int  nanortc_create_offer(nanortc_t *rtc,
                        char *offer_buf, size_t offer_buf_len,
                        size_t *out_len);
-int  nanortc_accept_answer(nanortc_t *rtc, const char *answer);
+int  nanortc_accept_answer(nanortc_t *rtc, const char *answer, size_t answer_len);
 
 // ---- ICE ----
 int  nanortc_add_local_candidate(nanortc_t *rtc,
                               const char *ip, uint16_t port);
 int  nanortc_add_remote_candidate(nanortc_t *rtc,
-                               const char *candidate_str);
+                               const char *candidate_str, size_t len);
 
 // ---- 事件循环（Sans I/O 核心）----
 int  nanortc_poll_output(nanortc_t *rtc, nanortc_output_t *out);
 int  nanortc_handle_input(nanortc_t *rtc, const nanortc_input_t *in);
+int  nanortc_report_transmit(nanortc_t *rtc, uint64_t token,
+                             nanortc_transmit_result_t result, uint32_t at_ms);
+int  nanortc_get_stats(const nanortc_t *rtc, nanortc_stats_t *stats);
 //   nanortc_input_t { now_ms, data, len, src, dst } — 与 nanortc_output_t.transmit 对称
 
 // ---- DataChannel (flat API — no handle needed) ----
@@ -158,7 +155,7 @@ int  nanortc_add_audio_track(nanortc_t *rtc, nanortc_direction_t dir,
                              uint8_t channels);
 int  nanortc_add_video_track(nanortc_t *rtc, nanortc_direction_t dir,
                              nanortc_codec_t codec);
-void nanortc_set_direction(nanortc_t *rtc, uint8_t mid, nanortc_direction_t dir);
+int nanortc_set_direction(nanortc_t *rtc, uint8_t mid, nanortc_direction_t dir);
 int  nanortc_send_audio(nanortc_t *rtc, uint8_t mid, uint32_t pts_ms,
                         const void *data, size_t len);
 int  nanortc_send_video(nanortc_t *rtc, uint8_t mid, uint32_t pts_ms,
@@ -171,6 +168,12 @@ bool nanortc_is_alive(const nanortc_t *rtc);
 bool nanortc_is_connected(const nanortc_t *rtc);
 void nanortc_disconnect(nanortc_t *rtc);
 ```
+
+协商状态独立于连接状态；一个连接最多有一个待处理 offer 和一个待回报 UDP 输出。
+输入 SDP/候选长度不含 NUL；失败不提交远端协商状态。每个 TRANSMIT 必须回报
+SENT 或最终 DROPPED，EAGAIN 则由应用复制一个数据报并继续收包/计时。
+`set_direction` 仅在协商前允许；单独 DC close 返回 NOT_IMPLEMENTED；disconnect 立即关闭。
+纯 ICE restart 保留 DTLS/SRTP/轨道/DC，身份和媒体变化必须重建连接。
 
 ### 2.3 输出/事件类型
 
@@ -196,7 +199,7 @@ typedef enum {
     NANORTC_EV_DATACHANNEL_OPEN = 7,         // DataChannel 打开
     NANORTC_EV_DATACHANNEL_DATA = 8,         // DataChannel 数据（binary 标志区分二进制/字符串）
     NANORTC_EV_DATACHANNEL_CLOSE = 9,        // DataChannel 关闭
-    NANORTC_EV_DATACHANNEL_BUFFERED_LOW = 10,// 发送缓冲区低于阈值
+    // 原 BUFFERED_LOW = 10 已删除；输出可写不等于已发送。
 } nanortc_event_type_t;
 
 // 事件结构体 (tagged union)
@@ -283,7 +286,7 @@ NanoRTC 的 ICE agent 支持两种模式：
 
 1. 主动发送 STUN Binding Request 给远端候选
 2. 处理 Binding Response，验证 `MESSAGE-INTEGRITY`
-3. 驱动候选配对和优先级排序
+3. 驱动有界候选配对；保存优先级，但未实现完整 checklist 排序
 4. 发送 `USE-CANDIDATE` 属性提名选中的候选对
 
 设备既可以作为 answerer（被浏览器/SFU 连接），也可以作为 offerer（主动连接远端）。
@@ -298,15 +301,15 @@ NanoRTC 不自行实现 DTLS。crypto provider（通常是 mbedtls）处理完�
 NanoRTC 提供 BIO（缓冲 I/O）接口：
 
 
-**自签名证书**：初始化时通过 crypto provider 生成。证书指纹嵌入 SDP answer
-中用于 DTLS-SRTP 验证。
+**自签名证书**：创建 DTLS context 时通过 crypto provider 生成，SHA-256 指纹嵌入 SDP。
+远端指纹必须与握手证书实际摘要一致，验证成功后才进入 ESTABLISHED 并导出 SRTP 密钥。
+缺失/错误指纹不能继续会话；纯 ICE restart 保留已有认证关联。
 
 ### 3.4 SCTP-Lite（nano_sctp.c）
 
 **范围**：RFC 9260 的有界 SCTP 子集，用于 WebRTC DataChannel 传输。这里记录实际实现范围，不表示完整 SCTP 合规。
 
-这是最具挑战性的自研模块。NanoRTC 仅实现 WebRTC Data Channel 规范（RFC 8831）
-所需的功能：
+NanoRTC 实现以下有界功能；不声称覆盖 WebRTC DataChannel 规范（RFC 8831）的全部要求：
 
 **已实现：**
 
@@ -348,6 +351,7 @@ SHUTDOWN 完整状态机、拥塞窗口及 gap SACK 驱动的快速重传仍是�
 - 有序 vs 无序交付（映射到 SCTP 流参数）
 - 字符串 vs 二进制消息类型（PPID: 51 为字符串, 53 为二进制）
 - 多个 DataChannel 使用不同 SCTP stream ID 并发
+- 单通道关闭返回 NOT_IMPLEMENTED（未实现 RFC 6525 stream reset）；连接 disconnect 立即关闭
 
 
 ### 3.6 RTP/RTCP（nano_rtp.c, nano_rtcp.c）— NANORTC_HAVE_MEDIA_TRANSPORT
@@ -372,27 +376,21 @@ SHUTDOWN 完整状态机、拥塞窗口及 gap SACK 驱动的快速重传仍是�
 
 ### 3.6.1 带宽估计（nano_bwe.c / nano_twcc.c）— NANORTC_FEATURE_VIDEO
 
-NanoRTC 只做**感知**，不做**执行**：BWE 消费 REMB 和 TWCC 反馈得出一个建议码率，应用层自行据此驱动编码器。库内不做 pacer、不做主动丢帧、不做 GCC delay-based 控制。
+BWE 的输入是实际 UDP 发送结果、REMB 上限与 draft-holmer TWCC 逐包反馈
+（PT=205/FMT=15，不是 RFC 8888 CCFB）。发送成功回报才写入有界 history；
+缺失、重复、过期或重传歧义样本不能证明空闲带宽。控制在固定时间间隔运行：
+高丢包降速，低丢包还需实际负载、足够到达时间样本、稳定期及无排队增长才能探升。
+仅 loss summary 不触发升速；REMB 是上限，可低于编码器最小偏好。
 
-**输入：**
-- RTCP PSFB FMT=15 REMB — 直接给出目标码率，EMA 平滑。
-- RTCP RTPFB FMT=15 TWCC — 从 chunk + delta 序列重建 `received_count / packet_status_count`，套 loss-based 控制器：
-  - loss < ~2 %：估计 × 1.08
-  - 2 %–10 %：保持
-  - \> 10 %：估计 × (512 − loss_q8) / 512
-  
-  再与现有估计做 EMA 融合。
+视频 m-line 协商 transport-cc 扩展 ID，RTP one-byte extension 携带16位 transport序号。
+`NANORTC_EV_BITRATE_ESTIMATE`、pacer 与可选 capability ladder 消费同一估计。
+应用仍负责调整编码器；库不实现完整 GCC trendline/probe cluster，也不发送接收端 TWCC。
 
-**发送侧协商：** 视频 m-line 在 SDP 里发布 `a=extmap:<id> http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01`（默认 ID 3，可回显对端）。RTP 发送时在 one-byte header extension（`0xBEDE`）里写入 transport-cc 16-bit 序列号，每包开销 8 字节。
-
-**输出：**
-- `NANORTC_EV_BITRATE_ESTIMATE` 事件：含 `bitrate_bps / prev_bitrate_bps / direction (UP/DOWN/STABLE) / source (REMB/TWCC_LOSS)`。
-- `nanortc_get_estimated_bitrate(rtc)` 查询。
-- `nanortc_track_stats_t`：`estimated_bitrate_bps`、`send_bitrate_bps`（1 秒滑窗）、`send_fps_q8`（Q8.8）、`fraction_lost`（从 RR/SR report block 提取）。
-
-**运行时调参：** `nanortc_set_bitrate_bounds(rtc, min, max)` / `nanortc_set_initial_bitrate(rtc, bps)` / `nanortc_set_bwe_event_threshold(rtc, pct)` 覆盖编译期 `NANORTC_BWE_*` 宏。适用于 IoT 设备启动后才知道硬件编码器能力的场景。
-
-**不做：** 发送 TWCC feedback 包（接收端需要，后续 phase 候选）、GCC/trendline 延迟控制、pacer、独立 NACK/PLI/FIR 事件（当前 `NANORTC_EV_KEYFRAME_REQUEST` 足够）。
+`nanortc_get_track_stats` 不修改状态。RTP发送包/字节在 SENT 后累计；视频 FPS 是
+成功接纳的帧数。RTT 仅在远端 report 的 SSRC/LSR 匹配实际发出的 SR 时有效，
+用经过时间减 DLSR，并通过 `rtt_valid` 区分无样本。
+运行时仍支持 bitrate bounds、initial bitrate、event threshold。容量与验收细节见
+[0.2记录](../engineering/nanortc-02.md)及[自适应媒体](../engineering/adaptive-media.md)。
 
 ### 3.7 SRTP（nano_srtp.c）— NANORTC_HAVE_MEDIA_TRANSPORT
 
@@ -432,7 +430,7 @@ Linux 主机开发可使用 OpenSSL 后端（`-DNANORTC_CRYPTO=openssl`）。
 
 **必需能力(CORE_ONLY profile 即需要):**
 
-- DTLS 1.2 全生命周期:init / handshake / encrypt / decrypt / export_keying_material / get_fingerprint / set_role
+- DTLS 1.2：context/BIO、handshake、encrypt/decrypt、export_keying_material、local/peer fingerprint 和 free；必须提供 set_time / next_timeout / handle_timeout。set_role 为可选能力，协商需要切换角色时若缺失则返回 NOT_IMPLEMENTED。
 - HMAC-SHA1 —— STUN MESSAGE-INTEGRITY
 - CSPRNG —— ICE 凭据、SCTP cookie、DTLS nonce
 

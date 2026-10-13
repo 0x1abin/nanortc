@@ -440,6 +440,18 @@ static int ossl_dtls_export_keying_material(nanortc_crypto_dtls_ctx_t *ctx, cons
     return 0;
 }
 
+static int ossl_dtls_get_peer_fingerprint(nanortc_crypto_dtls_ctx_t *ctx,
+                                          uint8_t out[NANORTC_DTLS_FINGERPRINT_SIZE])
+{
+    X509 *peer = SSL_get1_peer_certificate(ctx->ssl);
+    unsigned int len = 0;
+    if (!peer)
+        return -1;
+    int rc = X509_digest(peer, EVP_sha256(), out, &len);
+    X509_free(peer);
+    return rc == 1 && len == NANORTC_DTLS_FINGERPRINT_SIZE ? 0 : -1;
+}
+
 static int ossl_dtls_get_fingerprint(nanortc_crypto_dtls_ctx_t *ctx, char *buf, size_t buf_len)
 {
     if (!ctx || buf_len < NANORTC_DTLS_FINGERPRINT_MIN_BUF) {
@@ -553,6 +565,7 @@ static const nanortc_crypto_provider_t openssl_provider = {
     .dtls_decrypt = ossl_dtls_decrypt,
     .dtls_export_keying_material = ossl_dtls_export_keying_material,
     .dtls_get_fingerprint = ossl_dtls_get_fingerprint,
+    .dtls_get_peer_fingerprint = ossl_dtls_get_peer_fingerprint,
     .dtls_free = ossl_dtls_free,
     .dtls_close_notify = ossl_dtls_close_notify,
     .dtls_set_role = ossl_dtls_set_role,

@@ -80,6 +80,16 @@ static int dtls_handshake_result(nano_dtls_t *dtls, int rc)
     dtls->timeout_ms = dtls->crypto->dtls_next_timeout(dtls->crypto_ctx);
     dtls->timeout_observed_ms = dtls->now_ms;
     if (rc == 0) {
+        uint8_t peer[NANORTC_DTLS_FINGERPRINT_SIZE];
+        /* RFC 8122 §5.1: authenticate the certificate against the signaled digest. */
+        if (!dtls->peer_fingerprint_set ||
+            dtls->crypto->dtls_get_peer_fingerprint(dtls->crypto_ctx, peer) != 0 ||
+            memcmp(peer, dtls->expected_peer_fingerprint, sizeof(peer)) != 0) {
+            dtls->state = NANORTC_DTLS_STATE_ERROR;
+            dtls->timeout_ms = UINT32_MAX;
+            dtls->out_len = 0;
+            return NANORTC_ERR_CRYPTO;
+        }
         dtls->state = NANORTC_DTLS_STATE_ESTABLISHED;
         dtls->timeout_ms = UINT32_MAX;
         if (dtls->crypto->dtls_export_keying_material(
@@ -113,7 +123,8 @@ int dtls_validate_provider(const nanortc_crypto_provider_t *crypto)
     if (!crypto || !crypto->dtls_ctx_new || !crypto->dtls_set_bio || !crypto->dtls_handshake ||
         !crypto->dtls_encrypt || !crypto->dtls_decrypt || !crypto->dtls_export_keying_material ||
         !crypto->dtls_get_fingerprint || !crypto->dtls_free || !crypto->dtls_set_time ||
-        !crypto->dtls_next_timeout || !crypto->dtls_handle_timeout)
+        !crypto->dtls_next_timeout || !crypto->dtls_handle_timeout ||
+        !crypto->dtls_get_peer_fingerprint)
         return NANORTC_ERR_INVALID_PARAM;
     return NANORTC_OK;
 }
@@ -124,32 +135,47 @@ int dtls_init(nano_dtls_t *dtls, const nanortc_crypto_provider_t *crypto, int is
         return NANORTC_ERR_INVALID_PARAM;
     }
 
+    /* Prepare the provider before replacing caller state: failed init is retryable. */
+    nanortc_crypto_dtls_ctx_t *ctx = crypto->dtls_ctx_new(is_server);
+    if (!ctx)
+        return NANORTC_ERR_CRYPTO;
+    char fingerprint[NANORTC_DTLS_FINGERPRINT_STR_SIZE] = {0};
+    if (crypto->dtls_set_bio(ctx, dtls, bio_send_cb, bio_recv_cb) != 0 ||
+        crypto->dtls_get_fingerprint(ctx, fingerprint, sizeof(fingerprint)) != 0 ||
+        fingerprint[NANORTC_DTLS_FINGERPRINT_MIN_BUF - 1u] != '\0') {
+        crypto->dtls_free(ctx);
+        return NANORTC_ERR_CRYPTO;
+    }
+    for (size_t i = 0; i < NANORTC_DTLS_FINGERPRINT_MIN_BUF - 1u; i++) {
+        char c = fingerprint[i];
+        bool valid = i % 3u == 2u ? c == ':'
+                                  : ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F') ||
+                                     (c >= 'a' && c <= 'f'));
+        if (!valid) {
+            crypto->dtls_free(ctx);
+            return NANORTC_ERR_CRYPTO;
+        }
+    }
     memset(dtls, 0, sizeof(*dtls));
     dtls->state = NANORTC_DTLS_STATE_INIT;
     dtls->timeout_ms = UINT32_MAX;
     dtls->crypto = crypto;
     dtls->is_server = is_server;
-
-    /* Allocate crypto context (heap-allocated by provider) */
-    nanortc_crypto_dtls_ctx_t *ctx = crypto->dtls_ctx_new(is_server);
-    if (!ctx) {
-        dtls->state = NANORTC_DTLS_STATE_ERROR;
-        return NANORTC_ERR_CRYPTO;
-    }
     dtls->crypto_ctx = ctx;
+    memcpy(dtls->local_fingerprint, fingerprint, sizeof(fingerprint));
 
-    /* Register BIO callbacks */
-    int rc = crypto->dtls_set_bio(ctx, dtls, bio_send_cb, bio_recv_cb);
-    if (rc != 0) {
-        crypto->dtls_free(ctx);
-        dtls->crypto_ctx = NULL;
-        dtls->state = NANORTC_DTLS_STATE_ERROR;
-        return NANORTC_ERR_CRYPTO;
-    }
+    return NANORTC_OK;
+}
 
-    /* Cache local fingerprint */
-    crypto->dtls_get_fingerprint(ctx, dtls->local_fingerprint, sizeof(dtls->local_fingerprint));
-
+int dtls_set_peer_fingerprint(nano_dtls_t *dtls,
+                              const uint8_t fingerprint[NANORTC_DTLS_FINGERPRINT_SIZE])
+{
+    if (!dtls || !fingerprint)
+        return NANORTC_ERR_INVALID_PARAM;
+    if (dtls->state != NANORTC_DTLS_STATE_INIT)
+        return NANORTC_ERR_STATE;
+    memcpy(dtls->expected_peer_fingerprint, fingerprint, NANORTC_DTLS_FINGERPRINT_SIZE);
+    dtls->peer_fingerprint_set = true;
     return NANORTC_OK;
 }
 

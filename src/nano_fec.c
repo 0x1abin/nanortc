@@ -40,15 +40,26 @@ int fec_encode(const uint8_t *const *pkts, const uint16_t *lens, uint8_t count, 
         return NANORTC_ERR_INVALID_PARAM;
     }
 
-    uint16_t sn_base = fec_sn_base(pkts, count);
-    size_t max_bs = 0; /* longest FEC bit string = max(len_i - 2) */
     for (uint8_t i = 0; i < count; i++) {
         if (!pkts[i] || lens[i] < FEC_RTP_HDR) {
             return NANORTC_ERR_INVALID_PARAM;
         }
-        if ((uint16_t)(nanortc_read_u16be(pkts[i] + 2) - sn_base) >= FEC_MAX_GROUP) {
+    }
+    uint16_t sn_base = fec_sn_base(pkts, count);
+    uint32_t ssrc = nanortc_read_u32be(pkts[0] + 8);
+    uint16_t mask = 0;
+    size_t max_bs = 0; /* longest FEC bit string = max(len_i - 2) */
+    for (uint8_t i = 0; i < count; i++) {
+        uint16_t off = (uint16_t)(nanortc_read_u16be(pkts[i] + 2) - sn_base);
+        if (off >= FEC_MAX_GROUP) {
             return NANORTC_ERR_INVALID_PARAM; /* group spans >= 16 SNs */
         }
+        /* RFC 5109 §7.3/§7.4: a mask bit identifies one packet in one RTP
+         * stream; duplicate sequence numbers cannot be represented twice. */
+        uint16_t bit = (uint16_t)(0x8000u >> off);
+        if ((mask & bit) != 0 || nanortc_read_u32be(pkts[i] + 8) != ssrc)
+            return NANORTC_ERR_INVALID_PARAM;
+        mask |= bit;
         size_t bs = (size_t)lens[i] - 2;
         if (bs > max_bs) {
             max_bs = bs;
@@ -64,7 +75,6 @@ int fec_encode(const uint8_t *const *pkts, const uint16_t *lens, uint8_t count, 
     }
     memset(out, 0, total);
 
-    uint16_t mask = 0;
     for (uint8_t i = 0; i < count; i++) {
         const uint8_t *p = pkts[i];
         out[0] ^= (uint8_t)(p[0] & 0x3Fu); /* P/X/CC recovery (V dropped) */
@@ -79,8 +89,6 @@ int fec_encode(const uint8_t *const *pkts, const uint16_t *lens, uint8_t count, 
         for (uint16_t k = 0; k < len16; k++) {
             out[FEC_OVERHEAD + k] ^= p[FEC_RTP_HDR + k]; /* payload XOR */
         }
-        uint16_t off = (uint16_t)(nanortc_read_u16be(p + 2) - sn_base);
-        mask |= (uint16_t)(0x8000u >> off); /* level-0 mask: MSB = base+0 */
     }
 
     nanortc_write_u16be(out + 2, sn_base); /* SN base (not XOR'd) */
@@ -95,7 +103,8 @@ int fec_recover(const uint8_t *fec, size_t fec_len, uint32_t media_ssrc, const u
                 const uint16_t *recv_lens, uint8_t n_recv, uint8_t *out, size_t out_cap,
                 size_t *out_len, uint16_t *out_seq)
 {
-    if (!fec || !out || !out_len || !out_seq || fec_len < FEC_OVERHEAD) {
+    if (!fec || !out || !out_len || !out_seq || fec_len < FEC_OVERHEAD ||
+        (n_recv > 0 && (!recv || !recv_lens))) {
         return NANORTC_ERR_INVALID_PARAM;
     }
     uint16_t sn_base = nanortc_read_u16be(fec + 2);
@@ -115,7 +124,9 @@ int fec_recover(const uint8_t *fec, size_t fec_len, uint32_t media_ssrc, const u
         uint16_t sn = (uint16_t)(sn_base + off);
         int present = 0;
         for (uint8_t j = 0; j < n_recv; j++) {
-            if (recv[j] && recv_lens[j] >= FEC_RTP_HDR && nanortc_read_u16be(recv[j] + 2) == sn) {
+            if (recv[j] && recv_lens[j] >= FEC_RTP_HDR &&
+                nanortc_read_u32be(recv[j] + 8) == media_ssrc &&
+                nanortc_read_u16be(recv[j] + 2) == sn) {
                 present = 1;
                 break;
             }
@@ -142,14 +153,22 @@ int fec_recover(const uint8_t *fec, size_t fec_len, uint32_t media_ssrc, const u
     uint16_t rlen = nanortc_read_u16be(fec + 8);
     memcpy(out + FEC_RTP_HDR, fec + FEC_OVERHEAD, protlen); /* payload = FEC payload */
 
+    uint16_t recovered_mask = 0;
     for (uint8_t j = 0; j < n_recv; j++) {
-        if (!recv[j] || recv_lens[j] < FEC_RTP_HDR) {
+        if (!recv[j] || recv_lens[j] < FEC_RTP_HDR ||
+            nanortc_read_u32be(recv[j] + 8) != media_ssrc) {
             continue;
         }
         uint16_t off = (uint16_t)(nanortc_read_u16be(recv[j] + 2) - sn_base);
         if (off >= FEC_MAX_GROUP || !(mask & (uint16_t)(0x8000u >> off))) {
             continue; /* not a member of this FEC group */
         }
+        /* RFC 5109 §9.2: XOR each received source packet exactly once. */
+        uint16_t bit = (uint16_t)(0x8000u >> off);
+        if (recovered_mask & bit) {
+            continue;
+        }
+        recovered_mask |= bit;
         const uint8_t *p = recv[j];
         r0 ^= (uint8_t)(p[0] & 0x3Fu);
         r1 ^= p[1];

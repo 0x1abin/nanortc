@@ -26,6 +26,7 @@ extern "C" {
 /* DTLS certificate fingerprint format: "XX:XX:...:XX" SHA-256 */
 #define NANORTC_DTLS_FINGERPRINT_STR_SIZE 97 /* 95 hex:colon chars + NUL + 1 spare */
 #define NANORTC_DTLS_FINGERPRINT_MIN_BUF  96 /* 95 chars + NUL */
+#define NANORTC_DTLS_FINGERPRINT_SIZE     32 /* SHA-256 digest bytes. */
 
 /* Opaque DTLS context — sized by the provider implementation */
 typedef struct nanortc_crypto_dtls_ctx nanortc_crypto_dtls_ctx_t;
@@ -68,6 +69,9 @@ struct nanortc_crypto_provider {
     int (*dtls_export_keying_material)(nanortc_crypto_dtls_ctx_t *ctx, const char *label,
                                        size_t label_len, uint8_t *out, size_t out_len);
     int (*dtls_get_fingerprint)(nanortc_crypto_dtls_ctx_t *ctx, char *buf, size_t buf_len);
+    /* Required: SHA-256 of the peer's DER certificate; fail when absent. */
+    int (*dtls_get_peer_fingerprint)(nanortc_crypto_dtls_ctx_t *ctx,
+                                     uint8_t out[NANORTC_DTLS_FINGERPRINT_SIZE]);
     void (*dtls_free)(nanortc_crypto_dtls_ctx_t *ctx);
 
     /* Send DTLS close_notify alert (RFC 5246 §7.2.1).

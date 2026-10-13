@@ -1,16 +1,72 @@
 # Memory Profiles
 
-Issue #81 reuses pending-slot padding for ICE queue/valid/nomination state and
-retains the existing structure ceilings. All seven host state sizes were
-remeasured and are unchanged; current archive sizes are in [issue-81-ice.md](issue-81-ice.md). The P4 archive/code-size values below
-predate this ICE change and have not been remeasured for it.
+## 0.2.0 resource changes
 
-Current host hardening measurements and validation are recorded in
-[design-hardening.md](design-hardening.md). The existing host profile ceilings
-are unchanged. Candidate formatting now shares receive/TURN scratch; SCTP
-reassembly reuses the receive pool without a second message-sized buffer.
-DCEP uses bounded caller scratch instead of an embedded output copy; SCTP
-returns a caller-owned message view without retaining a delivery pointer.
+The current revision adds one pending-transmit token/result record and bounded
+TWCC send history. SDP candidates now use binary address/family/port/type/priority
+and related-address storage (44 bytes per staged entry on the measured host ABI);
+remote fingerprints use 32-byte digests. Parsed remote candidates live only in
+the negotiation staging result, then commit to ICE; persistent SDP no longer
+duplicates the remote candidate array. ICE remote priorities and related metadata
+use separate bounded arrays. Adding related metadata while removing that duplicate
+array reduces the host connection by 48 bytes relative to the earlier 0.2 layout.
+Negotiation staging contains remote fields only, excluding H.265 parameter sets;
+it does not copy a complete `nanortc_t` or media track.
+
+`NANORTC_BWE_SEND_HISTORY_SIZE` defaults to 256 entries (12 bytes each on the host
+ABI). Choose coverage for the actual packet rate and feedback delay; feedback misses after history
+overwrite are counted and cannot be interpreted as spare bandwidth. The example
+UDP helper owns one additional retry datagram outside `nanortc_t`. Crypto-provider
+allocations, application buffers, decoder/encoder state and RTOS stacks are also
+outside this structure's footprint.
+
+The default `NANORTC_FEC_TX_RING` is now 2, down from 4, to retain the original
+all-advanced-media memory ceiling while adding send-history accounting. Up to
+two FEC groups can hold pending repair datagrams. With pacing, groups exceeding
+available slots are discarded. Without pacing, insufficient capacity for every
+repair group completed by a frame discards all its repair groups while retaining
+atomic media admission. Discarded groups increment `fec_dropped_resource` and
+rely on the configured reorder/NACK recovery path.
+This is a bounded loss-recovery tradeoff, not an unlimited FEC queue. Applications
+may override the ring size after budgeting its extra buffers. At default host
+sizes each slot stores a 1,296-byte repair buffer and a 2-byte length, before
+structure alignment.
+
+The `test_sizeof` ceilings remain regression guards, not recommended budgets.
+All seven current host profiles pass the original ceilings without increasing
+them. The default CORE state is 20,496 B against a 20,640 B ceiling; MEDIA_H265
+is 121,728 B against 122,880 B. The video history has a real memory cost even
+though binary candidate storage reduces the non-video footprint.
+The all-advanced sanitizer profile measures 166,832 B against its unchanged
+167,936 B ceiling, with the default two-slot FEC transmit ring.
+
+## 0.2.0 measured configurations (2026-10-13)
+
+Host: Linux x86_64, GCC 13.3.0, OpenSSL, CMake Release, default host buffers.
+P4: ESP32-P4 RISC-V HP, ESP-IDF 6.1, mbedTLS 4.1.0 adapter, Kconfig defaults,
+`-Os`. All seven P4 profiles produced linked ELF/binary outputs. This is build
+and archive evidence, not an on-device heap/stack measurement. Archive bytes
+include code and read-only data, exclude the crypto library itself, and precede
+final-link garbage collection.
+The P4 measurement executables retain the `sizeof` entry point only; their
+binary sizes are not complete media-firmware footprints. The four real example
+applications were built and linked separately.
+
+| Profile | Host state B | Host archive B | P4 state B | P4 archive B |
+|---|---:|---:|---:|---:|
+| CORE_ONLY | 20,496 | 106,984 | 14,152 | 41,908 |
+| DATA | 35,624 | 146,458 | 23,688 | 55,712 |
+| AUDIO_ONLY | 46,304 | 136,483 | 23,984 | 56,586 |
+| AUDIO | 61,432 | 175,568 | 33,520 | 70,334 |
+| MEDIA_ONLY | 105,560 | 151,778 | 63,512 | 64,585 |
+| MEDIA | 120,688 | 189,831 | 73,048 | 78,295 |
+| MEDIA_H265 | 121,728 | 197,407 | 74,088 | 82,040 |
+
+Reproduce with `scripts/measure-sizes.sh` and its `--esp32 esp32p4` variant;
+[the 0.2 record](nanortc-02.md#resource-and-validation-record) records validation
+scope. Historical tables below support comparisons only, not current budgeting.
+
+## Historical measurements
 
 The ESP32-P4 table below was measured on **2026-09-07**, including the owned
 transient TX ring, design hardening and #79 protocol/policy integration: RISC-V HP, ESP-IDF **5.5.4**,
@@ -50,7 +106,7 @@ These guards catch accidental structural growth. They do not replace target
 measurements: pointer width, Kconfig buffer trims, crypto backend, and enabled
 media recovery features all change the actual footprint.
 
-## Current host state (Issue #81)
+## Historical host state (Issue #81, before 0.2.0)
 
 Release/OpenSSL, x86_64 defaults; code + read-only data uses GNU `size`.
 The #82-only snapshot remains in the historical hardening record.
@@ -70,7 +126,7 @@ raising the 600-byte DCEP ceiling. Compared with #82, host DataChannel profiles
 add 240 B; P4 DATA/AUDIO add 64 B and MEDIA/MEDIA_H265 add 56 B. Other profiles
 are unchanged. No state ceiling was increased.
 
-## Configuration Matrix
+## Historical ESP-IDF 5.5.4 configuration matrix
 
 | Configuration | Archive code + read-only data (bytes) | `sizeof(nanortc_t)` (bytes) | Notes |
 |---|---|---|---|
@@ -246,10 +302,14 @@ covers under 100 ms across IDR boundaries.
 Transient STUN/ICE/TURN control, DTLS records, encrypted SCTP output, RTCP
 feedback, and audio RTP are built in `nanortc_t.tx_slots`. A busy mask owns each
 slot until `nanortc_poll_output()` advances to that output's exact dequeue
-cursor. This makes two outputs produced by one state-machine call independent,
+cursor. The returned bytes remain only a short borrow; the outstanding token
+does not pin the slot. On socket `EAGAIN`, copy the datagram before another state
+mutation, keep its token, and continue input/timers until `report_transmit`
+records success or final discard. This makes two outputs produced by one state-machine call independent,
 and remains correct when the 16-bit output cursor wraps. If no slot is free,
 caller-driven audio/keyframe sends return `NANORTC_ERR_WOULD_BLOCK` without
-advancing RTP sequence, statistics, or protocol state; timer-driven producers
+advancing RTP sequence or committing the frame/message; wire-send statistics
+advance separately on successful transmit reports; timer-driven producers
 retain their work for a later tick.
 
 `nanortc_t.stun_buf` is now a receive-only view of a shared scratch union. In a

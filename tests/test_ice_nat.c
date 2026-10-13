@@ -54,11 +54,11 @@ static void nat_drain(unsigned side, uint32_t now, bool signal_candidates)
 {
     nanortc_t *from = &peers[side], *to = &peers[1 - side];
     nanortc_output_t out;
-    while (nanortc_poll_output(from, &out) == NANORTC_OK) {
+    while (nano_test_poll_output(from, &out) == NANORTC_OK) {
         if (out.type == NANORTC_OUTPUT_EVENT) {
             if (out.event.type == NANORTC_EV_ICE_CANDIDATE && signal_candidates &&
                 strstr(out.event.ice_candidate.candidate_str, "typ srflx"))
-                ASSERT_OK(nanortc_add_remote_candidate(to, out.event.ice_candidate.candidate_str));
+                ASSERT_OK(nanortc_add_remote_candidate(to, out.event.ice_candidate.candidate_str, strlen(out.event.ice_candidate.candidate_str)));
             if (out.event.type == NANORTC_EV_DATACHANNEL_DATA) {
                 static const uint8_t message[] = {'N', 0, 0xe4, 0xb8, 0xad};
                 ASSERT_EQ(out.event.datachannel_data.len, sizeof(message));
@@ -131,8 +131,8 @@ static void nat_connect(unsigned offerer, bool host_candidates)
     char offer[4096], answer[4096];
     size_t len = 0;
     ASSERT_OK(nanortc_create_offer(&peers[offerer], offer, sizeof(offer), &len));
-    ASSERT_OK(nanortc_accept_offer(&peers[1 - offerer], offer, answer, sizeof(answer), &len));
-    ASSERT_OK(nanortc_accept_answer(&peers[offerer], answer));
+    ASSERT_OK(nanortc_accept_offer(&peers[1 - offerer], offer, strlen(offer), answer, sizeof(answer), &len));
+    ASSERT_OK(nanortc_accept_answer(&peers[offerer], answer, strlen(answer)));
     for (uint32_t now = 100; now < 15000; now += 10) {
         for (unsigned i = 0; i < NAT_ENDPOINTS; i++)
             ASSERT_OK(nanortc_handle_input(&peers[i], &(nanortc_input_t){.now_ms = now}));

@@ -247,6 +247,8 @@ struct nanortc_crypto_dtls_ctx {
 
     /* Fingerprint cache */
     char fingerprint[NANORTC_DTLS_FINGERPRINT_STR_SIZE]; /* "XX:XX:..." SHA-256, 95 chars + NUL */
+    uint8_t peer_fingerprint[NANORTC_DTLS_FINGERPRINT_SIZE];
+    int peer_fingerprint_valid;
 };
 
 /* RFC 6347 §4.2.4: timers are driven by the caller, never platform clocks. */
@@ -281,11 +283,15 @@ static uint32_t mbed_dtls_next_timeout(nanortc_crypto_dtls_ctx_t *ctx)
 
 /* ---- Certificate verification callback: accept self-signed ---- */
 
+static int mbed_certificate_digest(const mbedtls_x509_crt *crt,
+                                   uint8_t digest[NANORTC_DTLS_FINGERPRINT_SIZE]);
+
 static int mbed_verify_cb(void *data, mbedtls_x509_crt *crt, int depth, uint32_t *flags)
 {
-    (void)data;
-    (void)crt;
-    (void)depth;
+    nanortc_crypto_dtls_ctx_t *ctx = data;
+    /* Retain the digest even when MBEDTLS_SSL_KEEP_PEER_CERTIFICATE is disabled. */
+    if (depth == 0)
+        ctx->peer_fingerprint_valid = mbed_certificate_digest(crt, ctx->peer_fingerprint) == 0;
     /* Clear flags that would reject self-signed certs */
     *flags &= ~(MBEDTLS_X509_BADCERT_NOT_TRUSTED | MBEDTLS_X509_BADCERT_CN_MISMATCH |
                 MBEDTLS_X509_BADCERT_BAD_KEY);
@@ -371,12 +377,12 @@ static int mbed_bio_recv(void *ctx, unsigned char *buf, size_t len)
  * Compute SHA-256 fingerprint of DER-encoded certificate
  * ================================================================ */
 
-static int mbed_compute_fingerprint(const mbedtls_x509_crt *crt, char *buf, size_t buf_len)
+static int mbed_certificate_digest(const mbedtls_x509_crt *crt,
+                                   uint8_t digest[NANORTC_DTLS_FINGERPRINT_SIZE])
 {
-    if (buf_len < NANORTC_DTLS_FINGERPRINT_MIN_BUF) {
+    if (!crt || !crt->raw.p || !crt->raw.len) {
         return -1;
     }
-    unsigned char digest[32];
 
 #ifdef NANORTC_MBEDTLS_4
     /* PSA one-shot hash (psa_crypto_init already called by mbed_dtls_ctx_new) */
@@ -394,6 +400,15 @@ static int mbed_compute_fingerprint(const mbedtls_x509_crt *crt, char *buf, size
     nano_sha256_finish(&sha256, digest);
     mbedtls_sha256_free(&sha256);
 #endif
+
+    return 0;
+}
+
+static int mbed_compute_fingerprint(const mbedtls_x509_crt *crt, char *buf, size_t buf_len)
+{
+    uint8_t digest[NANORTC_DTLS_FINGERPRINT_SIZE];
+    if (buf_len < NANORTC_DTLS_FINGERPRINT_MIN_BUF || mbed_certificate_digest(crt, digest) != 0)
+        return -1;
 
     /* Format as "XX:XX:XX:..." (95 chars for SHA-256) */
     static const char hex_upper[] = "0123456789ABCDEF";
@@ -606,7 +621,7 @@ static nanortc_crypto_dtls_ctx_t *mbed_dtls_ctx_new(int is_server)
 
     /* Accept self-signed certificates */
     mbedtls_ssl_conf_authmode(&ctx->conf, MBEDTLS_SSL_VERIFY_OPTIONAL);
-    mbedtls_ssl_conf_verify(&ctx->conf, mbed_verify_cb, NULL);
+    mbedtls_ssl_conf_verify(&ctx->conf, mbed_verify_cb, ctx);
 
     /* Set own certificate */
     ret = mbedtls_ssl_conf_own_cert(&ctx->conf, &ctx->cert, &ctx->pkey);
@@ -760,6 +775,15 @@ static int mbed_dtls_export_keying_material(nanortc_crypto_dtls_ctx_t *ctx, cons
     if (ret != 0) {
         return -1;
     }
+    return 0;
+}
+
+static int mbed_dtls_get_peer_fingerprint(nanortc_crypto_dtls_ctx_t *ctx,
+                                          uint8_t out[NANORTC_DTLS_FINGERPRINT_SIZE])
+{
+    if (!ctx->peer_fingerprint_valid)
+        return -1;
+    memcpy(out, ctx->peer_fingerprint, NANORTC_DTLS_FINGERPRINT_SIZE);
     return 0;
 }
 
@@ -920,6 +944,7 @@ static const nanortc_crypto_provider_t mbedtls_provider = {
     .dtls_decrypt = mbed_dtls_decrypt,
     .dtls_export_keying_material = mbed_dtls_export_keying_material,
     .dtls_get_fingerprint = mbed_dtls_get_fingerprint,
+    .dtls_get_peer_fingerprint = mbed_dtls_get_peer_fingerprint,
     .dtls_free = mbed_dtls_free,
     .dtls_close_notify = mbed_dtls_close_notify,
     .dtls_set_role = mbed_dtls_set_role,

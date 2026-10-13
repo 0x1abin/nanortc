@@ -18,11 +18,39 @@ app can re-IDR), **auto-PLI** keyframe recovery (`NANORTC_FEATURE_VIDEO_AUTO_PLI
 default **on** — cheap gap→debounced-PLI), and BWE (REMB + TWCC) feeding the
 encoder loop. So even the baseline recovers from loss via keyframes.
 
-## Measured footprint (`sizeof(nanortc_t)`, host x86-64, default config sizes)
+## 0.2.0 integration requirements
+
+Every profile must report actual UDP completion. Keep at most one copied datagram
+per connection for temporary socket backpressure, continue input/timers, and do
+not call a successful queue admission a sent packet. Drive the encoder from the
+current BWE estimate and tolerate `ERR_WOULD_BLOCK` without partially advancing
+the frame. Keep fixed storage bounds appropriate to the largest encoded frame,
+packet rate and feedback delay. See [the migration contract](nanortc-02.md).
+
+REMB is a receiver cap; TWCC uses actual send history and arrival-delay/load
+checks before probing upward. Sparse or absent matching feedback freezes upward
+probing. `NANORTC_BWE_SEND_HISTORY_SIZE` therefore needs to cover the stream's
+packet rate across its feedback delay. This does not implement a complete GCC
+controller or guarantee end-to-end latency under arbitrary loss.
+
+With FEC enabled, 0.2.0 defaults to two simultaneous repair-packet buffers
+(`NANORTC_FEC_TX_RING`, previously four). With pacing, groups exceeding available
+repair slots are discarded. Without pacing, if output/FEC capacity cannot fit
+every repair group completed by a frame, all its repair groups are discarded;
+media admission remains atomic. `fec_dropped_resource` counts these groups and
+configured NACK/reorder recovery still applies. Increase the ring explicitly
+when burst protection is worth its additional memory.
+
+## Historical footprint (before 0.2.0)
+
+The following host/competitor/CPU figures are earlier measurements, not a new
+0.2.0 benchmark. Current consolidated numbers belong in
+[memory-profiles.md](memory-profiles.md) and the [0.2 record](nanortc-02.md).
+
 
 Hard numbers — the central "suitable for embedded" axis. Measured by compiling
-`sizeof(nanortc_t)` per feature combo (one connection's entire state; no malloc,
-so this *is* the per-connection RAM):
+`sizeof(nanortc_t)` per feature combo (library state only; provider allocations,
+application retry buffers, codec memory and task stacks are additional):
 
 | Build | `sizeof(nanortc_t)` | Δ vs prior |
 |---|---:|---:|
@@ -75,14 +103,14 @@ nanortc SLOC: ~21 K (27 `.c` + 25 `.h`).
 | SRTP protect (AES-128-CM + HMAC-SHA1-80) | **~1.35 µs** | 741 K pkt/s |
 | SRTP unprotect | ~2.7 µs | 375 K pkt/s |
 
-The actionable result: **the protocol plumbing is essentially free (~20 ns/packet);
+The historical host result: **RTP framing measured ~20 ns/packet;
 per-packet CPU is dominated by SRTP crypto (~1.35 µs), ~67× the RTP cost.** So on
 an MCU the per-packet budget is *crypto + encoder*, not nanortc's framing — which
 is why a chip with a **hardware AES engine (ESP32, rk3588)** matters far more than
 the stack's own efficiency, and why the always-allocation-free, no-copy hot path
 is the right design (it adds nothing measurable on top of the unavoidable crypto).
 At 30 fps × ~50 pkt/frame ≈ 1500 pkt/s, software SRTP is ~2 ms CPU/s on this host —
-negligible; HW-AES MCUs drop it further. (Host arm64 numbers — indicative of the
+negligible; MCU hardware acceleration requires separate measurement. (Host arm64 numbers — indicative of the
 *shape* of the cost, not on-target absolute cycles; real MCU latency/CPU/power
 still need on-device measurement, as does loss-resilience under a real link.)
 

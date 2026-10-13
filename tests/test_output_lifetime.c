@@ -3,11 +3,11 @@
  *
  * Verifies the lifetime contract documented on `nanortc_output_t` in
  * include/nanortc.h: a `transmit.data` pointer is valid only until the
- * next nanortc_poll_output() / nanortc_handle_input() / nanortc_destroy()
+ * next nano_test_poll_output() / nanortc_handle_input() / nanortc_destroy()
  * call. This is what makes the zero-copy output path safe; a regression
  * would silently corrupt media or relayed payloads in production.
  *
- * Coverage (driven through the public nanortc_poll_output() API, not a
+ * Coverage (driven through the public nano_test_poll_output() API, not a
  * synthetic helper):
  *   - Video pkt_ring path: if the caller drains before pkt_ring wraps,
  *     the returned data still matches the producer-side bytes.
@@ -81,7 +81,7 @@ TEST(test_tx_slot_burst_has_independent_payloads_and_exact_release)
 
     for (uint8_t i = 0; i < NANORTC_TX_SLOT_COUNT; i++) {
         nanortc_output_t out;
-        ASSERT_OK(nanortc_poll_output(rtc, &out));
+        ASSERT_OK(nano_test_poll_output(rtc, &out));
         ASSERT_EQ(out.type, NANORTC_OUTPUT_TRANSMIT);
         ASSERT_EQ(out.transmit.len, 1u);
         ASSERT_EQ(out.transmit.data[0], (uint8_t)(0x30u + i));
@@ -133,7 +133,7 @@ TEST(test_managed_backing_release_matches_cursor_across_u16_wrap)
 #endif
 
     nanortc_output_t out;
-    ASSERT_OK(nanortc_poll_output(rtc, &out));
+    ASSERT_OK(nano_test_poll_output(rtc, &out));
     ASSERT_EQ(rtc->out_head, 0u);
     ASSERT_TRUE((rtc->tx_slots_in_use & UINT32_C(1)) == 0u);
 #if NANORTC_TX_SLOT_COUNT > 1
@@ -152,7 +152,7 @@ TEST(test_managed_backing_release_matches_cursor_across_u16_wrap)
 #endif
 #endif
 
-    ASSERT_OK(nanortc_poll_output(rtc, &out));
+    ASSERT_OK(nano_test_poll_output(rtc, &out));
     ASSERT_EQ(rtc->out_head, 1u);
     ASSERT_EQ(rtc->tx_slots_in_use, 0u);
 #if NANORTC_FEATURE_VIDEO
@@ -179,7 +179,7 @@ TEST(test_tx_slot_reusable_after_more_than_32768_outputs)
     ASSERT_OK(nano_rtc_tx_slot_commit(rtc, original_slot, 1, &dest, false));
 
     nanortc_output_t out;
-    ASSERT_OK(nanortc_poll_output(rtc, &out));
+    ASSERT_OK(nano_test_poll_output(rtc, &out));
     ASSERT_TRUE((rtc->tx_slots_in_use & (UINT32_C(1) << original_slot)) == 0u);
 
     /* The former signed-cursor reuse test turns negative at this distance and
@@ -187,7 +187,7 @@ TEST(test_tx_slot_reusable_after_more_than_32768_outputs)
      * irrelevant after the matching dequeue has cleared the bit. */
     for (uint32_t i = 0; i < UINT32_C(32769); i++) {
         enqueue_unmanaged_event(rtc);
-        ASSERT_OK(nanortc_poll_output(rtc, &out));
+        ASSERT_OK(nano_test_poll_output(rtc, &out));
     }
     ASSERT_TRUE((uint16_t)(rtc->out_head - rtc->tx_slot_free_at[original_slot]) > UINT16_C(32768));
 
@@ -207,7 +207,7 @@ TEST(test_tx_slot_reusable_after_more_than_32768_outputs)
  * Drives the same pkt_ring + out_queue layout the real callback drives,
  * but skips the SRTP/RTP machinery a unit test cannot realistically run.
  * The point of these tests is the lifetime contract surfaced through
- * nanortc_poll_output(), not the encoder itself. */
+ * nano_test_poll_output(), not the encoder itself. */
 static void enqueue_pkt_ring_fragment(nanortc_t *rtc, uint16_t seq, uint8_t marker)
 {
     uint16_t out_inflight = (uint16_t)(rtc->out_tail - rtc->out_head);
@@ -246,7 +246,7 @@ TEST(test_pkt_ring_drain_before_wrap_keeps_pointers_valid)
      * the contract supports. */
     for (uint16_t i = 0; i < NANORTC_VIDEO_PKT_RING_SIZE; i++) {
         nanortc_output_t out;
-        ASSERT_OK(nanortc_poll_output(rtc, &out));
+        ASSERT_OK(nano_test_poll_output(rtc, &out));
         ASSERT_EQ(out.type, NANORTC_OUTPUT_TRANSMIT);
         ASSERT_EQ(out.transmit.len, 1u);
         ASSERT_TRUE(out.transmit.data != NULL);
@@ -255,7 +255,7 @@ TEST(test_pkt_ring_drain_before_wrap_keeps_pointers_valid)
 
     /* Queue is now empty. */
     nanortc_output_t out;
-    ASSERT_FAIL(nanortc_poll_output(rtc, &out));
+    ASSERT_FAIL(nano_test_poll_output(rtc, &out));
 }
 
 TEST(test_pkt_ring_overrun_aliases_pre_drain_pointers)
@@ -276,7 +276,7 @@ TEST(test_pkt_ring_overrun_aliases_pre_drain_pointers)
     /* Now poll: the first returned entry's data byte is NOT 0x80 (the
      * original) but 0x80 + PKT_RING_SIZE (the wrap writer). */
     nanortc_output_t out;
-    ASSERT_OK(nanortc_poll_output(rtc, &out));
+    ASSERT_OK(nano_test_poll_output(rtc, &out));
     ASSERT_EQ(out.type, NANORTC_OUTPUT_TRANSMIT);
     ASSERT_TRUE(out.transmit.data != NULL);
     ASSERT_EQ(out.transmit.data[0], (uint8_t)(0x80u + NANORTC_VIDEO_PKT_RING_SIZE));
@@ -291,7 +291,7 @@ TEST(test_pkt_ring_overrun_aliases_pre_drain_pointers)
 
 #if NANORTC_FEATURE_TURN
 
-/* Pre-stage `rtc` so nanortc_poll_output() takes the lazy-wrap branch:
+/* Pre-stage `rtc` so nano_test_poll_output() takes the lazy-wrap branch:
  * TURN configured + ALLOCATED + ICE selected pair is RELAY. */
 static void prime_turn_state(nanortc_t *rtc)
 {
@@ -341,7 +341,7 @@ TEST(test_turn_lazy_wrap_rewrites_turn_buf_between_polls)
     enqueue_turn_wrapped(rtc, payload_b, sizeof(payload_b), peer_b, 5002);
 
     nanortc_output_t out1;
-    ASSERT_OK(nanortc_poll_output(rtc, &out1));
+    ASSERT_OK(nano_test_poll_output(rtc, &out1));
     ASSERT_EQ(out1.type, NANORTC_OUTPUT_TRANSMIT);
     /* Lifetime contract: lazy wrap returns rtc->turn_buf as the payload
      * pointer. The wrapped envelope contains payload_a in its trailer. */
@@ -354,7 +354,7 @@ TEST(test_turn_lazy_wrap_rewrites_turn_buf_between_polls)
     memcpy(snapshot1, out1.transmit.data, snap_len);
 
     nanortc_output_t out2;
-    ASSERT_OK(nanortc_poll_output(rtc, &out2));
+    ASSERT_OK(nano_test_poll_output(rtc, &out2));
     ASSERT_EQ(out2.type, NANORTC_OUTPUT_TRANSMIT);
     /* Same pointer, distinct contents — this is the contract: callers
      * must consume out1 before invoking poll a second time, otherwise
@@ -394,7 +394,7 @@ TEST(test_turn_lazy_wrap_oversized_payload_drops_silently)
     enqueue_turn_wrapped(rtc, payload_ok, sizeof(payload_ok), peer, 5003);
 
     nanortc_output_t out;
-    ASSERT_OK(nanortc_poll_output(rtc, &out));
+    ASSERT_OK(nano_test_poll_output(rtc, &out));
     ASSERT_EQ(out.type, NANORTC_OUTPUT_TRANSMIT);
     /* The oversized slot was skipped, so what came back is the small
      * one. We can't introspect the wrapped envelope's payload trailer
@@ -405,7 +405,7 @@ TEST(test_turn_lazy_wrap_oversized_payload_drops_silently)
 
     /* Queue is now drained. */
     nanortc_output_t empty;
-    ASSERT_FAIL(nanortc_poll_output(rtc, &empty));
+    ASSERT_FAIL(nano_test_poll_output(rtc, &empty));
 }
 
 TEST(test_turn_lazy_wrap_drop_releases_backing_tx_slot)
@@ -425,7 +425,7 @@ TEST(test_turn_lazy_wrap_drop_releases_backing_tx_slot)
     /* The only queued entry is dropped internally, so poll returns NO_DATA.
      * Its backing slot must nevertheless be released at the skipped cursor. */
     nanortc_output_t out;
-    ASSERT_EQ(nanortc_poll_output(rtc, &out), NANORTC_ERR_NO_DATA);
+    ASSERT_EQ(nano_test_poll_output(rtc, &out), NANORTC_ERR_NO_DATA);
     ASSERT_EQ(rtc->stats_wrap_dropped, 1u);
     ASSERT_TRUE((rtc->tx_slots_in_use & UINT32_C(1)) == 0u);
 
@@ -460,21 +460,21 @@ TEST(test_full_queue_retains_terminal_events_and_candidate_identity)
     ASSERT_OK(nano_rtc_emit_event_full(rtc, &event));
     nanortc_output_t out;
     for (uint16_t i = 0; i < NANORTC_OUT_QUEUE_SIZE; i++)
-        ASSERT_OK(nanortc_poll_output(rtc, &out));
-    ASSERT_OK(nanortc_poll_output(rtc, &out));
+        ASSERT_OK(nano_test_poll_output(rtc, &out));
+    ASSERT_OK(nano_test_poll_output(rtc, &out));
     ASSERT_EQ(out.event.type, NANORTC_EV_DISCONNECTED);
-    ASSERT_OK(nanortc_poll_output(rtc, &out));
+    ASSERT_OK(nano_test_poll_output(rtc, &out));
     ASSERT_EQ(out.event.ice_state, NANORTC_ICE_STATE_FAILED);
     uint32_t timeout;
     ASSERT_OK(nanortc_next_timeout_ms(rtc, 0, &timeout));
     ASSERT_EQ(timeout, 0u);
-    ASSERT_OK(nanortc_poll_output(rtc, &out));
+    ASSERT_OK(nano_test_poll_output(rtc, &out));
     ASSERT_EQ(out.event.type, NANORTC_EV_ICE_CANDIDATE);
     ASSERT_TRUE(strstr(out.event.ice_candidate.candidate_str, "192.0.2.1 1001") != NULL);
-    ASSERT_OK(nanortc_poll_output(rtc, &out));
+    ASSERT_OK(nano_test_poll_output(rtc, &out));
     ASSERT_EQ(out.event.type, NANORTC_EV_ICE_CANDIDATE);
     ASSERT_TRUE(strstr(out.event.ice_candidate.candidate_str, "192.0.2.2 1002") != NULL);
-    ASSERT_EQ(nanortc_poll_output(rtc, &out), NANORTC_ERR_NO_DATA);
+    ASSERT_EQ(nano_test_poll_output(rtc, &out), NANORTC_ERR_NO_DATA);
 }
 
 TEST_MAIN_BEGIN("test_output_lifetime")

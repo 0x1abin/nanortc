@@ -1,5 +1,9 @@
 # Phase 9: BWE Perception for IoT Camera / Intercom
 
+The controller description below records the earlier Phase 9 implementation.
+0.2.0 replaces its feedback-count-driven growth with actual-send history and
+fixed-time delay/load/loss guards; see [the current migration and acceptance record](../../engineering/nanortc-02.md).
+
 **Status:** Active (PR-1…PR-5 landed, PR-6 = this doc).
 **Estimated effort:** 1–2 agent sessions (six self-contained PRs).
 **Goal:** Give IoT camera / intercom applications sufficient congestion-control signal (TWCC, plus structured stats and tunables) so the application layer can drive its hardware encoder's rate-control knobs without NanoRTC itself running a pacer or enforcing a target rate.

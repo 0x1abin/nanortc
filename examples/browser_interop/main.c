@@ -38,6 +38,7 @@
 
 typedef struct {
     int offer_mode;
+    bool log_stats;
     int media_connected; /* DTLS+SRTP ready for media */
     int audio_mid;
     int video_mid;
@@ -77,19 +78,31 @@ static void on_event(nanortc_t *rtc, const nanortc_event_t *evt, void *userdata)
 
     case NANORTC_EV_ICE_STATE_CHANGE:
         if (evt->ice_state == NANORTC_ICE_STATE_CONNECTED) {
+            nanortc_stats_t stats;
+            if (nanortc_get_stats(rtc, &stats) != NANORTC_OK)
+                break;
             char local[INET6_ADDRSTRLEN] = "?", remote[INET6_ADDRSTRLEN] = "?";
-            inet_ntop(rtc->ice.selected_local_family == 6 ? AF_INET6 : AF_INET,
-                      rtc->ice.selected_local_addr, local, sizeof(local));
-            inet_ntop(rtc->ice.selected_family == 6 ? AF_INET6 : AF_INET, rtc->ice.selected_addr,
-                      remote, sizeof(remote));
-            const char *type = rtc->ice.selected_local_type == NANORTC_ICE_CAND_RELAY   ? "relay"
-                               : rtc->ice.selected_local_type == NANORTC_ICE_CAND_SRFLX ? "srflx"
-                                                                                        : "host";
+            inet_ntop(stats.selected_local.family == 6 ? AF_INET6 : AF_INET,
+                      stats.selected_local.addr, local, sizeof(local));
+            inet_ntop(stats.selected_remote.family == 6 ? AF_INET6 : AF_INET,
+                      stats.selected_remote.addr, remote, sizeof(remote));
+            const char *type = stats.selected_local_type == NANORTC_ICE_CAND_RELAY   ? "relay"
+                               : stats.selected_local_type == NANORTC_ICE_CAND_SRFLX ? "srflx"
+                                                                                     : "host";
             fprintf(stderr, "[event] ICE connected (%s): local %s:%u (%s), peer %s:%u\n",
-                    rtc->ice.is_controlling ? "controlling" : "controlled", local,
-                    rtc->ice.selected_local_port, type, remote, rtc->ice.selected_port);
+                    stats.is_controlling ? "controlling" : "controlled", local,
+                    stats.selected_local.port, type, remote, stats.selected_remote.port);
         }
         break;
+
+#if NANORTC_FEATURE_VIDEO
+    case NANORTC_EV_BITRATE_ESTIMATE:
+        if (ctx->log_stats)
+            fprintf(stderr, "[bwe] {\"bitrate_bps\":%u,\"previous_bps\":%u,\"source\":%u}\n",
+                    evt->bitrate_estimate.bitrate_bps, evt->bitrate_estimate.prev_bitrate_bps,
+                    (unsigned)evt->bitrate_estimate.source);
+        break;
+#endif
 
     case NANORTC_EV_CONNECTED:
         fprintf(stderr, "[event] Connected\n");
@@ -138,6 +151,7 @@ static void usage(const char *prog)
     fprintf(stderr, "  -s HOST:PORT   Signaling server (default: localhost:8765)\n");
     fprintf(stderr, "  -a DIR         Opus frame directory for audio send\n");
     fprintf(stderr, "  -v DIR         Video frame directory for video send (H.264 or H.265)\n");
+    fprintf(stderr, "  --stats          Emit public media/BWE snapshots every 500ms\n");
     fprintf(stderr, "  --video-codec C  Video codec: h264 (default) or h265\n");
     fprintf(stderr, "  --turn-server IP:PORT  TURN relay server\n");
     fprintf(stderr, "  --turn-user USER       TURN username\n");
@@ -237,7 +251,8 @@ static int do_answer_signaling(http_sig_t *sig, nanortc_t *rtc, app_workspace_t 
 
     char *answer = work->sdp;
     size_t answer_len = 0;
-    int rc = nanortc_accept_offer(rtc, payload, answer, sizeof(work->sdp), &answer_len);
+    int rc =
+        nanortc_accept_offer(rtc, payload, strlen(payload), answer, sizeof(work->sdp), &answer_len);
     if (rc != NANORTC_OK) {
         fprintf(stderr, "nanortc_accept_offer failed: %d\n", rc);
         return rc;
@@ -290,14 +305,14 @@ static int do_offer_signaling(http_sig_t *sig, nanortc_t *rtc, app_workspace_t *
         /* Buffer any early ICE candidates */
         if (strcmp(type, "candidate") == 0 && payload[0] != '\0') {
             fprintf(stderr, "[sig] Early ICE candidate: %.60s...\n", payload);
-            nanortc_add_remote_candidate(rtc, payload);
+            nanortc_add_remote_candidate(rtc, payload, strlen(payload));
         }
     }
 
     if (g_quit)
         return -1;
     fprintf(stderr, "[sig] Got SDP answer (%zu bytes)\n", strlen(payload));
-    rc = nanortc_accept_answer(rtc, payload);
+    rc = nanortc_accept_answer(rtc, payload, strlen(payload));
     if (rc < 0) {
         fprintf(stderr, "nanortc_accept_answer failed: %d\n", rc);
         return rc;
@@ -324,7 +339,7 @@ static void poll_trickle_ice(http_sig_t *sig, nanortc_t *rtc, app_workspace_t *w
     if (rc == 0) {
         if (strcmp(type, "candidate") == 0 && payload[0] != '\0') {
             fprintf(stderr, "[sig] Trickle ICE: %.60s...\n", payload);
-            nanortc_add_remote_candidate(rtc, payload);
+            nanortc_add_remote_candidate(rtc, payload, strlen(payload));
         } else if (strcmp(type, "candidate") == 0) {
             fprintf(stderr, "[sig] End-of-candidates\n");
         }
@@ -339,6 +354,7 @@ int main(int argc, char *argv[])
     uint16_t sig_port = 8765;
     int offer_mode = 0;
     bool host_only = false;
+    bool log_stats = false;
     const char *audio_dir = NULL;
     const char *video_dir = NULL;
     int video_codec = 0; /* 0 = H264 (default), 1 = H265 */
@@ -378,6 +394,8 @@ int main(int argc, char *argv[])
             turn_user = argv[++i];
         } else if (strcmp(argv[i], "--turn-pass") == 0 && i + 1 < argc) {
             turn_pass = argv[++i];
+        } else if (strcmp(argv[i], "--stats") == 0) {
+            log_stats = true;
         } else if (strcmp(argv[i], "--host-only") == 0) {
             host_only = true;
         } else if (strcmp(argv[i], "--offer") == 0) {
@@ -657,6 +675,8 @@ int main(int argc, char *argv[])
     if (has_audio_src || has_video_src) {
         loop.max_poll_ms = 5; /* 5ms poll for smooth media pacing */
     }
+    app_ctx.log_stats = log_stats;
+    uint32_t last_stats_ms = nano_get_millis();
     loop.running = 1;
     while (loop.running) {
         rc = nano_run_loop_step(&loop);
@@ -709,6 +729,25 @@ int main(int argc, char *argv[])
                 nano_media_pacer_advance(&video_pacer);
             }
         }
+#endif
+#if NANORTC_FEATURE_VIDEO
+        uint32_t stats_now = nano_get_millis();
+        if (log_stats && app_ctx.media_connected && stats_now - last_stats_ms >= 500) {
+            last_stats_ms = stats_now;
+            nanortc_stats_t stats;
+            nanortc_track_stats_t track = {0};
+            nanortc_get_stats(rtc, &stats);
+            if (app_ctx.video_mid >= 0)
+                nanortc_get_track_stats(rtc, (uint8_t)app_ctx.video_mid, &track);
+            fprintf(stderr,
+                    "[stats] {\"at_ms\":%u,\"estimate_bps\":%u,\"remb_cap_bps\":%u,"
+                    "\"remb_cap_valid\":%s,\"send_bps\":%u,\"packets_sent\":%u}\n",
+                    stats_now, stats.estimated_bitrate_bps, stats.remb_cap_bps,
+                    stats.remb_cap_valid ? "true" : "false", track.send_bitrate_bps,
+                    stats.packets_sent);
+        }
+#else
+        (void)last_stats_ms;
 #endif
     }
 

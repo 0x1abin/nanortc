@@ -387,37 +387,22 @@ static void teardown_relay_pair_nanortc(interop_sig_pipe_t *pipe, interop_nanort
  * plane traffic (Allocate, Refresh, CreatePermission, ChannelBind) is sent
  * direct-to-coturn, not wrapped through it, so stats_enqueue_direct > 0 is
  * both expected and healthy. */
-/* Relaxed-atomic read helpers.
- *
- * The peer thread concurrently updates ice.selected_type and the stats_*
- * counters while the test thread reads them here. Both sides use
- * __atomic_* with relaxed ordering — writers in src/nano_rtc.c and
- * src/nano_ice.c (__atomic_fetch_add for the monotone counters,
- * __atomic_store_n for selected_type), readers here. That makes the
- * access well-defined under the C memory model and TSan-clean while
- * compiling to the same machine code as plain ++ / = on every supported
- * target. Monotonicity of the counters + the single nomination write of
- * selected_type means relaxed ordering is sufficient for our
- * eventually-consistent assertions. */
-static inline uint8_t read_selected_type(const interop_nanortc_peer_t *nano)
+/* Read owner-published snapshots; the test thread never reads RTC internals. */
+static inline uint8_t read_selected_type(interop_nanortc_peer_t *nano)
 {
-    return __atomic_load_n(&nano->rtc.ice.selected_type, __ATOMIC_RELAXED);
+    return interop_nanortc_stats(nano).selected_remote_type;
 }
-static inline uint8_t read_selected_local_type(const interop_nanortc_peer_t *nano)
+static inline uint8_t read_selected_local_type(interop_nanortc_peer_t *nano)
 {
-    return __atomic_load_n(&nano->rtc.ice.selected_local_type, __ATOMIC_RELAXED);
-}
-static inline uint32_t read_stat_u32(const uint32_t *p)
-{
-    return __atomic_load_n(p, __ATOMIC_RELAXED);
+    return interop_nanortc_stats(nano).selected_local_type;
 }
 
-static void assert_nanortc_relay_path(const interop_nanortc_peer_t *nano)
+static void assert_nanortc_relay_path(interop_nanortc_peer_t *nano)
 {
     uint8_t selected_type = read_selected_type(nano);
-    uint32_t via_turn = read_stat_u32(&nano->rtc.stats_enqueue_via_turn);
-    uint32_t wrap_dropped = read_stat_u32(&nano->rtc.stats_wrap_dropped);
-    uint32_t tx_queue_full = read_stat_u32(&nano->rtc.stats_tx_queue_full);
+    uint32_t via_turn = interop_nanortc_stats(nano).enqueue_via_turn;
+    uint32_t wrap_dropped = interop_nanortc_stats(nano).wrap_dropped;
+    uint32_t tx_queue_full = interop_nanortc_stats(nano).tx_queue_full;
 
     TEST_ASSERT_EQUAL_MESSAGE(NANORTC_ICE_CAND_RELAY, selected_type,
                               "nanortc ice.selected_type != RELAY "
@@ -524,11 +509,11 @@ TEST(test_relay_nanortc_dc_string_bidirectional)
 
     /* nanortc → libdatachannel: this is the direction we care about most.
      * Capture the via_turn counter before the send and verify it grew. */
-    uint32_t via_before = read_stat_u32(&nano.rtc.stats_enqueue_via_turn);
+    uint32_t via_before = interop_nanortc_stats(&nano).enqueue_via_turn;
 
     const char *to_ldc = "ack from nanortc relay-client";
     int initial_ldc = atomic_load(&ldc.msg_count);
-    rc = nanortc_datachannel_send_string(&nano.rtc, 0, to_ldc);
+    rc = interop_nanortc_send_string(&nano, 0, to_ldc);
     ASSERT_OK(rc);
 
     start = interop_get_millis();
@@ -543,7 +528,7 @@ TEST(test_relay_nanortc_dc_string_bidirectional)
     ASSERT_TRUE(memcmp(ldc.last_msg, to_ldc, strlen(to_ldc)) == 0);
     pthread_mutex_unlock(&ldc.msg_mutex);
 
-    TEST_ASSERT_TRUE_MESSAGE(read_stat_u32(&nano.rtc.stats_enqueue_via_turn) > via_before,
+    TEST_ASSERT_TRUE_MESSAGE(interop_nanortc_stats(&nano).enqueue_via_turn > via_before,
                              "stats_enqueue_via_turn did not grow after nanortc send "
                              "(bytes leaked direct instead of wrapping through TURN)");
 
@@ -576,12 +561,12 @@ TEST(test_relay_nanortc_channel_data_burst)
      * hammered with back-to-back enqueues, exercising F7's side-table. */
     const int burst = 30;
     int initial = atomic_load(&ldc.msg_count);
-    uint32_t via_before = read_stat_u32(&nano.rtc.stats_enqueue_via_turn);
+    uint32_t via_before = interop_nanortc_stats(&nano).enqueue_via_turn;
 
     char buf[64];
     for (int i = 0; i < burst; i++) {
         snprintf(buf, sizeof(buf), "burst-msg-%04d", i);
-        rc = nanortc_datachannel_send_string(&nano.rtc, 0, buf);
+        rc = interop_nanortc_send_string(&nano, 0, buf);
         ASSERT_OK(rc);
         interop_sleep_ms(5);
     }
@@ -594,7 +579,7 @@ TEST(test_relay_nanortc_channel_data_burst)
 
     ASSERT_EQ(atomic_load(&ldc.msg_count), initial + burst);
 
-    TEST_ASSERT_TRUE_MESSAGE(read_stat_u32(&nano.rtc.stats_enqueue_via_turn) >=
+    TEST_ASSERT_TRUE_MESSAGE(interop_nanortc_stats(&nano).enqueue_via_turn >=
                                  via_before + (uint32_t)burst,
                              "stats_enqueue_via_turn did not grow by at least burst count "
                              "(some outbound bytes did not take the wrap path)");
@@ -632,9 +617,9 @@ TEST(test_relay_nanortc_large_payload)
         payload[i] = (char)('a' + (i % 26));
     }
 
-    uint32_t via_before = read_stat_u32(&nano.rtc.stats_enqueue_via_turn);
+    uint32_t via_before = interop_nanortc_stats(&nano).enqueue_via_turn;
     int initial = atomic_load(&ldc.msg_count);
-    rc = nanortc_datachannel_send(&nano.rtc, 0, payload, sizeof(payload));
+    rc = interop_nanortc_send(&nano, 0, payload, sizeof(payload));
     ASSERT_OK(rc);
 
     uint32_t start = interop_get_millis();
@@ -649,7 +634,7 @@ TEST(test_relay_nanortc_large_payload)
     ASSERT_TRUE(memcmp(ldc.last_msg, payload, sizeof(payload)) == 0);
     pthread_mutex_unlock(&ldc.msg_mutex);
 
-    TEST_ASSERT_TRUE_MESSAGE(read_stat_u32(&nano.rtc.stats_enqueue_via_turn) > via_before,
+    TEST_ASSERT_TRUE_MESSAGE(interop_nanortc_stats(&nano).enqueue_via_turn > via_before,
                              "stats_enqueue_via_turn did not grow after large send");
 
     assert_nanortc_relay_path(&nano);
@@ -694,10 +679,10 @@ TEST(test_relay_nanortc_echo_roundtrip)
     pthread_mutex_unlock(&nano.msg_mutex);
 
     /* nanortc echoes back — this hop is wrapped through TURN. */
-    uint32_t via_before = read_stat_u32(&nano.rtc.stats_enqueue_via_turn);
+    uint32_t via_before = interop_nanortc_stats(&nano).enqueue_via_turn;
     const char *reply = "echo-reply-relay-nanortc";
     int initial_ldc = atomic_load(&ldc.msg_count);
-    rc = nanortc_datachannel_send_string(&nano.rtc, 0, reply);
+    rc = interop_nanortc_send_string(&nano, 0, reply);
     ASSERT_OK(rc);
 
     start = interop_get_millis();
@@ -711,7 +696,7 @@ TEST(test_relay_nanortc_echo_roundtrip)
     ASSERT_TRUE(memcmp(ldc.last_msg, reply, strlen(reply)) == 0);
     pthread_mutex_unlock(&ldc.msg_mutex);
 
-    TEST_ASSERT_TRUE_MESSAGE(read_stat_u32(&nano.rtc.stats_enqueue_via_turn) > via_before,
+    TEST_ASSERT_TRUE_MESSAGE(interop_nanortc_stats(&nano).enqueue_via_turn > via_before,
                              "echo reply did not take the wrap path");
 
     assert_nanortc_relay_path(&nano);

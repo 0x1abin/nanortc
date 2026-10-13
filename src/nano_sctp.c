@@ -1,8 +1,8 @@
 /*
- * nanortc — SCTP-Lite implementation (RFC 4960)
+ * nanortc — SCTP-Lite implementation (RFC 9260)
  *
  * Minimal SCTP for WebRTC DataChannel over DTLS.
- * Reference: str0m src/sctp/mod.rs.
+ * Wire formats and association state transitions follow RFC 9260.
  *
  * SPDX-License-Identifier: MIT
  */
@@ -532,10 +532,25 @@ int nsctp_init(nano_sctp_t *sctp)
     sctp->state = NANORTC_SCTP_STATE_CLOSED;
     sctp->local_port = 5000; /* WebRTC default SCTP port */
     sctp->remote_port = 5000;
-#if NANORTC_FEATURE_DC_RELIABLE
     sctp->rto_ms = NANORTC_SCTP_RTO_INITIAL_MS;
-#endif
     return NANORTC_OK;
+}
+
+/* RFC 9260 §5.1: retries preserve the original Initiate Tag, TSN and cookie. */
+static void nsctp_queue_handshake(nano_sctp_t *sctp)
+{
+    bool init = sctp->state == NANORTC_SCTP_STATE_COOKIE_WAIT;
+    size_t pos = nsctp_begin_packet(sctp, init ? 0u : sctp->remote_vtag);
+    if (init) {
+        pos += nsctp_encode_init(nsctp_out_write_buf(sctp) + pos, NANORTC_SCTP_MTU - pos,
+                                 SCTP_CHUNK_INIT, sctp->local_vtag, NANORTC_SCTP_RECV_BUF_SIZE,
+                                 0xFFFF, 0xFFFF, sctp->next_tsn, NULL, 0);
+    } else {
+        pos += nsctp_encode_cookie_echo(nsctp_out_write_buf(sctp) + pos, NANORTC_SCTP_MTU - pos,
+                                        sctp->cookie, sctp->cookie_len);
+    }
+    nsctp_queue_output(sctp, pos);
+    sctp->handshake_queued = true;
 }
 
 /* ---- nsctp_start: client sends INIT ---- */
@@ -566,14 +581,12 @@ int nsctp_start(nano_sctp_t *sctp)
     sctp->next_tsn = next_tsn;
     memcpy(sctp->cookie_secret, cookie_secret, sizeof(cookie_secret));
 
-    /* Build INIT packet (vtag=0 for INIT per RFC 4960 §8.5.1) */
-    size_t pos = nsctp_begin_packet(sctp, 0);
-    pos += nsctp_encode_init(nsctp_out_write_buf(sctp) + pos, NANORTC_SCTP_MTU - pos,
-                             SCTP_CHUNK_INIT, sctp->local_vtag, NANORTC_SCTP_RECV_BUF_SIZE, 0xFFFF,
-                             0xFFFF, sctp->next_tsn, NULL, 0);
-    nsctp_queue_output(sctp, pos);
-
     sctp->state = NANORTC_SCTP_STATE_COOKIE_WAIT;
+    sctp->rto_ms = NANORTC_SCTP_RTO_INITIAL_MS;
+    sctp->handshake_retries = 0;
+    sctp->handshake_sent = false;
+    sctp->closed_due_to_failure = false;
+    nsctp_queue_handshake(sctp);
     return NANORTC_OK;
 }
 
@@ -636,6 +649,10 @@ static int nsctp_handle_init(nano_sctp_t *sctp, const uint8_t *chunk, size_t cle
 
 static int nsctp_handle_init_ack(nano_sctp_t *sctp, const uint8_t *chunk, size_t clen)
 {
+    /* RFC 9260 §5.2.3: delayed duplicate INIT ACKs do not restart the handshake. */
+    if (sctp->state == NANORTC_SCTP_STATE_COOKIE_ECHOED ||
+        sctp->state == NANORTC_SCTP_STATE_ESTABLISHED)
+        return NANORTC_OK;
     if (sctp->state != NANORTC_SCTP_STATE_COOKIE_WAIT) {
         return NANORTC_ERR_STATE;
     }
@@ -660,13 +677,11 @@ static int nsctp_handle_init_ack(nano_sctp_t *sctp, const uint8_t *chunk, size_t
     memcpy(sctp->cookie, init.cookie, init.cookie_len);
     sctp->cookie_len = init.cookie_len;
 
-    /* Send COOKIE-ECHO */
-    size_t pos = nsctp_begin_packet(sctp, sctp->remote_vtag);
-    pos += nsctp_encode_cookie_echo(nsctp_out_write_buf(sctp) + pos, NANORTC_SCTP_MTU - pos,
-                                    sctp->cookie, sctp->cookie_len);
-    nsctp_queue_output(sctp, pos);
-
     sctp->state = NANORTC_SCTP_STATE_COOKIE_ECHOED;
+    sctp->rto_ms = NANORTC_SCTP_RTO_INITIAL_MS;
+    sctp->handshake_retries = 0;
+    sctp->handshake_sent = false;
+    nsctp_queue_handshake(sctp);
     return NANORTC_OK;
 }
 
@@ -700,10 +715,16 @@ static int nsctp_handle_cookie_echo(nano_sctp_t *sctp, const uint8_t *chunk, siz
 
 static int nsctp_handle_cookie_ack(nano_sctp_t *sctp)
 {
+    /* RFC 9260 §5.2.5: duplicate COOKIE ACKs are harmless. */
+    if (sctp->state == NANORTC_SCTP_STATE_ESTABLISHED)
+        return NANORTC_OK;
     if (sctp->state != NANORTC_SCTP_STATE_COOKIE_ECHOED) {
         return NANORTC_ERR_STATE;
     }
     sctp->state = NANORTC_SCTP_STATE_ESTABLISHED;
+    sctp->rto_ms = NANORTC_SCTP_RTO_INITIAL_MS;
+    sctp->handshake_sent = false;
+    sctp->handshake_queued = false;
     return NANORTC_OK;
 }
 
@@ -1331,6 +1352,20 @@ int nsctp_poll_output(nano_sctp_t *sctp, uint8_t *buf, size_t buf_len, size_t *o
         memcpy(buf, sctp->out_bufs[ridx], pkt_len);
         *out_len = pkt_len;
         sctp->out_head++;
+        /* RFC 9260 §4/§6.3: start T1 only after output admission succeeds. */
+        if (sctp->handshake_queued &&
+            ((sctp->state == NANORTC_SCTP_STATE_COOKIE_WAIT && buf[12] == SCTP_CHUNK_INIT) ||
+             (sctp->state == NANORTC_SCTP_STATE_COOKIE_ECHOED &&
+              buf[12] == SCTP_CHUNK_COOKIE_ECHO))) {
+            if (sctp->handshake_sent) {
+                sctp->handshake_retries++;
+                sctp->rto_ms = sctp->rto_ms > NANORTC_SCTP_RTO_MAX_MS / 2u ? NANORTC_SCTP_RTO_MAX_MS
+                                                                           : sctp->rto_ms * 2u;
+            }
+            sctp->handshake_sent_at_ms = sctp->now_ms;
+            sctp->handshake_sent = true;
+            sctp->handshake_queued = false;
+        }
         return NANORTC_OK;
     }
 
@@ -1356,23 +1391,17 @@ int nsctp_poll_output(nano_sctp_t *sctp, uint8_t *buf, size_t buf_len, size_t *o
                     return NANORTC_ERR_BUFFER_TOO_SMALL;
                 }
                 /* Build DATA packet directly into output buffer */
-                size_t pos = nsctp_begin_packet(sctp, sctp->remote_vtag);
-                pos += nsctp_encode_data(nsctp_out_write_buf(sctp) + pos, NANORTC_SCTP_MTU - pos,
-                                         e->tsn, e->stream_id, e->ssn, e->ppid, e->flags,
-                                         sctp->send_buf + e->data_offset, e->data_len);
-
-                nsctp_queue_output(sctp, pos);
+                size_t pos = nsctp_encode_header(buf, sctp->local_port, sctp->remote_port,
+                                                 sctp->remote_vtag);
+                pos += nsctp_encode_data(buf + pos, buf_len - pos, e->tsn, e->stream_id, e->ssn,
+                                         e->ppid, e->flags, sctp->send_buf + e->data_offset,
+                                         e->data_len);
+                nsctp_finalize_checksum(buf, pos);
+                *out_len = pos;
                 e->in_flight = true;
 #if NANORTC_FEATURE_DC_RELIABLE
                 e->sent_at_ms = sctp->now_ms;
 #endif
-
-                /* Immediately dequeue the packet we just queued */
-                uint8_t ridx = (uint8_t)((sctp->out_head) & (NANORTC_SCTP_OUT_QUEUE_SIZE - 1));
-                uint16_t pkt_len = sctp->out_lens[ridx];
-                memcpy(buf, sctp->out_bufs[ridx], pkt_len);
-                *out_len = pkt_len;
-                sctp->out_head++;
                 return NANORTC_OK;
             }
             idx++;
@@ -1483,6 +1512,21 @@ int nsctp_handle_timeout(nano_sctp_t *sctp, uint32_t now_ms)
     }
 
     sctp->now_ms = now_ms;
+    if (sctp->state == NANORTC_SCTP_STATE_COOKIE_WAIT ||
+        sctp->state == NANORTC_SCTP_STATE_COOKIE_ECHOED) {
+        if (!sctp->handshake_sent || sctp->handshake_queued ||
+            nano_time_elapsed(now_ms, sctp->handshake_sent_at_ms) < sctp->rto_ms)
+            return NANORTC_OK;
+        /* RFC 9260 §4: bounded T1-init/T1-cookie failure is reported to the user. */
+        if (sctp->handshake_retries >= NANORTC_SCTP_MAX_RETRANSMITS) {
+            sctp->state = NANORTC_SCTP_STATE_CLOSED;
+            sctp->closed_due_to_failure = true;
+            return NANORTC_ERR_PROTOCOL;
+        }
+        if (!nsctp_out_full(sctp))
+            nsctp_queue_handshake(sctp);
+        return NANORTC_OK;
+    }
     if (sctp->state != NANORTC_SCTP_STATE_ESTABLISHED) {
         return NANORTC_OK;
     }
@@ -1558,7 +1602,16 @@ int nsctp_handle_timeout(nano_sctp_t *sctp, uint32_t now_ms)
 
 uint32_t nsctp_next_timeout_ms(const nano_sctp_t *sctp, uint32_t now_ms)
 {
-    if (!sctp || sctp->state != NANORTC_SCTP_STATE_ESTABLISHED) {
+    if (!sctp)
+        return UINT32_MAX;
+    if (sctp->state == NANORTC_SCTP_STATE_COOKIE_WAIT ||
+        sctp->state == NANORTC_SCTP_STATE_COOKIE_ECHOED) {
+        if (!sctp->handshake_sent || sctp->handshake_queued)
+            return UINT32_MAX;
+        uint32_t elapsed = nano_time_elapsed(now_ms, sctp->handshake_sent_at_ms);
+        return elapsed >= sctp->rto_ms ? 0u : sctp->rto_ms - elapsed;
+    }
+    if (sctp->state != NANORTC_SCTP_STATE_ESTABLISHED) {
         return UINT32_MAX;
     }
 

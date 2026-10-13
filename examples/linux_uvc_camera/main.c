@@ -443,7 +443,7 @@ static void run_event_loop(http_sig_t *sig, const nanortc_config_t *cfg)
                 } else {
                     nano_session_t *s = nano_session_find_by_viewer(&g_pool, msg.from);
                     if (s && msg.payload[0])
-                        nanortc_add_remote_candidate(&s->rtc, msg.payload);
+                        nanortc_add_remote_candidate(&s->rtc, msg.payload, strlen(msg.payload));
                 }
             }
         }
@@ -488,9 +488,15 @@ static void run_event_loop(http_sig_t *sig, const nanortc_config_t *cfg)
                 /* Pacer diagnostics (cumulative): pace_catchup rising ~every keyframe
                  * means big IDRs are burst-flushed past the latency cap — the 4K
                  * stutter signature. overrun/txfull should stay 0. */
-                fprintf(stderr, " | pace_catchup=%u overrun=%u txfull=%u paced=%u",
-                        s->rtc.stats_pace_catchup, s->rtc.stats_pkt_ring_overrun,
-                        s->rtc.stats_tx_queue_full, s->rtc.stats_paced_packets);
+                nanortc_stats_t stats;
+                if (nanortc_get_stats(&s->rtc, &stats) == NANORTC_OK) {
+                    fprintf(stderr, " | overrun=%u txfull=%u", stats.packet_ring_overrun,
+                            stats.tx_queue_full);
+#if NANORTC_FEATURE_VIDEO_PACING
+                    fprintf(stderr, " pace_catchup=%u paced=%u", stats.pace_catchup,
+                            stats.paced_packets);
+#endif
+                }
 #if NANORTC_FEATURE_VIDEO_RATE_CONTROL
                 if (g_applied_rung >= 0)
                     fprintf(stderr, " | rung=%d %ux%u@%u", g_applied_rung,

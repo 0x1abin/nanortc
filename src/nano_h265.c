@@ -19,287 +19,138 @@
  * Packetizer — Single NAL / FU / AP (RFC 7798 §4.4.1, §4.4.2, §4.4.3)
  * ================================================================ */
 
-/* Single NAL Unit Packet (RFC 7798 §4.4.1): the NAL bytes are the RTP payload,
- * with no additional payload header. The call sites emit them directly. */
-
-/**
- * Emit a Fragmentation Unit sequence (RFC 7798 §4.4.3).
- *
- * Wire format:
- *
- *    0                   1                   2                   3
- *    0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
- *   +---------------+---------------+---------------+---------------+
- *   | PayloadHdr (Type=49)          |   FU header   |   ...         |
- *   +---------------+---------------+---------------+               |
- *   |                                                               |
- *   |                     FU payload                                |
- *   |                                                               |
- *   |                               +---------------+---------------+
- *   |                               :   OPT RTP padding             |
- *   +---------------+---------------+---------------+---------------+
- *
- * Per §4.4.3:
- *   - The PayloadHdr carries the F bit from the original NAL, Type = 49,
- *     and LayerId / TID copied from the fragmented NAL's header.
- *   - The FU header carries Start (S), End (E), and FuType (original NAL
- *     unit type) fields.
- *   - The original 2-byte NAL header is NOT included in the FU payload —
- *     it is reconstructed at the receiver from PayloadHdr + FU header.
- *   - DON field is present only when sprop-max-don-diff > 0. First pass
- *     assumes 0, so DON is never emitted.
- */
-static int h265_emit_fu(const uint8_t *nalu, size_t nalu_len, size_t mtu, int marker_last_au,
-                        h265_packet_cb cb, void *userdata)
+int h265_packet_iter_init(h265_packet_iter_t *it, const h265_nal_ref_t *nals, size_t nal_count,
+                          size_t mtu)
 {
-    if (nalu_len <= H265_NAL_HEADER_SIZE) {
+    if (!it || !nals || nal_count == 0 || mtu <= H265_FU_HEADER_SIZE) {
         return NANORTC_ERR_INVALID_PARAM;
     }
-    if (mtu <= H265_FU_HEADER_SIZE) {
-        return NANORTC_ERR_INVALID_PARAM;
-    }
-    if (mtu > NANORTC_VIDEO_MTU) {
-        /* Caller sized MTU above our stack scratch buffer — refuse. */
-        return NANORTC_ERR_BUFFER_TOO_SMALL;
-    }
-
-    /* Extract original NAL fields */
-    uint8_t fu_type = H265_NAL_TYPE(nalu);
-
-    /* Build the PayloadHdr by cloning the original NAL header and
-     * overwriting only the Type field with 49.
-     *
-     * byte[0] = F(1) | Type(6) | LayerId_msb(1)
-     * byte[1] = LayerId_lsb(5) | TID(3)
-     *
-     * Mask 0x81 preserves F bit (0x80) and LayerId MSB (0x01) in byte 0.
-     * Type is placed in bits 6..1 via (49 << 1) == 0x62.
-     */
-    uint8_t payload_hdr0 = (uint8_t)((nalu[0] & 0x81) | (H265_PKT_FU << 1));
-    uint8_t payload_hdr1 = nalu[1];
-
-    /* Data pointer and remaining count skip the NAL header bytes. */
-    const uint8_t *data = nalu + H265_NAL_HEADER_SIZE;
-    size_t remaining = nalu_len - H265_NAL_HEADER_SIZE;
-    size_t max_frag = mtu - H265_FU_HEADER_SIZE;
-
-    /* Stack scratch buffer for the FU RTP payload. NANORTC_VIDEO_MTU caps
-     * the size and matches the per-packet limit used by the H.264 path. */
-    uint8_t pkt[NANORTC_VIDEO_MTU];
-
-    int first_frag = 1;
-    while (remaining > 0) {
-        size_t frag_len = remaining < max_frag ? remaining : max_frag;
-        int is_last_frag = (remaining == frag_len);
-
-        /* FU header: S bit on the first fragment, E bit on the last. */
-        uint8_t fu_header = fu_type;
-        if (first_frag) {
-            fu_header |= H265_FU_S_BIT;
+    for (size_t i = 0; i < nal_count; i++) {
+        if (!nals[i].data || nals[i].len < H265_NAL_HEADER_SIZE) {
+            return NANORTC_ERR_INVALID_PARAM;
         }
-        if (is_last_frag) {
-            fu_header |= H265_FU_E_BIT;
-        }
-
-        pkt[0] = payload_hdr0;
-        pkt[1] = payload_hdr1;
-        pkt[2] = fu_header;
-        memcpy(pkt + H265_FU_HEADER_SIZE, data, frag_len);
-
-        /* Marker bit: only on the last fragment AND only if this NAL is
-         * the final NAL in the access unit. */
-        int marker = (is_last_frag && marker_last_au) ? 1 : 0;
-        int rc = cb(pkt, H265_FU_HEADER_SIZE + frag_len, marker, userdata);
-        if (rc != 0) {
-            return rc;
-        }
-
-        data += frag_len;
-        remaining -= frag_len;
-        first_frag = 0;
     }
-
+    memset(it, 0, sizeof(*it));
+    it->nals = nals;
+    it->nal_count = nal_count;
+    it->mtu = mtu;
     return NANORTC_OK;
 }
 
-/**
- * Emit one Aggregation Packet (RFC 7798 §4.4.2).
- *
- * Wire format (for a run of N aggregated NAL units, sprop-max-don-diff=0):
- *
- *    0                   1                   2                   3
- *    0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
- *   +---------------+---------------+---------------+---------------+
- *   | PayloadHdr (Type=48)          |         NALU 1 Size           |
- *   +---------------+---------------+---------------+---------------+
- *   |         NALU 1 HDR            |                               |
- *   +---------------+---------------+  NALU 1 Data                  |
- *   :                              ...                              :
- *   |                               +---------------+---------------+
- *   :                               |         NALU 2 Size           |
- *   +---------------+---------------+---------------+---------------+
- *   |         NALU 2 HDR            |                               |
- *   +---------------+---------------+  NALU 2 Data                  |
- *   :                              ...                              :
- *
- * Per §4.4.2 header-field rules for the PayloadHdr:
- *   - F bit MUST be 1 iff any aggregated NAL has F=1; otherwise 0.
- *   - LayerId MUST be the smallest LayerId of the aggregated NALs.
- *   - TID (nuh_temporal_id_plus1) MUST be the smallest of the aggregated
- *     NALs' TIDs (i.e., the smallest temporal layer).
- */
-static int h265_emit_ap(const h265_nal_ref_t *nals, size_t start, size_t count, int marker,
-                        h265_packet_cb cb, void *userdata)
+int h265_packet_iter_has_next(const h265_packet_iter_t *it)
 {
-    if (count < 2) {
-        /* An AP with a single NAL is spec-legal but wastes bytes; the
-         * caller should use a Single NAL Unit Packet instead. */
+    return it && it->index < it->nal_count;
+}
+
+int h265_packet_iter_next(h265_packet_iter_t *it, uint8_t *scratch, size_t scratch_len,
+                          const uint8_t **payload, size_t *len, int *marker)
+{
+    if (!it || !payload || !len || !marker || !h265_packet_iter_has_next(it)) {
         return NANORTC_ERR_INVALID_PARAM;
     }
-
-    /* Scan aggregated NALs for min LayerId / min TID / max F bit. */
-    uint8_t min_layer_id = 63;
-    uint8_t min_tid = 7;
-    uint8_t f_bit = 0;
-    for (size_t i = 0; i < count; ++i) {
-        const h265_nal_ref_t *n = &nals[start + i];
-        if (n->len < H265_NAL_HEADER_SIZE) {
-            return NANORTC_ERR_INVALID_PARAM;
-        }
-        uint8_t lid = H265_NAL_LAYER_ID(n->data);
-        uint8_t tid = H265_NAL_TID(n->data);
-        if (n->data[0] & H265_NAL_F_BIT) {
-            f_bit = 1;
-        }
-        if (lid < min_layer_id) {
-            min_layer_id = lid;
-        }
-        if (tid < min_tid) {
-            min_tid = tid;
-        }
-    }
-
-    /* TID MUST be > 0 per H.265 §7.4.2.2 nuh_temporal_id_plus1; if all
-     * aggregated NALs were malformed with TID=0 we would have bailed at
-     * the nal_len check above. Clamp to 1 as a defensive floor. */
-    if (min_tid == 0) {
-        min_tid = 1;
-    }
-
-    uint8_t pkt[NANORTC_VIDEO_MTU];
-    if (H265_AP_PAYLOAD_HDR_SIZE > sizeof(pkt)) {
-        return NANORTC_ERR_BUFFER_TOO_SMALL;
-    }
-
-    /* Build PayloadHdr:
-     *   byte[0] = F(1) | Type=48(6) | LayerId_msb(1)
-     *   byte[1] = LayerId_lsb(5) | TID(3)
-     */
-    pkt[0] = (uint8_t)((f_bit ? H265_NAL_F_BIT : 0) | ((H265_PKT_AP & 0x3F) << 1) |
-                       ((min_layer_id >> 5) & 0x01));
-    pkt[1] = (uint8_t)(((min_layer_id & 0x1F) << 3) | (min_tid & 0x07));
-
-    size_t pos = H265_AP_PAYLOAD_HDR_SIZE;
-    for (size_t i = 0; i < count; ++i) {
-        const h265_nal_ref_t *n = &nals[start + i];
-        /* Defensive bound check — caller (h265_packetize_au) already
-         * guaranteed it fits, but we re-check so the module is safe to
-         * call standalone in tests and fuzz. */
-        if (pos + H265_AP_NALU_LEN_SIZE + n->len > sizeof(pkt)) {
+    const h265_nal_ref_t *n = &it->nals[it->index];
+    if (n->len > it->mtu) {
+        /* RFC 7798 §4.4.3: replace the source header with PayloadHdr + FU header. */
+        size_t offset = it->offset ? it->offset : H265_NAL_HEADER_SIZE;
+        size_t remaining = n->len - offset;
+        size_t frag = it->mtu - H265_FU_HEADER_SIZE;
+        if (frag > remaining)
+            frag = remaining;
+        if (!scratch || frag + H265_FU_HEADER_SIZE > scratch_len)
             return NANORTC_ERR_BUFFER_TOO_SMALL;
+        scratch[0] = (uint8_t)((n->data[0] & 0x81u) | (H265_PKT_FU << 1));
+        scratch[1] = n->data[1];
+        scratch[2] = H265_NAL_TYPE(n->data);
+        if (it->offset == 0)
+            scratch[2] |= H265_FU_S_BIT;
+        if (frag == remaining)
+            scratch[2] |= H265_FU_E_BIT;
+        memcpy(scratch + H265_FU_HEADER_SIZE, n->data + offset, frag);
+        *payload = scratch;
+        *len = frag + H265_FU_HEADER_SIZE;
+        if (frag == remaining) {
+            it->index++;
+            it->offset = 0;
+        } else {
+            it->offset = offset + frag;
         }
-        pkt[pos + 0] = (uint8_t)((n->len >> 8) & 0xFF);
-        pkt[pos + 1] = (uint8_t)(n->len & 0xFF);
-        pos += H265_AP_NALU_LEN_SIZE;
-        memcpy(pkt + pos, n->data, n->len);
-        pos += n->len;
+    } else {
+        /* RFC 7798 §4.4.2: aggregate consecutive NALs when at least two fit. */
+        size_t end = it->index;
+        size_t bytes = H265_AP_PAYLOAD_HDR_SIZE;
+        while (end < it->nal_count) {
+            size_t next = it->nals[end].len;
+            if (next > UINT16_MAX || next > it->mtu - bytes ||
+                H265_AP_NALU_LEN_SIZE > it->mtu - bytes - next)
+                break;
+            bytes += H265_AP_NALU_LEN_SIZE + next;
+            end++;
+        }
+        if (end - it->index < 2) {
+            *payload = n->data;
+            *len = n->len;
+            it->index++;
+        } else {
+            if (!scratch || bytes > scratch_len)
+                return NANORTC_ERR_BUFFER_TOO_SMALL;
+            uint8_t layer = 63, tid = 7, f = 0;
+            size_t pos = H265_AP_PAYLOAD_HDR_SIZE;
+            for (size_t i = it->index; i < end; i++) {
+                const h265_nal_ref_t *part = &it->nals[i];
+                uint8_t part_layer = H265_NAL_LAYER_ID(part->data);
+                uint8_t part_tid = H265_NAL_TID(part->data);
+                if (part_layer < layer)
+                    layer = part_layer;
+                if (part_tid < tid)
+                    tid = part_tid;
+                f |= part->data[0] & H265_NAL_F_BIT;
+                nanortc_write_u16be(scratch + pos, (uint16_t)part->len);
+                pos += H265_AP_NALU_LEN_SIZE;
+                memcpy(scratch + pos, part->data, part->len);
+                pos += part->len;
+            }
+            if (tid == 0)
+                tid = 1;
+            scratch[0] = (uint8_t)(f | (H265_PKT_AP << 1) | (layer >> 5));
+            scratch[1] = (uint8_t)((layer << 3) | tid);
+            *payload = scratch;
+            *len = pos;
+            it->index = end;
+        }
     }
-
-    return cb(pkt, pos, marker ? 1 : 0, userdata);
+    *marker = it->index == it->nal_count;
+    return NANORTC_OK;
 }
 
 int h265_packetize_au(const h265_nal_ref_t *nals, size_t nal_count, size_t mtu, h265_packet_cb cb,
                       void *userdata)
 {
-    if (!nals || nal_count == 0 || mtu < H265_FU_HEADER_SIZE + 1 || !cb) {
+    if (!cb)
         return NANORTC_ERR_INVALID_PARAM;
+    h265_packet_iter_t it;
+    int rc = h265_packet_iter_init(&it, nals, nal_count, mtu);
+    if (rc != NANORTC_OK)
+        return rc;
+    uint8_t scratch[NANORTC_VIDEO_MTU];
+    while (h265_packet_iter_has_next(&it)) {
+        const uint8_t *payload;
+        size_t len;
+        int marker;
+        rc = h265_packet_iter_next(&it, scratch, sizeof(scratch), &payload, &len, &marker);
+        if (rc != NANORTC_OK)
+            return rc;
+        rc = cb(payload, len, marker, userdata);
+        if (rc != NANORTC_OK)
+            return rc;
     }
-
-    size_t i = 0;
-    while (i < nal_count) {
-        const h265_nal_ref_t *n = &nals[i];
-        if (!n->data || n->len < H265_NAL_HEADER_SIZE) {
-            return NANORTC_ERR_INVALID_PARAM;
-        }
-
-        /* Case 1: NAL larger than a Single NAL Unit Packet → FU (§4.4.3). */
-        if (n->len > mtu) {
-            int is_last = (i + 1 == nal_count) ? 1 : 0;
-            int rc = h265_emit_fu(n->data, n->len, mtu, is_last, cb, userdata);
-            if (rc != 0) {
-                return rc;
-            }
-            i++;
-            continue;
-        }
-
-        /* Case 2: Try to aggregate current and following NALs into an AP
-         * (§4.4.2). An AP is only profitable when aggregating 2+ NALs;
-         * for a single NAL we fall through to Single NAL Unit Packet. */
-        size_t ap_bytes = H265_AP_PAYLOAD_HDR_SIZE + H265_AP_NALU_LEN_SIZE + n->len;
-        size_t j = i;
-        while (j + 1 < nal_count) {
-            const h265_nal_ref_t *next = &nals[j + 1];
-            if (!next->data || next->len < H265_NAL_HEADER_SIZE) {
-                /* Malformed tail — stop the run; outer loop will fail on it. */
-                break;
-            }
-            /* A large NAL that needs FU cannot be mixed into an AP —
-             * stop the run so the next iteration handles it via case 1. */
-            if (next->len > mtu) {
-                break;
-            }
-            size_t next_bytes = H265_AP_NALU_LEN_SIZE + next->len;
-            if (ap_bytes + next_bytes > mtu) {
-                break;
-            }
-            ap_bytes += next_bytes;
-            j++;
-        }
-
-        if (j > i) {
-            int is_last = (j + 1 == nal_count) ? 1 : 0;
-            int rc = h265_emit_ap(nals, i, j - i + 1, is_last, cb, userdata);
-            if (rc != 0) {
-                return rc;
-            }
-            i = j + 1;
-        } else {
-            int is_last = (i + 1 == nal_count) ? 1 : 0;
-            int rc = cb(n->data, n->len, is_last, userdata);
-            if (rc != 0) {
-                return rc;
-            }
-            i++;
-        }
-    }
-
     return NANORTC_OK;
 }
 
 int h265_packetize(const uint8_t *nalu, size_t nalu_len, size_t mtu, h265_packet_cb cb,
                    void *userdata)
 {
-    if (!nalu || nalu_len < H265_NAL_HEADER_SIZE || mtu < H265_FU_HEADER_SIZE + 1 || !cb) {
-        return NANORTC_ERR_INVALID_PARAM;
-    }
-
-    /* Fast path: Single NAL Unit Packet (§4.4.1). */
-    if (nalu_len <= mtu) {
-        return cb(nalu, nalu_len, 1 /* marker: last packet of one-NAL AU */, userdata);
-    }
-    /* Slow path: fragment into an FU sequence (§4.4.3). */
-    return h265_emit_fu(nalu, nalu_len, mtu, 1 /* marker_last_au */, cb, userdata);
+    const h265_nal_ref_t nal = {nalu, nalu_len};
+    return h265_packetize_au(&nal, 1, mtu, cb, userdata);
 }
 
 /* ================================================================

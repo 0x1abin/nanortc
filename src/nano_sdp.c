@@ -8,6 +8,7 @@
 
 #include "nano_sdp.h"
 #include "nano_ice.h"
+#include "nano_addr.h"
 #include "nanortc.h"
 #include "nanortc_util.h"
 #include <string.h>
@@ -153,6 +154,272 @@ static void extract_value(const char *line, size_t line_len, const char *prefix,
     dst[vlen] = '\0';
 }
 
+static int sdp_store_attribute(const char *value, size_t len, char *dst, size_t cap)
+{
+    while (len && (value[len - 1] == '\r' || value[len - 1] == '\n' || value[len - 1] == ' ' ||
+                   value[len - 1] == '\t'))
+        len--;
+    if (!len || len >= cap)
+        return NANORTC_ERR_PARSE;
+    if (dst[0] && (nanortc_strnlen(dst, cap) != len || memcmp(dst, value, len) != 0))
+        return NANORTC_ERR_PARSE;
+    memcpy(dst, value, len);
+    dst[len] = '\0';
+    return NANORTC_OK;
+}
+
+static int sdp_hex(char c)
+{
+    if (c >= '0' && c <= '9')
+        return c - '0';
+    if (c >= 'a' && c <= 'f')
+        return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F')
+        return c - 'A' + 10;
+    return -1;
+}
+
+int sdp_parse_fingerprint(const char *value, size_t len, uint8_t out[NANORTC_DTLS_FINGERPRINT_SIZE])
+{
+    if (!value || !out)
+        return NANORTC_ERR_INVALID_PARAM;
+    while (len && (value[len - 1] == '\r' || value[len - 1] == '\n' || value[len - 1] == ' ' ||
+                   value[len - 1] == '\t'))
+        len--;
+    if (len != 8u + NANORTC_DTLS_FINGERPRINT_SIZE * 3u - 1u || memcmp(value, "sha-256 ", 8) != 0)
+        return NANORTC_ERR_PARSE;
+    uint8_t parsed[NANORTC_DTLS_FINGERPRINT_SIZE];
+    for (size_t i = 0; i < sizeof(parsed); i++) {
+        int hi = sdp_hex(value[8u + i * 3u]);
+        int lo = sdp_hex(value[9u + i * 3u]);
+        if (hi < 0 || lo < 0 || (i + 1u < sizeof(parsed) && value[10u + i * 3u] != ':'))
+            return NANORTC_ERR_PARSE;
+        parsed[i] = (uint8_t)(hi * 16 + lo);
+    }
+    memcpy(out, parsed, sizeof(parsed));
+    return NANORTC_OK;
+}
+
+typedef struct {
+    const char *ptr;
+    size_t len;
+} sdp_token_t;
+static bool sdp_token(const char **cursor, const char *end, sdp_token_t *token)
+{
+    const char *p = *cursor;
+    while (p < end && (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n'))
+        p++;
+    token->ptr = p;
+    while (p < end && *p != ' ' && *p != '\t' && *p != '\r' && *p != '\n')
+        p++;
+    token->len = (size_t)(p - token->ptr);
+    *cursor = p;
+    return token->len != 0;
+}
+static bool sdp_token_eq(sdp_token_t token, const char *value, size_t len)
+{
+    if (token.len != len)
+        return false;
+    for (size_t i = 0; i < len; i++) {
+        char c = token.ptr[i];
+        if (c >= 'A' && c <= 'Z')
+            c = (char)(c - 'A' + 'a');
+        if (c != value[i])
+            return false;
+    }
+    return true;
+}
+static bool sdp_token_u32(sdp_token_t token, uint32_t *out)
+{
+    uint32_t v = 0;
+    if (!token.len)
+        return false;
+    for (size_t i = 0; i < token.len; i++) {
+        unsigned digit = (unsigned)(token.ptr[i] - '0');
+        if (digit > 9u || v > (UINT32_MAX - digit) / 10u)
+            return false;
+        v = v * 10u + digit;
+    }
+    *out = v;
+    return true;
+}
+
+int sdp_parse_candidate(const char *text, size_t len, nano_sdp_candidate_t *candidate)
+{
+    if (!text || !candidate || !len)
+        return NANORTC_ERR_INVALID_PARAM;
+    const char *p = text, *end = text + len;
+    if (memchr(text, 0, len))
+        return NANORTC_ERR_PARSE;
+    if (len >= 2u && memcmp(p, "a=", 2) == 0)
+        p += 2;
+    bool full = (size_t)(end - p) >= 10u && memcmp(p, "candidate:", 10) == 0;
+    sdp_token_t address, port, key, value;
+    uint8_t type = NANORTC_ICE_CAND_HOST;
+    uint32_t priority_value = ICE_HOST_PRIORITY(0);
+    uint32_t port_value;
+    uint8_t related_addr[NANORTC_ADDR_SIZE] = {0}, related_family = 0;
+    uint32_t related_port = 0;
+    bool has_related_addr = false, has_related_port = false;
+    if (full) {
+        p += 10;
+        sdp_token_t foundation, component, transport, priority;
+        uint32_t component_value;
+        if (!sdp_token(&p, end, &foundation) || !sdp_token(&p, end, &component) ||
+            !sdp_token(&p, end, &transport) || !sdp_token(&p, end, &priority) ||
+            !sdp_token(&p, end, &address) || !sdp_token(&p, end, &port) ||
+            !sdp_token_u32(component, &component_value) ||
+            !sdp_token_u32(priority, &priority_value))
+            return NANORTC_ERR_PARSE;
+        if (component_value != 1u || !sdp_token_eq(transport, "udp", 3))
+            return NANORTC_ERR_NOT_IMPLEMENTED;
+        if (!sdp_token(&p, end, &key) || !sdp_token_eq(key, "typ", 3) ||
+            !sdp_token(&p, end, &value))
+            return NANORTC_ERR_PARSE;
+        if (sdp_token_eq(value, "host", 4))
+            type = NANORTC_ICE_CAND_HOST;
+        else if (sdp_token_eq(value, "srflx", 5))
+            type = NANORTC_ICE_CAND_SRFLX;
+        else if (sdp_token_eq(value, "prflx", 5))
+            type = NANORTC_ICE_CAND_PRFLX;
+        else if (sdp_token_eq(value, "relay", 5))
+            type = NANORTC_ICE_CAND_RELAY;
+        else
+            return NANORTC_ERR_PARSE;
+        while (sdp_token(&p, end, &key)) {
+            if (!sdp_token(&p, end, &value))
+                return NANORTC_ERR_PARSE;
+            if (sdp_token_eq(key, "raddr", 5)) {
+                if (has_related_addr)
+                    return NANORTC_ERR_PARSE;
+                int rc = addr_parse_auto(value.ptr, value.len, related_addr, &related_family);
+                if (rc != NANORTC_OK)
+                    return rc;
+                has_related_addr = true;
+            } else if (sdp_token_eq(key, "rport", 5)) {
+                if (has_related_port || !sdp_token_u32(value, &related_port) ||
+                    related_port > UINT16_MAX)
+                    return NANORTC_ERR_PARSE;
+                has_related_port = true;
+            }
+        }
+        /* RFC 8839 §5.1: related address/port are required except for host. */
+        if (has_related_addr != has_related_port ||
+            (type == NANORTC_ICE_CAND_HOST ? has_related_addr : !has_related_addr))
+            return NANORTC_ERR_PARSE;
+    } else {
+        if (!sdp_token(&p, end, &address) || !sdp_token(&p, end, &port) || sdp_token(&p, end, &key))
+            return NANORTC_ERR_PARSE;
+    }
+    if (!sdp_token_u32(port, &port_value) || !port_value || port_value > UINT16_MAX ||
+        address.len >= NANORTC_IPV6_STR_SIZE)
+        return NANORTC_ERR_PARSE;
+    uint8_t binary[NANORTC_ADDR_SIZE] = {0}, family;
+    int rc = addr_parse_auto(address.ptr, address.len, binary, &family);
+    if (rc != NANORTC_OK)
+        return rc;
+    memset(candidate, 0, sizeof(*candidate));
+    memcpy(candidate->addr, binary, sizeof(candidate->addr));
+    candidate->family = family;
+    candidate->priority = priority_value;
+    candidate->port = (uint16_t)port_value;
+    candidate->type = type;
+    memcpy(candidate->related_addr, related_addr, sizeof(candidate->related_addr));
+    candidate->related_family = related_family;
+    candidate->related_port = (uint16_t)related_port;
+    candidate->has_related = has_related_addr;
+    return NANORTC_OK;
+}
+
+void sdp_commit_remote(nano_sdp_t *sdp, const nano_sdp_remote_t *remote)
+{
+    memcpy(sdp->remote_ufrag, remote->remote_ufrag, sizeof(sdp->remote_ufrag));
+    memcpy(sdp->remote_pwd, remote->remote_pwd, sizeof(sdp->remote_pwd));
+    memcpy(sdp->remote_fingerprint, remote->remote_fingerprint, sizeof(sdp->remote_fingerprint));
+    sdp->has_remote_fingerprint = remote->has_remote_fingerprint;
+    sdp->remote_max_message_size = remote->remote_max_message_size;
+    sdp->remote_sctp_port = remote->remote_sctp_port;
+    sdp->remote_setup = remote->remote_setup;
+    sdp->candidate_count = remote->candidate_count;
+    sdp->end_of_candidates = remote->end_of_candidates;
+    sdp->has_datachannel = remote->has_datachannel;
+    sdp->dc_mid = remote->dc_mid;
+    sdp->mid_count = remote->mid_count;
+#if NANORTC_HAVE_MEDIA_TRANSPORT
+    for (uint8_t i = 0; i < NANORTC_MAX_MEDIA_TRACKS; i++) {
+        nano_sdp_mline_t *m = &sdp->mlines[i];
+        const nano_sdp_remote_mline_t *r = &remote->mlines[i];
+        m->kind = r->kind;
+        m->mid = r->mid;
+        m->pt = r->pt;
+        m->remote_pt = r->remote_pt;
+        m->codec = r->codec;
+        m->channels = r->channels;
+        m->sample_rate = r->sample_rate;
+        m->direction = r->direction;
+        m->remote_direction = r->remote_direction;
+        m->active = r->active;
+        m->video_h264_rtpmap_pt = r->video_h264_rtpmap_pt;
+        m->twcc_ext_id = r->twcc_ext_id;
+#if NANORTC_FEATURE_H265
+        m->video_h265_rtpmap_pt = r->video_h265_rtpmap_pt;
+#endif
+    }
+    sdp->mline_count = remote->mline_count;
+#endif
+    sdp->parsed = remote->parsed;
+}
+
+void sdp_snapshot_remote(const nano_sdp_t *sdp, nano_sdp_remote_t *remote)
+{
+    memcpy(remote->remote_ufrag, sdp->remote_ufrag, sizeof(sdp->remote_ufrag));
+    memcpy(remote->remote_pwd, sdp->remote_pwd, sizeof(sdp->remote_pwd));
+    memcpy(remote->remote_fingerprint, sdp->remote_fingerprint, sizeof(sdp->remote_fingerprint));
+    remote->has_remote_fingerprint = sdp->has_remote_fingerprint;
+    remote->remote_max_message_size = sdp->remote_max_message_size;
+    remote->remote_sctp_port = sdp->remote_sctp_port;
+    remote->remote_setup = sdp->remote_setup;
+    /* Persisted remote candidate addresses belong to ICE, not this SDP snapshot. */
+    memset(remote->remote_candidates, 0, sizeof(remote->remote_candidates));
+    remote->candidate_count = sdp->candidate_count;
+    remote->end_of_candidates = sdp->end_of_candidates;
+    remote->has_datachannel = sdp->has_datachannel;
+    remote->dc_mid = sdp->dc_mid;
+    remote->mid_count = sdp->mid_count;
+#if NANORTC_HAVE_MEDIA_TRANSPORT
+    for (uint8_t i = 0; i < NANORTC_MAX_MEDIA_TRACKS; i++) {
+        const nano_sdp_mline_t *m = &sdp->mlines[i];
+        nano_sdp_remote_mline_t *r = &remote->mlines[i];
+        r->kind = m->kind;
+        r->mid = m->mid;
+        r->pt = m->pt;
+        r->remote_pt = m->remote_pt;
+        r->codec = m->codec;
+        r->channels = m->channels;
+        r->sample_rate = m->sample_rate;
+        r->direction = m->direction;
+        r->remote_direction = m->remote_direction;
+        r->active = m->active;
+        r->video_h264_rtpmap_pt = m->video_h264_rtpmap_pt;
+        r->twcc_ext_id = m->twcc_ext_id;
+#if NANORTC_FEATURE_H265
+        r->video_h265_rtpmap_pt = m->video_h265_rtpmap_pt;
+#endif
+    }
+    remote->mline_count = sdp->mline_count;
+#endif
+    remote->parsed = sdp->parsed;
+}
+
+int sdp_parse(nano_sdp_t *sdp, const char *text, size_t len)
+{
+    nano_sdp_remote_t remote;
+    int rc = sdp_parse_remote(sdp, text, len, &remote);
+    if (rc == NANORTC_OK)
+        sdp_commit_remote(sdp, &remote);
+    return rc;
+}
+
 #if NANORTC_HAVE_MEDIA_TRANSPORT
 
 /**
@@ -186,7 +453,7 @@ static uint8_t parse_mline_first_pt(const char *line, size_t line_len, size_t sk
  * Parse a=rtpmap:<pt> <codec>/<rate>[/<channels>]
  * Applies to the current m-line entry.
  */
-static void parse_rtpmap(nano_sdp_mline_t *ml, const char *line, size_t line_len)
+static void parse_rtpmap(nano_sdp_remote_mline_t *ml, const char *line, size_t line_len)
 {
     const char *p = line + 9; /* skip "a=rtpmap:" (9 chars) */
     const char *end = line + line_len;
@@ -202,16 +469,38 @@ static void parse_rtpmap(nano_sdp_mline_t *ml, const char *line, size_t line_len
         if ((uint8_t)pt != ml->remote_pt) {
             return;
         }
+        p = next + 1;
+        const char *slash = memchr(p, '/', (size_t)(end - p));
+        ml->codec = NANORTC_CODEC_NONE;
+        if (!slash)
+            return;
+        sdp_token_t name = {p, (size_t)(slash - p)};
+        if (sdp_token_eq(name, "opus", 4))
+            ml->codec = NANORTC_CODEC_OPUS;
+        else if (sdp_token_eq(name, "pcma", 4))
+            ml->codec = NANORTC_CODEC_PCMA;
+        else if (sdp_token_eq(name, "pcmu", 4))
+            ml->codec = NANORTC_CODEC_PCMU;
+        ml->sample_rate = parse_u32(slash + 1, end, &next);
+        ml->channels = 1;
+        if (next < end && *next == '/') {
+            uint32_t channels = parse_u32(next + 1, end, &next);
+            ml->channels = channels <= UINT8_MAX ? (uint8_t)channels : 0;
+        }
     } else if (ml->kind == SDP_MLINE_VIDEO) {
         p = next + 1;
         /* Match H264 (4 chars) */
         if (p + 4 <= end && memcmp(p, "H264", 4) == 0) {
             ml->video_h264_rtpmap_pt = (uint8_t)pt;
+            if (ml->codec == NANORTC_CODEC_NONE)
+                ml->codec = NANORTC_CODEC_H264;
         }
 #if NANORTC_FEATURE_H265
         /* Match H265 (4 chars) — must come before any broader match */
         else if (p + 4 <= end && memcmp(p, "H265", 4) == 0) {
             ml->video_h265_rtpmap_pt = (uint8_t)pt;
+            if (ml->codec == NANORTC_CODEC_NONE)
+                ml->codec = NANORTC_CODEC_H265;
             /* If the local track is H.265, adopt the offer's PT here. A
              * later fmtp line for the same codec can still override, but
              * offers that ship an H.265 rtpmap with no companion fmtp
@@ -239,55 +528,17 @@ int sdp_init(nano_sdp_t *sdp)
     return NANORTC_OK;
 }
 
-int sdp_parse(nano_sdp_t *sdp, const char *sdp_str, size_t len)
+int sdp_parse_remote(const nano_sdp_t *local, const char *sdp_str, size_t len,
+                     nano_sdp_remote_t *sdp)
 {
-    if (!sdp || !sdp_str || len == 0) {
+    if (!local || !sdp || !sdp_str || len == 0)
         return NANORTC_ERR_INVALID_PARAM;
-    }
-
-    /* Reset m-line tracking — parser assigns MIDs from position in SDP.
-     * But first snapshot local state that the caller populated BEFORE the
-     * offer arrived: codec selection (add_video_track) and H.265 parameter
-     * sets + profile-tier-level (set_h265_parameter_sets). The memset on
-     * each m=line below would otherwise silently erase those, making the
-     * answer fall back to H.264 / omit sprop-* even when the caller asked
-     * for H.265. */
-    sdp->mid_count = 0;
-    sdp->has_datachannel = false;
+    memset(sdp, 0, sizeof(*sdp));
+    if (memchr(sdp_str, 0, len))
+        return NANORTC_ERR_PARSE;
 #if NANORTC_HAVE_MEDIA_TRANSPORT
-    struct sdp_mline_local_preserve {
-        uint8_t codec;
-#if NANORTC_FEATURE_H265
-        char h265_sprop_fmtp[NANORTC_H265_SPROP_FMTP_SIZE];
-        uint16_t h265_sprop_fmtp_len;
-        uint8_t h265_profile_id;
-        uint8_t h265_tier_flag;
-        uint8_t h265_level_id;
-#endif
-    };
-    const uint8_t saved_count = sdp->mline_count;
-    struct sdp_mline_local_preserve saved[NANORTC_MAX_MEDIA_TRACKS];
-    memset(saved, 0, sizeof(saved));
-    for (uint8_t si = 0; si < saved_count && si < NANORTC_MAX_MEDIA_TRACKS; si++) {
-        saved[si].codec = sdp->mlines[si].codec;
-#if NANORTC_FEATURE_H265
-        uint16_t flen = sdp->mlines[si].h265_sprop_fmtp_len;
-        saved[si].h265_sprop_fmtp_len = flen;
-        if (flen > 0 && flen <= NANORTC_H265_SPROP_FMTP_SIZE) {
-            memcpy(saved[si].h265_sprop_fmtp, sdp->mlines[si].h265_sprop_fmtp, flen);
-        }
-        saved[si].h265_profile_id = sdp->mlines[si].h265_profile_id;
-        saved[si].h265_tier_flag = sdp->mlines[si].h265_tier_flag;
-        saved[si].h265_level_id = sdp->mlines[si].h265_level_id;
-#endif
-    }
-    sdp->mline_count = 0;
-    /* Index into sdp->mlines[] for current m-line, -1 if not a media m-line */
     int current_mline_idx = -1;
 #if NANORTC_FEATURE_H265
-    /* RFC 7798 §4.1: MSST / MSMT tx-modes and §6.1 sprop-max-don-diff > 0 cause
-     * the receiver to fail hard — first pass does not implement DON reordering
-     * or multi-session decoding. */
     bool h265_reject = false;
 #endif
 #endif
@@ -310,8 +561,8 @@ int sdp_parse(nano_sdp_t *sdp, const char *sdp_str, size_t len)
             bool is_video = line_starts_with(line, line_len, "m=video ");
             if (sdp->mline_count < NANORTC_MAX_MEDIA_TRACKS) {
                 const uint8_t idx = sdp->mline_count;
-                const struct sdp_mline_local_preserve *p = (idx < saved_count) ? &saved[idx] : NULL;
-                nano_sdp_mline_t *ml = &sdp->mlines[idx];
+                const nano_sdp_mline_t *p = idx < local->mline_count ? &local->mlines[idx] : NULL;
+                nano_sdp_remote_mline_t *ml = &sdp->mlines[idx];
                 memset(ml, 0, sizeof(*ml));
                 ml->kind = is_video ? SDP_MLINE_VIDEO : SDP_MLINE_AUDIO;
                 ml->mid = sdp->mid_count;
@@ -319,20 +570,22 @@ int sdp_parse(nano_sdp_t *sdp, const char *sdp_str, size_t len)
                 ml->remote_pt = parse_mline_first_pt(line, line_len, 8);
                 if (p) {
                     ml->codec = p->codec;
-#if NANORTC_FEATURE_H265
-                    if (is_video && p->h265_sprop_fmtp_len > 0) {
-                        memcpy(ml->h265_sprop_fmtp, p->h265_sprop_fmtp, p->h265_sprop_fmtp_len);
-                        ml->h265_sprop_fmtp_len = p->h265_sprop_fmtp_len;
-                    }
-                    ml->h265_profile_id = p->h265_profile_id;
-                    ml->h265_tier_flag = p->h265_tier_flag;
-                    ml->h265_level_id = p->h265_level_id;
-#endif
+                    ml->direction = p->direction;
+                    ml->sample_rate = p->sample_rate;
+                    ml->channels = p->channels;
+                }
+                if (!is_video) {
+                    /* RFC 3551 §6: only PT 0 and 8 have fixed audio mappings here. */
+                    ml->codec = ml->remote_pt == 0   ? NANORTC_CODEC_PCMU
+                                : ml->remote_pt == 8 ? NANORTC_CODEC_PCMA
+                                                     : NANORTC_CODEC_NONE;
+                    ml->sample_rate = 8000;
+                    ml->channels = 1;
                 }
                 current_mline_idx = (int)sdp->mline_count;
                 sdp->mline_count++;
             } else {
-                current_mline_idx = -1;
+                return NANORTC_ERR_BUFFER_TOO_SMALL;
             }
             sdp->mid_count++;
         } else if (line_len >= 2 && line[0] == 'm' && line[1] == '=') {
@@ -343,7 +596,7 @@ int sdp_parse(nano_sdp_t *sdp, const char *sdp_str, size_t len)
         } else if (current_mline_idx >= 0 &&
                    sdp->mlines[current_mline_idx].kind == SDP_MLINE_VIDEO &&
                    line_starts_with(line, line_len, "a=fmtp:")) {
-            nano_sdp_mline_t *ml = &sdp->mlines[current_mline_idx];
+            nano_sdp_remote_mline_t *ml = &sdp->mlines[current_mline_idx];
             /* Parse video fmtp for H264 packetization-mode=1 (RFC 6184 §8.1).
              * Prefer the entry whose profile-level-id matches our own (42e01f,
              * Constrained Baseline Level 3.1).  Fall back to any H264 with
@@ -466,14 +719,25 @@ int sdp_parse(nano_sdp_t *sdp, const char *sdp_str, size_t len)
         } else
 #endif /* NANORTC_HAVE_MEDIA_TRANSPORT */
             if (line_starts_with(line, line_len, "a=ice-ufrag:")) {
-                extract_value(line, line_len, "a=ice-ufrag:", sdp->remote_ufrag,
-                              sizeof(sdp->remote_ufrag));
+                int rc = sdp_store_attribute(line + 12, line_len - 12, sdp->remote_ufrag,
+                                             sizeof(sdp->remote_ufrag));
+                if (rc != NANORTC_OK)
+                    return rc;
             } else if (line_starts_with(line, line_len, "a=ice-pwd:")) {
-                extract_value(line, line_len, "a=ice-pwd:", sdp->remote_pwd,
-                              sizeof(sdp->remote_pwd));
+                int rc = sdp_store_attribute(line + 10, line_len - 10, sdp->remote_pwd,
+                                             sizeof(sdp->remote_pwd));
+                if (rc != NANORTC_OK)
+                    return rc;
             } else if (line_starts_with(line, line_len, "a=fingerprint:")) {
-                extract_value(line, line_len, "a=fingerprint:", sdp->remote_fingerprint,
-                              sizeof(sdp->remote_fingerprint));
+                uint8_t fingerprint[NANORTC_DTLS_FINGERPRINT_SIZE];
+                int rc = sdp_parse_fingerprint(line + 14, line_len - 14, fingerprint);
+                if (rc != NANORTC_OK)
+                    return rc;
+                if (sdp->has_remote_fingerprint &&
+                    memcmp(sdp->remote_fingerprint, fingerprint, sizeof(fingerprint)) != 0)
+                    return NANORTC_ERR_PARSE;
+                memcpy(sdp->remote_fingerprint, fingerprint, sizeof(fingerprint));
+                sdp->has_remote_fingerprint = true;
             } else if (line_starts_with(line, line_len, "a=max-message-size:")) {
                 const char *v = line + 19;
                 const char *end = line + line_len;
@@ -503,38 +767,14 @@ int sdp_parse(nano_sdp_t *sdp, const char *sdp_str, size_t len)
                     sdp->remote_setup = NANORTC_SDP_SETUP_ACTPASS;
                 }
             } else if (line_starts_with(line, line_len, "a=candidate:")) {
-                if (sdp->candidate_count < NANORTC_SDP_MAX_CANDIDATES) {
-                    const char *p = line + 12;
-                    const char *line_end = line + line_len;
-                    int field = 1;
-
-                    while (p < line_end && field < 5) {
-                        if (*p == ' ') {
-                            field++;
-                            while (p < line_end && *p == ' ')
-                                p++;
-                        } else {
-                            p++;
-                        }
-                    }
-
-                    const char *addr_start = p;
-                    while (p < line_end && *p != ' ')
-                        p++;
-                    size_t addr_len = (size_t)(p - addr_start);
-
-                    while (p < line_end && *p == ' ')
-                        p++;
-
-                    uint16_t cand_port = (uint16_t)parse_u32(p, line_end, NULL);
-
-                    if (addr_len > 0 && addr_len < NANORTC_IPV6_STR_SIZE && cand_port > 0) {
-                        nano_sdp_candidate_t *c = &sdp->remote_candidates[sdp->candidate_count];
-                        memcpy(c->addr, addr_start, addr_len);
-                        c->addr[addr_len] = '\0';
-                        c->port = cand_port;
-                        sdp->candidate_count++;
-                    }
+                nano_sdp_candidate_t candidate;
+                int rc = sdp_parse_candidate(line, line_len, &candidate);
+                if (rc != NANORTC_ERR_NOT_IMPLEMENTED) {
+                    if (rc != NANORTC_OK)
+                        return rc;
+                    if (sdp->candidate_count >= NANORTC_SDP_MAX_CANDIDATES)
+                        return NANORTC_ERR_BUFFER_TOO_SMALL;
+                    sdp->remote_candidates[sdp->candidate_count++] = candidate;
                 }
             } else if (line_starts_with(line, line_len, "a=end-of-candidates")) {
                 sdp->end_of_candidates = true;
@@ -612,8 +852,14 @@ static bool sdp_append_transport_attrs(nano_sdp_t *sdp, char *buf, size_t buf_le
 static bool sdp_append_host_candidates(nano_sdp_t *sdp, char *buf, size_t buf_len, size_t *pos)
 {
     for (uint8_t i = 0; i < sdp->local_candidate_count; i++) {
-        if (sdp->local_candidates[i].addr[0] == '\0')
+        const nano_sdp_candidate_t *candidate = &sdp->local_candidates[i];
+        if (!candidate->family)
             continue;
+        char address[NANORTC_IPV6_STR_SIZE];
+        size_t address_len;
+        if (addr_format(candidate->addr, candidate->family, address, sizeof(address),
+                        &address_len) != NANORTC_OK)
+            return false;
         /* Foundation = index + 1 (RFC 8445 §5.1.1.3) */
         if (!sdp_append(buf, buf_len, pos, "a=candidate:"))
             return false;
@@ -621,12 +867,12 @@ static bool sdp_append_host_candidates(nano_sdp_t *sdp, char *buf, size_t buf_le
             return false;
         if (!sdp_append(buf, buf_len, pos, " 1 UDP "))
             return false;
-        uint32_t prio = ICE_HOST_PRIORITY(i);
+        uint32_t prio = candidate->priority ? candidate->priority : ICE_HOST_PRIORITY(i);
         if (!sdp_append_u32(buf, buf_len, pos, prio))
             return false;
         if (!sdp_append(buf, buf_len, pos, " "))
             return false;
-        if (!sdp_append(buf, buf_len, pos, sdp->local_candidates[i].addr))
+        if (!sdp_append(buf, buf_len, pos, address))
             return false;
         if (!sdp_append(buf, buf_len, pos, " "))
             return false;
@@ -712,15 +958,7 @@ static bool sdp_append_relay_candidate(nano_sdp_t *sdp, char *buf, size_t buf_le
 static bool sdp_local_is_ipv6(const nano_sdp_t *sdp)
 {
 #if NANORTC_FEATURE_IPV6
-    if (sdp->local_candidate_count > 0) {
-        const char *p = sdp->local_candidates[0].addr;
-        while (*p) {
-            if (*p == ':') {
-                return true;
-            }
-            p++;
-        }
-    }
+    return sdp->local_candidate_count > 0 && sdp->local_candidates[0].family == 6;
 #else
     (void)sdp;
 #endif
@@ -1086,10 +1324,14 @@ int sdp_generate_answer(nano_sdp_t *sdp, char *buf, size_t buf_len, size_t *out_
         }
     }
 #else
-    if (!sdp_append(buf, buf_len, &pos, "a=group:BUNDLE 0\r\n"))
+    if (sdp->has_datachannel) {
+        if (!sdp_append(buf, buf_len, &pos, "a=group:BUNDLE 0\r\n"))
+            goto overflow;
+        if (!sdp_append_datachannel_mline(sdp, buf, buf_len, &pos, 0))
+            goto overflow;
+    } else if (!sdp_append_transport_attrs(sdp, buf, buf_len, &pos)) {
         goto overflow;
-    if (!sdp_append_datachannel_mline(sdp, buf, buf_len, &pos, 0))
-        goto overflow;
+    }
     if (!sdp_append_host_candidates(sdp, buf, buf_len, &pos))
         goto overflow;
     if (!sdp_append_srflx_candidate(sdp, buf, buf_len, &pos))

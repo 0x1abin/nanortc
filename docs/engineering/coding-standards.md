@@ -139,14 +139,14 @@ All `nano_*` public API functions return `int` as a status code:
 ```c
 /* Good: status code + out_len */
 size_t answer_len = 0;
-int rc = nanortc_accept_offer(&rtc, offer, answer, sizeof(answer), &answer_len);
+int rc = nanortc_accept_offer(&rtc, offer, offer_len, answer, sizeof(answer), &answer_len);
 if (rc != NANORTC_OK) {
     fprintf(stderr, "failed: %s\n", nanortc_err_name(rc));
     return rc;
 }
 
 /* Bad: using return value as length */
-int len = nanortc_accept_offer(&rtc, offer, answer, sizeof(answer), NULL);
+int len = nanortc_accept_offer(&rtc, offer, offer_len, answer, sizeof(answer), NULL);
 if (len > 0) { ... }  // WRONG — rc is always 0 or negative
 ```
 

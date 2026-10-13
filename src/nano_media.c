@@ -128,6 +128,8 @@ void rate_window_roll(nano_rate_window_t *w, uint32_t now_ms)
         return;
     }
     uint32_t elapsed = nano_time_elapsed(now_ms, w->bucket_start_ms);
+    if (elapsed > INT32_MAX)
+        return; /* A send completion can be newer than the last input tick. */
     if (elapsed >= 1000) {
         /* Bits/s = bytes * 8. At <= 2 Mbps × 1s the product fits in 32 bits. */
         w->prev_bps = w->cur_bytes * 8u;

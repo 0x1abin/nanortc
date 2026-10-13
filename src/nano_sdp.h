@@ -11,6 +11,7 @@
 #define NANORTC_SDP_H_
 
 #include "nanortc_config.h"
+#include "nanortc_crypto.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -25,8 +26,14 @@ typedef enum {
 
 /* ICE candidate parsed from SDP a=candidate: line (RFC 8839 §5.1) */
 typedef struct {
-    char addr[NANORTC_IPV6_STR_SIZE]; /* IP address string */
+    uint8_t addr[NANORTC_ADDR_SIZE]; /* Network byte order. */
+    uint32_t priority;
     uint16_t port;
+    uint8_t family, type;
+    uint8_t related_addr[NANORTC_ADDR_SIZE];
+    uint16_t related_port;
+    uint8_t related_family;
+    bool has_related;
 } nano_sdp_candidate_t;
 
 /* m-line type constants */
@@ -80,17 +87,49 @@ typedef struct nano_sdp_mline {
 } nano_sdp_mline_t;
 #endif
 
+/* Parsed remote data excludes caller-owned local H.265 parameter sets. */
+#if NANORTC_HAVE_MEDIA_TRANSPORT
+typedef struct {
+    uint8_t kind, mid, pt, remote_pt, codec, channels;
+    uint32_t sample_rate;
+    nanortc_direction_t direction, remote_direction;
+    bool active;
+    uint8_t video_h264_rtpmap_pt, twcc_ext_id;
+#if NANORTC_FEATURE_H265
+    uint8_t video_h265_rtpmap_pt;
+#endif
+} nano_sdp_remote_mline_t;
+#endif
+
+typedef struct {
+    char remote_ufrag[NANORTC_ICE_REMOTE_UFRAG_SIZE];
+    char remote_pwd[NANORTC_ICE_REMOTE_PWD_SIZE];
+    uint8_t remote_fingerprint[NANORTC_DTLS_FINGERPRINT_SIZE];
+    bool has_remote_fingerprint;
+    uint32_t remote_max_message_size;
+    uint16_t remote_sctp_port;
+    nano_sdp_setup_t remote_setup;
+    nano_sdp_candidate_t remote_candidates[NANORTC_SDP_MAX_CANDIDATES];
+    uint8_t candidate_count;
+    bool end_of_candidates, has_datachannel, parsed;
+    uint8_t dc_mid, mid_count;
+#if NANORTC_HAVE_MEDIA_TRANSPORT
+    nano_sdp_remote_mline_t mlines[NANORTC_MAX_MEDIA_TRACKS];
+    uint8_t mline_count;
+#endif
+} nano_sdp_remote_t;
+
 typedef struct nano_sdp {
     /* Parsed from remote SDP */
     char remote_ufrag[NANORTC_ICE_REMOTE_UFRAG_SIZE];
     char remote_pwd[NANORTC_ICE_REMOTE_PWD_SIZE];
-    char remote_fingerprint[NANORTC_SDP_FINGERPRINT_SIZE]; /* "sha-256 AA:BB:CC:..." */
+    uint8_t remote_fingerprint[NANORTC_DTLS_FINGERPRINT_SIZE];
+    bool has_remote_fingerprint;
     uint32_t remote_max_message_size;
     uint16_t remote_sctp_port;
     nano_sdp_setup_t remote_setup;
 
-    /* Remote ICE candidates embedded in SDP (RFC 8839) */
-    nano_sdp_candidate_t remote_candidates[NANORTC_SDP_MAX_CANDIDATES];
+    /* Candidate count from the description; addresses commit directly to ICE. */
     uint8_t candidate_count;
 
     /* Local SDP fields */
@@ -145,6 +184,13 @@ int sdp_init(nano_sdp_t *sdp);
  * @return NANORTC_OK on success.
  */
 int sdp_parse(nano_sdp_t *sdp, const char *sdp_str, size_t len);
+int sdp_parse_remote(const nano_sdp_t *local, const char *text, size_t len,
+                     nano_sdp_remote_t *remote);
+void sdp_commit_remote(nano_sdp_t *sdp, const nano_sdp_remote_t *remote);
+void sdp_snapshot_remote(const nano_sdp_t *sdp, nano_sdp_remote_t *remote);
+int sdp_parse_fingerprint(const char *value, size_t len,
+                          uint8_t out[NANORTC_DTLS_FINGERPRINT_SIZE]);
+int sdp_parse_candidate(const char *text, size_t len, nano_sdp_candidate_t *candidate);
 
 /**
  * Generate a WebRTC SDP answer (or offer).

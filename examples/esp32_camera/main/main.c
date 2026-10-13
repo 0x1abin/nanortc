@@ -29,6 +29,7 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include "freertos/queue.h"
 #include "esp_event.h"
 #include "esp_log.h"
@@ -69,6 +70,11 @@ static void nanortc_log_cb(const nanortc_log_message_t *msg, void *ctx)
 /* nanortc state */
 static nanortc_t s_rtc;
 static nano_run_loop_t s_loop;
+/* The HTTP offer callback temporarily acquires session ownership. */
+static SemaphoreHandle_t s_session_mutex;
+static uint32_t s_session_waiters;
+static nanortc_track_stats_t s_video_stats;
+static nanortc_stats_t s_stats; /* Published by the RTC owner for HTTP diagnostics. */
 static char s_local_ip[16];
 static volatile int s_connected;
 static int s_video_mid;
@@ -251,12 +257,17 @@ static int setup_camera_tracks(nanortc_t *rtc, void *userdata)
 /* ----------------------------------------------------------------
  * POST /offer handler — full nanortc session lifecycle
  * ---------------------------------------------------------------- */
-static int handle_offer(const char *offer, char *answer, size_t answer_size, size_t *answer_len,
-                        void *userdata)
+static int handle_offer(const char *offer, size_t offer_len, char *answer, size_t answer_size,
+                        size_t *answer_len, void *userdata)
 {
     (void)userdata;
+    __atomic_fetch_add(&s_session_waiters, 1u, __ATOMIC_RELAXED);
+    xSemaphoreTake(s_session_mutex, portMAX_DELAY);
+    __atomic_fetch_sub(&s_session_waiters, 1u, __ATOMIC_RELAXED);
 
     s_connected = 0;
+    memset(&s_stats, 0, sizeof(s_stats));
+    memset(&s_video_stats, 0, sizeof(s_video_stats));
 
     /* Drain any leftover frames in the queues */
     frame_msg_t stale;
@@ -306,14 +317,17 @@ static int handle_offer(const char *offer, char *answer, size_t answer_size, siz
         .event_cb = on_event,
     };
 
-    int rc = nano_session_accept_offer(&s_rtc, &s_loop, &params, offer, answer, answer_size,
-                                       answer_len);
+    int rc = nano_session_accept_offer(&s_rtc, &s_loop, &params, offer, offer_len, answer,
+                                       answer_size, answer_len);
     if (rc != NANORTC_OK) {
         ESP_LOGE(TAG, "nano_session_accept_offer failed: %d (%s)", rc, nanortc_err_name(rc));
+        xSemaphoreGive(s_session_mutex);
         return rc;
     }
 
-    ESP_LOGI(TAG, "remote_candidates=%d", s_rtc.ice.remote_candidate_count);
+    nanortc_get_stats(&s_rtc, &s_stats);
+    ESP_LOGI(TAG, "remote_candidates=%d", s_stats.remote_candidate_count);
+    xSemaphoreGive(s_session_mutex);
     return 0;
 }
 
@@ -322,15 +336,19 @@ static int handle_offer(const char *offer, char *answer, size_t answer_size, siz
  * ---------------------------------------------------------------- */
 static esp_err_t http_get_debug(httpd_req_t *req)
 {
+    __atomic_fetch_add(&s_session_waiters, 1u, __ATOMIC_RELAXED);
+    xSemaphoreTake(s_session_mutex, portMAX_DELAY);
+    __atomic_fetch_sub(&s_session_waiters, 1u, __ATOMIC_RELAXED);
+    nanortc_stats_t stats = s_stats;
     char buf[1024];
     /* PR-2 lifetime audit signals — exposed over HTTP so the bench operator
      * can sample them without a working serial monitor. */
-    uint32_t pkt_overrun = __atomic_load_n(&s_rtc.stats_pkt_ring_overrun, __ATOMIC_RELAXED);
-    uint32_t tx_full = __atomic_load_n(&s_rtc.stats_tx_queue_full, __ATOMIC_RELAXED);
+    uint32_t pkt_overrun = stats.packet_ring_overrun;
+    uint32_t tx_full = stats.tx_queue_full;
 #if NANORTC_FEATURE_TURN
-    uint32_t wrap_drop = __atomic_load_n(&s_rtc.stats_wrap_dropped, __ATOMIC_RELAXED);
-    uint32_t via_turn = __atomic_load_n(&s_rtc.stats_enqueue_via_turn, __ATOMIC_RELAXED);
-    uint32_t direct = __atomic_load_n(&s_rtc.stats_enqueue_direct, __ATOMIC_RELAXED);
+    uint32_t wrap_drop = stats.wrap_dropped;
+    uint32_t via_turn = stats.enqueue_via_turn;
+    uint32_t direct = stats.enqueue_direct;
 #else
     uint32_t wrap_drop = 0, via_turn = 0, direct = 0;
 #endif
@@ -338,40 +356,35 @@ static esp_err_t http_get_debug(httpd_req_t *req)
     /* Send-pacer health: `paced` rises with every metered fragment; a rising
      * `pace_catchup` means the link is slower than the encoder's output (the
      * pacer hit its latency cap and flushed the backlog — drop encoder bitrate). */
-    uint32_t paced = __atomic_load_n(&s_rtc.stats_paced_packets, __ATOMIC_RELAXED);
-    uint32_t pace_catchup = __atomic_load_n(&s_rtc.stats_pace_catchup, __ATOMIC_RELAXED);
+    uint32_t paced = stats.paced_packets;
+    uint32_t pace_catchup = stats.pace_catchup;
 #else
     uint32_t paced = 0, pace_catchup = 0;
 #endif
-    nanortc_track_stats_t vstats;
-    memset(&vstats, 0, sizeof(vstats));
-    if (s_connected && s_video_mid >= 0) {
-        nanortc_get_track_stats(&s_rtc, (uint8_t)s_video_mid, &vstats);
-    }
-    int n = snprintf(buf, sizeof(buf),
-                     "running=%d fd=%d connected=%d video_mid=%d mic_mid=%d\n"
-                     "ice.remote_candidates=%d ice.state=%d\n"
-                     "state=%d steps=%lu alive=%lu\n"
-                     "lifetime out_q=%u/%u pkt_overrun=%lu wrap_drop=%lu tx_full=%lu "
-                     "via_turn=%lu direct=%lu\n"
-                     "video send_err=%lu (kf=%lu) frame_drop=%lu kf_max=%lu B\n"
-                     "pacer paced=%lu catchup=%lu\n"
-                     "sock send_retry=%lu send_drop=%lu\n"
-                     "bwe est=%lu kbps applied=%lu kbps send=%lu kbps lost=%u/255\n",
-                     s_loop.running, s_loop.fds[0], (int)s_connected, s_video_mid, s_mic_mid,
-                     s_rtc.ice.remote_candidate_count, s_rtc.ice.state, s_rtc.state,
-                     (unsigned long)s_step_count, (unsigned long)s_task_alive,
-                     (unsigned)(s_rtc.out_tail - s_rtc.out_head), (unsigned)NANORTC_OUT_QUEUE_SIZE,
-                     (unsigned long)pkt_overrun, (unsigned long)wrap_drop,
-                     (unsigned long)tx_full, (unsigned long)via_turn, (unsigned long)direct,
-                     (unsigned long)s_vid_send_err, (unsigned long)s_vid_send_err_kf,
-                     (unsigned long)s_frame_drop, (unsigned long)s_kf_max_bytes,
-                     (unsigned long)paced, (unsigned long)pace_catchup,
-                     (unsigned long)s_loop.stats_send_retry, (unsigned long)s_loop.stats_send_drop,
-                     (unsigned long)(vstats.estimated_bitrate_bps / 1024),
-                     (unsigned long)(s_bwe.applied_bps / 1024),
-                     (unsigned long)(vstats.send_bitrate_bps / 1024),
-                     (unsigned)vstats.fraction_lost);
+    nanortc_track_stats_t vstats = s_video_stats;
+    int n = snprintf(
+        buf, sizeof(buf),
+        "running=%d fd=%d connected=%d video_mid=%d mic_mid=%d\n"
+        "ice.remote_candidates=%d ice.state=%d\n"
+        "state=%d steps=%lu alive=%lu\n"
+        "lifetime out_q=%u/%u pkt_overrun=%lu wrap_drop=%lu tx_full=%lu "
+        "via_turn=%lu direct=%lu\n"
+        "video send_err=%lu (kf=%lu) frame_drop=%lu kf_max=%lu B\n"
+        "pacer paced=%lu catchup=%lu\n"
+        "sock send_retry=%lu send_drop=%lu\n"
+        "bwe est=%lu kbps applied=%lu kbps send=%lu kbps lost=%u/255\n",
+        s_loop.running, s_loop.fds[0], (int)s_connected, s_video_mid, s_mic_mid,
+        stats.remote_candidate_count, stats.ice_state, stats.connection_state,
+        (unsigned long)s_step_count, (unsigned long)s_task_alive, (unsigned)stats.output_queued,
+        (unsigned)NANORTC_OUT_QUEUE_SIZE, (unsigned long)pkt_overrun, (unsigned long)wrap_drop,
+        (unsigned long)tx_full, (unsigned long)via_turn, (unsigned long)direct,
+        (unsigned long)s_vid_send_err, (unsigned long)s_vid_send_err_kf,
+        (unsigned long)s_frame_drop, (unsigned long)s_kf_max_bytes, (unsigned long)paced,
+        (unsigned long)pace_catchup, (unsigned long)s_loop.udp.retries,
+        (unsigned long)s_loop.udp.dropped, (unsigned long)(vstats.estimated_bitrate_bps / 1024),
+        (unsigned long)(s_bwe.applied_bps / 1024), (unsigned long)(vstats.send_bitrate_bps / 1024),
+        (unsigned)vstats.fraction_lost);
+    xSemaphoreGive(s_session_mutex);
     httpd_resp_set_type(req, "text/plain");
     httpd_resp_send(req, buf, n);
     return ESP_OK;
@@ -536,8 +549,10 @@ static void webrtc_task(void *arg)
     int64_t next_stats_us = 0;
 
     for (;;) {
+        xSemaphoreTake(s_session_mutex, portMAX_DELAY);
+        bool running = s_loop.running;
         s_task_alive++;
-        if (s_loop.running) {
+        if (running) {
             nano_run_loop_step(&s_loop);
             s_step_count++;
 
@@ -610,9 +625,10 @@ static void webrtc_task(void *arg)
             int64_t now_us = esp_timer_get_time();
             if (s_connected && now_us >= next_stats_us) {
                 next_stats_us = now_us + 5LL * 1000LL * 1000LL;
-                uint32_t pkt_overrun =
-                    __atomic_load_n(&s_rtc.stats_pkt_ring_overrun, __ATOMIC_RELAXED);
-                uint32_t tx_full = __atomic_load_n(&s_rtc.stats_tx_queue_full, __ATOMIC_RELAXED);
+                nanortc_stats_t stats;
+                nanortc_get_stats(&s_rtc, &stats);
+                uint32_t pkt_overrun = stats.packet_ring_overrun;
+                uint32_t tx_full = stats.tx_queue_full;
 
                 /* Video-path health + BWE tracking. send/est diverging with
                  * fraction_lost > 0 is the encoder outrunning the link. */
@@ -630,34 +646,39 @@ static void webrtc_task(void *arg)
                          (unsigned long)(s_bwe.applied_bps / 1024), (unsigned)vstats.fraction_lost,
                          (unsigned long)s_vid_send_err, (unsigned long)s_vid_send_err_kf,
                          (unsigned long)s_frame_drop, (unsigned long)s_kf_max_bytes,
-                         (unsigned long)s_loop.stats_send_retry,
-                         (unsigned long)s_loop.stats_send_drop);
+                         (unsigned long)s_loop.udp.retries, (unsigned long)s_loop.udp.dropped);
 
                 /* Periodic BWE convergence: estimates that move slowly may
                  * never cross the event threshold — converge here too. */
                 apply_bwe_estimate();
 #if NANORTC_FEATURE_TURN
-                uint32_t wrap_drop = __atomic_load_n(&s_rtc.stats_wrap_dropped, __ATOMIC_RELAXED);
-                uint32_t via_turn =
-                    __atomic_load_n(&s_rtc.stats_enqueue_via_turn, __ATOMIC_RELAXED);
-                uint32_t direct = __atomic_load_n(&s_rtc.stats_enqueue_direct, __ATOMIC_RELAXED);
+                uint32_t wrap_drop = stats.wrap_dropped;
+                uint32_t via_turn = stats.enqueue_via_turn;
+                uint32_t direct = stats.enqueue_direct;
                 ESP_LOGI(TAG,
                          "lifetime out_q=%u/%u pkt_overrun=%lu wrap_drop=%lu tx_full=%lu "
                          "via_turn=%lu direct=%lu",
-                         (unsigned)(s_rtc.out_tail - s_rtc.out_head),
-                         (unsigned)NANORTC_OUT_QUEUE_SIZE, (unsigned long)pkt_overrun,
-                         (unsigned long)wrap_drop, (unsigned long)tx_full,
-                         (unsigned long)via_turn, (unsigned long)direct);
+                         (unsigned)stats.output_queued, (unsigned)NANORTC_OUT_QUEUE_SIZE,
+                         (unsigned long)pkt_overrun, (unsigned long)wrap_drop,
+                         (unsigned long)tx_full, (unsigned long)via_turn, (unsigned long)direct);
 #else
                 ESP_LOGI(TAG, "lifetime out_q=%u/%u pkt_overrun=%lu tx_full=%lu",
-                         (unsigned)(s_rtc.out_tail - s_rtc.out_head),
-                         (unsigned)NANORTC_OUT_QUEUE_SIZE, (unsigned long)pkt_overrun,
-                         (unsigned long)tx_full);
+                         (unsigned)stats.output_queued, (unsigned)NANORTC_OUT_QUEUE_SIZE,
+                         (unsigned long)pkt_overrun, (unsigned long)tx_full);
 #endif
             }
-        } else {
-            vTaskDelay(pdMS_TO_TICKS(100));
+            nanortc_get_stats(&s_rtc, &s_stats);
+            memset(&s_video_stats, 0, sizeof(s_video_stats));
+            if (s_connected && s_video_mid >= 0)
+                nanortc_get_track_stats(&s_rtc, (uint8_t)s_video_mid, &s_video_stats);
         }
+        xSemaphoreGive(s_session_mutex);
+        /* Let a waiting HTTP task acquire ownership before this higher-priority
+         * task takes the mutex again. Normal media iterations do not sleep. */
+        if (__atomic_load_n(&s_session_waiters, __ATOMIC_RELAXED))
+            vTaskDelay(1);
+        else if (!running)
+            vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
 
@@ -747,6 +768,12 @@ void app_main(void)
                          NULL);
 
     /* 9. HTTP server */
+    s_session_mutex = xSemaphoreCreateMutex();
+    if (!s_session_mutex) {
+        ESP_LOGE(TAG, "Failed to create session mutex");
+        return;
+    }
+
     nano_webserver_config_t wscfg;
     memset(&wscfg, 0, sizeof(wscfg));
     wscfg.html_start = index_html_start;

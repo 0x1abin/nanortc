@@ -16,6 +16,7 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include "esp_system.h"
 #include "esp_event.h"
 #include "esp_log.h"
@@ -33,6 +34,9 @@ static const char *TAG = "nanortc_dc";
 /* nanortc state — static because nanortc_t is large */
 static nanortc_t s_rtc;
 static nano_run_loop_t s_loop;
+/* The HTTP offer callback temporarily acquires session ownership. */
+static SemaphoreHandle_t s_session_mutex;
+static uint32_t s_session_waiters;
 static char s_local_ip[16];
 
 /* Embedded HTML file (linked by EMBED_TXTFILES in CMakeLists.txt) */
@@ -92,10 +96,13 @@ static void on_event(nanortc_t *rtc, const nanortc_event_t *evt, void *userdata)
 /* ----------------------------------------------------------------
  * POST /offer handler — full nanortc session lifecycle
  * ---------------------------------------------------------------- */
-static int handle_offer(const char *offer, char *answer, size_t answer_size, size_t *answer_len,
-                        void *userdata)
+static int handle_offer(const char *offer, size_t offer_len, char *answer, size_t answer_size,
+                        size_t *answer_len, void *userdata)
 {
     (void)userdata;
+    __atomic_fetch_add(&s_session_waiters, 1u, __ATOMIC_RELAXED);
+    xSemaphoreTake(s_session_mutex, portMAX_DELAY);
+    __atomic_fetch_sub(&s_session_waiters, 1u, __ATOMIC_RELAXED);
 
     nanortc_config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
@@ -111,11 +118,12 @@ static int handle_offer(const char *offer, char *answer, size_t answer_size, siz
         .event_cb = on_event,
     };
 
-    int rc =
-        nano_session_accept_offer(&s_rtc, &s_loop, &params, offer, answer, answer_size, answer_len);
+    int rc = nano_session_accept_offer(&s_rtc, &s_loop, &params, offer, offer_len, answer,
+                                       answer_size, answer_len);
     if (rc != NANORTC_OK) {
         ESP_LOGE(TAG, "nano_session_accept_offer failed: %d (%s)", rc, nanortc_err_name(rc));
     }
+    xSemaphoreGive(s_session_mutex);
     return rc;
 }
 
@@ -128,11 +136,18 @@ static void webrtc_task(void *arg)
     ESP_LOGI(TAG, "WebRTC task started");
 
     for (;;) {
-        if (s_loop.running) {
+        xSemaphoreTake(s_session_mutex, portMAX_DELAY);
+        bool running = s_loop.running;
+        if (running) {
             nano_run_loop_step(&s_loop);
-        } else {
-            vTaskDelay(pdMS_TO_TICKS(50));
         }
+        xSemaphoreGive(s_session_mutex);
+        /* Let a waiting HTTP task acquire ownership before this higher-priority
+         * task takes the mutex again. Normal media iterations do not sleep. */
+        if (__atomic_load_n(&s_session_waiters, __ATOMIC_RELAXED))
+            vTaskDelay(1);
+        else if (!running)
+            vTaskDelay(pdMS_TO_TICKS(50));
     }
 }
 
@@ -170,6 +185,12 @@ void app_main(void)
     memset(&s_loop, 0, sizeof(s_loop));
 
     /* 5. Start HTTP server */
+    s_session_mutex = xSemaphoreCreateMutex();
+    if (!s_session_mutex) {
+        ESP_LOGE(TAG, "Failed to create session mutex");
+        return;
+    }
+
     nano_webserver_config_t wscfg;
     memset(&wscfg, 0, sizeof(wscfg));
     wscfg.html_start = index_html_start;

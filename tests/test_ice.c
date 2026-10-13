@@ -1463,6 +1463,31 @@ TEST(test_ice_consent_rejects_corrupt_integrity)
     ASSERT_TRUE(ctrl.consent_pending);
 }
 
+TEST(test_ice_consent_response_must_use_selected_path)
+{
+    nano_ice_t ctrl, ctld;
+    setup_ice_pair(&ctrl, &ctld);
+    ASSERT_OK(do_ice_roundtrip(&ctrl, &ctld, 100));
+    uint8_t request[256], response[256], scratch[256];
+    size_t request_len, response_len, scratch_len;
+    ctrl.consent_next_ms = 0;
+    ASSERT_OK(ice_generate_consent(&ctrl, 1000, crypto(), request, sizeof(request), &request_len));
+    nanortc_addr_t source = {.family = 4, .port = 4000};
+    memcpy(source.addr, ctrl.local_candidates[0].addr, sizeof(source.addr));
+    ASSERT_OK(ice_handle_stun(&ctld, request, request_len, &source, 0, false, crypto(), response,
+                              sizeof(response), &response_len));
+    source.port = 5001;
+    memcpy(source.addr, ctld.local_candidates[0].addr, sizeof(source.addr));
+    ASSERT_EQ(ice_handle_stun(&ctrl, response, response_len, &source, 0, false, crypto(), scratch,
+                              sizeof(scratch), &scratch_len),
+              NANORTC_ERR_PROTOCOL);
+    ASSERT_TRUE(ctrl.consent_pending);
+    source.port = 5000;
+    ASSERT_OK(ice_handle_stun(&ctrl, response, response_len, &source, 0, false, crypto(), scratch,
+                              sizeof(scratch), &scratch_len));
+    ASSERT_FALSE(ctrl.consent_pending);
+}
+
 /* ---- Runner ---- */
 
 TEST(test_ice_trigger_authentication_and_retired_response)
@@ -1610,6 +1635,7 @@ RUN(test_ice_rng_failure_does_not_commit_txid);
 RUN(test_ice_consent_deadlines_wrap);
 RUN(test_ice_consent_rng_failure_does_not_commit_txid);
 RUN(test_ice_consent_rejects_corrupt_integrity);
+RUN(test_ice_consent_response_must_use_selected_path);
 RUN(test_ice_controlled_generates_check);
 /* §7.2.1: Controlled receives requests */
 RUN(test_ice_controlled_handle_request);

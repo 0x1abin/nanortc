@@ -572,7 +572,7 @@ TEST(test_jitter_deadline_releases_tail_without_network_input)
     ASSERT_EQ(timeout, 0u);
     rtc->now_ms = 20;
     nanortc_output_t out;
-    ASSERT_OK(nanortc_poll_output(rtc, &out));
+    ASSERT_OK(nano_test_poll_output(rtc, &out));
     ASSERT_EQ(out.event.type, NANORTC_EV_MEDIA_DATA);
     ASSERT_EQ(out.event.media_data.len, 1u);
     ASSERT_EQ(out.event.media_data.data[0], sample);

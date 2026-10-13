@@ -16,6 +16,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
 
 /* SRTP keying material size (RFC 5764 §4.2):
  * client_key(16) + server_key(16) + client_salt(14) + server_salt(14) */
@@ -69,6 +70,8 @@ typedef struct nano_dtls {
 
     /* Local certificate fingerprint (SHA-256, "XX:XX:..." format, 95 chars + NUL) */
     char local_fingerprint[NANORTC_DTLS_FINGERPRINT_STR_SIZE];
+    uint8_t expected_peer_fingerprint[NANORTC_DTLS_FINGERPRINT_SIZE];
+    bool peer_fingerprint_set;
 
     /* ClientHello fragment reassembly (server-side only, workaround for
      * mbedtls 3.6 rejecting fragmented ClientHello at ssl_tls12_server.c:1099).
@@ -93,6 +96,8 @@ typedef struct nano_dtls {
  */
 int dtls_validate_provider(const nanortc_crypto_provider_t *crypto);
 int dtls_init(nano_dtls_t *dtls, const nanortc_crypto_provider_t *crypto, int is_server);
+int dtls_set_peer_fingerprint(nano_dtls_t *dtls,
+                              const uint8_t fingerprint[NANORTC_DTLS_FINGERPRINT_SIZE]);
 
 /*
  * Start handshake (client role: generates ClientHello).

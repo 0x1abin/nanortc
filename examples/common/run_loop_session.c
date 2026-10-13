@@ -11,7 +11,8 @@
 
 int nano_session_accept_offer(nanortc_t *rtc, nano_run_loop_t *loop,
                               const nano_accept_offer_params_t *params, const char *offer,
-                              char *answer, size_t answer_size, size_t *answer_len)
+                              size_t offer_len, char *answer, size_t answer_size,
+                              size_t *answer_len)
 {
     if (!rtc || !loop || !params || !params->rtc_cfg || !params->local_ip || !offer || !answer) {
         return NANORTC_ERR_INVALID_PARAM;
@@ -44,7 +45,7 @@ int nano_session_accept_offer(nanortc_t *rtc, nano_run_loop_t *loop,
     nano_run_loop_set_event_cb(loop, params->event_cb, params->event_userdata);
     loop->max_poll_ms = params->max_poll_ms;
 
-    rc = nanortc_accept_offer(rtc, offer, answer, answer_size, answer_len);
+    rc = nanortc_accept_offer(rtc, offer, offer_len, answer, answer_size, answer_len);
     if (rc != NANORTC_OK) {
         nano_run_loop_destroy(loop);
         nanortc_destroy(rtc);

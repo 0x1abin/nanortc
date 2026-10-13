@@ -103,7 +103,7 @@ TEST(test_interop_srflx_handshake_and_data)
      * side would fall back to selected_local_idx=0 (host) — i.e. type=HOST.
      * With the fix, the only local candidate is SRFLX, dst→idx resolves to
      * it, and selected_local_type is recorded as SRFLX. */
-    uint8_t local_type = __atomic_load_n(&nano.rtc.ice.selected_local_type, __ATOMIC_RELAXED);
+    uint8_t local_type = interop_nanortc_stats(&nano).selected_local_type;
     TEST_ASSERT_EQUAL_INT_MESSAGE(NANORTC_ICE_CAND_SRFLX, local_type,
                                   "nanortc selected_local_type != SRFLX");
 
@@ -127,7 +127,7 @@ TEST(test_interop_srflx_handshake_and_data)
 
     const char *msg_to_libdc = "world-srflx";
     int initial_libdc = atomic_load(&libdc.msg_count);
-    rc = nanortc_datachannel_send_string(&nano.rtc, 0, msg_to_libdc);
+    rc = interop_nanortc_send_string(&nano, 0, msg_to_libdc);
     TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
 
     start = interop_get_millis();

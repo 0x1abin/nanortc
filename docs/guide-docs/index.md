@@ -6,6 +6,7 @@ Operator-facing how-to guides: commands, flags, workflow recipes. Distinct from 
 
 | Document | Description |
 |----------|-------------|
+| [0.2 migration](../engineering/nanortc-02.md) | Breaking API, output ownership, authentication, lifecycle and acceptance |
 | [build.md](build.md) | Build commands, feature flags, crypto backends, interop, ASan, fuzz, coverage, ESP-IDF, formatting, CI locally |
 
 ## Naming Conventions

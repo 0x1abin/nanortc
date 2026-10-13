@@ -12,7 +12,17 @@
 #define NANORTC_TEST_H_
 
 #include "unity.h"
+#include "nanortc.h"
 #include <stdio.h>
+
+/* The in-memory bridge represents a successful synchronous UDP send. */
+static inline int nano_test_poll_output(nanortc_t *rtc, nanortc_output_t *out)
+{
+    int rc = nanortc_poll_output(rtc, out);
+    if (rc == NANORTC_OK && out->type == NANORTC_OUTPUT_TRANSMIT)
+        return nanortc_report_transmit(rtc, out->transmit.token, NANORTC_TRANSMIT_SENT, rtc->now_ms);
+    return rc;
+}
 
 /* Unity requires setUp/tearDown — provide empty defaults.
  * Each test executable is built from a single .c file,

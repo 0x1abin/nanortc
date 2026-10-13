@@ -35,7 +35,7 @@ extern "C" {
 /** @brief Library version (major.minor.patch). */
 /** @{ */
 #define NANORTC_VERSION_MAJOR 0
-#define NANORTC_VERSION_MINOR 1
+#define NANORTC_VERSION_MINOR 2
 #define NANORTC_VERSION_PATCH 0
 /** @} */
 
@@ -250,17 +250,16 @@ typedef enum {
 
 /** @brief Application event types delivered via NANORTC_OUTPUT_EVENT. */
 typedef enum {
-    NANORTC_EV_CONNECTED = 0,                 /**< ICE+DTLS(+SCTP) fully established. */
-    NANORTC_EV_DISCONNECTED = 1,              /**< Connection lost or closed. */
-    NANORTC_EV_ICE_STATE_CHANGE = 2,          /**< ICE state transition. */
-    NANORTC_EV_MEDIA_ADDED = 3,               /**< Remote added new media track. */
-    NANORTC_EV_MEDIA_CHANGED = 4,             /**< Media direction changed. */
-    NANORTC_EV_MEDIA_DATA = 5,                /**< Received media frame (audio or video). */
-    NANORTC_EV_KEYFRAME_REQUEST = 6,          /**< Remote requests keyframe (PLI/FIR). */
-    NANORTC_EV_DATACHANNEL_OPEN = 7,          /**< DataChannel opened (DCEP complete). */
-    NANORTC_EV_DATACHANNEL_DATA = 8,          /**< DataChannel data received. */
-    NANORTC_EV_DATACHANNEL_CLOSE = 9,         /**< DataChannel closed. */
-    NANORTC_EV_DATACHANNEL_BUFFERED_LOW = 10, /**< Send buffer drained below threshold. */
+    NANORTC_EV_CONNECTED = 0,         /**< ICE+DTLS(+SCTP) fully established. */
+    NANORTC_EV_DISCONNECTED = 1,      /**< Connection lost or closed. */
+    NANORTC_EV_ICE_STATE_CHANGE = 2,  /**< ICE state transition. */
+    NANORTC_EV_MEDIA_ADDED = 3,       /**< Remote added new media track. */
+    NANORTC_EV_MEDIA_CHANGED = 4,     /**< Media direction changed. */
+    NANORTC_EV_MEDIA_DATA = 5,        /**< Received media frame (audio or video). */
+    NANORTC_EV_KEYFRAME_REQUEST = 6,  /**< Remote requests keyframe (PLI/FIR). */
+    NANORTC_EV_DATACHANNEL_OPEN = 7,  /**< DataChannel opened (DCEP complete). */
+    NANORTC_EV_DATACHANNEL_DATA = 8,  /**< DataChannel data received. */
+    NANORTC_EV_DATACHANNEL_CLOSE = 9, /**< DataChannel closed. */
 #if NANORTC_FEATURE_VIDEO
     NANORTC_EV_BITRATE_ESTIMATE = 11, /**< BWE: estimated bitrate changed significantly. */
 #endif
@@ -272,6 +271,20 @@ typedef enum {
 
 /* Forward declarations needed by event data structures */
 typedef struct nanortc nanortc_t;
+
+typedef enum {
+    NANORTC_DISCONNECT_LOCAL,
+    NANORTC_DISCONNECT_ICE_FAILED,
+    NANORTC_DISCONNECT_CONSENT_EXPIRED,
+    NANORTC_DISCONNECT_AUTH_FAILED,
+    NANORTC_DISCONNECT_SCTP_FAILED,
+    NANORTC_DISCONNECT_PEER,
+} nanortc_disconnect_reason_t;
+
+typedef enum {
+    NANORTC_TRANSMIT_SENT,
+    NANORTC_TRANSMIT_DROPPED,
+} nanortc_transmit_result_t;
 
 /* ----------------------------------------------------------------
  * Per-event data structures (str0m-inspired typed events)
@@ -398,7 +411,7 @@ typedef struct {
     bool binary;         /**< true = binary, false = UTF-8 string. */
 } nanortc_ev_datachannel_data_t;
 
-/** @brief Data for NANORTC_EV_DATACHANNEL_CLOSE / NANORTC_EV_DATACHANNEL_BUFFERED_LOW. */
+/** @brief Data for NANORTC_EV_DATACHANNEL_CLOSE. */
 typedef struct {
     uint16_t id; /**< SCTP stream ID. */
 } nanortc_ev_datachannel_id_t;
@@ -417,6 +430,7 @@ typedef struct {
 typedef struct nanortc_event {
     nanortc_event_type_t type; /**< Event type discriminator. */
     union {
+        nanortc_disconnect_reason_t disconnect_reason;  /**< EV_DISCONNECTED. */
         nanortc_ev_connected_t connected;               /**< EV_CONNECTED */
         nanortc_ev_media_added_t media_added;           /**< EV_MEDIA_ADDED */
         nanortc_ev_media_changed_t media_changed;       /**< EV_MEDIA_CHANGED */
@@ -430,10 +444,9 @@ typedef struct nanortc_event {
 #endif
         nanortc_ev_datachannel_open_t datachannel_open; /**< EV_DATACHANNEL_OPEN */
         nanortc_ev_datachannel_data_t datachannel_data; /**< EV_DATACHANNEL_DATA */
-        nanortc_ev_datachannel_id_t
-            datachannel_id; /**< EV_DATACHANNEL_CLOSE, EV_DATACHANNEL_BUFFERED_LOW */
-        uint16_t ice_state; /**< EV_ICE_STATE_CHANGE */
-        nanortc_ev_ice_candidate_t ice_candidate; /**< EV_ICE_CANDIDATE */
+        nanortc_ev_datachannel_id_t datachannel_id;     /**< EV_DATACHANNEL_CLOSE */
+        uint16_t ice_state;                             /**< EV_ICE_STATE_CHANGE */
+        nanortc_ev_ice_candidate_t ice_candidate;       /**< EV_ICE_CANDIDATE */
     };
 } nanortc_event_t;
 
@@ -460,8 +473,17 @@ typedef struct nanortc_output {
             nanortc_addr_t dest; /**< Destination address. */
             nanortc_addr_t src;  /**< Source address (local interface).
                                   *   family==0 means "use any" (backward compat). */
-        } transmit;              /**< Valid when type == NANORTC_OUTPUT_TRANSMIT. */
-        nanortc_event_t event;   /**< Valid when type == NANORTC_OUTPUT_EVENT. */
+            union {
+                uint64_t token; /**< Report SENT or DROPPED before the next transmit. */
+                struct {
+                    uint32_t transport_seq;
+                    uint16_t payload_bytes;
+                    uint8_t mid;
+                    uint8_t flags;
+                } _internal; /**< Library queue metadata; callers must not modify. */
+            };
+        } transmit;            /**< Valid when type == NANORTC_OUTPUT_TRANSMIT. */
+        nanortc_event_t event; /**< Valid when type == NANORTC_OUTPUT_EVENT. */
     };
 } nanortc_output_t;
 
@@ -649,6 +671,54 @@ typedef enum {
     NANORTC_STATE_CLOSED,
 } nano_conn_state_t;
 
+typedef enum {
+    NANORTC_SIGNALING_READY,
+    NANORTC_SIGNALING_HAVE_LOCAL_OFFER,
+    NANORTC_SIGNALING_NEGOTIATED,
+} nanortc_signaling_state_t;
+
+/** Connection snapshot; all readers follow the single-owner discipline. */
+typedef struct {
+    nano_conn_state_t connection_state;
+    nano_ice_state_t ice_state;
+    nanortc_addr_t selected_local;
+    nanortc_addr_t selected_remote;
+    uint8_t remote_candidate_count;
+    uint8_t remote_relay_candidate_count;
+    uint8_t selected_local_type;
+    uint8_t selected_remote_type;
+    bool is_controlling;
+    uint32_t packets_sent;
+    uint32_t bytes_sent;
+    uint32_t packets_dropped;
+    uint32_t tx_queue_full;
+    uint16_t output_free_slots;
+    uint16_t output_queued;
+    bool transmit_pending;
+#if NANORTC_FEATURE_TURN
+    uint32_t enqueue_direct;
+    uint32_t enqueue_via_turn;
+    uint32_t wrap_dropped;
+#endif
+#if NANORTC_FEATURE_VIDEO
+    uint32_t packet_ring_overrun;
+    uint32_t feedback_history_missed;
+    uint32_t estimated_bitrate_bps;
+    uint32_t remb_cap_bps;
+    bool remb_cap_valid;
+#if NANORTC_FEATURE_VIDEO_FEC
+    uint32_t fec_sent;
+    uint32_t fec_dropped_resource;
+    uint32_t fec_recovered;
+#endif
+#if NANORTC_FEATURE_VIDEO_PACING
+    uint16_t pacer_queued;
+    uint32_t paced_packets;
+    uint32_t pace_catchup;
+#endif
+#endif
+} nanortc_stats_t;
+
 /* ----------------------------------------------------------------
  * Main state machine
  * ---------------------------------------------------------------- */
@@ -663,10 +733,13 @@ typedef enum {
 struct nanortc {
     nanortc_config_t config;
     nano_conn_state_t state;
+    nanortc_signaling_state_t signaling_state;
+    bool ice_restarting;
     uint32_t now_ms; /* last known time */
 
     /* Subsystem state */
     nano_ice_t ice;
+    nano_ice_related_t remote_candidate_related[NANORTC_MAX_ICE_CANDIDATES];
     nano_dtls_t dtls;
     nano_sdp_t sdp;
 #if NANORTC_FEATURE_TURN
@@ -736,6 +809,7 @@ struct nanortc {
 
     /** Shared bandwidth estimator (session-wide, not per-track). */
     nano_bwe_t bwe;
+    uint32_t twcc_sequence; /**< Shared BUNDLE transport sequence. */
 
 #if NANORTC_FEATURE_VIDEO_RATE_CONTROL
     /** Adaptive media spec controller (session-wide). Pure-compute: maps the
@@ -793,7 +867,8 @@ struct nanortc {
     /* Receive: ring of recent plaintext media packets for FEC recovery. */
     uint8_t fec_rx_med[NANORTC_FEC_GROUP_SIZE][NANORTC_MEDIA_BUF_SIZE];
     uint16_t fec_rx_len[NANORTC_FEC_GROUP_SIZE];
-    uint8_t fec_rx_n;                             /**< Ring write cursor. */
+    uint8_t fec_rx_n;                             /**< Saturating number of valid media packets. */
+    uint8_t fec_rx_cursor;                        /**< Bounded ring write cursor. */
     uint8_t fec_rx_recov[NANORTC_MEDIA_BUF_SIZE]; /**< Recovered packet scratch. */
     /** One FEC packet awaiting its group's late media (FEC delivered before
      *  enough members arrived); retried as each media packet is buffered so
@@ -820,6 +895,18 @@ struct nanortc {
     nanortc_output_t out_queue[NANORTC_OUT_QUEUE_SIZE];
     uint16_t out_head;
     uint16_t out_tail;
+    uint64_t transmit_token;
+    uint32_t stats_packets_sent;
+    uint32_t stats_bytes_sent;
+    uint32_t stats_packets_dropped;
+    uint16_t transmit_pending_len;
+    bool transmit_pending;
+#if NANORTC_HAVE_MEDIA_TRANSPORT
+    uint32_t transmit_pending_seq;
+    uint16_t transmit_pending_payload;
+    uint8_t transmit_pending_mid;
+    uint8_t transmit_pending_flags;
+#endif
     /* Queue-full metadata: latest snapshot per event type and track/channel.
      * Payload events retain their bytes in the protocol/track producer instead. */
     nanortc_event_t pending_events[NANORTC_PENDING_EVENT_SLOTS];
@@ -920,19 +1007,19 @@ NANORTC_API void nanortc_destroy(nanortc_t *rtc);
  * @brief Parse a remote SDP offer and generate an SDP answer.
  *
  * @param rtc            Initialized RTC state.
- * @param offer          NUL-terminated remote SDP offer string.
+ * @param offer          Remote SDP offer bytes; embedded NUL is rejected.
+ * @param offer_len      Number of input bytes, excluding any terminator.
  * @param answer_buf     Buffer to receive the generated SDP answer.
  * @param answer_buf_len Size of @p answer_buf in bytes.
  * @param out_len        Receives answer length in bytes (may be NULL).
  * @return NANORTC_OK on success.
  * @retval NANORTC_ERR_BUFFER_TOO_SMALL  @p answer_buf_len is insufficient.
  * @retval NANORTC_ERR_PARSE             Malformed SDP offer.
- * @retval NANORTC_ERR_STATE             Called on a non-fresh instance; only
- *                                       valid in state NEW (or after
- *                                       nanortc_ice_restart()).
+ * @retval NANORTC_ERR_STATE             Closed, local offer pending, or an
+ *                                       established offer without ICE restart.
  */
-NANORTC_API int nanortc_accept_offer(nanortc_t *rtc, const char *offer, char *answer_buf,
-                                     size_t answer_buf_len, size_t *out_len);
+NANORTC_API int nanortc_accept_offer(nanortc_t *rtc, const char *offer, size_t offer_len,
+                                     char *answer_buf, size_t answer_buf_len, size_t *out_len);
 
 /**
  * @brief Generate an SDP offer (controlling/offerer role).
@@ -951,12 +1038,13 @@ NANORTC_API int nanortc_create_offer(nanortc_t *rtc, char *offer_buf, size_t off
  * @brief Parse a remote SDP answer (after creating an offer).
  *
  * @param rtc     Initialized RTC state (must have called nanortc_create_offer first).
- * @param answer  NUL-terminated remote SDP answer string.
+ * @param answer  Remote SDP answer bytes; embedded NUL is rejected.
+ * @param answer_len Number of input bytes, excluding any terminator.
  * @return NANORTC_OK on success.
  * @retval NANORTC_ERR_PARSE  Malformed SDP answer.
  * @retval NANORTC_ERR_STATE  No pending offer.
  */
-NANORTC_API int nanortc_accept_answer(nanortc_t *rtc, const char *answer);
+NANORTC_API int nanortc_accept_answer(nanortc_t *rtc, const char *answer, size_t answer_len);
 
 /* ----------------------------------------------------------------
  * ICE API
@@ -981,12 +1069,13 @@ NANORTC_API int nanortc_add_local_candidate(nanortc_t *rtc, const char *ip, uint
  * CHECKING state, the new candidate is immediately included in checks.
  *
  * @param rtc            Initialized RTC state.
- * @param candidate_str  NUL-terminated SDP candidate line (a=candidate:...).
+ * @param candidate_str  SDP candidate bytes (a=candidate:... or candidate:...).
+ * @param len            Input byte count, excluding any terminator.
  * @return NANORTC_OK on success.
  * @retval NANORTC_ERR_PARSE  Malformed candidate string.
  * @retval NANORTC_ERR_NOT_IMPLEMENTED  Candidate is not component 1 over UDP.
  */
-NANORTC_API int nanortc_add_remote_candidate(nanortc_t *rtc, const char *candidate_str);
+NANORTC_API int nanortc_add_remote_candidate(nanortc_t *rtc, const char *candidate_str, size_t len);
 
 /**
  * @brief Set ICE servers after initialization.
@@ -1019,9 +1108,13 @@ NANORTC_API int nanortc_end_of_candidates(nanortc_t *rtc);
  *
  * Resets ICE state, generates new credentials, and clears remote candidates.
  * After calling this, exchange a new offer/answer with the updated credentials.
+ * Authenticated DTLS/SRTP/SCTP and tracks remain intact. The old route stays
+ * usable only until its existing consent expires. Finish any pending transmit
+ * first; restart during a DTLS handshake is rejected.
  *
  * @param rtc  Initialized RTC state.
  * @return NANORTC_OK on success.
+ * @retval NANORTC_ERR_WOULD_BLOCK A transmit result is still pending.
  */
 NANORTC_API int nanortc_ice_restart(nanortc_t *rtc);
 
@@ -1040,6 +1133,14 @@ NANORTC_API int nanortc_ice_restart(nanortc_t *rtc);
  * @retval NANORTC_ERR_NO_DATA  No more pending outputs.
  */
 NANORTC_API int nanortc_poll_output(nanortc_t *rtc, nanortc_output_t *out);
+
+/** Complete the one outstanding transmit. at_ms uses the input clock and
+ * records socket acceptance or final discard; it does not advance timers.
+ * Copy a transiently blocked datagram before any state-modifying call. */
+NANORTC_API int nanortc_report_transmit(nanortc_t *rtc, uint64_t token,
+                                        nanortc_transmit_result_t result, uint32_t at_ms);
+
+NANORTC_API int nanortc_get_stats(const nanortc_t *rtc, nanortc_stats_t *stats);
 
 /**
  * @brief Feed input into the state machine (unified entry point).
@@ -1211,7 +1312,7 @@ NANORTC_API int nanortc_video_set_h265_parameter_sets(nanortc_t *rtc, uint8_t mi
  * @param mid  Track MID returned by nanortc_add_audio_track() / nanortc_add_video_track().
  * @param dir  New direction.
  */
-NANORTC_API void nanortc_set_direction(nanortc_t *rtc, uint8_t mid, nanortc_direction_t dir);
+NANORTC_API int nanortc_set_direction(nanortc_t *rtc, uint8_t mid, nanortc_direction_t dir);
 
 /* ----------------------------------------------------------------
  * Media send API
@@ -1252,8 +1353,8 @@ NANORTC_API int nanortc_send_audio(nanortc_t *rtc, uint8_t mid, uint32_t pts_ms,
  *
  * Admission is atomic per frame: the worst-case RTP packet count is
  * computed up front and the frame is rejected before anything is enqueued
- * if it cannot ship whole. A partially sent frame is never put on the
- * wire (truncation guarantees receiver loss → PLI → keyframe storms).
+ * if it cannot fit whole. Socket or network loss may still discard individual
+ * packets after admission; send results are reported separately.
  *
  * @param rtc     Initialized RTC state (must be connected).
  * @param mid     Video track MID.
@@ -1293,20 +1394,18 @@ NANORTC_API int nanortc_request_keyframe(nanortc_t *rtc, uint8_t mid);
  * Media statistics and bandwidth estimation
  * ---------------------------------------------------------------- */
 
-/** @brief Per-track RTCP statistics snapshot.
- *
- * Only grows by appending fields to the tail so embedded applications
- * built against an older header continue to read the leading fields
- * correctly. The Phase-9 additions (send_bitrate_bps, send_fps_q8,
- * fraction_lost, estimated_bitrate_bps) sit after the legacy ones. */
+/** @brief Read-only per-track snapshot. Rebuild callers for the 0.2 layout. */
 typedef struct {
     uint8_t mid;               /**< Media track ID. */
     uint32_t packets_sent;     /**< Total RTP packets sent. */
     uint32_t octets_sent;      /**< Total payload bytes sent. */
+    uint32_t packets_accepted; /**< New RTP packets admitted before socket completion. */
+    uint32_t frames_accepted;  /**< Complete application frames admitted. */
     uint32_t packets_received; /**< Total RTP packets received. */
     uint32_t packets_lost;     /**< Estimated packets lost. */
     uint32_t jitter;           /**< Interarrival jitter (RFC 3550 §6.4.1). */
-    uint32_t rtt_ms;           /**< Round-trip time estimate from DLSR (ms). */
+    uint32_t rtt_ms;           /**< Matching SR/RR elapsed time minus DLSR (ms). */
+    bool rtt_valid;            /**< A matching report block supplied an RTT sample. */
 #if NANORTC_FEATURE_VIDEO
     uint32_t bitrate_bps; /**< BWE estimated bitrate (bps, video only).
                                Alias of estimated_bitrate_bps below. */
@@ -1314,8 +1413,8 @@ typedef struct {
     /* Phase 9 additions (always present; zero when the feature that
      * populates them is disabled). */
     uint32_t estimated_bitrate_bps; /**< Current BWE estimate (bps). */
-    uint32_t send_bitrate_bps;      /**< Outgoing RTP bytes/s, 1-second sliding window. */
-    uint16_t send_fps_q8;           /**< Outgoing video frames/s as unsigned Q8.8
+    uint32_t send_bitrate_bps;      /**< Successfully sent RTP bits/s, 1-second window. */
+    uint16_t send_fps_q8;           /**< Accepted video frames/s as unsigned Q8.8
                                          fixed-point (send_fps_q8 / 256.0). */
     uint8_t fraction_lost;          /**< Last RTCP RR fraction lost (0-255 = 0-100 %). */
     uint8_t reserved_pad;           /**< Reserved; pad to keep explicit layout. */
@@ -1483,7 +1582,8 @@ NANORTC_API int nanortc_datachannel_send_string(nanortc_t *rtc, uint16_t id, con
  *
  * @param rtc  Initialized RTC state.
  * @param id   SCTP stream ID.
- * @return NANORTC_OK on success.
+ * Stream reset is not implemented; a valid channel is left open.
+ * @return NANORTC_ERR_NOT_IMPLEMENTED for a known channel.
  * @retval NANORTC_ERR_INVALID_PARAM  Unknown or closed channel.
  */
 NANORTC_API int nanortc_datachannel_close(nanortc_t *rtc, uint16_t id);
@@ -1520,11 +1620,10 @@ NANORTC_API bool nanortc_is_alive(const nanortc_t *rtc);
 NANORTC_API bool nanortc_is_connected(const nanortc_t *rtc);
 
 /**
- * @brief Initiate graceful disconnection.
+ * @brief Close immediately; idempotent, including a fresh instance.
  *
- * Enqueues SCTP SHUTDOWN (if DataChannel) and DTLS close_notify.
- * Continue calling nanortc_poll_output() to drain close frames,
- * then call nanortc_destroy().
+ * Cancels queued work and invalidates the outstanding transmit token. Poll
+ * the single DISCONNECTED notification with its reason, then destroy.
  *
  * @param rtc  Initialized RTC state.
  */

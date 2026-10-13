@@ -13,6 +13,7 @@
 
 #include "interop_common.h"
 #include "run_loop.h"
+#include "interop_owner.h"
 
 #include <pthread.h>
 #include <stdatomic.h>
@@ -41,9 +42,9 @@ typedef struct {
     uint8_t channels;              /* Audio channels (0 for video) */
     const uint8_t *h265_vps;       /* Optional H.265 VPS NAL (NAL header + RBSP, no start code) */
     size_t h265_vps_len;
-    const uint8_t *h265_sps;       /* Optional H.265 SPS NAL */
+    const uint8_t *h265_sps; /* Optional H.265 SPS NAL */
     size_t h265_sps_len;
-    const uint8_t *h265_pps;       /* Optional H.265 PPS NAL */
+    const uint8_t *h265_pps; /* Optional H.265 PPS NAL */
     size_t h265_pps_len;
 } interop_media_track_config_t;
 
@@ -60,6 +61,7 @@ typedef struct {
     /* NanoRTC state */
     nanortc_t rtc;
     nano_run_loop_t loop;
+    interop_owner_t owner; /* Serialize sends and hand off fairly after blocking I/O. */
 
     /* Signaling pipe (our end) */
     int sig_fd;
@@ -105,7 +107,7 @@ int interop_nanortc_media_stop(interop_nanortc_media_peer_t *peer);
 
 /*
  * Send audio on the given track MID.
- * Thread-safe (nanortc_send_audio is re-entrant for output queuing).
+ * Thread-safe: the wrapper serializes access with the event loop.
  */
 int interop_nanortc_media_send_audio(interop_nanortc_media_peer_t *peer, uint8_t mid,
                                      uint32_t pts_ms, const void *data, size_t len);

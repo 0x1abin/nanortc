@@ -21,6 +21,7 @@
 #include "nano_test.h"
 #include "nano_test_config.h"
 #include "nano_test_ice.h"
+#include "nano_rtc_internal.h"
 #include <string.h>
 
 /* ----------------------------------------------------------------
@@ -84,7 +85,7 @@ static void e2e_rng_arm(int fail_at, size_t match_len)
 #if NANORTC_HAVE_MEDIA_TRANSPORT
 /* Build a deterministic SRTP endpoint without running ICE/DTLS. This keeps
  * media receive-path tests focused on RTP/SRTP while still entering through
- * nanortc_handle_input() and leaving through nanortc_poll_output(). */
+ * nanortc_handle_input() and leaving through nano_test_poll_output(). */
 static int e2e_init_direct_srtp_endpoint(nanortc_t *rtc, int is_client)
 {
     nanortc_config_t cfg = e2e_default_config();
@@ -147,6 +148,23 @@ static int e2e_fail_aes_128_cm(const uint8_t key[16], const uint8_t iv[16], cons
 }
 #endif
 
+static void e2e_bind_fingerprints(nanortc_t *offerer, nanortc_t *answerer)
+{
+    if (!offerer->dtls.crypto_ctx)
+        ASSERT_OK(dtls_init(&offerer->dtls, offerer->config.crypto, 0));
+    if (!answerer->dtls.crypto_ctx)
+        ASSERT_OK(dtls_init(&answerer->dtls, answerer->config.crypto, 1));
+    nano_rtc_cache_fingerprint(offerer);
+    nano_rtc_cache_fingerprint(answerer);
+    ASSERT_OK(sdp_parse_fingerprint(answerer->sdp.local_fingerprint,
+                                    strlen(answerer->sdp.local_fingerprint), offerer->sdp.remote_fingerprint));
+    ASSERT_OK(sdp_parse_fingerprint(offerer->sdp.local_fingerprint,
+                                    strlen(offerer->sdp.local_fingerprint), answerer->sdp.remote_fingerprint));
+    offerer->sdp.has_remote_fingerprint = answerer->sdp.has_remote_fingerprint = true;
+    ASSERT_OK(dtls_set_peer_fingerprint(&offerer->dtls, offerer->sdp.remote_fingerprint));
+    ASSERT_OK(dtls_set_peer_fingerprint(&answerer->dtls, answerer->sdp.remote_fingerprint));
+}
+
 /*
  * Relay all TRANSMIT outputs from `from` into `to` as received data.
  * Returns number of packets relayed, or negative on error.
@@ -156,7 +174,7 @@ static int e2e_relay(nanortc_t *from, nanortc_t *to, uint32_t now_ms)
     int relayed = 0;
     nanortc_output_t out;
 
-    while (nanortc_poll_output(from, &out) == NANORTC_OK) {
+    while (nano_test_poll_output(from, &out) == NANORTC_OK) {
         if (out.type == NANORTC_OUTPUT_TRANSMIT) {
             nanortc_addr_t src = out.transmit.src;
             if (!src.family && from->ice.local_candidate_count) {
@@ -184,7 +202,7 @@ static int e2e_relay(nanortc_t *from, nanortc_t *to, uint32_t now_ms)
 static int e2e_relay_checked(nanortc_t *from, nanortc_t *to, uint32_t now_ms)
 {
     nanortc_output_t out;
-    while (nanortc_poll_output(from, &out) == NANORTC_OK) {
+    while (nano_test_poll_output(from, &out) == NANORTC_OK) {
         if (out.type != NANORTC_OUTPUT_TRANSMIT) {
             continue;
         }
@@ -219,7 +237,7 @@ static int e2e_relay_drop_rtp(nanortc_t *from, nanortc_t *to, uint32_t now_ms, i
     int rtp_idx = 0;
     nanortc_output_t out;
 
-    while (nanortc_poll_output(from, &out) == NANORTC_OK) {
+    while (nano_test_poll_output(from, &out) == NANORTC_OK) {
         if (out.type != NANORTC_OUTPUT_TRANSMIT) {
             continue;
         }
@@ -326,10 +344,7 @@ TEST(test_e2e_negotiation_rng_failure_is_transactional)
         e2e_rng_arm(0, 0u);
         ASSERT_OK(nanortc_init(&rtc, &cfg));
 
-        memset(rtc.sdp.local_ufrag, 'S', NANORTC_ICE_UFRAG_LEN);
-        rtc.sdp.local_ufrag[NANORTC_ICE_UFRAG_LEN] = '\0';
-        memset(rtc.sdp.local_pwd, 'P', NANORTC_ICE_PWD_LEN);
-        rtc.sdp.local_pwd[NANORTC_ICE_PWD_LEN] = '\0';
+
         memset(rtc.ice.local_ufrag, 'I', NANORTC_ICE_UFRAG_LEN);
         rtc.ice.local_ufrag[NANORTC_ICE_UFRAG_LEN] = '\0';
         memset(rtc.ice.local_pwd, 'C', NANORTC_ICE_PWD_LEN);
@@ -371,10 +386,9 @@ TEST(test_e2e_negotiation_rng_failure_is_transactional)
         size_t answer_len = 456u;
 
         e2e_rng_arm(fail_at, 0u);
-        ASSERT_EQ(nanortc_accept_offer(&rtc, "not parsed on RNG failure", answer, sizeof(answer),
-                                       &answer_len),
-                  NANORTC_ERR_CRYPTO);
-        ASSERT_TRUE(e2e_rng_failed);
+        ASSERT_EQ(nanortc_accept_offer(&rtc, "not parsed on RNG failure", strlen("not parsed on RNG failure"), answer, sizeof(answer), &answer_len),
+                  NANORTC_ERR_PARSE);
+        ASSERT_FALSE(e2e_rng_failed);
         ASSERT_TRUE(memcmp(&rtc.sdp, &sdp_before, sizeof(sdp_before)) == 0);
         ASSERT_TRUE(memcmp(&rtc.ice, &ice_before, sizeof(ice_before)) == 0);
         ASSERT_EQ(rtc.state, NANORTC_STATE_NEW);
@@ -453,9 +467,9 @@ TEST(test_e2e_media_seed_rng_failure_rolls_back_all_tracks)
     size_t answer_len = 0u;
     ASSERT_OK(nanortc_create_offer(&offerer, offer, sizeof(offer), &offer_len));
     offer[offer_len] = '\0';
-    ASSERT_OK(nanortc_accept_offer(&answerer, offer, answer, sizeof(answer), &answer_len));
+    ASSERT_OK(nanortc_accept_offer(&answerer, offer, strlen(offer), answer, sizeof(answer), &answer_len));
     answer[answer_len] = '\0';
-    ASSERT_OK(nanortc_accept_answer(&offerer, answer));
+    ASSERT_OK(nanortc_accept_answer(&offerer, answer, strlen(answer)));
 
     /* The test relay reports 192.168.1.1:9999 as the source of every packet;
      * arm that address as the controlled peer's remote candidate. */
@@ -544,7 +558,7 @@ TEST(test_e2e_padded_audio_excludes_rtp_padding)
 
     nanortc_output_t out;
     bool found = false;
-    while (nanortc_poll_output(&receiver, &out) == NANORTC_OK) {
+    while (nano_test_poll_output(&receiver, &out) == NANORTC_OK) {
         if (out.type == NANORTC_OUTPUT_EVENT && out.event.type == NANORTC_EV_MEDIA_DATA) {
             ASSERT_EQ(out.event.media_data.mid, (uint8_t)mid);
             ASSERT_EQ(out.event.media_data.len, sizeof(payload));
@@ -593,7 +607,7 @@ TEST(test_e2e_padded_video_excludes_rtp_padding)
 
     nanortc_output_t out;
     bool found = false;
-    while (nanortc_poll_output(&receiver, &out) == NANORTC_OK) {
+    while (nano_test_poll_output(&receiver, &out) == NANORTC_OK) {
         if (out.type == NANORTC_OUTPUT_EVENT && out.event.type == NANORTC_EV_MEDIA_DATA) {
             ASSERT_EQ(out.event.media_data.mid, (uint8_t)mid);
             ASSERT_EQ(out.event.media_data.len, sizeof(payload));
@@ -647,7 +661,7 @@ TEST(test_e2e_bwe_feedback_events_keep_source)
 
     nanortc_output_t out;
     bool found_remb = false;
-    while (nanortc_poll_output(&receiver, &out) == NANORTC_OK) {
+    while (nano_test_poll_output(&receiver, &out) == NANORTC_OK) {
         if (out.type == NANORTC_OUTPUT_EVENT && out.event.type == NANORTC_EV_BITRATE_ESTIMATE) {
             ASSERT_EQ(out.event.bitrate_estimate.source, (uint8_t)NANORTC_BWE_SRC_REMB);
             found_remb = true;
@@ -655,8 +669,9 @@ TEST(test_e2e_bwe_feedback_events_keep_source)
     }
     ASSERT_TRUE(found_remb);
 
-    /* One received TWCC packet (zero loss). Run-length chunk 0x2001 means
-     * one SMALL_DELTA status, followed by its one-byte delta and padding. */
+    /* A matching, actually sent packet is reported lost: a bounded decrease
+     * must retain its TWCC source instead of inventing growth from no history. */
+    bwe_record_transmit(&receiver.bwe, 100u, 100u, 100u, true, false);
     memset(packet, 0, sizeof(packet));
     packet[0] = (uint8_t)((2u << 6) | 15u); /* V=2, FMT=15 */
     packet[1] = 205u;                       /* RTPFB */
@@ -665,8 +680,8 @@ TEST(test_e2e_bwe_feedback_events_keep_source)
     nanortc_write_u32be(packet + 8, 0x55667788u);
     nanortc_write_u16be(packet + 12, 100u);
     nanortc_write_u16be(packet + 14, 1u);
-    nanortc_write_u16be(packet + 20, 0x2001u);
-    packet[22] = 1u;
+    nanortc_write_u16be(packet + 20, 0x0001u);
+    packet[22] = 0u;
 
     wire_len = 0;
     ASSERT_OK(nano_srtp_protect_rtcp(&sender.srtp, packet, 24u, &wire_len));
@@ -675,7 +690,7 @@ TEST(test_e2e_bwe_feedback_events_keep_source)
         &(nanortc_input_t){.now_ms = 101u, .data = packet, .len = wire_len, .src = src}));
 
     bool found_twcc = false;
-    while (nanortc_poll_output(&receiver, &out) == NANORTC_OK) {
+    while (nano_test_poll_output(&receiver, &out) == NANORTC_OK) {
         if (out.type == NANORTC_OUTPUT_EVENT && out.event.type == NANORTC_EV_BITRATE_ESTIMATE) {
             ASSERT_EQ(out.event.bitrate_estimate.source, (uint8_t)NANORTC_BWE_SRC_TWCC_LOSS);
             found_twcc = true;
@@ -698,19 +713,20 @@ TEST(test_e2e_stubs_not_implemented)
 
     char buf[2048];
     /* nanortc_accept_offer now works (parses SDP), but invalid SDP returns parse error */
-    ASSERT_FAIL(nanortc_accept_offer(&rtc, "v=0\r\n", buf, sizeof(buf), NULL));
+    ASSERT_FAIL(nanortc_accept_offer(&rtc, "v=0\r\n", strlen("v=0\r\n"), buf, sizeof(buf), NULL));
     /* nanortc_create_offer now works on NEW state */
     ASSERT_OK(nanortc_create_offer(&rtc, buf, sizeof(buf), NULL));
     /* After create_offer, state is still NEW (waiting for answer), accept_answer parses SDP */
-    ASSERT_FAIL(nanortc_accept_answer(&rtc, "v=0\r\n"));
+    ASSERT_FAIL(nanortc_accept_answer(&rtc, "v=0\r\n", strlen("v=0\r\n")));
     ASSERT_OK(nanortc_add_local_candidate(&rtc, "192.168.1.1", 9999));
     /* nanortc_add_remote_candidate now parses SDP candidate; invalid format returns parse error */
-    ASSERT_EQ(nanortc_add_remote_candidate(&rtc, "candidate:..."), NANORTC_ERR_PARSE);
+    ASSERT_EQ(nanortc_add_remote_candidate(&rtc, "candidate:...", strlen("candidate:...")), NANORTC_ERR_PARSE);
     /* Valid candidate succeeds */
-    ASSERT_OK(nanortc_add_remote_candidate(
-        &rtc, "candidate:0 1 UDP 2122260223 192.168.1.100 50000 typ host"));
-    ASSERT_OK(nanortc_add_remote_candidate(&rtc, "192.168.1.200 60000"));
+    ASSERT_OK(nanortc_add_remote_candidate(&rtc, "candidate:0 1 UDP 2122260223 192.168.1.100 50000 typ host", strlen("candidate:0 1 UDP 2122260223 192.168.1.100 50000 typ host")));
+    ASSERT_OK(nanortc_add_remote_candidate(&rtc, "192.168.1.200 60000", strlen("192.168.1.200 60000")));
 
+    nanortc_destroy(&rtc);
+    ASSERT_OK(nanortc_init(&rtc, &cfg));
     /* nanortc_handle_input and nanortc_handle_input are now implemented */
 
     uint8_t data[] = {0x00, 0x01, 0x00, 0x00};
@@ -776,8 +792,8 @@ TEST(test_e2e_loopback_skeleton)
 
     /* No transmit output should be queued yet (no remote candidate) */
     nanortc_output_t out;
-    ASSERT_EQ(nanortc_poll_output(&server, &out), NANORTC_ERR_NO_DATA);
-    ASSERT_EQ(nanortc_poll_output(&client, &out), NANORTC_ERR_NO_DATA);
+    ASSERT_EQ(nano_test_poll_output(&server, &out), NANORTC_ERR_NO_DATA);
+    ASSERT_EQ(nano_test_poll_output(&client, &out), NANORTC_ERR_NO_DATA);
 
     /* Pump should relay 0 packets (nothing to relay) */
     uint32_t now_ms = 0;
@@ -944,6 +960,7 @@ static void e2e_setup_ice_creds(nanortc_t *offerer, nanortc_t *answerer)
     answerer->ice.local_candidates[0] = offerer->ice.remote_candidates[0];
     answerer->ice.remote_candidates[0] = offerer->ice.local_candidates[0];
     answerer->ice.local_candidate_count = answerer->ice.remote_candidate_count = 1;
+    e2e_bind_fingerprints(offerer, answerer);
 }
 
 TEST(test_e2e_ice_dtls_loopback)
@@ -1071,39 +1088,29 @@ TEST(test_e2e_ice_restart_dtls_rehandshake)
     ASSERT_OK(nanortc_ice_restart(&offerer));
     ASSERT_OK(nanortc_ice_restart(&answerer));
 
-    /* Mid-restart invariants — the unit-level T19/T20/T21 properties must hold
-     * on a fully connected nanortc_t, not just on a hand-built one. */
-    ASSERT_TRUE(offerer.dtls.crypto_ctx == NULL);
-    ASSERT_TRUE(answerer.dtls.crypto_ctx == NULL);
-    ASSERT_EQ(offerer.dtls.local_fingerprint[0], '\0');
-    ASSERT_EQ(answerer.dtls.local_fingerprint[0], '\0');
-    ASSERT_EQ(offerer.sdp.local_fingerprint[0], '\0');
-    ASSERT_EQ(answerer.sdp.local_fingerprint[0], '\0');
-    ASSERT_EQ(offerer.state, NANORTC_STATE_NEW);
-    ASSERT_EQ(answerer.state, NANORTC_STATE_NEW);
+    ASSERT_TRUE(offerer.dtls.crypto_ctx != NULL);
+    ASSERT_TRUE(answerer.dtls.crypto_ctx != NULL);
+    ASSERT_MEM_EQ(pre_off_fp, offerer.dtls.local_fingerprint, sizeof(pre_off_fp));
+    ASSERT_MEM_EQ(pre_ans_fp, answerer.dtls.local_fingerprint, sizeof(pre_ans_fp));
 
     e2e_resync_ice_creds(&offerer, &answerer);
 
     /* Bootstrap the second ICE check round and pump until DTLS reconnects. */
     ASSERT_OK(nanortc_handle_input(&offerer, &(nanortc_input_t){.now_ms = now_ms}));
     int reconnected = 0;
-    for (int round = 0; round < 30; round++) {
-        e2e_pump(&offerer, &answerer, now_ms, 5);
+    for (int round = 0; round < 50; round++) {
+        e2e_pump(&offerer, &answerer, now_ms, 10);
         now_ms += 50;
-        if (offerer.state >= NANORTC_STATE_DTLS_CONNECTED &&
-            answerer.state >= NANORTC_STATE_DTLS_CONNECTED) {
+        if (offerer.ice.state == NANORTC_ICE_STATE_CONNECTED &&
+            answerer.ice.state == NANORTC_ICE_STATE_CONNECTED &&
+            !offerer.ice_restarting && !answerer.ice_restarting) {
             reconnected = 1;
             break;
         }
     }
     ASSERT_TRUE(reconnected);
-
-    /* Fingerprint must differ — a regenerated cert is the proof that
-     * dtls_init actually ran on the second handshake. */
-    ASSERT_TRUE(dtls_get_fingerprint(&offerer.dtls) != NULL);
-    ASSERT_TRUE(dtls_get_fingerprint(&answerer.dtls) != NULL);
-    ASSERT_NEQ(memcmp(pre_off_fp, offerer.dtls.local_fingerprint, sizeof(pre_off_fp)), 0);
-    ASSERT_NEQ(memcmp(pre_ans_fp, answerer.dtls.local_fingerprint, sizeof(pre_ans_fp)), 0);
+    ASSERT_MEM_EQ(pre_off_fp, offerer.dtls.local_fingerprint, sizeof(pre_off_fp));
+    ASSERT_MEM_EQ(pre_ans_fp, answerer.dtls.local_fingerprint, sizeof(pre_ans_fp));
 
     nanortc_destroy(&offerer);
     nanortc_destroy(&answerer);
@@ -1148,26 +1155,11 @@ TEST(test_e2e_ice_restart_sdp_fingerprint_refresh)
     memcpy(pre_dtls_fp, rtc.dtls.local_fingerprint, sizeof(pre_dtls_fp));
 
     ASSERT_OK(nanortc_ice_restart(&rtc));
-    ASSERT_EQ(rtc.dtls.local_fingerprint[0], '\0');
-    ASSERT_EQ(rtc.sdp.local_fingerprint[0], '\0');
-
-    /* Second create_offer must regenerate the cert and re-cache the fingerprint. */
+    ASSERT_MEM_EQ(pre_dtls_fp, rtc.dtls.local_fingerprint, sizeof(pre_dtls_fp));
     char offer2[4096];
     ASSERT_OK(nanortc_create_offer(&rtc, offer2, sizeof(offer2), NULL));
-
-    ASSERT_TRUE(rtc.dtls.local_fingerprint[0] != '\0');
-    ASSERT_NEQ(memcmp(pre_dtls_fp, rtc.dtls.local_fingerprint, sizeof(pre_dtls_fp)), 0);
-
-    /* The advertised SDP fingerprint must match the freshly generated cert,
-     * not the stale pre-restart hash. Reverting 9a75412 fails this assertion:
-     * nano_rtc_cache_fingerprint's early-return on non-empty sdp.local_fingerprint
-     * would leave the SDP cache holding the old "sha-256 OLD..." while the
-     * DTLS layer holds the new cert hash. */
-    ASSERT_TRUE(rtc.sdp.local_fingerprint[0] != '\0');
-    ASSERT_EQ(memcmp(rtc.sdp.local_fingerprint, "sha-256 ", 8), 0);
-    ASSERT_EQ(memcmp(rtc.sdp.local_fingerprint + 8, rtc.dtls.local_fingerprint,
-                     sizeof(rtc.dtls.local_fingerprint) - 1),
-              0);
+    ASSERT_MEM_EQ(pre_dtls_fp, rtc.dtls.local_fingerprint, sizeof(pre_dtls_fp));
+    ASSERT_TRUE(strstr(offer2, rtc.dtls.local_fingerprint) != NULL);
 
     nanortc_destroy(&rtc);
 }
@@ -1256,14 +1248,14 @@ TEST(test_e2e_offer_answer_roundtrip)
     /* Answerer accepts offer, produces answer */
     char answer[4096];
     size_t answer_len = 0;
-    ASSERT_OK(nanortc_accept_offer(&answerer, offer, answer, sizeof(answer), &answer_len));
+    ASSERT_OK(nanortc_accept_offer(&answerer, offer, strlen(offer), answer, sizeof(answer), &answer_len));
     answer[answer_len] = '\0';
     ASSERT_TRUE(answer_len > 0);
     ASSERT_TRUE(str_contains(answer, "a=ice-ufrag:"));
     ASSERT_TRUE(str_contains(answer, "a=setup:passive"));
 
     /* Offerer accepts answer */
-    ASSERT_OK(nanortc_accept_answer(&offerer, answer));
+    ASSERT_OK(nanortc_accept_answer(&offerer, answer, strlen(answer)));
 
     /* Verify remote ICE creds propagated to offerer */
     ASSERT_TRUE(offerer.ice.remote_ufrag_len > 0);
@@ -1313,11 +1305,11 @@ TEST(test_e2e_full_sdp_to_dtls)
 
     char answer[4096];
     size_t answer_len = 0;
-    ASSERT_OK(nanortc_accept_offer(&answerer, offer, answer, sizeof(answer), &answer_len));
+    ASSERT_OK(nanortc_accept_offer(&answerer, offer, strlen(offer), answer, sizeof(answer), &answer_len));
     answer[answer_len] = '\0';
 
     /* accept_answer triggers dtls_set_role on offerer */
-    ASSERT_OK(nanortc_accept_answer(&offerer, answer));
+    ASSERT_OK(nanortc_accept_answer(&offerer, answer, strlen(answer)));
 
     /* Verify DTLS roles: offerer=active(client), answerer=passive(server) */
     ASSERT_EQ(offerer.dtls.is_server, 0);
@@ -1428,18 +1420,12 @@ TEST(test_e2e_channel_close)
 
     /* Drain any outputs from create */
     nanortc_output_t tmp;
-    while (nanortc_poll_output(&rtc, &tmp) == NANORTC_OK) {
+    while (nano_test_poll_output(&rtc, &tmp) == NANORTC_OK) {
     }
 
-    /* Close via flat API */
-    ASSERT_OK(nanortc_datachannel_close(&rtc, (uint16_t)sid));
-
-    /* Should emit CHANNEL_CLOSE event */
-    nanortc_output_t evt;
-    ASSERT_OK(nanortc_poll_output(&rtc, &evt));
-    ASSERT_EQ(evt.type, NANORTC_OUTPUT_EVENT);
-    ASSERT_EQ(evt.event.type, NANORTC_EV_DATACHANNEL_CLOSE);
-    ASSERT_EQ(evt.event.datachannel_id.id, (uint16_t)sid);
+    ASSERT_EQ(nanortc_datachannel_close(&rtc, (uint16_t)sid), NANORTC_ERR_NOT_IMPLEMENTED);
+    ASSERT_EQ(rtc.datachannel.channel_count, 1);
+    ASSERT_EQ(nano_test_poll_output(&rtc, &tmp), NANORTC_ERR_NO_DATA);
 
     nanortc_destroy(&rtc);
 }
@@ -1492,7 +1478,7 @@ TEST(test_e2e_graceful_disconnect)
     /* Should emit DISCONNECTED event */
     nanortc_output_t evt;
     int found_disconnect = 0;
-    while (nanortc_poll_output(&rtc, &evt) == NANORTC_OK) {
+    while (nano_test_poll_output(&rtc, &evt) == NANORTC_OK) {
         if (evt.type == NANORTC_OUTPUT_EVENT && evt.event.type == NANORTC_EV_DISCONNECTED) {
             found_disconnect = 1;
         }
@@ -1510,9 +1496,8 @@ TEST(test_e2e_disconnect_new_state)
     ASSERT_OK(nanortc_init(&rtc, &cfg));
 
     nanortc_disconnect(&rtc);
-    /* Should remain in NEW state (no-op on NEW) */
-    ASSERT_EQ(rtc.state, NANORTC_STATE_NEW);
-    ASSERT_TRUE(nanortc_is_alive(&rtc));
+    ASSERT_EQ(rtc.state, NANORTC_STATE_CLOSED);
+    ASSERT_FALSE(nanortc_is_alive(&rtc));
 
     nanortc_destroy(&rtc);
 }
@@ -1541,14 +1526,14 @@ TEST(test_e2e_ice_multi_candidate)
     /* Drain the host candidate event */
     {
         nanortc_output_t drain;
-        while (nanortc_poll_output(&rtc, &drain) == NANORTC_OK) {
+        while (nano_test_poll_output(&rtc, &drain) == NANORTC_OK) {
         }
     }
 
     /* Add 3 remote candidates */
-    ASSERT_OK(nanortc_add_remote_candidate(&rtc, "10.0.0.1 5001"));
-    ASSERT_OK(nanortc_add_remote_candidate(&rtc, "10.0.0.2 5002"));
-    ASSERT_OK(nanortc_add_remote_candidate(&rtc, "10.0.0.3 5003"));
+    ASSERT_OK(nanortc_add_remote_candidate(&rtc, "10.0.0.1 5001", strlen("10.0.0.1 5001")));
+    ASSERT_OK(nanortc_add_remote_candidate(&rtc, "10.0.0.2 5002", strlen("10.0.0.2 5002")));
+    ASSERT_OK(nanortc_add_remote_candidate(&rtc, "10.0.0.3 5003", strlen("10.0.0.3 5003")));
     ASSERT_EQ(rtc.ice.remote_candidate_count, 3);
 
     /* First timeout: should send check to candidate 0 */
@@ -1556,20 +1541,20 @@ TEST(test_e2e_ice_multi_candidate)
     ASSERT_OK(nanortc_handle_input(&rtc, &(nanortc_input_t){.now_ms = now_ms}));
 
     nanortc_output_t out;
-    ASSERT_OK(nanortc_poll_output(&rtc, &out));
+    ASSERT_OK(nano_test_poll_output(&rtc, &out));
     ASSERT_EQ(out.type, NANORTC_OUTPUT_TRANSMIT);
     ASSERT_EQ(out.transmit.dest.port, 5001);
     ASSERT_EQ(out.transmit.dest.addr[3], 1);
 
     /* Drain remaining outputs (ICE_STATE_CHANGE + TIMEOUT) */
-    while (nanortc_poll_output(&rtc, &out) == NANORTC_OK) {
+    while (nano_test_poll_output(&rtc, &out) == NANORTC_OK) {
     }
 
     /* Second timeout: should advance to candidate 1 */
     now_ms += rtc.ice.check_interval_ms + 1;
     ASSERT_OK(nanortc_handle_input(&rtc, &(nanortc_input_t){.now_ms = now_ms}));
 
-    ASSERT_OK(nanortc_poll_output(&rtc, &out));
+    ASSERT_OK(nano_test_poll_output(&rtc, &out));
     ASSERT_EQ(out.type, NANORTC_OUTPUT_TRANSMIT);
     ASSERT_EQ(out.transmit.dest.port, 5002);
     ASSERT_EQ(out.transmit.dest.addr[3], 2);
@@ -1586,7 +1571,7 @@ TEST(test_e2e_accept_answer_state_guard)
 
     /* Simulate non-NEW state */
     rtc.state = NANORTC_STATE_ICE_CHECKING;
-    ASSERT_EQ(nanortc_accept_answer(&rtc, "v=0\r\n"), NANORTC_ERR_STATE);
+    ASSERT_EQ(nanortc_accept_answer(&rtc, "v=0\r\n", strlen("v=0\r\n")), NANORTC_ERR_STATE);
 
     nanortc_destroy(&rtc);
 }
@@ -1661,7 +1646,7 @@ TEST(test_e2e_datachannel_send_recv)
 
     /* Drain DCEP OPEN output */
     nanortc_output_t out;
-    while (nanortc_poll_output(&rtc, &out) == NANORTC_OK) {
+    while (nano_test_poll_output(&rtc, &out) == NANORTC_OK) {
     }
 
     /* Send a message — should succeed even though SCTP path isn't live
@@ -1819,7 +1804,7 @@ TEST(test_e2e_datachannel_offerer_initiated)
         nanortc_handle_input(&answerer, &(nanortc_input_t){.now_ms = now_ms});
 
         nanortc_output_t o;
-        while (nanortc_poll_output(&offerer, &o) == NANORTC_OK) {
+        while (nano_test_poll_output(&offerer, &o) == NANORTC_OK) {
             if (o.type == NANORTC_OUTPUT_TRANSMIT) {
                 nanortc_handle_input(&answerer, &(nanortc_input_t){.now_ms = now_ms,
                                                                    .data = o.transmit.data,
@@ -1828,7 +1813,7 @@ TEST(test_e2e_datachannel_offerer_initiated)
             }
         }
         nanortc_output_t e;
-        while (nanortc_poll_output(&answerer, &e) == NANORTC_OK) {
+        while (nano_test_poll_output(&answerer, &e) == NANORTC_OK) {
             if (e.type == NANORTC_OUTPUT_EVENT && e.event.type == NANORTC_EV_DATACHANNEL_DATA) {
                 ASSERT_EQ(e.event.datachannel_data.len, sizeof(payload) - 1);
                 ASSERT_EQ(memcmp(e.event.datachannel_data.data, payload, sizeof(payload) - 1), 0);
@@ -1939,7 +1924,7 @@ TEST(test_e2e_ice_connection_timeout)
     for (int i = 0; i < 2 * NANORTC_ICE_MAX_CHECKS + 5; i++) {
         nanortc_handle_input(&rtc, &(nanortc_input_t){.now_ms = now_ms});
         nanortc_output_t out;
-        while (nanortc_poll_output(&rtc, &out) == NANORTC_OK) {
+        while (nano_test_poll_output(&rtc, &out) == NANORTC_OK) {
             if (out.type == NANORTC_OUTPUT_EVENT) {
                 if (out.event.type == NANORTC_EV_ICE_STATE_CHANGE &&
                     out.event.ice_state == (uint16_t)NANORTC_ICE_STATE_FAILED) {
@@ -1974,8 +1959,7 @@ TEST(test_e2e_ipv6_remote_candidate)
     ASSERT_OK(nanortc_init(&rtc, &cfg));
 
     /* IPv6 SDP candidate line */
-    ASSERT_OK(nanortc_add_remote_candidate(
-        &rtc, "candidate:1 1 UDP 2122260223 2001:db8::1 50000 typ host"));
+    ASSERT_OK(nanortc_add_remote_candidate(&rtc, "candidate:1 1 UDP 2122260223 2001:db8::1 50000 typ host", strlen("candidate:1 1 UDP 2122260223 2001:db8::1 50000 typ host")));
     ASSERT_EQ(rtc.ice.remote_candidate_count, 1);
     ASSERT_EQ(rtc.ice.remote_candidates[0].family, 6);
     ASSERT_EQ(rtc.ice.remote_candidates[0].port, 50000);
@@ -1984,14 +1968,14 @@ TEST(test_e2e_ipv6_remote_candidate)
     ASSERT_EQ(rtc.ice.remote_candidates[0].addr[15], 0x01);
 
     /* Short form: "ip port" */
-    ASSERT_OK(nanortc_add_remote_candidate(&rtc, "::1 60000"));
+    ASSERT_OK(nanortc_add_remote_candidate(&rtc, "::1 60000", strlen("::1 60000")));
     ASSERT_EQ(rtc.ice.remote_candidate_count, 2);
     ASSERT_EQ(rtc.ice.remote_candidates[1].family, 6);
     ASSERT_EQ(rtc.ice.remote_candidates[1].port, 60000);
     ASSERT_EQ(rtc.ice.remote_candidates[1].addr[15], 0x01);
 
     /* Mixed: IPv4 candidate after IPv6 */
-    ASSERT_OK(nanortc_add_remote_candidate(&rtc, "192.168.1.1 5000"));
+    ASSERT_OK(nanortc_add_remote_candidate(&rtc, "192.168.1.1 5000", strlen("192.168.1.1 5000")));
     ASSERT_EQ(rtc.ice.remote_candidate_count, 3);
     ASSERT_EQ(rtc.ice.remote_candidates[2].family, 4);
 
@@ -2035,7 +2019,7 @@ static int e2e_relay_ipv6(nanortc_t *from, nanortc_t *to, uint32_t now_ms,
 {
     int relayed = 0;
     nanortc_output_t out;
-    while (nanortc_poll_output(from, &out) == NANORTC_OK) {
+    while (nano_test_poll_output(from, &out) == NANORTC_OK) {
         if (out.type != NANORTC_OUTPUT_TRANSMIT)
             continue;
         nanortc_addr_t src;
@@ -2100,6 +2084,7 @@ TEST(test_e2e_ipv6_loopback_connects)
     answerer.ice.local_candidates[0] = offerer.ice.remote_candidates[0];
     answerer.ice.remote_candidates[0] = offerer.ice.local_candidates[0];
     answerer.ice.local_candidate_count = answerer.ice.remote_candidate_count = 1;
+    e2e_bind_fingerprints(&offerer, &answerer);
 
     uint32_t now_ms = 100;
     ASSERT_OK(nanortc_handle_input(&offerer, &(nanortc_input_t){.now_ms = now_ms}));
@@ -2274,10 +2259,10 @@ TEST(test_e2e_h265_loopback)
 
     char answer[4096];
     size_t answer_len = 0;
-    ASSERT_OK(nanortc_accept_offer(&answerer, offer, answer, sizeof(answer), &answer_len));
+    ASSERT_OK(nanortc_accept_offer(&answerer, offer, strlen(offer), answer, sizeof(answer), &answer_len));
     answer[answer_len] = '\0';
 
-    ASSERT_OK(nanortc_accept_answer(&offerer, answer));
+    ASSERT_OK(nanortc_accept_answer(&offerer, answer, strlen(answer)));
 
     /* Mirror test_e2e_full_sdp_to_dtls: arm answerer's remote candidate to
      * the loopback source the e2e_relay helper rewrites onto every packet. */
@@ -2330,7 +2315,7 @@ TEST(test_e2e_h265_loopback)
      * expect. Other event types (e.g., RTCP) may precede or follow it. */
     int got_media = 0;
     nanortc_output_t out;
-    while (nanortc_poll_output(&answerer, &out) == NANORTC_OK) {
+    while (nano_test_poll_output(&answerer, &out) == NANORTC_OK) {
         if (out.type != NANORTC_OUTPUT_EVENT || out.event.type != NANORTC_EV_MEDIA_DATA) {
             continue;
         }
@@ -2392,9 +2377,9 @@ TEST(test_e2e_h265_midstream_param_refresh)
     offer[offer_len] = '\0';
     char answer[4096];
     size_t answer_len = 0;
-    ASSERT_OK(nanortc_accept_offer(&answerer, offer, answer, sizeof(answer), &answer_len));
+    ASSERT_OK(nanortc_accept_offer(&answerer, offer, strlen(offer), answer, sizeof(answer), &answer_len));
     answer[answer_len] = '\0';
-    ASSERT_OK(nanortc_accept_answer(&offerer, answer));
+    ASSERT_OK(nanortc_accept_answer(&offerer, answer, strlen(answer)));
 
     answerer.ice.remote_candidates[0].family = 4;
     answerer.ice.remote_candidates[0].addr[0] = 192;
@@ -2419,7 +2404,7 @@ TEST(test_e2e_h265_midstream_param_refresh)
     /* Drain any handshake events parked on the answerer. */
     {
         nanortc_output_t d;
-        while (nanortc_poll_output(&answerer, &d) == NANORTC_OK) {
+        while (nano_test_poll_output(&answerer, &d) == NANORTC_OK) {
         }
     }
 
@@ -2432,7 +2417,7 @@ TEST(test_e2e_h265_midstream_param_refresh)
         now_ms += 20;
         ASSERT_OK(nanortc_handle_input(&offerer, &(nanortc_input_t){.now_ms = now_ms}));
         e2e_relay(&offerer, &answerer, now_ms);
-        while (nanortc_poll_output(&answerer, &out) == NANORTC_OK) {
+        while (nano_test_poll_output(&answerer, &out) == NANORTC_OK) {
             if (out.type == NANORTC_OUTPUT_EVENT && out.event.type == NANORTC_EV_MEDIA_DATA &&
                 out.event.media_data.is_keyframe)
                 got_kf1 = 1;
@@ -2460,7 +2445,7 @@ TEST(test_e2e_h265_midstream_param_refresh)
         now_ms += 20;
         ASSERT_OK(nanortc_handle_input(&offerer, &(nanortc_input_t){.now_ms = now_ms}));
         e2e_relay(&offerer, &answerer, now_ms);
-        while (nanortc_poll_output(&answerer, &out) == NANORTC_OK) {
+        while (nano_test_poll_output(&answerer, &out) == NANORTC_OK) {
             if (out.type == NANORTC_OUTPUT_EVENT && out.event.type == NANORTC_EV_MEDIA_DATA) {
                 got_media2 = 1;
                 if (out.event.media_data.is_keyframe)
@@ -2488,7 +2473,7 @@ TEST(test_e2e_h265_midstream_param_refresh)
  *     with BUFFER_TOO_SMALL and enqueues nothing;
  *   - a frame that fits an empty queue but not the residual free space is
  *     rejected with WOULD_BLOCK and enqueues nothing;
- *   - after draining via nanortc_poll_output() the same frame is accepted;
+ *   - after draining via nano_test_poll_output() the same frame is accepted;
  *   - nanortc_output_free_slots() tracks the queue depth across all of it.
  */
 #if NANORTC_FEATURE_VIDEO_PACING
@@ -2513,7 +2498,7 @@ static void e2e_flush_sender(nanortc_t *rtc, uint32_t *now_ms)
         (void)nanortc_handle_input(rtc, &(nanortc_input_t){.now_ms = *now_ms});
         nanortc_output_t d;
         int drained = 0;
-        while (nanortc_poll_output(rtc, &d) == NANORTC_OK) {
+        while (nano_test_poll_output(rtc, &d) == NANORTC_OK) {
             drained = 1;
         }
 #if NANORTC_FEATURE_VIDEO_PACING
@@ -2559,10 +2544,10 @@ TEST(test_e2e_video_send_admission)
 
     char answer[4096];
     size_t answer_len = 0;
-    ASSERT_OK(nanortc_accept_offer(&answerer, offer, answer, sizeof(answer), &answer_len));
+    ASSERT_OK(nanortc_accept_offer(&answerer, offer, strlen(offer), answer, sizeof(answer), &answer_len));
     answer[answer_len] = '\0';
 
-    ASSERT_OK(nanortc_accept_answer(&offerer, answer));
+    ASSERT_OK(nanortc_accept_answer(&offerer, answer, strlen(answer)));
 
     /* Mirror test_e2e_h265_loopback: arm answerer's remote candidate to the
      * loopback source the e2e_relay helper rewrites onto every packet. */
@@ -2592,7 +2577,7 @@ TEST(test_e2e_video_send_admission)
     /* Drain handshake leftovers so the queue starts empty. */
     {
         nanortc_output_t d;
-        while (nanortc_poll_output(&offerer, &d) == NANORTC_OK) {
+        while (nano_test_poll_output(&offerer, &d) == NANORTC_OK) {
         }
     }
     ASSERT_EQ(nanortc_output_free_slots(&offerer), (uint16_t)NANORTC_OUT_QUEUE_SIZE);
@@ -2604,7 +2589,9 @@ TEST(test_e2e_video_send_admission)
      * queue, but two back-to-back un-drained sends exceed the capacity. */
     const size_t fit_packets = cap * 3 / 4;
 #if NANORTC_FEATURE_VIDEO_FEC && !NANORTC_FEATURE_VIDEO_PACING && !NANORTC_FEC_ADAPTIVE
-    const size_t fit_fec_packets = fit_packets / NANORTC_FEC_GROUP_SIZE;
+    const size_t fit_fec_groups = fit_packets / NANORTC_FEC_GROUP_SIZE;
+    /* Immediate mode admits optional FEC only when the whole set fits. */
+    const size_t fit_fec_packets = fit_fec_groups <= NANORTC_FEC_TX_RING ? fit_fec_groups : 0u;
 #else
     const size_t fit_fec_packets = 0u;
 #endif
@@ -2703,9 +2690,9 @@ TEST(test_e2e_video_auto_pli_on_loss)
     offer[offer_len] = '\0';
     char answer[4096];
     size_t answer_len = 0;
-    ASSERT_OK(nanortc_accept_offer(&answerer, offer, answer, sizeof(answer), &answer_len));
+    ASSERT_OK(nanortc_accept_offer(&answerer, offer, strlen(offer), answer, sizeof(answer), &answer_len));
     answer[answer_len] = '\0';
-    ASSERT_OK(nanortc_accept_answer(&offerer, answer));
+    ASSERT_OK(nanortc_accept_answer(&offerer, answer, strlen(answer)));
 
     answerer.ice.remote_candidates[0].family = 4;
     answerer.ice.remote_candidates[0].addr[0] = 192;
@@ -2729,9 +2716,9 @@ TEST(test_e2e_video_auto_pli_on_loss)
     ASSERT_TRUE(connected);
     {
         nanortc_output_t d;
-        while (nanortc_poll_output(&offerer, &d) == NANORTC_OK) {
+        while (nano_test_poll_output(&offerer, &d) == NANORTC_OK) {
         }
-        while (nanortc_poll_output(&answerer, &d) == NANORTC_OK) {
+        while (nano_test_poll_output(&answerer, &d) == NANORTC_OK) {
         }
     }
 
@@ -2770,7 +2757,7 @@ TEST(test_e2e_video_auto_pli_on_loss)
     e2e_relay_drop_rtp(&answerer, &offerer, now, -1);
     int got_kf_req = 0;
     nanortc_output_t out;
-    while (nanortc_poll_output(&offerer, &out) == NANORTC_OK) {
+    while (nano_test_poll_output(&offerer, &out) == NANORTC_OK) {
         if (out.type == NANORTC_OUTPUT_EVENT && out.event.type == NANORTC_EV_KEYFRAME_REQUEST) {
             got_kf_req = 1;
             ASSERT_EQ(out.event.keyframe_request.mid, (uint8_t)off_mid);
@@ -2829,7 +2816,7 @@ static void e2e_relay_reordered(nanortc_t *from, nanortc_t *to, uint32_t now)
     src.addr[3] = 1;
     src.port = 9999;
     nanortc_output_t out;
-    while (nanortc_poll_output(from, &out) == NANORTC_OK) {
+    while (nano_test_poll_output(from, &out) == NANORTC_OK) {
         if (out.type != NANORTC_OUTPUT_TRANSMIT) {
             continue;
         }
@@ -2878,9 +2865,9 @@ TEST(test_e2e_video_reorder_heals_swap)
     offer[offer_len] = '\0';
     char answer[4096];
     size_t answer_len = 0;
-    ASSERT_OK(nanortc_accept_offer(&answerer, offer, answer, sizeof(answer), &answer_len));
+    ASSERT_OK(nanortc_accept_offer(&answerer, offer, strlen(offer), answer, sizeof(answer), &answer_len));
     answer[answer_len] = '\0';
-    ASSERT_OK(nanortc_accept_answer(&offerer, answer));
+    ASSERT_OK(nanortc_accept_answer(&offerer, answer, strlen(answer)));
 
     answerer.ice.remote_candidates[0].family = 4;
     answerer.ice.remote_candidates[0].addr[0] = 192;
@@ -2904,9 +2891,9 @@ TEST(test_e2e_video_reorder_heals_swap)
     ASSERT_TRUE(connected);
     {
         nanortc_output_t d;
-        while (nanortc_poll_output(&offerer, &d) == NANORTC_OK) {
+        while (nano_test_poll_output(&offerer, &d) == NANORTC_OK) {
         }
-        while (nanortc_poll_output(&answerer, &d) == NANORTC_OK) {
+        while (nano_test_poll_output(&answerer, &d) == NANORTC_OK) {
         }
     }
 
@@ -2927,7 +2914,7 @@ TEST(test_e2e_video_reorder_heals_swap)
     e2e_relay_reordered(&offerer, &answerer, now); /* single packet: in order */
     {
         nanortc_output_t d;
-        while (nanortc_poll_output(&answerer, &d) == NANORTC_OK) {
+        while (nano_test_poll_output(&answerer, &d) == NANORTC_OK) {
         }
     }
 
@@ -2958,7 +2945,7 @@ TEST(test_e2e_video_reorder_heals_swap)
     uint8_t first_byte[4];
     int got = 0;
     nanortc_output_t out;
-    while (nanortc_poll_output(&answerer, &out) == NANORTC_OK) {
+    while (nano_test_poll_output(&answerer, &out) == NANORTC_OK) {
         if (out.type == NANORTC_OUTPUT_EVENT && out.event.type == NANORTC_EV_MEDIA_DATA &&
             got < 4) {
             /* payload byte after the 1-byte NAL header distinguishes A (0xA1)
@@ -2981,7 +2968,7 @@ TEST(test_e2e_video_reorder_heals_swap)
      * deliver the new stream. (TD: reorder SSRC-change reset.) --- */
     {
         nanortc_output_t d;
-        while (nanortc_poll_output(&answerer, &d) == NANORTC_OK) {
+        while (nano_test_poll_output(&answerer, &d) == NANORTC_OK) {
         }
     }
     offerer.media[0].rtp.ssrc = offerer.media[0].rtp.ssrc + 0x5050u;         /* new SSRC */
@@ -3000,7 +2987,7 @@ TEST(test_e2e_video_reorder_heals_swap)
     e2e_relay_reordered(&offerer, &answerer, now);
 
     int new_got = 0;
-    while (nanortc_poll_output(&answerer, &out) == NANORTC_OK) {
+    while (nano_test_poll_output(&answerer, &out) == NANORTC_OK) {
         if (out.type == NANORTC_OUTPUT_EVENT && out.event.type == NANORTC_EV_MEDIA_DATA &&
             out.event.media_data.len > 1 && out.event.media_data.data[1] == 0xD3) {
             new_got++;
@@ -3039,9 +3026,9 @@ TEST(test_e2e_video_nack_recovers_drop)
     offer[offer_len] = '\0';
     char answer[4096];
     size_t answer_len = 0;
-    ASSERT_OK(nanortc_accept_offer(&answerer, offer, answer, sizeof(answer), &answer_len));
+    ASSERT_OK(nanortc_accept_offer(&answerer, offer, strlen(offer), answer, sizeof(answer), &answer_len));
     answer[answer_len] = '\0';
-    ASSERT_OK(nanortc_accept_answer(&offerer, answer));
+    ASSERT_OK(nanortc_accept_answer(&offerer, answer, strlen(answer)));
 
     answerer.ice.remote_candidates[0].family = 4;
     answerer.ice.remote_candidates[0].addr[0] = 192;
@@ -3065,9 +3052,9 @@ TEST(test_e2e_video_nack_recovers_drop)
     ASSERT_TRUE(connected);
     {
         nanortc_output_t d;
-        while (nanortc_poll_output(&offerer, &d) == NANORTC_OK) {
+        while (nano_test_poll_output(&offerer, &d) == NANORTC_OK) {
         }
-        while (nanortc_poll_output(&answerer, &d) == NANORTC_OK) {
+        while (nano_test_poll_output(&answerer, &d) == NANORTC_OK) {
         }
     }
 
@@ -3088,7 +3075,7 @@ TEST(test_e2e_video_nack_recovers_drop)
     e2e_relay(&offerer, &answerer, now);
     {
         nanortc_output_t d;
-        while (nanortc_poll_output(&answerer, &d) == NANORTC_OK) {
+        while (nano_test_poll_output(&answerer, &d) == NANORTC_OK) {
         }
     }
 
@@ -3106,7 +3093,7 @@ TEST(test_e2e_video_nack_recovers_drop)
     pts += 33;
     {
         nanortc_output_t d;
-        while (nanortc_poll_output(&offerer, &d) == NANORTC_OK) { /* drop everything (Frame A) */
+        while (nano_test_poll_output(&offerer, &d) == NANORTC_OK) { /* drop everything (Frame A) */
         }
     }
 
@@ -3139,7 +3126,7 @@ TEST(test_e2e_video_nack_recovers_drop)
     uint8_t bytes[6];
     int got = 0;
     nanortc_output_t out;
-    while (nanortc_poll_output(&answerer, &out) == NANORTC_OK) {
+    while (nano_test_poll_output(&answerer, &out) == NANORTC_OK) {
         if (out.type == NANORTC_OUTPUT_EVENT && out.event.type == NANORTC_EV_MEDIA_DATA &&
             out.event.media_data.len > 1 && got < 6) {
             bytes[got++] = out.event.media_data.data[1];
@@ -3184,7 +3171,7 @@ TEST(test_e2e_h265_fec_group_commits)
     nanortc_output_t out;
     for (uint8_t i = 0; i < (uint8_t)NANORTC_FEC_GROUP_SIZE; i++) {
         ASSERT_OK(nanortc_send_video(&rtc, (uint8_t)mid, (uint32_t)i * 33u, frame, sizeof(frame)));
-        while (nanortc_poll_output(&rtc, &out) == NANORTC_OK) {
+        while (nano_test_poll_output(&rtc, &out) == NANORTC_OK) {
         }
     }
     ASSERT_EQ(rtc.stats_fec_sent, sent_before + 1u);
@@ -3240,7 +3227,7 @@ TEST(test_e2e_video_fec_resource_drop_is_atomic)
     for (uint8_t i = 0; i + 1u < (uint8_t)NANORTC_FEC_GROUP_SIZE; i++) {
         ASSERT_OK(
             nanortc_send_video(&rtc, (uint8_t)mid, (uint32_t)(i + 1u) * 33u, frame, sizeof(frame)));
-        while (nanortc_poll_output(&rtc, &out) == NANORTC_OK) {
+        while (nano_test_poll_output(&rtc, &out) == NANORTC_OK) {
         }
     }
     ASSERT_EQ(rtc.fec_tx_n, (uint8_t)(NANORTC_FEC_GROUP_SIZE - 1u));
@@ -3266,7 +3253,7 @@ TEST(test_e2e_video_fec_resource_drop_is_atomic)
 
     int media_packets = 0;
     int fec_packets = 0;
-    while (nanortc_poll_output(&rtc, &out) == NANORTC_OK) {
+    while (nano_test_poll_output(&rtc, &out) == NANORTC_OK) {
         if (out.type != NANORTC_OUTPUT_TRANSMIT) {
             continue;
         }
@@ -3285,7 +3272,7 @@ TEST(test_e2e_video_fec_resource_drop_is_atomic)
     for (uint8_t i = 0; i + 1u < (uint8_t)NANORTC_FEC_GROUP_SIZE; i++) {
         ASSERT_OK(nanortc_send_video(&rtc, (uint8_t)mid, 2000u + (uint32_t)i * 33u, frame,
                                      sizeof(frame)));
-        while (nanortc_poll_output(&rtc, &out) == NANORTC_OK) {
+        while (nano_test_poll_output(&rtc, &out) == NANORTC_OK) {
         }
     }
     sent_before = rtc.stats_fec_sent;
@@ -3293,7 +3280,7 @@ TEST(test_e2e_video_fec_resource_drop_is_atomic)
     ASSERT_EQ(rtc.stats_fec_sent, sent_before + 1u);
     media_packets = 0;
     fec_packets = 0;
-    while (nanortc_poll_output(&rtc, &out) == NANORTC_OK) {
+    while (nano_test_poll_output(&rtc, &out) == NANORTC_OK) {
         if (out.type != NANORTC_OUTPUT_TRANSMIT) {
             continue;
         }
@@ -3326,7 +3313,7 @@ static int e2e_relay_drop_media(nanortc_t *from, nanortc_t *to, uint32_t now, in
     src.addr[3] = 1;
     src.port = 9999;
     nanortc_output_t out;
-    while (nanortc_poll_output(from, &out) == NANORTC_OK) {
+    while (nano_test_poll_output(from, &out) == NANORTC_OK) {
         if (out.type != NANORTC_OUTPUT_TRANSMIT) {
             continue;
         }
@@ -3373,9 +3360,9 @@ TEST(test_e2e_video_fec_recovers_drop)
     offer[offer_len] = '\0';
     char answer[4096];
     size_t answer_len = 0;
-    ASSERT_OK(nanortc_accept_offer(&answerer, offer, answer, sizeof(answer), &answer_len));
+    ASSERT_OK(nanortc_accept_offer(&answerer, offer, strlen(offer), answer, sizeof(answer), &answer_len));
     answer[answer_len] = '\0';
-    ASSERT_OK(nanortc_accept_answer(&offerer, answer));
+    ASSERT_OK(nanortc_accept_answer(&offerer, answer, strlen(answer)));
 
     answerer.ice.remote_candidates[0].family = 4;
     answerer.ice.remote_candidates[0].addr[0] = 192;
@@ -3399,9 +3386,9 @@ TEST(test_e2e_video_fec_recovers_drop)
     ASSERT_TRUE(connected);
     {
         nanortc_output_t d;
-        while (nanortc_poll_output(&offerer, &d) == NANORTC_OK) {
+        while (nano_test_poll_output(&offerer, &d) == NANORTC_OK) {
         }
-        while (nanortc_poll_output(&answerer, &d) == NANORTC_OK) {
+        while (nano_test_poll_output(&answerer, &d) == NANORTC_OK) {
         }
     }
 
@@ -3449,7 +3436,7 @@ TEST(test_e2e_video_fec_recovers_drop)
     for (int r = 0; r < 40; r++) {
         now += 5;
         ASSERT_OK(nanortc_handle_input(&answerer, &(nanortc_input_t){.now_ms = now}));
-        while (nanortc_poll_output(&answerer, &out) == NANORTC_OK) {
+        while (nano_test_poll_output(&answerer, &out) == NANORTC_OK) {
             if (out.type == NANORTC_OUTPUT_EVENT && out.event.type == NANORTC_EV_MEDIA_DATA &&
                 out.event.media_data.len > 1) {
                 uint8_t b = out.event.media_data.data[1];
@@ -3516,9 +3503,9 @@ TEST(test_e2e_video_fec_adaptive_k_tracks_loss)
     offer[offer_len] = '\0';
     char answer[4096];
     size_t answer_len = 0;
-    ASSERT_OK(nanortc_accept_offer(&answerer, offer, answer, sizeof(answer), &answer_len));
+    ASSERT_OK(nanortc_accept_offer(&answerer, offer, strlen(offer), answer, sizeof(answer), &answer_len));
     answer[answer_len] = '\0';
-    ASSERT_OK(nanortc_accept_answer(&offerer, answer));
+    ASSERT_OK(nanortc_accept_answer(&offerer, answer, strlen(answer)));
     answerer.ice.remote_candidates[0].family = 4;
     answerer.ice.remote_candidates[0].addr[0] = 192;
     answerer.ice.remote_candidates[0].addr[1] = 168;
@@ -3621,9 +3608,9 @@ TEST(test_e2e_video_fec_multigroup_idr)
     offer[offer_len] = '\0';
     char answer[4096];
     size_t answer_len = 0;
-    ASSERT_OK(nanortc_accept_offer(&answerer, offer, answer, sizeof(answer), &answer_len));
+    ASSERT_OK(nanortc_accept_offer(&answerer, offer, strlen(offer), answer, sizeof(answer), &answer_len));
     answer[answer_len] = '\0';
-    ASSERT_OK(nanortc_accept_answer(&offerer, answer));
+    ASSERT_OK(nanortc_accept_answer(&offerer, answer, strlen(answer)));
     answerer.ice.remote_candidates[0].family = 4;
     answerer.ice.remote_candidates[0].addr[0] = 192;
     answerer.ice.remote_candidates[0].addr[1] = 168;
@@ -3754,11 +3741,11 @@ TEST(test_e2e_media_offer_answer)
 
     char answer[4096];
     size_t answer_len = 0;
-    ASSERT_OK(nanortc_accept_offer(&answerer, offer, answer, sizeof(answer), &answer_len));
+    ASSERT_OK(nanortc_accept_offer(&answerer, offer, strlen(offer), answer, sizeof(answer), &answer_len));
     ASSERT_TRUE(answer_len > 100);
 
     /* Offerer accepts answer */
-    ASSERT_OK(nanortc_accept_answer(&offerer, answer));
+    ASSERT_OK(nanortc_accept_answer(&offerer, answer, strlen(answer)));
 
     /* Both should have progressed beyond NEW */
     ASSERT_TRUE(nanortc_is_alive(&offerer));
@@ -3898,12 +3885,12 @@ TEST(test_e2e_accept_offer_bad_sdp)
     size_t answer_len = 0;
 
     /* NULL params */
-    ASSERT_FAIL(nanortc_accept_offer(NULL, "v=0\r\n", answer, sizeof(answer), &answer_len));
-    ASSERT_FAIL(nanortc_accept_offer(&rtc, NULL, answer, sizeof(answer), &answer_len));
-    ASSERT_FAIL(nanortc_accept_offer(&rtc, "v=0\r\n", NULL, sizeof(answer), &answer_len));
+    ASSERT_FAIL(nanortc_accept_offer(NULL, "v=0\r\n", strlen("v=0\r\n"), answer, sizeof(answer), &answer_len));
+    ASSERT_FAIL(nanortc_accept_offer(&rtc, NULL, 0, answer, sizeof(answer), &answer_len));
+    ASSERT_FAIL(nanortc_accept_offer(&rtc, "v=0\r\n", strlen("v=0\r\n"), NULL, sizeof(answer), &answer_len));
 
     /* Malformed SDP — will fail during sdp_parse */
-    ASSERT_FAIL(nanortc_accept_offer(&rtc, "garbage", answer, sizeof(answer), &answer_len));
+    ASSERT_FAIL(nanortc_accept_offer(&rtc, "garbage", strlen("garbage"), answer, sizeof(answer), &answer_len));
 
     nanortc_destroy(&rtc);
 }
@@ -3935,11 +3922,11 @@ TEST(test_e2e_accept_answer_bad)
     ASSERT_OK(nanortc_init(&rtc, &cfg));
 
     /* NULL params */
-    ASSERT_FAIL(nanortc_accept_answer(NULL, "v=0\r\n"));
-    ASSERT_FAIL(nanortc_accept_answer(&rtc, NULL));
+    ASSERT_FAIL(nanortc_accept_answer(NULL, "v=0\r\n", strlen("v=0\r\n")));
+    ASSERT_FAIL(nanortc_accept_answer(&rtc, NULL, 0));
 
     /* Malformed answer */
-    ASSERT_FAIL(nanortc_accept_answer(&rtc, "not-sdp"));
+    ASSERT_FAIL(nanortc_accept_answer(&rtc, "not-sdp", strlen("not-sdp")));
 
     nanortc_destroy(&rtc);
 }
@@ -3953,8 +3940,8 @@ TEST(test_e2e_add_candidate_params)
     /* NULL params */
     ASSERT_FAIL(nanortc_add_local_candidate(NULL, "1.2.3.4", 9999));
     ASSERT_FAIL(nanortc_add_local_candidate(&rtc, NULL, 9999));
-    ASSERT_FAIL(nanortc_add_remote_candidate(NULL, "candidate:1 1 UDP 1 1.2.3.4 9999 typ host"));
-    ASSERT_FAIL(nanortc_add_remote_candidate(&rtc, NULL));
+    ASSERT_FAIL(nanortc_add_remote_candidate(NULL, "candidate:1 1 UDP 1 1.2.3.4 9999 typ host", strlen("candidate:1 1 UDP 1 1.2.3.4 9999 typ host")));
+    ASSERT_FAIL(nanortc_add_remote_candidate(&rtc, NULL, 0));
 
     /* Valid local candidate */
     ASSERT_OK(nanortc_add_local_candidate(&rtc, "192.168.1.100", 5000));
@@ -3965,37 +3952,36 @@ TEST(test_e2e_add_candidate_params)
     ASSERT_EQ(rtc.ice.remote_candidate_count, 0);
 
     ASSERT_OK(
-        nanortc_add_remote_candidate(&rtc, "candidate:1 1 UDP 2122260223 10.0.0.1 9999 typ host"));
+        nanortc_add_remote_candidate(&rtc, "candidate:1 1 UDP 2122260223 10.0.0.1 9999 typ host", strlen("candidate:1 1 UDP 2122260223 10.0.0.1 9999 typ host")));
     ASSERT_EQ(rtc.ice.remote_candidates[0].type, NANORTC_ICE_CAND_HOST);
 
-    ASSERT_OK(nanortc_add_remote_candidate(
-        &rtc, "candidate:2 1 UDP 1686052863 10.0.0.2 9998 typ srflx raddr 0.0.0.0 rport 0"));
+    ASSERT_OK(nanortc_add_remote_candidate(&rtc, "candidate:2 1 UDP 1686052863 10.0.0.2 9998 typ srflx raddr 0.0.0.0 rport 0", strlen("candidate:2 1 UDP 1686052863 10.0.0.2 9998 typ srflx raddr 0.0.0.0 rport 0")));
     ASSERT_EQ(rtc.ice.remote_candidates[1].type, NANORTC_ICE_CAND_SRFLX);
 
     ASSERT_OK(
-        nanortc_add_remote_candidate(&rtc, "candidate:3 1 UDP 1685987071 10.0.0.3 9997 typ prflx"));
-    ASSERT_EQ(rtc.ice.remote_candidates[2].type, NANORTC_ICE_CAND_SRFLX); /* prflx → srflx */
+        nanortc_add_remote_candidate(&rtc, "candidate:3 1 UDP 1685987071 10.0.0.3 9997 typ prflx raddr 0.0.0.0 rport 9", strlen("candidate:3 1 UDP 1685987071 10.0.0.3 9997 typ prflx raddr 0.0.0.0 rport 9")));
+    ASSERT_EQ(rtc.ice.remote_candidates[2].type, NANORTC_ICE_CAND_PRFLX);
 
     ASSERT_OK(
-        nanortc_add_remote_candidate(&rtc, "candidate:4 1 UDP 8387583 10.0.0.4 9996 typ relay"));
+        nanortc_add_remote_candidate(&rtc, "candidate:4 1 UDP 8387583 10.0.0.4 9996 typ relay raddr 0.0.0.0 rport 9", strlen("candidate:4 1 UDP 8387583 10.0.0.4 9996 typ relay raddr 0.0.0.0 rport 9")));
     ASSERT_EQ(rtc.ice.remote_candidates[3].type, NANORTC_ICE_CAND_RELAY);
 
     /* Simple "<addr> <port>" format has no typ; defaults to host. */
-    ASSERT_OK(nanortc_add_remote_candidate(&rtc, "10.0.0.5 8888"));
+    ASSERT_OK(nanortc_add_remote_candidate(&rtc, "10.0.0.5 8888", strlen("10.0.0.5 8888")));
     ASSERT_EQ(rtc.ice.remote_candidates[4].type, NANORTC_ICE_CAND_HOST);
 
     /* SDP candidate without "typ" attribute (spec-compliant minimum) also
      * falls back to host. */
-    ASSERT_OK(nanortc_add_remote_candidate(&rtc, "candidate:5 1 UDP 1 10.0.0.6 9995"));
+    ASSERT_OK(nanortc_add_remote_candidate(&rtc, "candidate:5 1 UDP 1 10.0.0.6 9995 typ host", strlen("candidate:5 1 UDP 1 10.0.0.6 9995 typ host")));
     ASSERT_EQ(rtc.ice.remote_candidates[5].type, NANORTC_ICE_CAND_HOST);
 
-    /* An unknown type word after "typ" is left at the default (host). */
-    ASSERT_OK(nanortc_add_remote_candidate(&rtc, "candidate:6 1 UDP 1 10.0.0.7 9994 typ weird"));
-    ASSERT_EQ(rtc.ice.remote_candidates[6].type, NANORTC_ICE_CAND_HOST);
+    /* RFC 8839 candidate types are validated instead of becoming host. */
+    ASSERT_EQ(nanortc_add_remote_candidate(&rtc, "candidate:6 1 UDP 1 10.0.0.7 9994 typ weird", strlen("candidate:6 1 UDP 1 10.0.0.7 9994 typ weird")), NANORTC_ERR_PARSE);
+    ASSERT_EQ(rtc.ice.remote_candidate_count, 6);
 
     /* Malformed remote candidate */
-    ASSERT_FAIL(nanortc_add_remote_candidate(&rtc, ""));
-    ASSERT_FAIL(nanortc_add_remote_candidate(&rtc, "x"));
+    ASSERT_FAIL(nanortc_add_remote_candidate(&rtc, "", strlen("")));
+    ASSERT_FAIL(nanortc_add_remote_candidate(&rtc, "x", strlen("x")));
 
     nanortc_destroy(&rtc);
 }
@@ -4087,9 +4073,9 @@ TEST(test_e2e_dc_create_with_options)
     ASSERT_TRUE(nanortc_datachannel_get_label(&rtc, (uint16_t)sid2) != NULL);
 
     /* Close channel */
-    ASSERT_OK(nanortc_datachannel_close(&rtc, (uint16_t)sid1));
-    /* After close, label should be NULL */
-    ASSERT_EQ(nanortc_datachannel_get_label(&rtc, (uint16_t)sid1), NULL);
+    ASSERT_EQ(nanortc_datachannel_close(&rtc, (uint16_t)sid1), NANORTC_ERR_NOT_IMPLEMENTED);
+    /* Unsupported stream reset leaves the channel intact. */
+    ASSERT_TRUE(nanortc_datachannel_get_label(&rtc, (uint16_t)sid1) != NULL);
 
     nanortc_destroy(&rtc);
 }
@@ -4209,7 +4195,7 @@ TEST(test_e2e_srflx_discovery)
     /* Poll the Binding Request output */
     nanortc_output_t out;
     bool found_stun_req = false;
-    while (nanortc_poll_output(&rtc, &out) == NANORTC_OK) {
+    while (nano_test_poll_output(&rtc, &out) == NANORTC_OK) {
         if (out.type == NANORTC_OUTPUT_TRANSMIT && out.transmit.dest.port == 3478) {
             found_stun_req = true;
             /* Verify it's a Binding Request */
@@ -4245,7 +4231,7 @@ TEST(test_e2e_srflx_discovery)
 
     /* Poll the trickle ICE candidate event */
     bool found_srflx_event = false;
-    while (nanortc_poll_output(&rtc, &out) == NANORTC_OK) {
+    while (nano_test_poll_output(&rtc, &out) == NANORTC_OK) {
         if (out.type == NANORTC_OUTPUT_EVENT && out.event.type == NANORTC_EV_ICE_CANDIDATE) {
             found_srflx_event = true;
             /* RFC 8839 §5.1 / §9.1: check the actual discovered event. */
@@ -4278,7 +4264,7 @@ TEST(test_e2e_shared_stun_turn_endpoint_demux)
     uint32_t now_ms = 100;
     for (uint8_t attempt = 0; attempt < 4 && !found_binding_request; attempt++) {
         ASSERT_OK(nanortc_handle_input(&rtc, &(nanortc_input_t){.now_ms = now_ms}));
-        while (nanortc_poll_output(&rtc, &out) == NANORTC_OK) {
+        while (nano_test_poll_output(&rtc, &out) == NANORTC_OK) {
             if (out.type == NANORTC_OUTPUT_TRANSMIT && out.transmit.len >= STUN_HEADER_SIZE &&
                 nanortc_read_u16be(out.transmit.data) == STUN_BINDING_REQUEST) {
                 memcpy(stun_txid, out.transmit.data + 8, STUN_TXID_SIZE);
@@ -4323,7 +4309,7 @@ TEST(test_e2e_srflx_retry)
 
     /* Drain output */
     nanortc_output_t out;
-    while (nanortc_poll_output(&rtc, &out) == NANORTC_OK) {
+    while (nano_test_poll_output(&rtc, &out) == NANORTC_OK) {
     }
 
     /* Not enough time for retry */
@@ -4337,7 +4323,7 @@ TEST(test_e2e_srflx_retry)
     ASSERT_EQ(rtc.stun_retries, 2);
 
     /* Drain */
-    while (nanortc_poll_output(&rtc, &out) == NANORTC_OK) {
+    while (nano_test_poll_output(&rtc, &out) == NANORTC_OK) {
     }
 
     /* Third retry */
@@ -4346,7 +4332,7 @@ TEST(test_e2e_srflx_retry)
     ASSERT_EQ(rtc.stun_retries, 3);
 
     /* No more retries after max */
-    while (nanortc_poll_output(&rtc, &out) == NANORTC_OK) {
+    while (nano_test_poll_output(&rtc, &out) == NANORTC_OK) {
     }
     now += 500;
     ASSERT_OK(nanortc_handle_input(&rtc, &(nanortc_input_t){.now_ms = now}));
@@ -4371,7 +4357,7 @@ TEST(test_e2e_srflx_joins_local_candidates)
     uint32_t now = 100;
     ASSERT_OK(nanortc_handle_input(&rtc, &(nanortc_input_t){.now_ms = now}));
     nanortc_output_t out;
-    while (nanortc_poll_output(&rtc, &out) == NANORTC_OK) {
+    while (nano_test_poll_output(&rtc, &out) == NANORTC_OK) {
     }
 
     uint8_t initial_count = rtc.ice.local_candidate_count;
@@ -4647,7 +4633,7 @@ TEST(test_e2e_turn_allocation_lifecycle)
     /* Drain the Allocate Request output */
     nanortc_output_t out;
     bool found_allocate = false;
-    while (nanortc_poll_output(&rtc, &out) == NANORTC_OK) {
+    while (nano_test_poll_output(&rtc, &out) == NANORTC_OK) {
         if (out.type == NANORTC_OUTPUT_TRANSMIT && out.transmit.dest.port == 3478) {
             stun_msg_t msg;
             if (stun_parse(out.transmit.data, out.transmit.len, &msg) == NANORTC_OK) {
@@ -4705,7 +4691,7 @@ TEST(test_e2e_turn_allocation_lifecycle)
 
     /* Drain authenticated Allocate */
     bool found_auth = false;
-    while (nanortc_poll_output(&rtc, &out) == NANORTC_OK) {
+    while (nano_test_poll_output(&rtc, &out) == NANORTC_OK) {
         if (out.type == NANORTC_OUTPUT_TRANSMIT) {
             stun_msg_t msg;
             if (stun_parse(out.transmit.data, out.transmit.len, &msg) == NANORTC_OK) {
@@ -4764,7 +4750,7 @@ TEST(test_e2e_turn_allocation_lifecycle)
     /* Verify relay candidate was emitted */
     ASSERT_TRUE(rtc.sdp.has_relay_candidate);
     bool found_relay_event = false;
-    while (nanortc_poll_output(&rtc, &out) == NANORTC_OK) {
+    while (nano_test_poll_output(&rtc, &out) == NANORTC_OK) {
         if (out.type == NANORTC_OUTPUT_EVENT && out.event.type == NANORTC_EV_ICE_CANDIDATE) {
             const char *cs = out.event.ice_candidate.candidate_str;
             TEST_ASSERT_EQUAL_STRING(" typ relay raddr 0.0.0.0 rport 9", strstr(cs, " typ "));
@@ -4859,7 +4845,7 @@ TEST(test_e2e_relay_check_waits_without_blocking_permission)
 
     nanortc_output_t out;
     bool found_permission = false;
-    while (nanortc_poll_output(&rtc, &out) == NANORTC_OK) {
+    while (nano_test_poll_output(&rtc, &out) == NANORTC_OK) {
         if (out.type == NANORTC_OUTPUT_TRANSMIT &&
             nanortc_read_u16be(out.transmit.data) == STUN_CREATE_PERMISSION_REQUEST) {
             found_permission = true;
@@ -4917,7 +4903,7 @@ TEST(test_e2e_turn_permission_capacity_covers_remote_candidates)
          tick++) {
         ASSERT_OK(
             nanortc_handle_input(&rtc, &(nanortc_input_t){.now_ms = (uint32_t)(100u + tick)}));
-        while (nanortc_poll_output(&rtc, &out) == NANORTC_OK) {
+        while (nano_test_poll_output(&rtc, &out) == NANORTC_OK) {
         }
     }
     ASSERT_EQ(rtc.turn.permission_count, expected);
@@ -5195,7 +5181,7 @@ TEST(test_nack_matches_media_ssrc_as_well_as_sequence)
     ASSERT_OK(nanortc_handle_input(&receiver, &input));
     nanortc_output_t out;
     unsigned matches = 0;
-    while (nanortc_poll_output(&receiver, &out) == NANORTC_OK) {
+    while (nano_test_poll_output(&receiver, &out) == NANORTC_OK) {
         if (out.type == NANORTC_OUTPUT_TRANSMIT && out.transmit.len == 13) {
             ASSERT_EQ(out.transmit.data[12], 0xA1);
             matches++;

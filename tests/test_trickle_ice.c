@@ -171,12 +171,12 @@ static void test_trickle_max_candidates(void)
         char cand[32];
         int len = snprintf(cand, sizeof(cand), "10.0.0.%d %d", i + 1, 5000 + i);
         (void)len;
-        nanortc_add_remote_candidate(&rtc, cand);
+        nanortc_add_remote_candidate(&rtc, cand, strlen(cand));
     }
     TEST_ASSERT_EQUAL_INT(NANORTC_MAX_ICE_CANDIDATES, rtc.ice.remote_candidate_count);
     /* One more must fail */
     TEST_ASSERT_EQUAL_INT(NANORTC_ERR_BUFFER_TOO_SMALL,
-                          nanortc_add_remote_candidate(&rtc, "10.0.0.99 6000"));
+                          nanortc_add_remote_candidate(&rtc, "10.0.0.99 6000", strlen("10.0.0.99 6000")));
     TEST_ASSERT_EQUAL_INT(NANORTC_MAX_ICE_CANDIDATES, rtc.ice.remote_candidate_count);
     nanortc_destroy(&rtc);
 }
@@ -323,6 +323,11 @@ static void test_consent_response_clears_pending(void)
     ctrl.state = NANORTC_ICE_STATE_CONNECTED;
     ctrl.consent_next_ms = 0;
     ctrl.consent_expiry_ms = 50000;
+    /* Consent is scoped to the nominated transport address (RFC 7675 §5.1). */
+    ctrl.selected_family = 4;
+    ctrl.selected_port = 5000;
+    ctrl.selected_addr[0] = 10;
+    ctrl.selected_addr[3] = 1;
 
     /* Set up controlled agent to respond */
     ice_init(&ctld, 0);
@@ -402,7 +407,7 @@ static void test_sdp_end_of_candidates_parsed(void)
                           "c=IN IP4 10.0.0.1\r\n"
                           "a=ice-ufrag:abcd\r\n"
                           "a=ice-pwd:efghijklmnopqr\r\n"
-                          "a=fingerprint:sha-256 AA:BB:CC:DD\r\n"
+                          "a=fingerprint:sha-256 AA:BB:CC:DD:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00\r\n"
                           "a=setup:actpass\r\n"
                           "a=sctp-port:5000\r\n"
                           "a=candidate:1 1 UDP 2130706431 10.0.0.1 5000 typ host\r\n"
@@ -430,7 +435,7 @@ static void test_sdp_no_end_of_candidates(void)
                           "c=IN IP4 10.0.0.1\r\n"
                           "a=ice-ufrag:abcd\r\n"
                           "a=ice-pwd:efghijklmnopqr\r\n"
-                          "a=fingerprint:sha-256 AA:BB:CC:DD\r\n"
+                          "a=fingerprint:sha-256 AA:BB:CC:DD:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00\r\n"
                           "a=setup:actpass\r\n"
                           "a=sctp-port:5000\r\n";
 
@@ -478,26 +483,22 @@ static void test_api_remote_candidate_parses_type(void)
     nanortc_init(&rtc, &cfg);
 
     /* host candidate */
-    int rc = nanortc_add_remote_candidate(
-        &rtc, "candidate:1 1 UDP 2130706431 192.168.1.10 5000 typ host");
+    int rc = nanortc_add_remote_candidate(&rtc, "candidate:1 1 UDP 2130706431 192.168.1.10 5000 typ host", strlen("candidate:1 1 UDP 2130706431 192.168.1.10 5000 typ host"));
     TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
     TEST_ASSERT_EQUAL_INT(NANORTC_ICE_CAND_HOST, rtc.ice.remote_candidates[0].type);
 
     /* srflx candidate (with raddr/rport tail) */
-    rc = nanortc_add_remote_candidate(
-        &rtc,
-        "candidate:2 1 UDP 1694498815 203.0.113.5 6000 typ srflx raddr 192.168.1.10 rport 5000");
+    rc = nanortc_add_remote_candidate(&rtc, "candidate:2 1 UDP 1694498815 203.0.113.5 6000 typ srflx raddr 192.168.1.10 rport 5000", strlen("candidate:2 1 UDP 1694498815 203.0.113.5 6000 typ srflx raddr 192.168.1.10 rport 5000"));
     TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
     TEST_ASSERT_EQUAL_INT(NANORTC_ICE_CAND_SRFLX, rtc.ice.remote_candidates[1].type);
 
     /* relay candidate */
-    rc = nanortc_add_remote_candidate(
-        &rtc, "candidate:3 1 UDP 16777215 198.51.100.7 7000 typ relay raddr 0.0.0.0 rport 0");
+    rc = nanortc_add_remote_candidate(&rtc, "candidate:3 1 UDP 16777215 198.51.100.7 7000 typ relay raddr 0.0.0.0 rport 0", strlen("candidate:3 1 UDP 16777215 198.51.100.7 7000 typ relay raddr 0.0.0.0 rport 0"));
     TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
     TEST_ASSERT_EQUAL_INT(NANORTC_ICE_CAND_RELAY, rtc.ice.remote_candidates[2].type);
 
     /* simple format (no candidate: prefix) defaults to HOST */
-    rc = nanortc_add_remote_candidate(&rtc, "10.0.0.1 8000");
+    rc = nanortc_add_remote_candidate(&rtc, "10.0.0.1 8000", strlen("10.0.0.1 8000"));
     TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
     TEST_ASSERT_EQUAL_INT(NANORTC_ICE_CAND_HOST, rtc.ice.remote_candidates[3].type);
 
@@ -515,24 +516,22 @@ static void test_api_remote_candidate_validation_and_dedup(void)
     nanortc_init(&rtc, &cfg);
 
     TEST_ASSERT_EQUAL_INT(NANORTC_OK,
-                          nanortc_add_remote_candidate(
-                              &rtc, "candidate:1 1 udp 2130706431 8.8.8.8 5000 typ host\r\n"));
+                          nanortc_add_remote_candidate(&rtc, "candidate:1 1 udp 2130706431 8.8.8.8 5000 typ host\r\n", strlen("candidate:1 1 udp 2130706431 8.8.8.8 5000 typ host\r\n")));
     TEST_ASSERT_EQUAL_INT(
         NANORTC_OK,
-        nanortc_add_remote_candidate(
-            &rtc, "candidate:2 1 UDP 16777215 8.8.8.8 5000 typ relay raddr 0.0.0.0 rport 0"));
+        nanortc_add_remote_candidate(&rtc, "candidate:2 1 UDP 16777215 8.8.8.8 5000 typ relay raddr 0.0.0.0 rport 0", strlen("candidate:2 1 UDP 16777215 8.8.8.8 5000 typ relay raddr 0.0.0.0 rport 0")));
     TEST_ASSERT_EQUAL_INT(1, rtc.ice.remote_candidate_count);
     TEST_ASSERT_EQUAL_INT(NANORTC_ICE_CAND_RELAY, rtc.ice.remote_candidates[0].type);
 
     TEST_ASSERT_EQUAL_INT(
         NANORTC_ERR_NOT_IMPLEMENTED,
-        nanortc_add_remote_candidate(&rtc, "candidate:3 2 UDP 2130706431 8.8.4.4 5001 typ host"));
+        nanortc_add_remote_candidate(&rtc, "candidate:3 2 UDP 2130706431 8.8.4.4 5001 typ host", strlen("candidate:3 2 UDP 2130706431 8.8.4.4 5001 typ host")));
     TEST_ASSERT_EQUAL_INT(
         NANORTC_ERR_NOT_IMPLEMENTED,
-        nanortc_add_remote_candidate(&rtc, "candidate:4 1 TCP 2130706431 8.8.4.4 5001 typ host"));
+        nanortc_add_remote_candidate(&rtc, "candidate:4 1 TCP 2130706431 8.8.4.4 5001 typ host", strlen("candidate:4 1 TCP 2130706431 8.8.4.4 5001 typ host")));
     TEST_ASSERT_EQUAL_INT(
         NANORTC_ERR_PARSE,
-        nanortc_add_remote_candidate(&rtc, "candidate:5 1 UDP 2130706431 8.8.4.4 65536 typ host"));
+        nanortc_add_remote_candidate(&rtc, "candidate:5 1 UDP 2130706431 8.8.4.4 65536 typ host", strlen("candidate:5 1 UDP 2130706431 8.8.4.4 65536 typ host")));
     TEST_ASSERT_EQUAL_INT(1, rtc.ice.remote_candidate_count);
 
     nanortc_destroy(&rtc);
@@ -615,16 +614,10 @@ static void test_api_ice_restart_clears_dtls(void)
     rc = nanortc_ice_restart(&rtc);
     TEST_ASSERT_EQUAL_INT(NANORTC_OK, rc);
 
-    /* The DTLS context must have been torn down so the next
-     * accept_offer/create_offer path re-runs dtls_init. */
-    TEST_ASSERT_NULL(rtc.dtls.crypto_ctx);
-    TEST_ASSERT_EQUAL_INT(NANORTC_DTLS_STATE_CLOSED, rtc.dtls.state);
-
-    /* Cached fingerprints must be invalidated so nano_rtc_cache_fingerprint
-     * repopulates them from the next dtls_init's cert (otherwise the
-     * peer sees a stale SDP fingerprint and DTLS verify fails). */
-    TEST_ASSERT_EQUAL_INT('\0', rtc.sdp.local_fingerprint[0]);
-    TEST_ASSERT_EQUAL_INT('\0', rtc.dtls.local_fingerprint[0]);
+    TEST_ASSERT_NOT_NULL(rtc.dtls.crypto_ctx);
+    TEST_ASSERT_EQUAL_INT(NANORTC_DTLS_STATE_INIT, rtc.dtls.state);
+    TEST_ASSERT_EQUAL_STRING("sha-256 AA:BB:CC", rtc.sdp.local_fingerprint);
+    TEST_ASSERT_EQUAL_STRING("AA:BB:CC", rtc.dtls.local_fingerprint);
 
     nanortc_destroy(&rtc);
 }
@@ -699,7 +692,7 @@ static void test_candidate_event_related_address(void)
 #endif
             nanortc_output_t out;
             unsigned seen = 0;
-            while (nanortc_poll_output(&rtc, &out) == NANORTC_OK) {
+            while (nano_test_poll_output(&rtc, &out) == NANORTC_OK) {
                 if (out.type != NANORTC_OUTPUT_EVENT || out.event.type != NANORTC_EV_ICE_CANDIDATE)
                     continue;
                 const char *tail = strstr(out.event.ice_candidate.candidate_str, " typ ");
