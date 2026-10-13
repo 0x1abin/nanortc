@@ -18,6 +18,15 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#define NANO_TX_RTP        1u
+#define NANO_TX_TWCC       2u
+#define NANO_TX_RETRANSMIT 4u
+#define NANO_TX_FEC        8u
+#define NANO_TX_SR         16u
+
+void nano_rtc_tag_last_sr(nanortc_t *rtc, uint8_t mid, uint32_t compact_ntp);
+bool nano_rtc_peer_can_send(const nanortc_t *rtc);
+
 #ifdef __cplusplus
 extern "C" {
 #endif

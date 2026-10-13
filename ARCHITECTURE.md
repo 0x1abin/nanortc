@@ -20,6 +20,13 @@ NanoRTC is a **Sans I/O state machine**. The entire library is a pure function o
 
 The caller owns the event loop, sockets, and clock. NanoRTC owns protocol logic only.
 
+0.2.0 also takes explicit **socket completion** as input. Each connection has at
+most one outstanding transmit token. Borrowed bytes last until the next state
+mutation; a temporarily blocked caller copies one datagram and keeps driving
+input/timers. `nanortc_report_transmit` commits successful-send statistics and
+BWE history at actual socket acceptance time. See the
+[0.2 migration contract](docs/engineering/nanortc-02.md).
+
 ## Module Dependency Graph
 
 Dependencies flow strictly downward. No cycles allowed.
@@ -136,7 +143,7 @@ nanortc_handle_input(rtc, &(nanortc_input_t){.now_ms, .data, .len, .src, .dst})
   │                            └── ICE connected event
   │
   ├── byte[0] ∈ [0x14-0x3F] → nano_dtls
-  │                              ├── handshake → DTLS connected event
+  │                              ├── handshake → verify SDP peer SHA-256 → DTLS connected event
   │                              └── app data → nano_sctp
   │                                               └── nano_datachannel
   │                                                    └── DC data/string event
@@ -172,7 +179,8 @@ nanortc_poll_output(rtc, &out)
   │     RTP fragments from the pkt_ring pace FIFO into out_queue at the
   │     BWE-derived rate before the queue is drained
   │
-  ├── NANORTC_OUTPUT_TRANSMIT → caller does sendto()
+  ├── NANORTC_OUTPUT_TRANSMIT → caller sends or retains one datagram
+  │     └── nanortc_report_transmit(token, SENT/DROPPED, actual_time)
   │     (if ICE selected pair is RELAY and TURN is allocated: lazy wrap into
   │      ChannelData/Send indication using rtc->turn_buf, dest rewritten to
   │      TURN server; otherwise dest = peer directly)
@@ -212,10 +220,29 @@ precedes error dispatch. Nonce rotation retires affected transaction IDs while
 preserving retry budgets and concurrent deadlines. Polling drains producers
 iteratively, preserving output priority and borrowed-pointer lifetime.
 
+
+**Negotiation and lifecycle.** Signaling has READY/HAVE_LOCAL_OFFER/NEGOTIATED
+states independent of transport progress. Length-delimited SDP parses into a
+remote-only staging result; validation and output-capacity checks precede
+connection commit. SDP candidates use binary addresses and retain priority.
+A pure ICE restart preserves the authenticated DTLS association, media and DC
+state, then replaces transport routing when the new pair succeeds. General
+renegotiation and individual DataChannel stream reset are unsupported. Local
+disconnect is immediate and idempotent, with no graceful-shutdown claim.
+
+**Congestion evidence.** Actual transmit reports populate bounded TWCC history.
+REMB is an upper cap; matched feedback drives fixed-interval loss control, while
+arrival-delay, offered-load and stability guards qualify upward probes. The
+wire format is draft-holmer transport-wide-cc (PT=205/FMT=15), not RFC 8888.
+Unknown or stale history cannot establish spare bandwidth. Track statistics
+are pure snapshots; matching sent-SR/LSR/DLSR samples carry an explicit RTT
+validity bit.
+
 **Clock and logging.** DTLS providers expose set-time, next-timeout and
 handle-timeout operations. mbedTLS runs retransmissions from the caller clock;
 OpenSSL 3.0 exposes its internal real-clock deadline through the adapter. Timer
-and packet paths share handshake completion/key-export handling. Audio jitter
+and packet paths share handshake completion, peer-certificate authentication and
+key-export handling; an unbound/mismatched peer never enters ESTABLISHED. Audio jitter
 playout participates in the deadline query. Logs use `rtc->config.log` explicitly;
 stateless codecs have no ambient callback or mutable singleton.
 

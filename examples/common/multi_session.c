@@ -5,6 +5,8 @@
  */
 
 #include "multi_session.h"
+#include "run_loop.h"
+#include <fcntl.h>
 
 #include <arpa/inet.h>
 #include <ifaddrs.h>
@@ -129,6 +131,7 @@ void nano_session_destroy(nano_session_t *s)
 {
     if (!s)
         return;
+    nano_udp_cancel(&s->udp, &s->rtc, nano_get_millis());
     if (s->udp_fd >= 0) {
         close(s->udp_fd);
         s->udp_fd = -1;
@@ -182,6 +185,12 @@ int nano_session_create(nano_session_pool_t *pool, int viewer_id, const char *of
         return -1;
     }
 
+    int flags = fcntl(s->udp_fd, F_GETFL, 0);
+    if (flags < 0 || fcntl(s->udp_fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+        nano_session_destroy(s);
+        return -1;
+    }
+
     int reuse = 1;
     setsockopt(s->udp_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
 
@@ -206,7 +215,8 @@ int nano_session_create(nano_session_pool_t *pool, int viewer_id, const char *of
     }
 
     char answer[HTTP_SIG_BUF_SIZE];
-    if (nanortc_accept_offer(&s->rtc, offer_sdp, answer, sizeof(answer), NULL) != NANORTC_OK ||
+    if (nanortc_accept_offer(&s->rtc, offer_sdp, strlen(offer_sdp), answer, sizeof(answer), NULL) !=
+            NANORTC_OK ||
         http_sig_send_to(sig, viewer_id, "answer", answer, "sdp") < 0) {
         close(s->udp_fd);
         s->udp_fd = -1;
@@ -252,17 +262,21 @@ void nano_session_dispatch(nano_session_t *s, uint32_t *timeout_ms)
     if (!s || !s->active)
         return;
 
+    nano_udp_retry(&s->udp, &s->rtc, nano_get_millis());
     nanortc_output_t out;
-    while (nanortc_poll_output(&s->rtc, &out) == NANORTC_OK) {
+    while (!s->udp.pending && nanortc_poll_output(&s->rtc, &out) == NANORTC_OK) {
         switch (out.type) {
         case NANORTC_OUTPUT_TRANSMIT: {
-            if (s->udp_fd < 0)
+            if (s->udp_fd < 0) {
+                (void)nanortc_report_transmit(&s->rtc, out.transmit.token, NANORTC_TRANSMIT_DROPPED,
+                                              nano_get_millis());
                 break;
+            }
             struct sockaddr_in dest = {.sin_family = AF_INET};
             memcpy(&dest.sin_addr, out.transmit.dest.addr, 4);
             dest.sin_port = htons(out.transmit.dest.port);
-            sendto(s->udp_fd, out.transmit.data, out.transmit.len, 0, (struct sockaddr *)&dest,
-                   sizeof(dest));
+            nano_udp_send(&s->udp, &s->rtc, &out, s->udp_fd, (struct sockaddr *)&dest, sizeof(dest),
+                          nano_get_millis());
             break;
         }
         case NANORTC_OUTPUT_EVENT:
@@ -271,8 +285,11 @@ void nano_session_dispatch(nano_session_t *s, uint32_t *timeout_ms)
         }
     }
     uint32_t next_ms;
-    if (timeout_ms && nanortc_next_timeout_ms(&s->rtc, s->rtc.now_ms, &next_ms) == NANORTC_OK &&
+    if (timeout_ms && nanortc_next_timeout_ms(&s->rtc, nano_get_millis(), &next_ms) == NANORTC_OK &&
         next_ms < *timeout_ms)
+        *timeout_ms = next_ms;
+    next_ms = nano_udp_next_timeout(&s->udp, nano_get_millis());
+    if (timeout_ms && next_ms < *timeout_ms)
         *timeout_ms = next_ms;
 }
 
@@ -314,13 +331,14 @@ void nano_session_pool_handle_udp(nano_session_pool_t *pool, int select_ret, con
                 nanortc_addr_t src = {.family = 4, .port = ntohs(from.sin_port)};
                 memcpy(src.addr, &from.sin_addr, 4);
                 nanortc_input_t in = {.now_ms = now_ms, .data = buf, .len = (size_t)n, .src = src};
-                nanortc_handle_input(&s->rtc, &in);
+                if (nanortc_handle_input(&s->rtc, &in) == NANORTC_ERR_WOULD_BLOCK) {
+                    nano_session_dispatch(s, NULL);
+                    (void)nanortc_handle_input(&s->rtc, &in);
+                }
             }
-        } else {
-            /* Timer tick even without data. */
-            nanortc_input_t tick = {.now_ms = now_ms};
-            nanortc_handle_input(&s->rtc, &tick);
         }
+        nanortc_input_t tick = {.now_ms = now_ms};
+        nanortc_handle_input(&s->rtc, &tick);
     }
 }
 

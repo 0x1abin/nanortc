@@ -205,7 +205,7 @@ TEST(test_interop_turn_dc_string)
     /* nanortc -> libdatachannel */
     const char *msg_to_ldc = "hello libdc via TURN";
     int initial_ldc = atomic_load(&ldc.msg_count);
-    rc = nanortc_datachannel_send_string(&nano.rtc, 0, msg_to_ldc);
+    rc = interop_nanortc_send_string(&nano, 0, msg_to_ldc);
     ASSERT_OK(rc);
 
     start = interop_get_millis();
@@ -262,7 +262,7 @@ TEST(test_interop_turn_dc_echo_roundtrip)
     /* Step 2: nanortc echoes back */
     const char *reply = "echo-reply-via-turn";
     int initial_ldc = atomic_load(&ldc.msg_count);
-    rc = nanortc_datachannel_send_string(&nano.rtc, 0, reply);
+    rc = interop_nanortc_send_string(&nano, 0, reply);
     ASSERT_OK(rc);
 
     start = interop_get_millis();

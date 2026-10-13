@@ -87,6 +87,8 @@ typedef struct nano_media {
 
     /* Outgoing send-rate + fps window used to populate stats. */
     nano_rate_window_t rate_window;
+    uint32_t packets_accepted; /**< RTP packets admitted, excluding retransmits/FEC. */
+    uint32_t frames_accepted;  /**< Complete application frames admitted. */
 
     /* Latest fraction_lost byte copied from inbound RTCP RR. */
     uint8_t fraction_lost;

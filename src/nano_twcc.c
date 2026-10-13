@@ -126,8 +126,8 @@ static int parse_chunks(const uint8_t *data, size_t pkt_size, size_t *offset, ui
     return NANORTC_OK;
 }
 
-int twcc_parse_feedback(const uint8_t *data, size_t len, nano_twcc_summary_t *out,
-                        nano_twcc_packet_cb_t cb, void *user)
+static int twcc_parse_validated(const uint8_t *data, size_t len, nano_twcc_summary_t *out,
+                                nano_twcc_packet_cb_t cb, void *user)
 {
     if (!data || !out) {
         return NANORTC_ERR_INVALID_PARAM;
@@ -232,4 +232,14 @@ int twcc_parse_feedback(const uint8_t *data, size_t len, nano_twcc_summary_t *ou
     }
 
     return NANORTC_OK;
+}
+
+int twcc_parse_feedback(const uint8_t *data, size_t len, nano_twcc_summary_t *out,
+                        nano_twcc_packet_cb_t cb, void *user)
+{
+    int rc = twcc_parse_validated(data, len, out, NULL, NULL);
+    if (rc != NANORTC_OK || !cb)
+        return rc;
+    /* Validate the entire feedback before callbacks may commit measurements. */
+    return twcc_parse_validated(data, len, out, cb, user);
 }

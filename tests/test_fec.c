@@ -202,6 +202,110 @@ TEST(test_fec_unrecoverable_cases)
               NANORTC_ERR_NO_DATA);
 }
 
+TEST(test_fec_encode_validates_members_before_reading)
+{
+    uint8_t valid[16] = {0x80, 96};
+    uint8_t short_packet[1] = {0x80};
+    const uint8_t *pkts[2] = {valid, NULL};
+    uint16_t lens[2] = {sizeof(valid), FEC_RTP_HDR};
+    uint8_t out[64];
+    size_t len = 99;
+    ASSERT_EQ(fec_encode(pkts, lens, 2, out, sizeof(out), &len), NANORTC_ERR_INVALID_PARAM);
+    pkts[0] = NULL;
+    ASSERT_EQ(fec_encode(pkts, lens, 1, out, sizeof(out), &len), NANORTC_ERR_INVALID_PARAM);
+    pkts[0] = short_packet;
+    lens[0] = sizeof(short_packet);
+    ASSERT_EQ(fec_encode(pkts, lens, 1, out, sizeof(out), &len), NANORTC_ERR_INVALID_PARAM);
+    ASSERT_EQ(len, 99u);
+}
+
+TEST(test_fec_recover_validates_arrays_and_ignores_duplicate_members)
+{
+    uint8_t p[3][32];
+    const uint8_t *pkts[3];
+    uint16_t lens[3];
+    for (uint8_t i = 0; i < 3; i++) {
+        lens[i] = build_rtp(p[i], (uint16_t)(100 + i), 200, 96, 0, i, 12);
+        pkts[i] = p[i];
+    }
+    uint8_t fec[64], out[64];
+    size_t fl, ol;
+    uint16_t seq;
+    ASSERT_OK(fec_encode(pkts, lens, 3, fec, sizeof(fec), &fl));
+    ASSERT_EQ(fec_recover(fec, fl, SSRC, NULL, lens, 1, out, sizeof(out), &ol, &seq),
+              NANORTC_ERR_INVALID_PARAM);
+    ASSERT_EQ(fec_recover(fec, fl, SSRC, pkts, NULL, 1, out, sizeof(out), &ol, &seq),
+              NANORTC_ERR_INVALID_PARAM);
+    const uint8_t *recv[3] = {p[0], p[0], p[2]};
+    uint16_t recv_lens[3] = {lens[0], lens[0], lens[2]};
+    ASSERT_OK(fec_recover(fec, fl, SSRC, recv, recv_lens, 3, out, sizeof(out), &ol, &seq));
+    ASSERT_EQ(seq, 101);
+    ASSERT_EQ(ol, lens[1]);
+    ASSERT_MEM_EQ(out, p[1], ol);
+}
+
+TEST(test_fec_encode_rejects_mixed_ssrc_before_writing)
+{
+    uint8_t p[2][16], out[32], unchanged[32];
+    const uint8_t *pkts[2] = {p[0], p[1]};
+    uint16_t lens[2] = {build_rtp(p[0], 100, 200, 96, 0, 1, 2),
+                        build_rtp(p[1], 101, 200, 96, 0, 3, 2)};
+    nanortc_write_u32be(p[1] + 8, SSRC + 1u);
+    memset(out, 0xA5, sizeof(out));
+    memcpy(unchanged, out, sizeof(out));
+    size_t len = 99;
+    ASSERT_EQ(fec_encode(pkts, lens, 2, out, sizeof(out), &len), NANORTC_ERR_INVALID_PARAM);
+    ASSERT_EQ(len, 99);
+    ASSERT_MEM_EQ(out, unchanged, sizeof(out));
+    nanortc_write_u32be(p[1] + 8, SSRC);
+    ASSERT_OK(fec_encode(pkts, lens, 2, out, sizeof(out), &len));
+    ASSERT_EQ(nanortc_read_u16be(out + 12), 0xC000);
+}
+
+TEST(test_fec_encode_rejects_duplicate_sequence_before_writing)
+{
+    uint8_t p[2][16], out[32], unchanged[32];
+    const uint8_t *pkts[2] = {p[0], p[1]};
+    uint16_t lens[2] = {build_rtp(p[0], 100, 200, 96, 0, 1, 2),
+                        build_rtp(p[1], 100, 300, 96, 0, 3, 2)};
+    memset(out, 0xA5, sizeof(out));
+    memcpy(unchanged, out, sizeof(out));
+    size_t len = 99;
+    ASSERT_EQ(fec_encode(pkts, lens, 2, out, sizeof(out), &len), NANORTC_ERR_INVALID_PARAM);
+    ASSERT_EQ(len, 99);
+    ASSERT_MEM_EQ(out, unchanged, sizeof(out));
+}
+
+TEST(test_fec_recover_ignores_foreign_ssrc_with_matching_sequence)
+{
+    /* RFC 5109 §7.3/§7.4: two packets at SN 100/101, M/PT XOR=0x80,
+     * timestamp XOR=0x10101010, length XOR=0, payload XOR=0x2266. */
+    const uint8_t fec[] = {0, 0x80, 0, 100, 0x10, 0x10, 0x10, 0x10,
+                           0, 0,    0, 2,   0xC0, 0,    0x22, 0x66};
+    const uint8_t first[] = {0x80, 0x60, 0, 100, 1, 2, 3, 4, 0x12, 0x34, 0x56, 0x78, 0x11, 0x22};
+    const uint8_t missing[] = {0x80, 0xE0, 0,    101,  0x11, 0x12, 0x13,
+                               0x14, 0x12, 0x34, 0x56, 0x78, 0x33, 0x44};
+    uint8_t foreign[sizeof(missing)], out[32];
+    memcpy(foreign, missing, sizeof(foreign));
+    nanortc_write_u32be(foreign + 8, SSRC + 1u);
+    foreign[12] = foreign[13] = 0x99;
+    const uint8_t *recv[2] = {foreign, first};
+    const uint16_t lens[2] = {sizeof(foreign), sizeof(first)};
+    size_t len;
+    uint16_t sequence;
+    /* A foreign SN 101 must not hide the genuinely missing member. */
+    ASSERT_OK(
+        fec_recover(fec, sizeof(fec), SSRC, recv, lens, 2, out, sizeof(out), &len, &sequence));
+    ASSERT_EQ(sequence, 101);
+    ASSERT_EQ(len, sizeof(missing));
+    ASSERT_MEM_EQ(out, missing, sizeof(missing));
+    /* A foreign SN 100 must not be XORed in place of the genuine member. */
+    nanortc_write_u16be(foreign + 2, 100);
+    ASSERT_OK(
+        fec_recover(fec, sizeof(fec), SSRC, recv, lens, 2, out, sizeof(out), &len, &sequence));
+    ASSERT_MEM_EQ(out, missing, sizeof(missing));
+}
+
 #endif /* NANORTC_FEATURE_VIDEO_FEC */
 
 TEST_MAIN_BEGIN("nanortc ULPFEC codec tests")
@@ -211,5 +315,10 @@ RUN(test_fec_roundtrip_recovers_each);
 RUN(test_fec_roundtrip_variable_lengths);
 RUN(test_fec_wraparound_seqs);
 RUN(test_fec_unrecoverable_cases);
+RUN(test_fec_encode_validates_members_before_reading);
+RUN(test_fec_recover_validates_arrays_and_ignores_duplicate_members);
+RUN(test_fec_encode_rejects_mixed_ssrc_before_writing);
+RUN(test_fec_encode_rejects_duplicate_sequence_before_writing);
+RUN(test_fec_recover_ignores_foreign_ssrc_with_matching_sequence);
 #endif
 TEST_MAIN_END

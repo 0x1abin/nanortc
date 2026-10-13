@@ -14,6 +14,9 @@ Authoritative protocol specifications for NanoRTC. RFCs are the **sole** authori
 | TURN-bis | [RFC 8656](https://www.rfc-editor.org/rfc/rfc8656) | Traversal Using Relays around NAT (obsoletes 5766 and 6156) | §7 (Allocate), §8 (Refresh), §9 (Permissions), §10 (CreatePermission), §11 (Send/Data), §12 (Channels), §18 (Attributes) | Phase 5 |
 | TURN IPv6 | [RFC 6156](https://www.rfc-editor.org/rfc/rfc6156) | TURN Extension for IPv6 | §4 (REQUESTED-ADDRESS-FAMILY), §6 (relay address selection) | Future (currently out of scope) |
 | DTLS | [RFC 6347](https://www.rfc-editor.org/rfc/rfc6347) | Datagram Transport Layer Security 1.2 | §4 (record protocol), §4.2 (handshake) | Phase 1 Week 2 |
+| DTLS offer/answer | [RFC 8842](https://www.rfc-editor.org/rfc/rfc8842) | SDP Offer/Answer Considerations for DTLS and TLS | §6 (association reuse through ICE restart) | 0.2 |
+| ICE SDP | [RFC 8839](https://www.rfc-editor.org/rfc/rfc8839) | SDP Offer/Answer Procedures for ICE | §5.1 (candidate syntax and related addresses) | 0.2 |
+| Consent freshness | [RFC 7675](https://www.rfc-editor.org/rfc/rfc7675) | STUN Usage for Consent Freshness | §5.1 (matching authenticated responses and expiry) | 0.2 |
 | SCTP | [RFC 9260](https://www.rfc-editor.org/rfc/rfc9260) | Stream Control Transmission Protocol (obsoletes 4960) | §3 (packet format), §5 (association setup), §6 (chunk processing), §8 (fault) | Phase 1 Week 3 |
 | SCTP/DTLS | [RFC 8261](https://www.rfc-editor.org/rfc/rfc8261) | Datagram Transport Layer Security for SCTP | Entire document | Phase 1 Week 3 |
 | PR-SCTP | [RFC 3758](https://www.rfc-editor.org/rfc/rfc3758) | SCTP Partial Reliability Extension | §3 (FORWARD-TSN) | Phase 1 Week 3 |
@@ -51,6 +54,7 @@ Authoritative protocol specifications for NanoRTC. RFCs are the **sole** authori
 |-----|-------|-----------|
 | [RFC 8827](https://www.rfc-editor.org/rfc/rfc8827) | WebRTC Security Architecture | Mandatory SRTP cipher suites, DTLS requirements |
 | [RFC 8826](https://www.rfc-editor.org/rfc/rfc8826) | Security Considerations for WebRTC | Threat model and mitigations |
+| [RFC 8122](https://www.rfc-editor.org/rfc/rfc8122) | Connection-Oriented Media Transport over TLS in SDP | §5 (certificate fingerprints), §6.2 (certificate presentation and verification) |
 
 ## How to Use This Index
 

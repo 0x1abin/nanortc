@@ -140,7 +140,7 @@ The biggest embedded-bandwidth win on the scarce camera uplink: the group size K
 (overhead 1/K) **tracks the smoothed TWCC loss fraction** instead of a fixed K.
 
 - `nano_bwe.c` retains a `smoothed_loss_q8` EMA of the TWCC loss samples it
-  already receives (RFC 8888), exposed via `bwe_get_loss_q8()`.
+  already receives (draft-holmer transport-wide-cc, PT=205/FMT=15), exposed via `bwe_get_loss_q8()`.
 - `rtc_fec_effective_k()`: loss `< NANORTC_FEC_LOSS_OFF_Q8` (~2%) → **K=0, no FEC
   at all** (zero overhead on a clean link); loss `≥ NANORTC_FEC_LOSS_HIGH_Q8`
   (~10%) → `NANORTC_FEC_MIN_GROUP` (most protection); else the full group. K is

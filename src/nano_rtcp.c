@@ -243,6 +243,8 @@ int rtcp_parse(const uint8_t *data, size_t len, nano_rtcp_info_t *info)
         if (pkt_size < RTCP_SR_SIZE) {
             return NANORTC_ERR_PARSE;
         }
+        if ((size_t)(data[0] & 0x1fu) > (pkt_size - RTCP_SR_SIZE) / 24u)
+            return NANORTC_ERR_PARSE;
         info->ntp_sec = nanortc_read_u32be(data + 8);
         info->ntp_frac = nanortc_read_u32be(data + 12);
         info->rtp_ts = nanortc_read_u32be(data + 16);
@@ -255,12 +257,16 @@ int rtcp_parse(const uint8_t *data, size_t len, nano_rtcp_info_t *info)
             if (rc_count >= 1 && pkt_size >= RTCP_SR_WITH_RB_SIZE) {
                 info->rb_source_ssrc = nanortc_read_u32be(data + 28);
                 info->rb_fraction_lost = data[32];
+                info->rb_lsr = nanortc_read_u32be(data + 44);
+                info->rb_dlsr = nanortc_read_u32be(data + 48);
                 info->rb_valid = true;
             }
         }
         break;
 
     case RTCP_RR:
+        if ((size_t)(data[0] & 0x1fu) > (pkt_size - RTCP_HEADER_SIZE) / 24u)
+            return NANORTC_ERR_PARSE;
         /* Receiver Report (RFC 3550 §6.4.2): the report block sits at
          * offset 8 when RC >= 1. We only keep the first block — nanortc
          * one-SSRC-per-track makes multi-block RRs rare in practice. */
@@ -269,6 +275,8 @@ int rtcp_parse(const uint8_t *data, size_t len, nano_rtcp_info_t *info)
             if (rc_count >= 1 && pkt_size >= RTCP_RR_SIZE) {
                 info->rb_source_ssrc = nanortc_read_u32be(data + 8);
                 info->rb_fraction_lost = data[12];
+                info->rb_lsr = nanortc_read_u32be(data + 24);
+                info->rb_dlsr = nanortc_read_u32be(data + 28);
                 info->rb_valid = true;
             }
         }

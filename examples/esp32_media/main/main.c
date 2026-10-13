@@ -21,6 +21,7 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
@@ -56,6 +57,10 @@ static void nanortc_log_cb(const nanortc_log_message_t *msg, void *ctx)
 /* nanortc state */
 static nanortc_t s_rtc;
 static nano_run_loop_t s_loop;
+/* The HTTP offer callback temporarily acquires session ownership. */
+static SemaphoreHandle_t s_session_mutex;
+static uint32_t s_session_waiters;
+static nanortc_stats_t s_stats; /* Published by the RTC owner for HTTP diagnostics. */
 static char s_local_ip[16];
 static int s_connected;
 static int s_video_mid;
@@ -216,12 +221,16 @@ static int setup_av_tracks(nanortc_t *rtc, void *userdata)
 /* ----------------------------------------------------------------
  * POST /offer handler — full nanortc session lifecycle
  * ---------------------------------------------------------------- */
-static int handle_offer(const char *offer, char *answer, size_t answer_size, size_t *answer_len,
-                        void *userdata)
+static int handle_offer(const char *offer, size_t offer_len, char *answer, size_t answer_size,
+                        size_t *answer_len, void *userdata)
 {
     (void)userdata;
+    __atomic_fetch_add(&s_session_waiters, 1u, __ATOMIC_RELAXED);
+    xSemaphoreTake(s_session_mutex, portMAX_DELAY);
+    __atomic_fetch_sub(&s_session_waiters, 1u, __ATOMIC_RELAXED);
 
     s_connected = 0;
+    memset(&s_stats, 0, sizeof(s_stats));
 
     nanortc_config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
@@ -239,14 +248,17 @@ static int handle_offer(const char *offer, char *answer, size_t answer_size, siz
         .event_cb = on_event,
     };
 
-    int rc =
-        nano_session_accept_offer(&s_rtc, &s_loop, &params, offer, answer, answer_size, answer_len);
+    int rc = nano_session_accept_offer(&s_rtc, &s_loop, &params, offer, offer_len, answer,
+                                       answer_size, answer_len);
     if (rc != NANORTC_OK) {
         ESP_LOGE(TAG, "nano_session_accept_offer failed: %d (%s)", rc, nanortc_err_name(rc));
+        xSemaphoreGive(s_session_mutex);
         return rc;
     }
 
-    ESP_LOGI(TAG, "remote_candidates=%d", s_rtc.ice.remote_candidate_count);
+    nanortc_get_stats(&s_rtc, &s_stats);
+    ESP_LOGI(TAG, "remote_candidates=%d", s_stats.remote_candidate_count);
+    xSemaphoreGive(s_session_mutex);
     return 0;
 }
 
@@ -278,6 +290,10 @@ static esp_err_t http_get_config(httpd_req_t *req)
  * ---------------------------------------------------------------- */
 static esp_err_t http_get_debug(httpd_req_t *req)
 {
+    __atomic_fetch_add(&s_session_waiters, 1u, __ATOMIC_RELAXED);
+    xSemaphoreTake(s_session_mutex, portMAX_DELAY);
+    __atomic_fetch_sub(&s_session_waiters, 1u, __ATOMIC_RELAXED);
+    nanortc_stats_t stats = s_stats;
     char buf[512];
     int n = snprintf(buf, sizeof(buf),
                      "running=%d fd=%d connected=%d\n"
@@ -296,8 +312,9 @@ static esp_err_t http_get_debug(httpd_req_t *req)
 #if CONFIG_EXAMPLE_ENABLE_AUDIO
                      s_audio_ready, s_audio_mid,
 #endif
-                     s_rtc.ice.remote_candidate_count, s_rtc.ice.state, s_rtc.state,
+                     stats.remote_candidate_count, stats.ice_state, stats.connection_state,
                      (unsigned long)s_step_count, (unsigned long)s_task_alive);
+    xSemaphoreGive(s_session_mutex);
     httpd_resp_set_type(req, "text/plain");
     httpd_resp_send(req, buf, n);
     return ESP_OK;
@@ -312,8 +329,10 @@ static void webrtc_task(void *arg)
     ESP_LOGI(TAG, "WebRTC task started on core %d", xPortGetCoreID());
 
     for (;;) {
+        xSemaphoreTake(s_session_mutex, portMAX_DELAY);
+        bool running = s_loop.running;
         s_task_alive++;
-        if (s_loop.running) {
+        if (running) {
             nano_run_loop_step(&s_loop);
             s_step_count++;
             if (s_connected && (s_video_ready || s_audio_ready)) {
@@ -322,12 +341,16 @@ static void webrtc_task(void *arg)
                     video_send_tick(&s_rtc, (uint8_t)s_video_mid, now);
                 if (s_audio_ready)
                     audio_send_tick(&s_rtc, (uint8_t)s_audio_mid, now);
-            } else {
-                vTaskDelay(pdMS_TO_TICKS(20));
             }
-        } else {
-            vTaskDelay(pdMS_TO_TICKS(100));
+            nanortc_get_stats(&s_rtc, &s_stats);
         }
+        xSemaphoreGive(s_session_mutex);
+        /* Let a waiting HTTP task acquire ownership before this higher-priority
+         * task takes the mutex again. Normal media iterations do not sleep. */
+        if (__atomic_load_n(&s_session_waiters, __ATOMIC_RELAXED))
+            vTaskDelay(1);
+        else if (!running)
+            vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
 
@@ -365,6 +388,12 @@ void app_main(void)
     memset(&s_loop, 0, sizeof(s_loop));
 
     /* 4. Start HTTP server */
+    s_session_mutex = xSemaphoreCreateMutex();
+    if (!s_session_mutex) {
+        ESP_LOGE(TAG, "Failed to create session mutex");
+        return;
+    }
+
     nano_webserver_config_t wscfg;
     memset(&wscfg, 0, sizeof(wscfg));
     wscfg.html_start = index_html_start;

@@ -18,7 +18,7 @@
  * Configuration limits (tuned for ESP32 RAM constraints).
  * Adjust as needed for other platforms.
  */
-#define MAX_OFFER_SIZE 10240
+#define MAX_OFFER_SIZE  10240
 #define MAX_ANSWER_SIZE 2048
 
 /* Internal copy of config (only one HTTP server per ESP32) */
@@ -72,23 +72,27 @@ static esp_err_t http_post_offer(httpd_req_t *req)
     nano_webserver_config_t *cfg = (nano_webserver_config_t *)req->user_ctx;
     const char *tag = cfg->tag ? cfg->tag : "webserver";
 
-    int content_len = req->content_len;
-    if (content_len <= 0 || content_len > MAX_OFFER_SIZE) {
+    if (req->content_len == 0 || req->content_len > MAX_OFFER_SIZE) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad offer size");
         return ESP_FAIL;
     }
 
+    int content_len = (int)req->content_len; /* Bounded above before narrowing. */
     char *offer = malloc((size_t)content_len + 1);
     if (!offer) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM");
         return ESP_FAIL;
     }
 
-    int received = httpd_req_recv(req, offer, (size_t)content_len);
-    if (received <= 0) {
-        free(offer);
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Read failed");
-        return ESP_FAIL;
+    int received = 0;
+    while (received < content_len) {
+        int n = httpd_req_recv(req, offer + received, (size_t)(content_len - received));
+        if (n <= 0) {
+            free(offer);
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Read failed");
+            return ESP_FAIL;
+        }
+        received += n;
     }
     offer[received] = '\0';
 
@@ -102,7 +106,8 @@ static esp_err_t http_post_offer(httpd_req_t *req)
     }
 
     size_t answer_len = 0;
-    int rc = cfg->offer_handler(offer, answer, MAX_ANSWER_SIZE, &answer_len, cfg->userdata);
+    int rc = cfg->offer_handler(offer, (size_t)received, answer, MAX_ANSWER_SIZE, &answer_len,
+                                cfg->userdata);
     free(offer);
 
     if (rc != 0) {

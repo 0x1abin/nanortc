@@ -22,11 +22,11 @@ extern "C" {
 
 /**
  * Application callback for POST /offer.
- * Receives the SDP offer string, writes the SDP answer into @p answer.
+ * Receives the SDP offer bytes and length, writes the SDP answer into @p answer.
  * Return 0 on success, negative on error.
  */
-typedef int (*nano_offer_handler_fn)(const char *offer, char *answer, size_t answer_size,
-                                     size_t *answer_len, void *userdata);
+typedef int (*nano_offer_handler_fn)(const char *offer, size_t offer_len, char *answer,
+                                     size_t answer_size, size_t *answer_len, void *userdata);
 
 typedef struct nano_webserver_config {
     const uint8_t *html_start;

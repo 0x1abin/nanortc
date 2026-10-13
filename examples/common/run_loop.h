@@ -11,6 +11,7 @@
 #define NANORTC_RUN_LOOP_H_
 
 #include "nanortc.h"
+#include "udp_send.h"
 
 /* Non-CMake builds default to explicit local candidates. */
 #ifndef NANO_HAVE_GETIFADDRS
@@ -34,13 +35,7 @@ typedef struct nano_run_loop {
     void *event_userdata;
     uint32_t max_poll_ms; /* max select timeout (0 = default 100ms) */
 
-    /* Socket-layer send health. sendto() can fail transiently when the
-     * stack's TX buffers are exhausted (lwIP: ENOMEM on WiFi TX / pbuf
-     * starvation; POSIX: ENOBUFS/EWOULDBLOCK). Each failure used to be an
-     * invisible drop; now it is retried briefly and counted either way so
-     * bench runs can tell socket starvation apart from queue overflow. */
-    uint32_t stats_send_retry; /* transient failure, retried */
-    uint32_t stats_send_drop;  /* gave up after retries (packet lost) */
+    nano_udp_sender_t udp; /* one owned datagram while the socket is busy */
 } nano_run_loop_t;
 
 /* Initialize: bind a single UDP socket on INADDR_ANY, associate with nanortc_t.
@@ -59,7 +54,8 @@ void nano_run_loop_set_event_cb(nano_run_loop_t *loop, nano_event_cb cb, void *u
 /* Run one iteration: poll_output → sendto, select → handle_receive/timeout */
 int nano_run_loop_step(nano_run_loop_t *loop);
 
-/* Drain all pending outputs onto the wire without selecting/receiving.
+/* Send ready outputs without selecting/receiving. A busy socket retains one
+ * datagram until a later step/drain call; this function never waits for retry.
  * Use before retrying a nanortc_send_audio() or nanortc_send_video() that
  * returned NANORTC_ERR_WOULD_BLOCK: this releases output backing slots so
  * the same, still-uncommitted frame can be retried safely. */
@@ -113,7 +109,8 @@ typedef struct {
 /* Returns NANORTC_OK on success, negative on error. */
 int nano_session_accept_offer(nanortc_t *rtc, nano_run_loop_t *loop,
                               const nano_accept_offer_params_t *params, const char *offer,
-                              char *answer, size_t answer_size, size_t *answer_len);
+                              size_t offer_len, char *answer, size_t answer_size,
+                              size_t *answer_len);
 
 #ifdef __cplusplus
 }

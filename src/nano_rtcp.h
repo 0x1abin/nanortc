@@ -53,6 +53,11 @@ typedef struct nano_rtcp {
     bool last_sr_recv_valid;  /* True once last_sr_recv_ms has been set */
     uint16_t max_seq;         /* Highest seq received */
     uint32_t jitter;          /* Interarrival jitter (RFC 3550 §6.4.1) */
+    uint32_t last_tx_sr_ntp;
+    uint32_t last_tx_sr_ms;
+    uint32_t rtt_ms;
+    bool last_tx_sr_valid;
+    bool rtt_valid;
 } nano_rtcp_t;
 
 /* Parsed RTCP packet info */
@@ -82,6 +87,8 @@ typedef struct nano_rtcp_info {
     bool rb_valid;
     uint32_t rb_source_ssrc;
     uint8_t rb_fraction_lost; /* 8-bit fixed-point (0..255 = 0..100 %) */
+    uint32_t rb_lsr;
+    uint32_t rb_dlsr;
 } nano_rtcp_info_t;
 
 int rtcp_init(nano_rtcp_t *rtcp, uint32_t ssrc);

@@ -102,7 +102,7 @@ if(ESP_PLATFORM)
 endif()
 
 # ---- Host build ----
-project(nanortc VERSION 0.1.0 LANGUAGES C)
+project(nanortc VERSION 0.2.0 LANGUAGES C)
 
 # Host example capability, also used by the interop event loop. The library
 # itself never includes platform headers. Cache override OFF tests the fallback.
@@ -214,6 +214,11 @@ endif()
 
 # ---- Library target ----
 add_library(nanortc ${NANORTC_SOURCES})
+option(NANORTC_BUILD_BENCHMARKS "Build the reproducible host benchmark" OFF)
+if(NANORTC_BUILD_BENCHMARKS)
+    add_executable(nanortc_benchmark benchmarks/benchmark.c)
+    target_link_libraries(nanortc_benchmark PRIVATE nanortc)
+endif()
 target_include_directories(nanortc PUBLIC include src crypto)
 
 # Pass feature flags as compile definitions

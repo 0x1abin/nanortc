@@ -264,19 +264,12 @@ static void teardown_relay_pair(interop_sig_pipe_t *pipe, interop_nanortc_peer_t
  * relays peer-bound data over an *ephemeral* outbound socket whose port is
  * not knowable from the client side, so any port comparison here would
  * silently break with a different TURN server. */
-static void assert_relay_path(const interop_nanortc_peer_t *nano)
+static void assert_relay_path(interop_nanortc_peer_t *nano)
 {
-    const nano_ice_t *ice = &nano->rtc.ice;
-
-    int relay_seen = 0;
-    for (uint8_t i = 0; i < ice->remote_candidate_count; i++) {
-        if (ice->remote_candidates[i].type == NANORTC_ICE_CAND_RELAY) {
-            relay_seen = 1;
-            break;
-        }
-    }
-    TEST_ASSERT_TRUE_MESSAGE(relay_seen, "libdc did not advertise a relay candidate "
-                                         "(iceTransportPolicy=relay not effective?)");
+    nanortc_stats_t stats = interop_nanortc_stats(nano);
+    TEST_ASSERT_TRUE_MESSAGE(stats.remote_relay_candidate_count > 0,
+                             "libdc did not advertise a relay candidate "
+                             "(iceTransportPolicy=relay not effective?)");
 }
 
 /* ----------------------------------------------------------------
@@ -361,7 +354,7 @@ TEST(test_relay_only_dc_string_bidirectional)
     /* nanortc → libdatachannel, via relay */
     const char *to_ldc = "ack via TURN relay";
     int initial_ldc = atomic_load(&ldc.msg_count);
-    rc = nanortc_datachannel_send_string(&nano.rtc, 0, to_ldc);
+    rc = interop_nanortc_send_string(&nano, 0, to_ldc);
     ASSERT_OK(rc);
 
     start = interop_get_millis();
@@ -512,7 +505,7 @@ TEST(test_relay_only_echo_roundtrip)
     /* nanortc echoes back via relay. */
     const char *reply = "echo-reply";
     int initial_ldc = atomic_load(&ldc.msg_count);
-    rc = nanortc_datachannel_send_string(&nano.rtc, 0, reply);
+    rc = interop_nanortc_send_string(&nano, 0, reply);
     ASSERT_OK(rc);
 
     start = interop_get_millis();

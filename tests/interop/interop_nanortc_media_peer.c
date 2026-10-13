@@ -139,7 +139,8 @@ static int nanortc_media_do_signaling(interop_nanortc_media_peer_t *peer)
     /* Generate answer */
     char answer[8192];
     size_t answer_len = 0;
-    int rc = nanortc_accept_offer(&peer->rtc, buf, answer, sizeof(answer), &answer_len);
+    int rc =
+        nanortc_accept_offer(&peer->rtc, buf, (size_t)len, answer, sizeof(answer), &answer_len);
     if (rc != NANORTC_OK) {
         fprintf(stderr, "[nanortc-media] nanortc_accept_offer failed: %d\n", rc);
         return -1;
@@ -167,7 +168,7 @@ static int nanortc_media_do_signaling(interop_nanortc_media_peer_t *peer)
 
         if (msg_type == SIG_MSG_ICE_CANDIDATE) {
             fprintf(stderr, "[nanortc-media] Got remote ICE candidate: %s\n", buf);
-            nanortc_add_remote_candidate(&peer->rtc, buf);
+            nanortc_add_remote_candidate(&peer->rtc, buf, (size_t)len);
         }
     }
 
@@ -192,7 +193,9 @@ static void *nanortc_media_thread_fn(void *arg)
     /* Event loop: drive nanortc with real UDP */
     fprintf(stderr, "[nanortc-media] Entering event loop (port=%d)\n", peer->port);
     while (atomic_load(&peer->running)) {
+        interop_owner_step_lock(&peer->owner);
         nano_run_loop_step(&peer->loop);
+        interop_owner_step_unlock(&peer->owner);
     }
 
     fprintf(stderr, "[nanortc-media] Thread exiting\n");
@@ -219,6 +222,7 @@ int interop_nanortc_media_start(interop_nanortc_media_peer_t *peer, int sig_fd, 
         peer->track_mids[i] = -1;
     }
     pthread_mutex_init(&peer->frame_mutex, NULL);
+    interop_owner_init(&peer->owner);
 
     /* Init nanortc */
     nanortc_config_t cfg;
@@ -267,12 +271,12 @@ int interop_nanortc_media_stop(interop_nanortc_media_peer_t *peer)
     }
 
     atomic_store(&peer->running, 0);
-    nano_run_loop_stop(&peer->loop);
     pthread_join(peer->thread, NULL);
 
     nano_run_loop_destroy(&peer->loop);
     nanortc_destroy(&peer->rtc);
     pthread_mutex_destroy(&peer->frame_mutex);
+    interop_owner_destroy(&peer->owner);
 
     return 0;
 }
@@ -283,7 +287,10 @@ int interop_nanortc_media_send_audio(interop_nanortc_media_peer_t *peer, uint8_t
     if (!peer || !data) {
         return -1;
     }
-    return nanortc_send_audio(&peer->rtc, mid, pts_ms, data, len);
+    interop_owner_send_lock(&peer->owner);
+    int rc = nanortc_send_audio(&peer->rtc, mid, pts_ms, data, len);
+    interop_owner_send_unlock(&peer->owner);
+    return rc;
 }
 
 int interop_nanortc_media_send_video(interop_nanortc_media_peer_t *peer, uint8_t mid,
@@ -293,7 +300,10 @@ int interop_nanortc_media_send_video(interop_nanortc_media_peer_t *peer, uint8_t
         return -1;
     }
 #if NANORTC_FEATURE_VIDEO
-    return nanortc_send_video(&peer->rtc, mid, pts_ms, data, len);
+    interop_owner_send_lock(&peer->owner);
+    int rc = nanortc_send_video(&peer->rtc, mid, pts_ms, data, len);
+    interop_owner_send_unlock(&peer->owner);
+    return rc;
 #else
     (void)mid;
     (void)len;

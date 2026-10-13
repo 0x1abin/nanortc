@@ -103,6 +103,13 @@ static void on_track_message(int tr, const char *message, int size, void *ptr)
     }
     size_t actual_len = (size_t)size;
 
+    /* RFC 5761 section 4: RTCP packet types 192..223 are distinct from
+     * negotiated RTP payload types, including the marker bit. Receiver-only
+     * tracks deliver raw packets here; a sender report is not a media frame. */
+    const uint8_t *packet = (const uint8_t *)message;
+    if (actual_len < 12 || (packet[0] >> 6) != 2 || (packet[1] >= 192 && packet[1] <= 223))
+        return;
+
     fprintf(stderr, "[libdatachannel-media] Track message (%zu bytes, handle=%d)\n", actual_len,
             tr);
 

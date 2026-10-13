@@ -20,7 +20,15 @@ static int allocations, fail_alloc, fail_connect, sockets, closes, fcntl_flags, 
 static nanortc_input_t last_input;
 static int output_pending;
 static nanortc_output_t output;
-static int sent_family;
+static int sent_family, sent_fd, send_calls, send_error, short_send;
+static uint8_t sent_data[4096];
+static size_t sent_len;
+static uint16_t sent_port;
+static uint32_t clock_ms = 2005, selected_timeout;
+static int output_polls, reports;
+static uint64_t reported_token;
+static nanortc_transmit_result_t reported_result;
+static uint32_t reported_at;
 static char wire[17000];
 static size_t wire_len;
 static const char *http_response;
@@ -108,12 +116,20 @@ static ssize_t mock_recv(int fd, void *buf, size_t size, int flags)
 static ssize_t mock_sendto(int fd, const void *buf, size_t len, int flags,
                            const struct sockaddr *dest, socklen_t size)
 {
-    (void)fd;
-    (void)buf;
     (void)flags;
     (void)size;
+    send_calls++;
+    sent_fd = fd;
     sent_family = dest->sa_family;
-    return (ssize_t)len;
+    sent_port = ntohs(((const struct sockaddr_in *)dest)->sin_port);
+    sent_len = len;
+    if (len <= sizeof(sent_data))
+        memcpy(sent_data, buf, len);
+    if (send_error) {
+        errno = send_error;
+        return -1;
+    }
+    return (ssize_t)(len - (short_send && len ? 1u : 0u));
 }
 static ssize_t mock_recvfrom(int fd, void *buf, size_t len, int flags, struct sockaddr *src,
                              socklen_t *size)
@@ -138,15 +154,15 @@ static int mock_select(int n, fd_set *r, fd_set *w, fd_set *e, struct timeval *t
     (void)r;
     (void)w;
     (void)e;
-    (void)t;
+    selected_timeout = (uint32_t)(t->tv_sec * 1000 + t->tv_usec / 1000);
     errno = select_error;
     return select_result;
 }
 static int mock_clock(clockid_t clock, struct timespec *ts)
 {
     (void)clock;
-    ts->tv_sec = 2;
-    ts->tv_nsec = 5000000;
+    ts->tv_sec = clock_ms / 1000;
+    ts->tv_nsec = (clock_ms % 1000) * 1000000;
     return 0;
 }
 static int mock_input(nanortc_t *rtc, const nanortc_input_t *in)
@@ -162,10 +178,22 @@ static int mock_input(nanortc_t *rtc, const nanortc_input_t *in)
 static int mock_output(nanortc_t *rtc, nanortc_output_t *out)
 {
     (void)rtc;
+    output_polls++;
     if (!output_pending)
         return NANORTC_ERR_NO_DATA;
     *out = output;
     output_pending = 0;
+    return NANORTC_OK;
+}
+
+static int mock_report(nanortc_t *rtc, uint64_t token, nanortc_transmit_result_t result,
+                       uint32_t at_ms)
+{
+    (void)rtc;
+    reports++;
+    reported_token = token;
+    reported_result = result;
+    reported_at = at_ms;
     return NANORTC_OK;
 }
 
@@ -174,21 +202,22 @@ static int mock_output(nanortc_t *rtc, nanortc_output_t *out)
 #ifdef TEST_EXAMPLE_FCNTL
 #undef MSG_DONTWAIT
 #endif
-#define socket               mock_socket
-#define close                mock_close
-#define connect              mock_connect
-#define setsockopt           mock_setsockopt
-#define fcntl                mock_fcntl
-#define malloc               mock_malloc
-#define free                 mock_free
-#define send                 mock_send
-#define recv                 mock_recv
-#define sendto               mock_sendto
-#define recvfrom             mock_recvfrom
-#define select               mock_select
-#define clock_gettime        mock_clock
-#define nanortc_handle_input mock_input
-#define nanortc_poll_output  mock_output
+#define socket                  mock_socket
+#define close                   mock_close
+#define connect                 mock_connect
+#define setsockopt              mock_setsockopt
+#define fcntl                   mock_fcntl
+#define malloc                  mock_malloc
+#define free                    mock_free
+#define send                    mock_send
+#define recv                    mock_recv
+#define sendto                  mock_sendto
+#define recvfrom                mock_recvfrom
+#define select                  mock_select
+#define clock_gettime           mock_clock
+#define nanortc_handle_input    mock_input
+#define nanortc_poll_output     mock_output
+#define nanortc_report_transmit mock_report
 #include "../examples/common/run_loop_linux.c"
 #include "../examples/common/http_signaling.c"
 #undef malloc
@@ -260,6 +289,121 @@ TEST(test_example_socket_family_and_capability_fallback)
 #endif
 }
 
+/* Exercise the real loop: a borrowed wrapped datagram must survive receive/timer
+ * mutations without blocking either, and only its terminal result is reported. */
+TEST(test_example_udp_pending_owns_packet_and_keeps_progress)
+{
+    nanortc_t rtc = {0};
+    nano_run_loop_t loop = {.rtc = &rtc, .fds = {17}, .fd_count = 1, .max_poll_ms = 20};
+    loop.local_addrs[0].family = 4;
+    uint8_t packet[] = {0x40, 0x01, 0x00, 0x02, 0xab, 0xcd};
+    output = (nanortc_output_t){.type = NANORTC_OUTPUT_TRANSMIT};
+    output.transmit.data = packet;
+    output.transmit.len = sizeof(packet);
+    output.transmit.token = UINT64_C(0x123456789);
+    output.transmit.dest.family = 4;
+    output.transmit.dest.port = 9001;
+    output_pending = 1;
+    clock_ms = 2005;
+    send_calls = reports = ticks = inputs = 0;
+    select_result = 1;
+    recv_error = 0;
+    send_error = EAGAIN;
+    ASSERT_OK(nano_run_loop_step(&loop));
+    ASSERT_TRUE(loop.udp.pending);
+    ASSERT_EQ(send_calls, 1);
+    ASSERT_EQ(reports, 0);
+    ASSERT_EQ(selected_timeout, 1);
+    ASSERT_EQ(inputs, 1);
+    ASSERT_EQ(ticks, 1);
+    int polls_before = output_polls;
+    memset(packet, 0, sizeof(packet)); /* Input is allowed to invalidate borrowed data. */
+    output.transmit.dest.port = 9999;
+    nano_run_loop_drain(&loop);
+    ASSERT_EQ(send_calls, 1);
+    ASSERT_EQ(output_polls, polls_before);
+    clock_ms++;
+    send_error = 0;
+    ASSERT_OK(nano_run_loop_step(&loop));
+    ASSERT_FALSE(loop.udp.pending);
+    ASSERT_EQ(send_calls, 2);
+    ASSERT_EQ(reports, 1);
+    ASSERT_EQ(reported_token, UINT64_C(0x123456789));
+    ASSERT_EQ(reported_result, NANORTC_TRANSMIT_SENT);
+    ASSERT_EQ(reported_at, 2006);
+    ASSERT_EQ(sent_fd, 17);
+    ASSERT_EQ(sent_port, 9001);
+    ASSERT_EQ(sent_len, sizeof(packet));
+    ASSERT_EQ(sent_data[0], 0x40);
+    ASSERT_EQ(sent_data[5], 0xcd);
+    ASSERT_EQ(inputs, 2);
+    ASSERT_EQ(ticks, 2);
+    clock_ms = 2005;
+}
+
+TEST(test_example_udp_failure_bounds_and_wrap)
+{
+    nanortc_t rtc = {0};
+    nano_run_loop_t loop = {.rtc = &rtc, .fds = {17}, .fd_count = 1};
+    loop.local_addrs[0].family = 4;
+    static const uint8_t packet[] = {1, 2};
+    output = (nanortc_output_t){.type = NANORTC_OUTPUT_TRANSMIT};
+    output.transmit.data = packet;
+    output.transmit.len = sizeof(packet);
+    output.transmit.token = 42;
+    output.transmit.dest.family = 4;
+    output.transmit.dest.port = 9000;
+    output_pending = 1;
+    clock_ms = UINT32_MAX - 1;
+    send_calls = reports = 0;
+    send_error = ENOBUFS;
+    nano_run_loop_drain(&loop);
+    for (int i = 0; i < 3; i++) {
+        clock_ms++;
+        nano_run_loop_drain(&loop);
+    }
+    ASSERT_EQ(send_calls, 4);
+    ASSERT_EQ(loop.udp.retries, 3);
+    ASSERT_EQ(loop.udp.dropped, 1);
+    ASSERT_EQ(reports, 1);
+    ASSERT_EQ(reported_token, 42);
+    ASSERT_EQ(reported_result, NANORTC_TRANSMIT_DROPPED);
+    ASSERT_EQ(reported_at, 1);
+    ASSERT_FALSE(loop.udp.pending);
+    /* Scheduler stalls expire the packet without sending stale media. */
+    output_pending = 1;
+    nano_run_loop_drain(&loop);
+    clock_ms += 4;
+    nano_run_loop_drain(&loop);
+    ASSERT_EQ(send_calls, 5);
+    ASSERT_EQ(reports, 2);
+    ASSERT_FALSE(loop.udp.pending);
+    /* Permanent and partial datagram failures terminate immediately. */
+    output_pending = 1;
+    send_error = EIO;
+    nano_run_loop_drain(&loop);
+    ASSERT_EQ(reports, 3);
+    ASSERT_FALSE(loop.udp.pending);
+    output_pending = 1;
+    send_error = 0;
+    short_send = 1;
+    nano_run_loop_drain(&loop);
+    ASSERT_EQ(reports, 4);
+    ASSERT_EQ(reported_result, NANORTC_TRANSMIT_DROPPED);
+    short_send = 0;
+    /* Teardown settles the last token exactly once before closing the fd. */
+    output_pending = 1;
+    send_error = EAGAIN;
+    nano_run_loop_drain(&loop);
+    loop.running = 1;
+    nano_run_loop_destroy(&loop);
+    ASSERT_EQ(loop.running, 0);
+    ASSERT_EQ(reports, 5);
+    ASSERT_FALSE(loop.udp.pending);
+    send_error = 0;
+    clock_ms = 2005;
+}
+
 TEST(test_example_http_buffer_failure_and_cleanup)
 {
     http_sig_t sig = {.host = "127.0.0.1", .port = 8765, .peer_id = 1};
@@ -308,5 +452,7 @@ TEST(test_example_http_buffer_failure_and_cleanup)
 TEST_MAIN_BEGIN("Example I/O")
 RUN(test_example_recv_readiness_and_timer_progress);
 RUN(test_example_socket_family_and_capability_fallback);
+RUN(test_example_udp_pending_owns_packet_and_keeps_progress);
+RUN(test_example_udp_failure_bounds_and_wrap);
 RUN(test_example_http_buffer_failure_and_cleanup);
 TEST_MAIN_END

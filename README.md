@@ -1,5 +1,7 @@
 # NanoRTC
 
+**0.2.0 breaks API compatibility.** Remote SDP/candidates require lengths, and every polled UDP transmit requires a completion report. See the [migration and validation record](docs/engineering/nanortc-02.md).
+
 English | [简体中文](README.zh-CN.md)
 
 A Sans I/O, pure C WebRTC implementation for RTOS and embedded systems.
@@ -27,17 +29,20 @@ NanoRTC is a WebRTC protocol stack designed from the ground up for resource-cons
 
 - **Orthogonal feature flags** — Include only what you need:
 
-| Configuration | Flash (.text) | RAM (sizeof) | Flags |
-|--------------|---------------|-------------|-------|
-| Core only | 29.0 KB | 10.2 KB | DC=OFF AUDIO=OFF VIDEO=OFF |
-| DataChannel | 38.8 KB | 19.4 KB | DC=ON |
-| Audio only | 40.8 KB | 20.6 KB | DC=OFF AUDIO=ON |
-| DataChannel + Audio | 50.6 KB | 29.9 KB | DC=ON AUDIO=ON |
-| Media only (no DC) | 45.3 KB | 51.0 KB | DC=OFF AUDIO=ON VIDEO=ON |
-| Full media | 55.0 KB | 60.3 KB | DC=ON AUDIO=ON VIDEO=ON |
+0.2.0 ESP32-P4 measurements; exact bytes and host limits are maintained in
+[memory-profiles.md](docs/engineering/memory-profiles.md).
 
-> Measured on ESP32-P4 (RISC-V HP), ESP-IDF 5.5 mbedTLS, `-Os` (`CONFIG_COMPILER_OPTIMIZATION_SIZE=y`). `sizeof(nanortc_t)` is the full per-connection RAM — no heap allocation. Flash figures count only nanortc library code (`libnanortc.a` .text); mbedTLS and lwIP are separate and typically shared with the rest of the firmware.
-> Sizes reflect the ESP-IDF Kconfig defaults — IoT-grade buffer/queue sizing baked in, full ICE stack intact (TURN relay, srflx discovery, IPv6 host candidates, TWCC/BWE perception, RFC 8445 hardening). Reproduce with `./scripts/measure-sizes.sh --esp32 esp32p4`; tune further via `idf.py menuconfig` or [`NANORTC_CONFIG_FILE`](docs/engineering/memory-profiles.md).
+| Configuration | Archive code + rodata | State (`sizeof`) | Profile |
+|---|---:|---:|---|
+| Core only | 39.8 KiB | 13.9 KiB | `CORE_ONLY` |
+| DataChannel | 53.3 KiB | 23.3 KiB | `DATA` |
+| Audio only | 54.1 KiB | 23.5 KiB | `AUDIO_ONLY` |
+| DataChannel + Audio | 67.4 KiB | 32.8 KiB | `AUDIO` |
+| Media only (no DC) | 61.7 KiB | 62.1 KiB | `MEDIA_ONLY` |
+| Full media | 75.1 KiB | 71.4 KiB | `MEDIA` |
+| Full media + H.265 | 78.8 KiB | 72.5 KiB | `MEDIA_H265` |
+
+> Measured on ESP32-P4, ESP-IDF 6.1 / mbedTLS 4.1.0, `-Os`, Kconfig defaults. Archive code includes read-only data and excludes crypto libraries and final-link garbage collection. State excludes provider allocations, application retry buffers and task stacks. Reproduce with `./scripts/measure-sizes.sh --esp32 esp32p4`.
 
 Any combination works — audio without DataChannel, video without audio, etc.
 
@@ -48,7 +53,7 @@ Any combination works — audio without DataChannel, video without audio, etc.
 - **RTP/RTCP/SRTP** — Audio and video media transport, H.264 FU-A and H.265 (RFC 7798) packetization
 - **SDP** — Offer/answer negotiation, multi-track media
 - **NAT traversal** — STUN server-reflexive discovery + TURN relay client (optional, `NANORTC_FEATURE_TURN`)
-- **Bandwidth estimation** — REMB + TWCC loss-aware receiver BWE for adaptive video
+- **Bandwidth estimation** — REMB receiver caps + TWCC send-history/delay guards for adaptive video
 - **Single external dependency** — Only mbedtls (built-in on ESP-IDF, Zephyr, RT-Thread, STM32)
 
 ## Quick Start
@@ -76,14 +81,14 @@ idf.py build
 
 ## Usage
 
-> Signatures below are simplified for readability — optional out-parameters are omitted. See [include/nanortc.h](include/nanortc.h) for the full API.
+> The snippets use application-owned socket/clock helpers. Check all return values; see [include/nanortc.h](include/nanortc.h) for the full API.
 
 **Configure, negotiate, drive:**
 
 ```c
 #include "nanortc.h"
 
-nanortc_t rtc;
+nanortc_t rtc = {0};
 nanortc_init(&rtc, &(nanortc_config_t){
     .crypto = nanortc_crypto_mbedtls(),   // or nanortc_crypto_openssl()
     .role   = NANORTC_ROLE_CONTROLLED,    // or _CONTROLLING to offer
@@ -91,8 +96,11 @@ nanortc_init(&rtc, &(nanortc_config_t){
 nanortc_add_local_candidate(&rtc, local_ip, local_port);
 
 char sdp[4096];
-nanortc_accept_offer(&rtc, remote_offer, sdp);
-// Offerer: create_datachannel("chat") → create_offer(sdp) → accept_answer(remote_answer)
+size_t answer_len = 0;
+int rc = nanortc_accept_offer(&rtc, remote_offer, remote_offer_len,
+                              sdp, sizeof(sdp), &answer_len);
+if (rc != NANORTC_OK) { /* Handle negotiation error before sending the answer. */ }
+// Offerer: create_datachannel → create_offer → accept_answer(answer, answer_len).
 ```
 
 The event loop is symmetric — **drain outputs, feed inputs.** You own the socket and clock:
@@ -101,14 +109,23 @@ The event loop is symmetric — **drain outputs, feed inputs.** You own the sock
 for (;;) {
     nanortc_output_t out;
     while (nanortc_poll_output(&rtc, &out) == NANORTC_OK)
-        handle_output(&out);              // send UDP, fire app event, note next wake-up
+        handle_output(&rtc, &out);              // send UDP, fire app event, note next wake-up
 
+    uint32_t wake_ms;
+    nanortc_next_timeout_ms(&rtc, now_ms(), &wake_ms);
     size_t len = recv_udp(fd, buf, sizeof buf, &src, wake_ms);
     nanortc_handle_input(&rtc, &(nanortc_input_t){
         .now_ms = now_ms(), .data = buf, .len = len, .src = src,
     });
 }
 ```
+
+`handle_output` is application code: it must report each transmit with
+`nanortc_report_transmit(rtc, out.transmit.token, NANORTC_TRANSMIT_SENT, sent_ms)`
+after UDP acceptance, or `NANORTC_TRANSMIT_DROPPED` after final discard. On
+`EAGAIN`, copy one datagram before further state changes, retain its token, and
+continue input/timers while retrying. Do not treat dequeue time as send time.
+Use [the shared UDP helper](examples/common/udp_send.h) for a complete retry path.
 
 One input struct in, one output struct out. No hidden state, no background threads.
 

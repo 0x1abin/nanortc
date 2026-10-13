@@ -692,6 +692,83 @@
 
 /** @brief BWE event threshold (percent). Emit NANORTC_EV_BITRATE_ESTIMATE
  *  only when the estimate changes by more than this percentage. Default: 15. */
+#ifndef NANORTC_BWE_MIN_BITRATE
+#define NANORTC_BWE_MIN_BITRATE 30000
+#endif
+#ifndef NANORTC_BWE_MAX_BITRATE
+#define NANORTC_BWE_MAX_BITRATE 2000000
+#endif
+#ifndef NANORTC_BWE_INITIAL_BITRATE
+#define NANORTC_BWE_INITIAL_BITRATE 300000
+#endif
+#ifndef NANORTC_BWE_SEND_HISTORY_SIZE
+#define NANORTC_BWE_SEND_HISTORY_SIZE 256
+#endif
+#ifndef NANORTC_BWE_CONTROL_INTERVAL_MS
+#define NANORTC_BWE_CONTROL_INTERVAL_MS 200
+#endif
+#ifndef NANORTC_BWE_STABLE_INTERVAL_MS
+#define NANORTC_BWE_STABLE_INTERVAL_MS 1000
+#endif
+#ifndef NANORTC_BWE_PROBE_INTERVAL_MS
+#define NANORTC_BWE_PROBE_INTERVAL_MS 500
+#endif
+#ifndef NANORTC_BWE_FEEDBACK_TIMEOUT_MS
+#define NANORTC_BWE_FEEDBACK_TIMEOUT_MS 1000
+#endif
+#ifndef NANORTC_BWE_HISTORY_MAX_AGE_MS
+#define NANORTC_BWE_HISTORY_MAX_AGE_MS 2000
+#endif
+#ifndef NANORTC_BWE_DELAY_MIN_SAMPLES
+#define NANORTC_BWE_DELAY_MIN_SAMPLES 8
+#endif
+#ifndef NANORTC_BWE_DELAY_MIN_SPAN_MS
+#define NANORTC_BWE_DELAY_MIN_SPAN_MS 100
+#endif
+#ifndef NANORTC_BWE_DELAY_GROWTH_US
+#define NANORTC_BWE_DELAY_GROWTH_US 10000
+#endif
+#ifndef NANORTC_BWE_LOW_LOSS_Q8
+#define NANORTC_BWE_LOW_LOSS_Q8 5
+#endif
+#ifndef NANORTC_BWE_HIGH_LOSS_Q8
+#define NANORTC_BWE_HIGH_LOSS_Q8 25
+#endif
+#ifndef NANORTC_BWE_MIN_LOAD_PCT
+#define NANORTC_BWE_MIN_LOAD_PCT 80
+#endif
+#ifndef NANORTC_BWE_MIN_HISTORY_MATCH_PCT
+#define NANORTC_BWE_MIN_HISTORY_MATCH_PCT 80
+#endif
+#ifndef NANORTC_BWE_PROBE_INCREASE_PCT
+#define NANORTC_BWE_PROBE_INCREASE_PCT 8
+#endif
+#ifndef NANORTC_BWE_RATE_BUCKETS
+#define NANORTC_BWE_RATE_BUCKETS 5
+#endif
+#if NANORTC_BWE_SEND_HISTORY_SIZE < 1 || \
+    (NANORTC_BWE_SEND_HISTORY_SIZE & (NANORTC_BWE_SEND_HISTORY_SIZE - 1)) != 0
+#error "NANORTC_BWE_SEND_HISTORY_SIZE must be a power of two"
+#endif
+#if NANORTC_BWE_RATE_BUCKETS < 2 || NANORTC_BWE_CONTROL_INTERVAL_MS < 1 ||                    \
+    NANORTC_BWE_RATE_BUCKETS * 1ULL * NANORTC_BWE_CONTROL_INTERVAL_MS >= 0x80000000ULL ||     \
+    NANORTC_BWE_STABLE_INTERVAL_MS < 1 || NANORTC_BWE_PROBE_INTERVAL_MS < 1 ||                \
+    NANORTC_BWE_STABLE_INTERVAL_MS >= 0x80000000ULL ||                                        \
+    NANORTC_BWE_PROBE_INTERVAL_MS >= 0x80000000ULL || NANORTC_BWE_FEEDBACK_TIMEOUT_MS < 1 ||  \
+    NANORTC_BWE_HISTORY_MAX_AGE_MS < 1 || NANORTC_BWE_FEEDBACK_TIMEOUT_MS >= 0x80000000ULL || \
+    NANORTC_BWE_HISTORY_MAX_AGE_MS >= 0x80000000ULL || NANORTC_BWE_DELAY_MIN_SAMPLES < 2 ||   \
+    NANORTC_BWE_DELAY_MIN_SAMPLES > 65535 || NANORTC_BWE_DELAY_MIN_SPAN_MS < 1 ||             \
+    NANORTC_BWE_DELAY_MIN_SPAN_MS >= 0x80000000ULL
+#error "NANORTC_BWE intervals, sample count and rate window must be positive and bounded"
+#endif
+#if NANORTC_BWE_LOW_LOSS_Q8 < 1 || NANORTC_BWE_LOW_LOSS_Q8 >= NANORTC_BWE_HIGH_LOSS_Q8 || \
+    NANORTC_BWE_HIGH_LOSS_Q8 > 256 || NANORTC_BWE_MIN_LOAD_PCT < 1 ||                     \
+    NANORTC_BWE_MIN_LOAD_PCT > 100 || NANORTC_BWE_MIN_HISTORY_MATCH_PCT < 1 ||            \
+    NANORTC_BWE_MIN_HISTORY_MATCH_PCT > 100 || NANORTC_BWE_PROBE_INCREASE_PCT < 1 ||      \
+    NANORTC_BWE_PROBE_INCREASE_PCT > 100
+#error "NANORTC_BWE loss thresholds and percentages must be ordered and bounded"
+#endif
+
 #ifndef NANORTC_BWE_EVENT_THRESHOLD_PCT
 #define NANORTC_BWE_EVENT_THRESHOLD_PCT 15
 #endif
@@ -861,7 +938,7 @@
 #endif
 
 /** @brief Adaptive FEC: scale protection to the measured TWCC loss fraction
- *  (RFC 8888) instead of a fixed group size. The scarce embedded camera uplink
+ *  instead of a fixed group size. The scarce embedded camera uplink
  *  pays *no* FEC overhead on a clean link and more protection only when it's
  *  actually lossy. Default 1 (only meaningful with FEC). K is varied in
  *  [NANORTC_FEC_MIN_GROUP .. NANORTC_FEC_GROUP_SIZE]; below the OFF threshold no
@@ -894,10 +971,10 @@
  *  send call, before the app polls — each needs its own buffer so their pointers
  *  in out_queue don't alias. With N slots, up to N groups of an IDR get FEC;
  *  beyond that the surplus groups fall back to reorder/NACK (TD-026 L1 residual).
- *  Each slot costs NANORTC_FEC_BUF_SIZE. Default 4 (covers an IDR up to ~4·K
+ *  Each slot costs NANORTC_FEC_BUF_SIZE. Default 2 (covers an IDR up to ~2·K
  *  packets fully). 1 = the original single-buffer behaviour. */
 #ifndef NANORTC_FEC_TX_RING
-#define NANORTC_FEC_TX_RING 4
+#define NANORTC_FEC_TX_RING 2
 #endif
 
 /** @brief Dynamic RTP payload type for the outbound ULPFEC stream (RFC 5109).

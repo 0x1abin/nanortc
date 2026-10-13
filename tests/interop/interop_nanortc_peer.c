@@ -18,6 +18,24 @@
 #include <net/if.h>
 #include <sys/socket.h>
 
+static void publish_stats(interop_nanortc_peer_t *peer)
+{
+    nanortc_stats_t stats;
+    if (nanortc_get_stats(&peer->rtc, &stats) != NANORTC_OK)
+        return;
+    pthread_mutex_lock(&peer->msg_mutex);
+    peer->stats_snapshot = stats;
+    pthread_mutex_unlock(&peer->msg_mutex);
+}
+
+nanortc_stats_t interop_nanortc_stats(interop_nanortc_peer_t *peer)
+{
+    pthread_mutex_lock(&peer->msg_mutex);
+    nanortc_stats_t stats = peer->stats_snapshot;
+    pthread_mutex_unlock(&peer->msg_mutex);
+    return stats;
+}
+
 /* ----------------------------------------------------------------
  * Event callback (runs in nanortc thread)
  * ---------------------------------------------------------------- */
@@ -26,6 +44,7 @@ static void nanortc_on_event(nanortc_t *rtc, const nanortc_event_t *evt, void *u
 {
     interop_nanortc_peer_t *peer = (interop_nanortc_peer_t *)userdata;
     (void)rtc;
+    publish_stats(peer);
 
     switch (evt->type) {
     case NANORTC_EV_ICE_STATE_CHANGE:
@@ -106,7 +125,8 @@ static int nanortc_do_signaling(interop_nanortc_peer_t *peer)
     /* Generate answer */
     char answer[8192];
     size_t answer_len = 0;
-    int rc = nanortc_accept_offer(&peer->rtc, buf, answer, sizeof(answer), &answer_len);
+    int rc =
+        nanortc_accept_offer(&peer->rtc, buf, (size_t)len, answer, sizeof(answer), &answer_len);
     if (rc != NANORTC_OK) {
         fprintf(stderr, "[nanortc] nanortc_accept_offer failed: %d\n", rc);
         return -1;
@@ -134,7 +154,7 @@ static int nanortc_do_signaling(interop_nanortc_peer_t *peer)
 
         if (msg_type == SIG_MSG_ICE_CANDIDATE) {
             fprintf(stderr, "[nanortc] Got remote ICE candidate: %s\n", buf);
-            nanortc_add_remote_candidate(&peer->rtc, buf);
+            nanortc_add_remote_candidate(&peer->rtc, buf, (size_t)len);
         }
     }
 
@@ -165,6 +185,7 @@ static void *nanortc_thread_fn(void *arg)
         int srflx_ready = 0;
         while (atomic_load(&peer->running)) {
             nano_run_loop_step(&peer->loop);
+            publish_stats(peer);
             relay_ready = peer->rtc.sdp.has_relay_candidate;
             srflx_ready = peer->rtc.sdp.has_srflx_candidate;
             int needed_ready = peer->require_srflx_and_relay ? (relay_ready && srflx_ready)
@@ -216,7 +237,10 @@ static void *nanortc_thread_fn(void *arg)
     /* Event loop: drive nanortc with real UDP */
     fprintf(stderr, "[nanortc] Entering event loop (port=%d)\n", peer->port);
     while (atomic_load(&peer->running)) {
+        interop_owner_step_lock(&peer->owner);
         nano_run_loop_step(&peer->loop);
+        publish_stats(peer);
+        interop_owner_step_unlock(&peer->owner);
     }
 
     fprintf(stderr, "[nanortc] Thread exiting\n");
@@ -267,6 +291,7 @@ int interop_nanortc_start(interop_nanortc_peer_t *peer, int sig_fd, uint16_t por
     peer->srflx_only = (ice_cfg != NULL && ice_cfg->srflx_only);
     peer->require_srflx_and_relay = (ice_cfg != NULL && ice_cfg->require_srflx_and_relay);
     pthread_mutex_init(&peer->msg_mutex, NULL);
+    interop_owner_init(&peer->owner);
 
     /* Resolve ICE server domain names to IPs */
     if (ice_cfg && ice_cfg->ice_servers && ice_cfg->ice_server_count > 0 &&
@@ -343,14 +368,30 @@ int interop_nanortc_stop(interop_nanortc_peer_t *peer)
     }
 
     atomic_store(&peer->running, 0);
-    nano_run_loop_stop(&peer->loop);
     pthread_join(peer->thread, NULL);
 
     nano_run_loop_destroy(&peer->loop);
     nanortc_destroy(&peer->rtc);
     pthread_mutex_destroy(&peer->msg_mutex);
+    interop_owner_destroy(&peer->owner);
 
     return 0;
+}
+
+int interop_nanortc_send(interop_nanortc_peer_t *peer, uint16_t id, const void *data, size_t len)
+{
+    interop_owner_send_lock(&peer->owner);
+    int rc = nanortc_datachannel_send(&peer->rtc, id, data, len);
+    interop_owner_send_unlock(&peer->owner);
+    return rc;
+}
+
+int interop_nanortc_send_string(interop_nanortc_peer_t *peer, uint16_t id, const char *text)
+{
+    interop_owner_send_lock(&peer->owner);
+    int rc = nanortc_datachannel_send_text(&peer->rtc, id, text, strlen(text));
+    interop_owner_send_unlock(&peer->owner);
+    return rc;
 }
 
 int interop_nanortc_wait_flag(atomic_int *flag, int timeout_ms)

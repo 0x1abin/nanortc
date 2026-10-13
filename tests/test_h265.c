@@ -999,7 +999,60 @@ TEST(test_h265_track_init_dispatches_to_h265_depkt)
  * Test runner
  * ================================================================ */
 
+TEST(test_h265_iterator_writes_ap_and_fu_into_caller_buffer)
+{
+    /* RFC 7798 §4.4.2/§4.4.3: independent AP and FU byte vectors. */
+    const uint8_t a[] = {0x40, 1, 0xAA}, b[] = {0x42, 1, 0xBB};
+    const uint8_t c[] = {0x26, 1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11};
+    const h265_nal_ref_t nals[] = {{a, sizeof(a)}, {b, sizeof(b)}, {c, sizeof(c)}};
+    const uint8_t ap[] = {0x60, 1, 0, 3, 0x40, 1, 0xAA, 0, 3, 0x42, 1, 0xBB};
+    const uint8_t fu_start[] = {0x62, 1, 0x93, 0, 1, 2, 3, 4, 5, 6, 7, 8};
+    const uint8_t fu_end[] = {0x62, 1, 0x53, 9, 10, 11};
+    h265_packet_iter_t it;
+    ASSERT_OK(h265_packet_iter_init(&it, nals, 3, 12));
+    uint8_t scratch[12];
+    const uint8_t *payload;
+    size_t len;
+    int marker;
+    ASSERT_EQ(h265_packet_iter_next(&it, scratch, 11, &payload, &len, &marker),
+              NANORTC_ERR_BUFFER_TOO_SMALL);
+    ASSERT_OK(h265_packet_iter_next(&it, scratch, sizeof(scratch), &payload, &len, &marker));
+    ASSERT_TRUE(payload == scratch);
+    ASSERT_EQ(len, sizeof(ap));
+    ASSERT_MEM_EQ(payload, ap, len);
+    ASSERT_EQ(marker, 0);
+    ASSERT_OK(h265_packet_iter_next(&it, scratch, sizeof(scratch), &payload, &len, &marker));
+    ASSERT_MEM_EQ(payload, fu_start, sizeof(fu_start));
+    ASSERT_EQ(marker, 0);
+    ASSERT_EQ(h265_packet_iter_next(&it, scratch, 5, &payload, &len, &marker),
+              NANORTC_ERR_BUFFER_TOO_SMALL);
+    ASSERT_OK(h265_packet_iter_next(&it, scratch, sizeof(scratch), &payload, &len, &marker));
+    ASSERT_EQ(len, sizeof(fu_end));
+    ASSERT_MEM_EQ(payload, fu_end, len);
+    ASSERT_EQ(marker, 1);
+    ASSERT_FALSE(h265_packet_iter_has_next(&it));
+}
+
+TEST(test_h265_iterator_validates_complete_au)
+{
+    const uint8_t valid[] = {0x26, 1, 0x55};
+    const h265_nal_ref_t invalid[] = {{valid, sizeof(valid)}, {NULL, 2}};
+    h265_packet_iter_t it;
+    ASSERT_EQ(h265_packet_iter_init(&it, invalid, 2, 1200), NANORTC_ERR_INVALID_PARAM);
+    const h265_nal_ref_t nal = {valid, sizeof(valid)};
+    ASSERT_OK(h265_packet_iter_init(&it, &nal, 1, 1200));
+    const uint8_t *payload;
+    size_t len;
+    int marker;
+    ASSERT_OK(h265_packet_iter_next(&it, NULL, 0, &payload, &len, &marker));
+    ASSERT_TRUE(payload == valid);
+    ASSERT_EQ(len, sizeof(valid));
+    ASSERT_EQ(marker, 1);
+}
+
 TEST_MAIN_BEGIN("test_h265")
+RUN(test_h265_iterator_writes_ap_and_fu_into_caller_buffer);
+RUN(test_h265_iterator_validates_complete_au);
 /* Packetizer — Single NAL (§4.4.1) */
 RUN(test_h265_pack_single_nal);
 RUN(test_h265_pack_single_nal_header_type_extract);

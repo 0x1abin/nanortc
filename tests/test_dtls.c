@@ -120,6 +120,69 @@ static int dtls_relay(nano_dtls_t *from, nano_dtls_t *to)
     return relayed;
 }
 
+static void dtls_bind_pair(nano_dtls_t *client, nano_dtls_t *server)
+{
+    uint8_t fingerprint[NANORTC_DTLS_FINGERPRINT_SIZE];
+    char text[8 + NANORTC_DTLS_FINGERPRINT_MIN_BUF];
+    memcpy(text, "sha-256 ", 8);
+    memcpy(text + 8, server->local_fingerprint, NANORTC_DTLS_FINGERPRINT_MIN_BUF);
+    ASSERT_OK(sdp_parse_fingerprint(text, sizeof(text) - 1, fingerprint));
+    ASSERT_OK(dtls_set_peer_fingerprint(client, fingerprint));
+    memcpy(text + 8, client->local_fingerprint, NANORTC_DTLS_FINGERPRINT_MIN_BUF);
+    ASSERT_OK(sdp_parse_fingerprint(text, sizeof(text) - 1, fingerprint));
+    ASSERT_OK(dtls_set_peer_fingerprint(server, fingerprint));
+}
+
+TEST(test_dtls_rejects_unbound_peer)
+{
+    nano_dtls_t client, server;
+    ASSERT_OK(dtls_init(&client, nano_test_crypto(), 0));
+    ASSERT_OK(dtls_init(&server, nano_test_crypto(), 1));
+    int rc = dtls_start(&client);
+    for (unsigned i = 0; i < 20 && rc >= 0; i++) {
+        rc = dtls_relay(&client, &server);
+        if (rc >= 0)
+            rc = dtls_relay(&server, &client);
+    }
+    ASSERT_TRUE(rc < 0);
+    ASSERT_FALSE(client.keying_material_ready);
+    ASSERT_FALSE(server.keying_material_ready);
+    ASSERT_TRUE(client.state != NANORTC_DTLS_STATE_ESTABLISHED);
+    ASSERT_TRUE(server.state != NANORTC_DTLS_STATE_ESTABLISHED);
+    dtls_destroy(&client);
+    dtls_destroy(&server);
+}
+
+TEST(test_dtls_rejects_wrong_peer_fingerprint)
+{
+    nano_dtls_t client, server;
+    ASSERT_OK(dtls_init(&client, nano_test_crypto(), 0));
+    ASSERT_OK(dtls_init(&server, nano_test_crypto(), 1));
+    dtls_bind_pair(&client, &server);
+    client.expected_peer_fingerprint[0] ^= 1;
+    int rc = dtls_start(&client);
+    for (unsigned i = 0; i < 20 && rc >= 0; i++) {
+        rc = dtls_relay(&client, &server);
+        if (rc >= 0)
+            rc = dtls_relay(&server, &client);
+    }
+    ASSERT_EQ(rc, NANORTC_ERR_CRYPTO);
+    ASSERT_EQ(client.state, NANORTC_DTLS_STATE_ERROR);
+    ASSERT_FALSE(client.keying_material_ready);
+    ASSERT_EQ(client.out_len, 0);
+    dtls_destroy(&client);
+    dtls_destroy(&server);
+}
+
+TEST(test_dtls_peer_fingerprint_provider_is_required)
+{
+    nanortc_crypto_provider_t provider = *nano_test_crypto();
+    provider.dtls_get_peer_fingerprint = NULL;
+    nano_dtls_t dtls = {0};
+    ASSERT_EQ(dtls_init(&dtls, &provider, 0), NANORTC_ERR_INVALID_PARAM);
+    ASSERT_TRUE(dtls.crypto_ctx == NULL);
+}
+
 TEST(test_dtls_handshake_loopback)
 {
     nano_dtls_t server, client;
@@ -128,6 +191,7 @@ TEST(test_dtls_handshake_loopback)
     /* Initialize both sides */
     ASSERT_OK(dtls_init(&server, crypto, 1));
     ASSERT_OK(dtls_init(&client, crypto, 0));
+    dtls_bind_pair(&client, &server);
 
     /* Client initiates handshake (sends ClientHello) */
     ASSERT_OK(dtls_start(&client));
@@ -183,6 +247,7 @@ TEST(test_dtls_encrypt_decrypt)
     const nanortc_crypto_provider_t *crypto = nano_test_crypto();
     ASSERT_OK(dtls_init(&server, crypto, 1));
     ASSERT_OK(dtls_init(&client, crypto, 0));
+    dtls_bind_pair(&client, &server);
     ASSERT_OK(dtls_do_handshake(&client, &server));
 
     /* Client encrypts a message */
@@ -226,6 +291,7 @@ TEST(test_dtls_keying_material)
     const nanortc_crypto_provider_t *crypto = nano_test_crypto();
     ASSERT_OK(dtls_init(&server, crypto, 1));
     ASSERT_OK(dtls_init(&client, crypto, 0));
+    dtls_bind_pair(&client, &server);
     ASSERT_OK(dtls_do_handshake(&client, &server));
 
     /* Both sides should have exported keying material */
@@ -278,6 +344,7 @@ TEST(test_dtls_keying_material_length)
     const nanortc_crypto_provider_t *crypto = nano_test_crypto();
     ASSERT_OK(dtls_init(&server, crypto, 1));
     ASSERT_OK(dtls_init(&client, crypto, 0));
+    dtls_bind_pair(&client, &server);
     ASSERT_OK(dtls_do_handshake(&client, &server));
 
     /* Verify keying material is ready and 60 bytes are meaningful */
@@ -314,6 +381,7 @@ TEST(test_dtls_record_content_type)
     const nanortc_crypto_provider_t *crypto = nano_test_crypto();
     ASSERT_OK(dtls_init(&server, crypto, 1));
     ASSERT_OK(dtls_init(&client, crypto, 0));
+    dtls_bind_pair(&client, &server);
     ASSERT_OK(dtls_do_handshake(&client, &server));
 
     /* Client encrypts app data */
@@ -373,6 +441,7 @@ TEST(test_dtls_close_notify)
     /* Set up established DTLS session */
     ASSERT_OK(dtls_init(&server, crypto, 1));
     ASSERT_OK(dtls_init(&client, crypto, 0));
+    dtls_bind_pair(&client, &server);
     ASSERT_OK(dtls_start(&client));
 
     for (int round = 0; round < 30; round++) {
@@ -570,6 +639,7 @@ TEST(test_dtls_lost_client_flight_retransmits_on_caller_clock)
     nano_dtls_t client, server;
     ASSERT_OK(dtls_init(&client, nano_test_crypto(), 0));
     ASSERT_OK(dtls_init(&server, nano_test_crypto(), 1));
+    dtls_bind_pair(&client, &server);
     dtls_set_time(&client, 100);
     dtls_set_time(&server, 100);
     ASSERT_OK(dtls_start(&client));
@@ -609,6 +679,9 @@ TEST(test_dtls_lost_client_flight_retransmits_on_caller_clock)
 TEST_MAIN_BEGIN("test_dtls")
 RUN(test_dtls_lost_client_flight_retransmits_on_caller_clock);
 RUN(test_dtls_init_server);
+RUN(test_dtls_rejects_unbound_peer);
+RUN(test_dtls_rejects_wrong_peer_fingerprint);
+RUN(test_dtls_peer_fingerprint_provider_is_required);
 RUN(test_dtls_init_client);
 RUN(test_dtls_init_null_params);
 RUN(test_dtls_fingerprint_format);

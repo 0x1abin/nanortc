@@ -34,11 +34,17 @@ camera. The capability therefore splits into **decide** (pure compute, in the SD
 
 ## 2. Current state — what exists today
 
+0.2.0 replaces feedback-count-driven growth with bounded actual-send history and
+fixed-time control. [The migration record](nanortc-02.md) distinguishes host tests
+from live-link acceptance. Earlier Phase A browser results below are historical;
+they have not been re-certified by the 0.2 host tests.
+
+
 ### 2.1 Transport substrate (solid)
 
 | Capability | Where | Notes |
 |---|---|---|
-| Bottleneck bandwidth estimate | `src/nano_bwe.c` (`bwe_on_rtcp_feedback` REMB, `bwe_on_twcc_loss`) | Converges to the min path; EMA-smoothed (`NANORTC_BWE_EMA_ALPHA`). |
+| Bandwidth target | `src/nano_bwe.c` | REMB is a receiver cap; matched TWCC send/arrival history qualifies conservative recovery, and loss reduces the local target at a fixed control interval. |
 | Estimate exposed to app | `include/nanortc.h`: `NANORTC_EV_BITRATE_ESTIMATE` (with `direction`/`source`), `nanortc_get_estimated_bitrate`, `nanortc_set_bitrate_bounds` / `_initial_bitrate` / `_bwe_event_threshold` | App reads the estimate; tunes bounds. |
 | Send pacing (anti-burst) | `src/nano_rtc_media.c` `nano_rtc_pacer_pump`; `NANORTC_PACING_*` in `include/nanortc_config.h` | Token bucket at `PACING_FACTOR_PCT × BWE`, latency cap `MAX_QUEUE_MS`. |
 | Loss recovery | NACK-rx, FEC (adaptive group size K by loss), reorder, auto-PLI; flags `NANORTC_FEATURE_VIDEO_{NACK_RX,FEC,REORDER,AUTO_PLI}` | Per [deployment-profiles.md](deployment-profiles.md); FEC K already tracks smoothed TWCC loss. |
@@ -83,7 +89,7 @@ work is mostly signal quality, spec-change packaging parity, and multi-direction
 | G1 | **Resolved for the SDK + FFmpeg example; partial across all apps/backends.** | The library can now recommend resolution/fps/bitrate rungs; applications still must apply them. | `nano_rate_control`, `nanortc_set_capability_ladder`, `NANORTC_EV_SPEC_RECOMMENDATION`; FFmpeg `capture_set_layout()` applies geometry, GStreamer remains bitrate-only. |
 | G2 | **Default policy implemented; no custom policy API yet.** | Realtime/smoothness-first behavior is covered, but apps cannot tune preference weights beyond compile-time constants. | Safety/headroom/hold/loss thresholds live in `NANORTC_RATE_CONTROL_*`. |
 | G3 | **SDK decision implemented; application apply loop remains by design.** | Apps no longer re-roll the controller, but each encoder backend still owns the I/O-specific application step. | Controller lives in `src/`; Linux UVC example aggregates recommendations and applies the shared-encoder min rung. |
-| G4 | **BWE is loss-only and asymmetric.** | Drops fast, recovers slowly, and reacts only *after* loss (queues already overflowed) → hurts both "step back up on recovery" and "bounded latency". | Tracked as **issue #71 / TD-027**; per-packet TWCC delay is parsed then discarded (`twcc_parse_feedback(..., NULL, NULL)` in `src/nano_rtc_media.c`). |
+| G4 | **0.2 adds delay/load guards and bounded recovery; complete delay-based control remains open.** | Recovery requires enough matched send history, sustained load, stable low loss and no growing arrival delay. This protects upward probing; it does not replace a full congestion-delay model. | `bwe_record_transmit` and `bwe_on_twcc_feedback`; deterministic feedback-cadence and weak-network acceptance are recorded with 0.2. |
 | G5 | **Spec-change flow is not packaged.** | An app that *did* step resolution must hand-roll force-IDR + in-band re-send of parameter sets; the SDP `sprop-parameter-sets` is offer/answer-only and goes stale; there is no H.264 parameter-set API (only `nanortc_video_set_h265_parameter_sets`). | `src/nano_sdp.c` sets sprop at negotiation only; no H.264 equivalent. |
 | G6 | **Two-way (Profile C) has no per-direction controller.** | A symmetric intercom needs an independent controller per direction. | Profile C documented in [deployment-profiles.md](deployment-profiles.md); no controller. |
 
@@ -102,7 +108,7 @@ example's old bitrate-only decision loop:
 
 - **Current inputs**: current bottleneck estimate, smoothed loss, an **application capability
   ladder** (the ordered set of `{w, h, fps, bitrate}` rungs the encoder supports), and
-  compile-time policy constants. Phase B adds a delay/probing signal (see §4.3).
+  compile-time policy constants. The 0.2 BWE target includes delay/probing guards (see §4.3).
 - **Current output**: a recommended rung `{resolution, fps, bitrate}`, with **hysteresis** —
   asymmetric up/down thresholds and a minimum hold time — so it does not flap between rungs.
   Send-strategy hints such as pacer/FEC tuning remain future work.
@@ -121,11 +127,31 @@ example's old bitrate-only decision loop:
 
 ### 4.3 Fix the congestion signal (prerequisite for clean up-adaptation)
 
-Resolve **#71 / TD-027**: feed the discarded per-packet TWCC arrival-delay data into a
-delay-based (GCC-style) estimator and add light active probing. This makes adaptation
-**proactive** (reacts to queue buildup before loss → lower latency) and **symmetric** (can
-discover recovered headroom instead of parking at the floor), which the up-step in §4.2
-depends on.
+0.2 stores sequence, actual socket-acceptance time and size in a bounded send
+history. Draft-holmer TWCC arrival deltas are matched to those records. The
+controller distinguishes receiver REMB caps from its local target, applies loss
+reduction at a fixed interval, and requires a stable, sufficiently loaded window
+before a bounded upward probe. Delay growth, local drops/retransmissions,
+unknown history and stale feedback suppress growth. This is transport-wide-cc
+PT=205/FMT=15, not RFC 8888 CCFB.
+
+Default tuning: 256 send-history entries, 200 ms control interval, 1000 ms stable
+interval and 500 ms minimum probe interval; `nanortc_config.h` is authoritative.
+The acceptance matrix includes equivalent 50/100/200 ms feedback cadence,
+sequence/reference-time wrap, duplicate/expired feedback, application-limited
+load, socket backpressure and capacity reduction/recovery. Results and limits
+are reported in the [0.2 record](nanortc-02.md). The 50 ms RTT model steps from
+2 Mbit/s to 300 kbit/s and back: all three feedback cadences reduce target and
+sent rate within 1.72 s, and recover the sent-rate window to 1.6 Mbit/s within
+13.965 s. A persistent 500 kbit/s REMB cap is respected throughout. Separate
+tests suppress unsupported growth with low offered load, delay growth, local
+drops, incomplete history or retransmit ambiguity. These are deterministic host
+results, not new browser or real-network measurements.
+
+A full GCC trendline controller, explicit probe clusters, receiver-side TWCC
+feedback generation and independent per-stream bandwidth allocation remain
+outside this release. #71/TD-027 should not be marked completely resolved solely
+because delay samples are now consumed.
 
 ### 4.4 Package the spec-change protocol
 
@@ -154,8 +180,9 @@ Phased so each step is independently shippable and testable; ordered by value.
 - **Phase A — Adaptive Media Controller (biggest win).** Pure-compute ladder + policy +
   hysteresis as an SDK module; wire the example encoder to drive resolution **and** fps **and**
   bitrate. Verify on the H2O 4K↔1080p↔720p path.
-- **Phase B — Proactive/symmetric BWE.** Delay-based estimate + probing; resolves #71/TD-027.
-  Unlocks clean up-adaptation and lower latency.
+- **Phase B — Congestion evidence.** 0.2 implements send-history matching, fixed-time
+  control and guarded recovery. Full delay-based estimation/probe clusters and
+  live weak-link validation remain separate acceptance work for #71/TD-027.
 - **Phase C — Spec-change protocol hardening.** H.264 parameter-set API parity, a
   force-IDR-on-switch helper, and the receiver contract in docs.
 - **Phase D — Two-way controllers.** Independent per-direction control for Profile C.

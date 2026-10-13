@@ -163,7 +163,7 @@ typedef struct nano_sctp {
     nano_sctp_state_t state;
 
     /* Set true exactly once when nsctp_handle_timeout() transitions state
-     * to CLOSED due to retransmit exhaustion (RFC 4960 §6.3.3 Path.Max.Retrans).
+     * to CLOSED due to handshake or DATA retransmit exhaustion (RFC 9260 §4/§6.3.3).
      * The RTC poll layer reads and clears this flag to emit
      * NANORTC_EV_DISCONNECTED, mirroring the ICE failure path. Peer-ABORT
      * and init-time CLOSED paths do NOT set this — they have separate
@@ -206,10 +206,13 @@ typedef struct nano_sctp {
     uint8_t send_buf[NANORTC_SCTP_SEND_BUF_SIZE];
     uint16_t send_buf_used;
 
-#if NANORTC_FEATURE_DC_RELIABLE
-    /* Retransmission */
+    /* T1-init/T1-cookie also apply when reliable DATA is disabled. */
     uint32_t rto_ms;
-    uint32_t last_send_ms;
+    uint32_t handshake_sent_at_ms;
+    uint32_t handshake_retries;
+    bool handshake_sent;
+    bool handshake_queued;
+#if NANORTC_FEATURE_DC_RELIABLE
     uint32_t forward_sent_at_ms;
     bool forward_pending;
 #endif
@@ -267,9 +270,10 @@ int nsctp_handle_timeout(nano_sctp_t *sctp, uint32_t now_ms);
 
 /**
  * Compute milliseconds until the next deadline this SCTP association
- * needs the timer wheel to fire. Considers retransmission RTOs on the
- * send queue and the periodic heartbeat. Returns UINT32_MAX when the
- * association is not ESTABLISHED or has nothing pending.
+ * needs the timer wheel to fire. Considers handshake retransmission,
+ * DATA retransmission and the periodic heartbeat. A queued handshake
+ * has no timer until poll_output succeeds; output backpressure does not
+ * consume retries. Returns UINT32_MAX when no timer is armed.
  *
  * Pure const reader — does not mutate @p sctp; safe to call from the
  * library's own Sans-I/O timeout aggregator.

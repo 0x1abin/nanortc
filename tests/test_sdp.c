@@ -6,6 +6,7 @@
 
 #include "nanortc.h"
 #include "nano_sdp.h"
+#include "nano_addr.h"
 #include "nano_test.h"
 #include "nano_test_config.h"
 #include <string.h>
@@ -47,8 +48,9 @@ TEST(test_sdp_parse_chrome_offer)
     ASSERT_EQ(sdp.remote_setup, NANORTC_SDP_SETUP_ACTPASS);
 
     /* Fingerprint should start with "sha-256 AA:BB:" */
-    ASSERT_TRUE(sdp.remote_fingerprint[0] != '\0');
-    ASSERT_MEM_EQ(sdp.remote_fingerprint, "sha-256 AA:BB:", 14);
+    ASSERT_TRUE(sdp.has_remote_fingerprint);
+    ASSERT_EQ(sdp.remote_fingerprint[0], 0xAA);
+    ASSERT_EQ(sdp.remote_fingerprint[1], 0xBB);
 }
 
 TEST(test_sdp_parse_missing_ufrag)
@@ -241,7 +243,7 @@ TEST(test_sdp_parse_firefox_offer)
     ASSERT_MEM_EQ(sdp.remote_pwd, "firefoxpassword12345678", 23);
     ASSERT_EQ(sdp.remote_sctp_port, 5000);
     ASSERT_EQ(sdp.remote_setup, NANORTC_SDP_SETUP_ACTPASS);
-    ASSERT_TRUE(sdp.remote_fingerprint[0] != '\0');
+    ASSERT_TRUE(sdp.has_remote_fingerprint);
 }
 
 /* Safari offer: uses setup:passive when it is the answerer,
@@ -340,17 +342,23 @@ TEST(test_sdp_parse_libdatachannel_offer)
     ASSERT_MEM_EQ(sdp.remote_pwd, "ldcpassword123456789012", 23);
     ASSERT_EQ(sdp.remote_sctp_port, 5000);
     ASSERT_EQ(sdp.remote_setup, NANORTC_SDP_SETUP_ACTPASS);
-    ASSERT_TRUE(sdp.remote_fingerprint[0] != '\0');
-    ASSERT_MEM_EQ(sdp.remote_fingerprint, "sha-256 A1:B2:", 14);
+    ASSERT_TRUE(sdp.has_remote_fingerprint);
+    ASSERT_EQ(sdp.remote_fingerprint[0], 0xA1);
+    ASSERT_EQ(sdp.remote_fingerprint[1], 0xB2);
 
+    nano_sdp_remote_t remote;
+    ASSERT_OK(sdp_parse_remote(&sdp, LIBDATACHANNEL_OFFER, strlen(LIBDATACHANNEL_OFFER), &remote));
     /* Verify embedded ICE candidates */
     ASSERT_EQ(sdp.candidate_count, 2);
 
-    ASSERT_MEM_EQ(sdp.remote_candidates[0].addr, "192.168.1.100", 13);
-    ASSERT_EQ(sdp.remote_candidates[0].port, 50000);
+    const uint8_t first[] = {192, 168, 1, 100};
+    const uint8_t second[] = {10, 0, 0, 5};
+    ASSERT_MEM_EQ(remote.remote_candidates[0].addr, first, sizeof(first));
+    ASSERT_EQ(remote.remote_candidates[0].family, 4);
+    ASSERT_EQ(remote.remote_candidates[0].port, 50000);
 
-    ASSERT_MEM_EQ(sdp.remote_candidates[1].addr, "10.0.0.5", 8);
-    ASSERT_EQ(sdp.remote_candidates[1].port, 50001);
+    ASSERT_MEM_EQ(remote.remote_candidates[1].addr, second, sizeof(second));
+    ASSERT_EQ(remote.remote_candidates[1].port, 50001);
 }
 
 /* Verify existing browser offers still parse correctly (no candidates) */
@@ -381,7 +389,8 @@ TEST(test_accept_offer_generates_answer)
 
     char answer[2048];
     size_t answer_len = 0;
-    int rc = nanortc_accept_offer(&rtc, CHROME_OFFER, answer, sizeof(answer), &answer_len);
+    int rc = nanortc_accept_offer(&rtc, CHROME_OFFER, strlen(CHROME_OFFER), answer, sizeof(answer),
+                                  &answer_len);
     ASSERT_OK(rc);
     ASSERT_TRUE(answer_len > 0);
 
@@ -1035,7 +1044,8 @@ TEST(test_sdp_generate_ipv6_connection_line)
     sdp.mid_count = 1;
 
     /* Set an IPv6 local candidate */
-    memcpy(sdp.local_candidates[0].addr, "2001:db8::1", 12);
+    ASSERT_OK(addr_parse_auto("2001:db8::1", 11, sdp.local_candidates[0].addr,
+                              &sdp.local_candidates[0].family));
     sdp.local_candidates[0].port = 5000;
     sdp.local_candidate_count = 1;
 
@@ -1067,7 +1077,8 @@ TEST(test_sdp_generate_ipv4_connection_line)
     sdp.mid_count = 1;
 
     /* Set an IPv4 local candidate */
-    memcpy(sdp.local_candidates[0].addr, "192.168.1.1", 12);
+    ASSERT_OK(addr_parse_auto("192.168.1.1", 11, sdp.local_candidates[0].addr,
+                              &sdp.local_candidates[0].family));
     sdp.local_candidates[0].port = 5000;
     sdp.local_candidate_count = 1;
 
@@ -1179,7 +1190,8 @@ TEST(test_sdp_generate_with_candidates)
     sdp.mid_count = 1;
 
     /* Add a host candidate */
-    memcpy(sdp.local_candidates[0].addr, "192.168.1.100", 14);
+    ASSERT_OK(addr_parse_auto("192.168.1.100", 13, sdp.local_candidates[0].addr,
+                              &sdp.local_candidates[0].family));
     sdp.local_candidates[0].port = 4000;
     sdp.local_candidate_count = 1;
 
@@ -1246,7 +1258,9 @@ TEST(test_sdp_candidate_related_addresses)
             sdp.mid_count = 1;
             size_t other = (family + 1) % families;
             if (host) {
-                memcpy(sdp.local_candidates[0].addr, ips[other], strlen(ips[other]) + 1);
+                ASSERT_OK(addr_parse_auto(ips[other], strlen(ips[other]),
+                                          sdp.local_candidates[0].addr,
+                                          &sdp.local_candidates[0].family));
                 sdp.local_candidates[0].port = 4000;
                 sdp.local_candidate_count = 1;
             }
@@ -1329,7 +1343,9 @@ TEST(test_sdp_parse_twcc_extmap)
                         "t=0 0\r\n"
                         "a=ice-ufrag:remoteuf\r\n"
                         "a=ice-pwd:remotepassword12345\r\n"
-                        "a=fingerprint:sha-256 AA:BB:CC\r\n"
+                        "a=fingerprint:sha-256 "
+                        "AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:"
+                        "AA:AA:AA:AA:AA:AA:AA:AA\r\n"
                         "a=setup:actpass\r\n"
                         "m=video 9 UDP/TLS/RTP/SAVPF 96\r\n"
                         "c=IN IP4 0.0.0.0\r\n"
@@ -1356,7 +1372,9 @@ TEST(test_sdp_parse_twcc_extmap_with_direction)
                         "t=0 0\r\n"
                         "a=ice-ufrag:dirufrag\r\n"
                         "a=ice-pwd:dirpassword123456789\r\n"
-                        "a=fingerprint:sha-256 AA:BB\r\n"
+                        "a=fingerprint:sha-256 "
+                        "AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:"
+                        "AA:AA:AA:AA:AA:AA:AA:AA\r\n"
                         "a=setup:actpass\r\n"
                         "m=video 9 UDP/TLS/RTP/SAVPF 96\r\n"
                         "c=IN IP4 0.0.0.0\r\n"
@@ -1379,7 +1397,9 @@ TEST(test_sdp_parse_non_twcc_extmap_ignored)
                         "t=0 0\r\n"
                         "a=ice-ufrag:notwccuf\r\n"
                         "a=ice-pwd:notwccpassword123456\r\n"
-                        "a=fingerprint:sha-256 AA:BB\r\n"
+                        "a=fingerprint:sha-256 "
+                        "AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:"
+                        "AA:AA:AA:AA:AA:AA:AA:AA\r\n"
                         "a=setup:actpass\r\n"
                         "m=video 9 UDP/TLS/RTP/SAVPF 96\r\n"
                         "c=IN IP4 0.0.0.0\r\n"
@@ -1403,7 +1423,9 @@ TEST(test_sdp_parse_twcc_extmap_id_zero_rejected)
                         "t=0 0\r\n"
                         "a=ice-ufrag:zeroufrag\r\n"
                         "a=ice-pwd:zeropassword1234567\r\n"
-                        "a=fingerprint:sha-256 AA\r\n"
+                        "a=fingerprint:sha-256 "
+                        "AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:"
+                        "AA:AA:AA:AA:AA:AA:AA:AA\r\n"
                         "a=setup:actpass\r\n"
                         "m=video 9 UDP/TLS/RTP/SAVPF 96\r\n"
                         "c=IN IP4 0.0.0.0\r\n"
@@ -1427,7 +1449,9 @@ TEST(test_sdp_parse_twcc_extmap_id_reserved_rejected)
                         "t=0 0\r\n"
                         "a=ice-ufrag:rsvdufrag\r\n"
                         "a=ice-pwd:rsvdpassword1234567\r\n"
-                        "a=fingerprint:sha-256 AA\r\n"
+                        "a=fingerprint:sha-256 "
+                        "AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:"
+                        "AA:AA:AA:AA:AA:AA:AA:AA\r\n"
                         "a=setup:actpass\r\n"
                         "m=video 9 UDP/TLS/RTP/SAVPF 96\r\n"
                         "c=IN IP4 0.0.0.0\r\n"
@@ -1452,7 +1476,9 @@ TEST(test_sdp_parse_twcc_extmap_id_out_of_range_rejected)
                         "t=0 0\r\n"
                         "a=ice-ufrag:bigufrag1\r\n"
                         "a=ice-pwd:bigpassword12345678\r\n"
-                        "a=fingerprint:sha-256 AA\r\n"
+                        "a=fingerprint:sha-256 "
+                        "AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:"
+                        "AA:AA:AA:AA:AA:AA:AA:AA\r\n"
                         "a=setup:actpass\r\n"
                         "m=video 9 UDP/TLS/RTP/SAVPF 96\r\n"
                         "c=IN IP4 0.0.0.0\r\n"
@@ -1477,7 +1503,9 @@ TEST(test_sdp_parse_twcc_extmap_duplicate_last_wins)
                         "t=0 0\r\n"
                         "a=ice-ufrag:dupuf\r\n"
                         "a=ice-pwd:duppassword123456789\r\n"
-                        "a=fingerprint:sha-256 AA\r\n"
+                        "a=fingerprint:sha-256 "
+                        "AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:"
+                        "AA:AA:AA:AA:AA:AA:AA:AA\r\n"
                         "a=setup:actpass\r\n"
                         "m=video 9 UDP/TLS/RTP/SAVPF 96\r\n"
                         "c=IN IP4 0.0.0.0\r\n"
@@ -1501,7 +1529,9 @@ TEST(test_sdp_twcc_roundtrip)
                         "t=0 0\r\n"
                         "a=ice-ufrag:rtripuf1\r\n"
                         "a=ice-pwd:rtrippassword1234567\r\n"
-                        "a=fingerprint:sha-256 AA\r\n"
+                        "a=fingerprint:sha-256 "
+                        "AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:"
+                        "AA:AA:AA:AA:AA:AA:AA:AA\r\n"
                         "a=setup:actpass\r\n"
                         "m=video 9 UDP/TLS/RTP/SAVPF 96\r\n"
                         "c=IN IP4 0.0.0.0\r\n"
@@ -1551,7 +1581,93 @@ TEST(test_sdp_message_size_limits)
     ASSERT_EQ(sdp_parse(&sdp, overflow, sizeof(overflow) - 1), NANORTC_ERR_PARSE);
 }
 
+TEST(test_sdp_remote_failure_is_atomic)
+{
+    nano_sdp_t sdp;
+    sdp_init(&sdp);
+    const char valid[] =
+        "v=0\r\na=ice-ufrag:peer\r\na=ice-pwd:passwordpasswordpassword\r\n"
+        "a=candidate:1 1 UDP 100 192.0.2.1 3478 typ relay raddr 192.0.2.2 rport 5000\r\n";
+    ASSERT_OK(sdp_parse(&sdp, valid, sizeof(valid) - 1));
+    nano_sdp_remote_t remote;
+    ASSERT_OK(sdp_parse_remote(&sdp, valid, sizeof(valid) - 1, &remote));
+    ASSERT_EQ(remote.remote_candidates[0].type, NANORTC_ICE_CAND_RELAY);
+    nano_sdp_t before = sdp;
+    const char malformed[] = "v=0\r\na=ice-ufrag:changed\r\na=ice-pwd:newpassword\r\n"
+                             "a=fingerprint:sha-256 AA:BB\r\n";
+    ASSERT_EQ(sdp_parse(&sdp, malformed, sizeof(malformed) - 1), NANORTC_ERR_PARSE);
+    ASSERT_MEM_EQ(&sdp, &before, sizeof(sdp));
+    ASSERT_EQ(sdp_parse(&sdp, valid, sizeof(valid)), NANORTC_ERR_PARSE);
+    ASSERT_MEM_EQ(&sdp, &before, sizeof(sdp));
+}
+
+TEST(test_sdp_fingerprint_exact_digest)
+{
+    char fingerprint[] = "sha-256 00:01:02:03:04:05:06:07:08:09:0a:0b:0c:0d:0e:0f:"
+                         "10:11:12:13:14:15:16:17:18:19:1A:1B:1C:1D:1E:1F";
+    uint8_t digest[NANORTC_DTLS_FINGERPRINT_SIZE];
+    ASSERT_OK(sdp_parse_fingerprint(fingerprint, sizeof(fingerprint) - 1, digest));
+    for (unsigned i = 0; i < sizeof(digest); i++)
+        ASSERT_EQ(digest[i], i);
+    uint8_t before[sizeof(digest)];
+    memcpy(before, digest, sizeof(before));
+    fingerprint[10] = '-';
+    ASSERT_EQ(sdp_parse_fingerprint(fingerprint, sizeof(fingerprint) - 1, digest),
+              NANORTC_ERR_PARSE);
+    ASSERT_MEM_EQ(digest, before, sizeof(digest));
+}
+
+TEST(test_sdp_candidate_related_fields_reject_atomically)
+{
+    const char *invalid[] = {
+        "candidate:1 1 UDP 100 192.0.2.1 5000 typ relay",
+        "candidate:1 1 UDP 100 192.0.2.1 5000 typ host raddr 192.0.2.2 rport 5001",
+        "candidate:1 1 UDP 100 192.0.2.1 5000 typ relay raddr 192.0.2.2",
+        "candidate:1 1 UDP 100 192.0.2.1 5000 typ relay rport 5001",
+        "candidate:1 1 UDP 100 192.0.2.1 5000 typ relay raddr 192.0.2.2 rport 65536",
+        "candidate:1 1 UDP 100 192.0.2.1 5000 typ relay raddr bad rport 5001",
+        "candidate:1 1 UDP 100 192.0.2.1 5000 typ relay raddr 192.0.2.2 rport nope",
+        "candidate:1 1 UDP 100 192.0.2.1 5000 typ relay raddr 192.0.2.2 rport 5001 rport 5002",
+    };
+    for (unsigned i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++) {
+        nano_sdp_candidate_t candidate;
+        memset(&candidate, 0xa5, sizeof(candidate));
+        nano_sdp_candidate_t before = candidate;
+        ASSERT_EQ(sdp_parse_candidate(invalid[i], strlen(invalid[i]), &candidate),
+                  NANORTC_ERR_PARSE);
+        ASSERT_MEM_EQ(&candidate, &before, sizeof(candidate));
+    }
+}
+
+TEST(test_sdp_candidate_related_fields_preserved)
+{
+    /* RFC 8839 §5.1 example, independent of the library SDP generator. */
+    const char ipv4[] = "a=candidate:2 1 UDP 1694498815 192.0.2.3 45664 typ srflx "
+                        "raddr 203.0.113.141 rport 8998 generation 0";
+    nano_sdp_candidate_t candidate;
+    ASSERT_OK(sdp_parse_candidate(ipv4, sizeof(ipv4) - 1, &candidate));
+    const uint8_t related4[] = {203, 0, 113, 141};
+    ASSERT_TRUE(candidate.has_related);
+    ASSERT_EQ(candidate.related_family, 4);
+    ASSERT_EQ(candidate.related_port, 8998);
+    ASSERT_MEM_EQ(candidate.related_addr, related4, sizeof(related4));
+#if NANORTC_FEATURE_IPV6
+    const char ipv6[] = "candidate:2 1 UDP 100 2001:db8::1 5000 typ relay "
+                        "raddr 2001:db8::2 rport 65535";
+    const uint8_t related6[] = {0x20, 1, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2};
+    ASSERT_OK(sdp_parse_candidate(ipv6, sizeof(ipv6) - 1, &candidate));
+    ASSERT_TRUE(candidate.has_related);
+    ASSERT_EQ(candidate.related_family, 6);
+    ASSERT_EQ(candidate.related_port, 65535);
+    ASSERT_MEM_EQ(candidate.related_addr, related6, sizeof(related6));
+#endif
+}
+
 TEST_MAIN_BEGIN("test_sdp")
+RUN(test_sdp_candidate_related_fields_reject_atomically);
+RUN(test_sdp_candidate_related_fields_preserved);
+RUN(test_sdp_remote_failure_is_atomic);
+RUN(test_sdp_fingerprint_exact_digest);
 RUN(test_sdp_message_size_limits);
 RUN(test_sdp_parse_chrome_offer);
 RUN(test_sdp_parse_missing_ufrag);

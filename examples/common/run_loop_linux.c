@@ -311,35 +311,12 @@ static int find_socket_for_src(nano_run_loop_t *loop, const nanortc_addr_t *src)
     return 0; /* fallback */
 }
 
-/* Bounded-retry UDP send. POSIX UDP fails transiently with ENOBUFS when
- * the interface queue is full (macOS does this readily under multi-
- * fragment video bursts) or EWOULDBLOCK on a saturated non-blocking
- * socket. Previously the return value was ignored and the packet
- * silently vanished; retry briefly and count both outcomes so bench
- * runs can tell socket starvation apart from queue overflow. Worst-case
- * stall is 3 ms per packet. */
-static void send_udp(nano_run_loop_t *loop, int fd, const void *data, size_t len,
-                     const struct sockaddr *dest, socklen_t dest_len)
-{
-    for (int attempt = 0;; attempt++) {
-        if (sendto(fd, data, len, 0, dest, dest_len) >= 0) {
-            return;
-        }
-        int e = errno;
-        if (attempt >= 3 || (e != ENOMEM && e != ENOBUFS && e != EWOULDBLOCK && e != EAGAIN)) {
-            loop->stats_send_drop++;
-            return;
-        }
-        loop->stats_send_retry++;
-        usleep(1000);
-    }
-}
-
 static void dispatch_outputs(nano_run_loop_t *loop)
 {
+    nano_udp_retry(&loop->udp, loop->rtc, nano_get_millis());
     nanortc_output_t out;
 
-    while (nanortc_poll_output(loop->rtc, &out) == NANORTC_OK) {
+    while (!loop->udp.pending && nanortc_poll_output(loop->rtc, &out) == NANORTC_OK) {
         switch (out.type) {
         case NANORTC_OUTPUT_TRANSMIT: {
             int index = find_socket_for_src(loop, &out.transmit.src);
@@ -367,8 +344,8 @@ static void dispatch_outputs(nano_run_loop_t *loop)
                 memcpy(&dest->sin_addr, out.transmit.dest.addr, 4);
                 dest_len = sizeof(*dest);
             }
-            send_udp(loop, loop->fds[index], out.transmit.data, out.transmit.len,
-                     (struct sockaddr *)&storage, dest_len);
+            nano_udp_send(&loop->udp, loop->rtc, &out, loop->fds[index],
+                          (struct sockaddr *)&storage, dest_len, nano_get_millis());
             break;
         }
         case NANORTC_OUTPUT_EVENT:
@@ -398,6 +375,7 @@ int nano_run_loop_step(nano_run_loop_t *loop)
      * which also bounds cooperative-shutdown latency for callers that
      * tear the loop down by flipping `peer->running`). The library's
      * next protocol deadline can only *shorten* this — never extend it. */
+    dispatch_outputs(loop);
     uint32_t timeout_ms = loop->max_poll_ms ? loop->max_poll_ms : 100;
 
     uint32_t deadline_ms = 0;
@@ -406,7 +384,9 @@ int nano_run_loop_step(nano_run_loop_t *loop)
         timeout_ms = deadline_ms;
     }
 
-    dispatch_outputs(loop);
+    uint32_t retry_ms = nano_udp_next_timeout(&loop->udp, nano_get_millis());
+    if (retry_ms < timeout_ms)
+        timeout_ms = retry_ms;
 
     /* Wait for network input or timeout */
     fd_set rset;
@@ -519,6 +499,8 @@ void nano_run_loop_destroy(nano_run_loop_t *loop)
 {
     if (!loop)
         return;
+    loop->running = 0;
+    nano_udp_cancel(&loop->udp, loop->rtc, nano_get_millis());
     for (uint8_t i = 0; i < loop->fd_count; i++) {
         if (loop->fds[i] >= 0) {
             close(loop->fds[i]);

@@ -21,6 +21,43 @@
  * Helpers
  * ---------------------------------------------------------------- */
 
+typedef struct {
+    interop_owner_t owner;
+    atomic_int sent;
+} owner_handoff_test_t;
+
+static void *handoff_sender(void *arg)
+{
+    owner_handoff_test_t *test = arg;
+    interop_owner_send_lock(&test->owner);
+    atomic_store(&test->sent, 1);
+    interop_owner_send_unlock(&test->owner);
+    return NULL;
+}
+
+TEST(test_interop_owner_handoff)
+{
+    owner_handoff_test_t test;
+    interop_owner_init(&test.owner);
+    for (int i = 0; i < 32; i++) {
+        atomic_init(&test.sent, 0);
+        interop_owner_step_lock(&test.owner);
+        pthread_t sender;
+        ASSERT_OK(pthread_create(&sender, NULL, handoff_sender, &test));
+        while (!atomic_load(&test.owner.senders))
+            interop_sleep_ms(1);
+        interop_owner_step_unlock(&test.owner);
+        /* Even if this thread immediately wins the mutex, the next blocking
+         * I/O step must wait for the already registered application sender. */
+        interop_owner_step_lock(&test.owner);
+        int sent = atomic_load(&test.sent);
+        interop_owner_step_unlock(&test.owner);
+        pthread_join(sender, NULL);
+        ASSERT_EQ(sent, 1);
+    }
+    interop_owner_destroy(&test.owner);
+}
+
 /* Port counter to avoid bind conflicts between tests */
 static uint16_t next_port = INTEROP_PORT_BASE;
 
@@ -187,7 +224,7 @@ TEST(test_interop_dc_string_nanortc_to_libdatachannel)
     const char *msg = "hello libdatachannel";
     int initial_count = atomic_load(&libdatachannel.msg_count);
 
-    rc = nanortc_datachannel_send_string(&nano.rtc, 0, msg);
+    rc = interop_nanortc_send_string(&nano, 0, msg);
     ASSERT_OK(rc);
 
     /* Wait for libdatachannel to receive it */
@@ -277,7 +314,7 @@ TEST(test_interop_dc_binary_nanortc_to_libdatachannel)
     }
 
     int initial_count = atomic_load(&libdatachannel.msg_count);
-    rc = nanortc_datachannel_send(&nano.rtc, 0, payload, sizeof(payload));
+    rc = interop_nanortc_send(&nano, 0, payload, sizeof(payload));
     ASSERT_OK(rc);
 
     /* Wait for libdatachannel to receive */
@@ -340,7 +377,7 @@ TEST(test_interop_dc_large_binary)
     pthread_mutex_unlock(&nano.msg_mutex);
 
     initial_count = atomic_load(&libdatachannel.msg_count);
-    rc = nanortc_datachannel_send(&nano.rtc, 0, payload, sizeof(payload));
+    rc = interop_nanortc_send(&nano, 0, payload, sizeof(payload));
     ASSERT_OK(rc);
     start = interop_get_millis();
     while (atomic_load(&libdatachannel.msg_count) <= initial_count) {
@@ -394,7 +431,7 @@ TEST(test_interop_dc_single_byte)
     /* nanortc -> libdatachannel: single byte 0xAB */
     uint8_t byte_nano = 0xAB;
     int initial_ldc = atomic_load(&libdatachannel.msg_count);
-    rc = nanortc_datachannel_send(&nano.rtc, 0, &byte_nano, 1);
+    rc = interop_nanortc_send(&nano, 0, &byte_nano, 1);
     ASSERT_OK(rc);
 
     start = interop_get_millis();
@@ -489,7 +526,7 @@ TEST(test_interop_dc_bidirectional)
     const char *from_nano = "from-nano";
     const char *from_ldc = "from-libdc";
 
-    rc = nanortc_datachannel_send_string(&nano.rtc, 0, from_nano);
+    rc = interop_nanortc_send_string(&nano, 0, from_nano);
     ASSERT_OK(rc);
     rc = interop_libdatachannel_send_string(&libdatachannel, from_ldc);
     ASSERT_TRUE(rc >= 0);
@@ -559,7 +596,7 @@ TEST(test_interop_dc_echo_roundtrip)
     /* Step 2: nanortc echoes back a reply */
     const char *reply = "echo-reply";
     int initial_ldc = atomic_load(&libdatachannel.msg_count);
-    rc = nanortc_datachannel_send_string(&nano.rtc, 0, reply);
+    rc = interop_nanortc_send_string(&nano, 0, reply);
     ASSERT_OK(rc);
 
     start = interop_get_millis();
@@ -583,6 +620,7 @@ TEST(test_interop_dc_echo_roundtrip)
  * ---------------------------------------------------------------- */
 
 TEST_MAIN_BEGIN("interop-datachannel")
+RUN(test_interop_owner_handoff);
 RUN(test_interop_handshake);
 RUN(test_interop_dc_open);
 RUN(test_interop_dc_string_libdatachannel_to_nanortc);

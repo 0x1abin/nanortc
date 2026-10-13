@@ -11,13 +11,13 @@ set_target_properties(unity PROPERTIES C_STANDARD 99)
 file(GLOB TEST_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/test_*.c")
 
 # Tests that require media transport (AUDIO or VIDEO enabled)
-set(MEDIA_TESTS test_rtp test_srtp test_rtcp test_media)
+set(MEDIA_TESTS test_rtp test_srtp test_rtcp test_media test_media_api)
 
 # Tests that require AUDIO specifically
 set(AUDIO_TESTS test_jitter)
 
 # Tests that require VIDEO specifically
-set(VIDEO_TESTS test_h264 test_bwe test_twcc test_annex_b test_video_pacing test_reorder test_fec test_rate_control)
+set(VIDEO_TESTS test_h264 test_bwe test_twcc test_annex_b test_video_pacing test_reorder test_fec test_rate_control test_media_fec test_media_packetization test_transmit_media test_bwe_network)
 
 # Tests that require the H.265 sub-feature of VIDEO
 set(H265_TESTS test_h265 test_base64)

@@ -1,5 +1,7 @@
 # NanoRTC
 
+**0.2.0 包含破坏性 API 升级。** 远端 SDP/候选输入必须传长度；每个取出的 UDP 输出都必须回报发送结果。详见[迁移与验收记录](docs/engineering/nanortc-02.md)。
+
 [English](README.md) | 简体中文
 
 一个面向 RTOS 与嵌入式系统的 Sans I/O 纯 C WebRTC 实现。
@@ -27,17 +29,17 @@ NanoRTC 是一个从零设计的 WebRTC 协议栈,目标是运行 FreeRTOS、Zep
 
 - **正交的特性开关** —— 只编入你需要的部分:
 
-| 配置 | Flash (.text) | RAM (sizeof) | 开关 |
-|--------------|---------------|-------------|-------|
-| 仅核心 | 29.0 KB | 10.2 KB | DC=OFF AUDIO=OFF VIDEO=OFF |
-| DataChannel | 38.8 KB | 19.4 KB | DC=ON |
-| 仅音频 | 40.8 KB | 20.6 KB | DC=OFF AUDIO=ON |
-| DataChannel + 音频 | 50.6 KB | 29.9 KB | DC=ON AUDIO=ON |
-| 仅媒体(无 DC) | 45.3 KB | 51.0 KB | DC=OFF AUDIO=ON VIDEO=ON |
-| 完整媒体 | 55.0 KB | 60.3 KB | DC=ON AUDIO=ON VIDEO=ON |
+| 配置 | 库代码 + 只读数据 | 状态（`sizeof`） | Profile |
+|---|---:|---:|---|
+| 仅核心 | 39.8 KiB | 13.9 KiB | `CORE_ONLY` |
+| DataChannel | 53.3 KiB | 23.3 KiB | `DATA` |
+| 仅音频 | 54.1 KiB | 23.5 KiB | `AUDIO_ONLY` |
+| DataChannel + 音频 | 67.4 KiB | 32.8 KiB | `AUDIO` |
+| 仅媒体（无 DC） | 61.7 KiB | 62.1 KiB | `MEDIA_ONLY` |
+| 完整媒体 | 75.1 KiB | 71.4 KiB | `MEDIA` |
+| 完整媒体 + H.265 | 78.8 KiB | 72.5 KiB | `MEDIA_H265` |
 
-> 实测平台:ESP32-P4(RISC-V HP),ESP-IDF 5.5 mbedTLS,`-Os`(`CONFIG_COMPILER_OPTIMIZATION_SIZE=y`)。`sizeof(nanortc_t)` 即单连接的全部 RAM 占用——没有堆分配。Flash 数字只统计 nanortc 库自身代码(`libnanortc.a` .text);mbedTLS 与 lwIP 独立计算,通常与固件其余部分共享。
-> 以上尺寸基于 ESP-IDF Kconfig 默认值——内置 IoT 级缓冲区/队列配置,完整 ICE 栈不打折(TURN 中继、srflx 发现、IPv6 host 候选、TWCC/BWE 感知、RFC 8445 加固)。可用 `./scripts/measure-sizes.sh --esp32 esp32p4` 复现;进一步裁剪见 `idf.py menuconfig` 或 [`NANORTC_CONFIG_FILE`](docs/engineering/memory-profiles.md)。
+> ESP32-P4，ESP-IDF 6.1 / mbedTLS 4.1.0，`-Os`，Kconfig 默认配置。库大小含只读数据，不含加密库和最终链接裁剪。状态大小不含 provider heap、应用重试缓存与任务栈。
 
 任意组合均可工作——只要音频不要 DataChannel、只要视频不要音频,都没问题。
 
@@ -48,8 +50,10 @@ NanoRTC 是一个从零设计的 WebRTC 协议栈,目标是运行 FreeRTOS、Zep
 - **RTP/RTCP/SRTP** —— 音视频媒体传输,H.264 FU-A 与 H.265(RFC 7798)分包
 - **SDP** —— Offer/Answer 协商,多轨媒体
 - **NAT 穿透** —— STUN 服务器反射地址发现 + TURN 中继客户端(可选,`NANORTC_FEATURE_TURN`)
-- **带宽估计** —— REMB + TWCC 丢包感知的接收端 BWE,支持视频自适应
+- **带宽估计** —— REMB 接收端上限 + TWCC 实际发送历史与到达延迟检查,支持视频自适应
 - **唯一外部依赖** —— 只有 mbedtls(ESP-IDF、Zephyr、RT-Thread、STM32 均内置)
+
+上方是 0.2.0 P4 实测；精确字节与主机容量上限见[内存配置](docs/engineering/memory-profiles.md)。`sizeof(nanortc_t)` 不含加密后端分配、应用重试缓存与任务栈。
 
 ## 快速开始
 
@@ -76,14 +80,14 @@ idf.py build
 
 ## 使用方式
 
-> 下方函数签名为便于阅读做了简化——省略了可选的出参。完整 API 见 [include/nanortc.h](include/nanortc.h)。
+> 示例中的套接字/时钟 helper 由应用提供。请检查所有返回值；完整 API 见 [include/nanortc.h](include/nanortc.h)。
 
 **配置、协商、驱动:**
 
 ```c
 #include "nanortc.h"
 
-nanortc_t rtc;
+nanortc_t rtc = {0};
 nanortc_init(&rtc, &(nanortc_config_t){
     .crypto = nanortc_crypto_mbedtls(),   // or nanortc_crypto_openssl()
     .role   = NANORTC_ROLE_CONTROLLED,    // or _CONTROLLING to offer
@@ -91,8 +95,11 @@ nanortc_init(&rtc, &(nanortc_config_t){
 nanortc_add_local_candidate(&rtc, local_ip, local_port);
 
 char sdp[4096];
-nanortc_accept_offer(&rtc, remote_offer, sdp);
-// Offerer: create_datachannel("chat") → create_offer(sdp) → accept_answer(remote_answer)
+size_t answer_len = 0;
+int rc = nanortc_accept_offer(&rtc, remote_offer, remote_offer_len,
+                              sdp, sizeof(sdp), &answer_len);
+if (rc != NANORTC_OK) { /* Handle negotiation error before sending the answer. */ }
+// Offerer: create_datachannel → create_offer → accept_answer(answer, answer_len).
 ```
 
 事件循环是对称的——**排空输出,喂入输入。** 套接字与时钟由你掌控:
@@ -101,14 +108,22 @@ nanortc_accept_offer(&rtc, remote_offer, sdp);
 for (;;) {
     nanortc_output_t out;
     while (nanortc_poll_output(&rtc, &out) == NANORTC_OK)
-        handle_output(&out);              // send UDP, fire app event, note next wake-up
+        handle_output(&rtc, &out);              // send UDP, fire app event, note next wake-up
 
+    uint32_t wake_ms;
+    nanortc_next_timeout_ms(&rtc, now_ms(), &wake_ms);
     size_t len = recv_udp(fd, buf, sizeof buf, &src, wake_ms);
     nanortc_handle_input(&rtc, &(nanortc_input_t){
         .now_ms = now_ms(), .data = buf, .len = len, .src = src,
     });
 }
 ```
+
+`handle_output` 是应用函数：UDP 成功接收数据报后必须调用
+`nanortc_report_transmit(rtc, out.transmit.token, NANORTC_TRANSMIT_SENT, sent_ms)`；
+最终放弃时回报 `NANORTC_TRANSMIT_DROPPED`。遇到 `EAGAIN`，先复制这一个数据报
+并保留 token，再继续处理输入和定时器并择机重试。取出时间不是实际发送时间。
+完整重试逻辑见[共享 UDP helper](examples/common/udp_send.h)。
 
 一个输入结构体进,一个输出结构体出。没有隐藏状态,没有后台线程。
 

@@ -1,5 +1,7 @@
 # NanoRTC
 
+**0.2.0 cambia la compatibilidad de la API.** SDP/candidatos remotos requieren longitud; cada datagrama extraído requiere un informe de envío. Consulta la [migración y validación](docs/engineering/nanortc-02.md).
+
 [English](README.md) | [简体中文](README.zh-CN.md) | Español
 
 Una implementación de WebRTC en C puro y Sans I/O para RTOS y sistemas embebidos.
@@ -29,7 +31,7 @@ NanoRTC es una pila de protocolos WebRTC diseñada desde cero para microcontrola
 
 Los siete perfiles y sus medidas actuales de código y estado están en
 [Perfiles de memoria](docs/engineering/memory-profiles.md). Las medidas de
-ESP32-P4 usan ESP-IDF 5.5.4 y `-Os`; no incluyen las asignaciones del proveedor
+ESP32-P4 de 0.2.0 usan ESP-IDF 6.1 / mbedTLS 4.1.0 y `-Os`; no incluyen las asignaciones del proveedor
 criptográfico, los buffers de la aplicación ni las pilas de tareas. Para
 reproducirlas: `./scripts/measure-sizes.sh --esp32 esp32p4`.
 
@@ -42,7 +44,7 @@ Cualquier combinación funciona: audio sin DataChannel, video sin audio, etc.
 - **RTP/RTCP/SRTP** — Transporte de medios de audio y video, paquetización H.264 FU-A y H.265 (RFC 7798).
 - **SDP** — Negociación de oferta/respuesta, medios multi-pista.
 - **Atravesamiento de NAT** — Descubrimiento server-reflexive de STUN + cliente de relé TURN (opcional, `NANORTC_FEATURE_TURN`).
-- **Estimación de ancho de banda** — REMB + BWE de receptor consciente de pérdidas TWCC para video adaptativo.
+- **Estimación de ancho de banda** — Límite REMB del receptor + historial de envío y controles de demora TWCC para video adaptativo.
 - **Única dependencia externa** — Solo mbedtls (integrado en ESP-IDF, Zephyr, RT-Thread, STM32).
 
 ## Inicio Rápido
@@ -70,14 +72,14 @@ idf.py build
 
 ## Uso
 
-> Las firmas a continuación están simplificadas para mayor legibilidad — se omiten los parámetros de salida opcionales. Consulta [include/nanortc.h](include/nanortc.h) para la API completa.
+> Los helpers de socket/reloj pertenecen a la aplicación. Comprueba los códigos de retorno; consulta [include/nanortc.h](include/nanortc.h) para la API completa.
 
 **Configurar, negociar, ejecutar:**
 
 ```c
 #include "nanortc.h"
 
-nanortc_t rtc;
+nanortc_t rtc = {0};
 nanortc_init(&rtc, &(nanortc_config_t){
     .crypto = nanortc_crypto_mbedtls(),   // o nanortc_crypto_openssl()
     .role   = NANORTC_ROLE_CONTROLLED,    // o _CONTROLLING para ofrecer
@@ -85,8 +87,11 @@ nanortc_init(&rtc, &(nanortc_config_t){
 nanortc_add_local_candidate(&rtc, local_ip, local_port);
 
 char sdp[4096];
-nanortc_accept_offer(&rtc, remote_offer, sdp);
-// Offerer: create_datachannel("chat") → create_offer(sdp) → accept_answer(remote_answer)
+size_t answer_len = 0;
+int rc = nanortc_accept_offer(&rtc, remote_offer, remote_offer_len,
+                              sdp, sizeof(sdp), &answer_len);
+if (rc != NANORTC_OK) { /* Handle negotiation error before sending the answer. */ }
+// Offerer: create_datachannel → create_offer → accept_answer(answer, answer_len).
 ```
 
 El bucle de eventos es simétrico: **vaciar salidas, alimentar entradas.** Tú posees el socket y el reloj:
@@ -95,7 +100,7 @@ El bucle de eventos es simétrico: **vaciar salidas, alimentar entradas.** Tú p
 for (;;) {
     nanortc_output_t out;
     while (nanortc_poll_output(&rtc, &out) == NANORTC_OK)
-        handle_output(&out);              // enviar UDP o procesar un evento
+        handle_output(&rtc, &out);              // enviar UDP o procesar un evento
 
     uint32_t wake_ms;
     nanortc_next_timeout_ms(&rtc, now_ms(), &wake_ms);
@@ -106,6 +111,13 @@ for (;;) {
     });
 }
 ```
+
+`handle_output` es código de la aplicación: tras aceptar UDP el datagrama, llama a
+`nanortc_report_transmit(rtc, out.transmit.token, NANORTC_TRANSMIT_SENT, sent_ms)`;
+al descartarlo definitivamente usa `NANORTC_TRANSMIT_DROPPED`. Con `EAGAIN`, copia
+un datagrama y conserva el token antes de otras llamadas que modifiquen el estado.
+Sigue procesando entradas y temporizadores durante los reintentos. Véase el
+[helper UDP compartido](examples/common/udp_send.h).
 
 Una estructura de entrada entra, una estructura de salida sale. Sin estado oculto, sin hilos en segundo plano.
 

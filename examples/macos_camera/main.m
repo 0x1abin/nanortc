@@ -413,7 +413,7 @@ static void poll_signaling(http_sig_t *sig, const nanortc_config_t *cfg)
         nano_session_t *s = nano_session_find_by_viewer(&g_pool, from);
         if (s && payload[0] != '\0') {
             fprintf(stderr, "[sig] ICE candidate from viewer %d\n", from);
-            nanortc_add_remote_candidate(&s->rtc, payload);
+            nanortc_add_remote_candidate(&s->rtc, payload, strlen(payload));
         }
     }
 }

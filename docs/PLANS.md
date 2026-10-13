@@ -6,7 +6,20 @@ Plans are first-class artifacts in NanoRTC. They are versioned, tracked, and co-
 
 NanoRTC is built by AI coding agents. Estimates use **agent sessions** (one focused run, typically 2-6 hours of agent work) rather than human-weeks. The primary bottleneck is human review and browser-level verification, not coding speed.
 
-## Active Plans
+## Current release and active plans
+
+**0.2.0 implementation and release validation — completed 2026-10-13:**
+[API, authentication, bounded I/O, ICE restart, statistics and BWE](engineering/nanortc-02.md).
+Full CI passes 54/54 checks across seven profiles and both crypto providers.
+All-advanced ASan/UBSan builds pass 43/43 suites on each provider; 12 fuzz harnesses completed
+14 runs and 96,285,341 executions without errors. Both-role session restart,
+50/100/200 ms weak-network simulations, four Chrome sessions, four independent
+peer interop suites, four ESP-IDF examples and seven P4 profiles are verified
+within the linked record's scope. Performance and exact memory values are
+recorded there. This release breaks API compatibility; hardware runtime,
+LeakSanitizer and browser encoder-adaptation timing are not claimed. Earlier
+completed-plan browser/fuzz totals below are dated historical results.
+
 
 Issue #81 implementation and validation: [bidirectional ICE](engineering/issue-81-ice.md). Example portability is delivered separately.
 
@@ -22,10 +35,11 @@ Issue #81 implementation and validation: [bidirectional ICE](engineering/issue-8
 
 **Total Phase 1-10:** ~25-32 agent sessions
 
-## Completed Plans
+## Completed plans
 
 | Plan | Completed | Effort | Outcome |
 |------|-----------|--------|---------|
+| [0.2.0 convergence](engineering/nanortc-02.md) | 2026-10-13 | Implementation + validation | **Completed.** Explicit transmit results, authenticated DTLS, transactional negotiation, retained ICE restart, bounded feedback history and lifecycle/stats contracts. CI 54/54, ASan/UBSan 43/43, fresh fuzz, browser, ESP-IDF, resource and performance evidence; scoped runtime limits remain documented. |
 | [DataChannel zero-retransmission integration](engineering/datachannel-zero-retransmit.md) | 2026-09-07 | Integration + validation | PR #79 adapted to #82 ownership; explicit zero-retry policy, protocol metadata, bounded gap-SACK abandonment; full CI, ASan/UBSan, million-run SCTP fuzz and four Chrome sessions passed. |
 | [Design hardening and transport convergence](engineering/design-hardening.md) | 2026-09-07 | Implementation + review + validation | Bounded SCTP ownership/iterative reassembly, DCEP peek/commit, TURN shared scheduling and authenticated nonce transactions, instance logs, provider timers and length-delimited text; full CI, ASan/UBSan, SCTP/TURN million-run fuzz, 4 KiB interop, 4 Chrome sessions, 4 ESP-IDF examples and 7 P4 profiles passed. ESP32 hardware validation excluded by user. |
 | [Phase 0: Skeleton](exec-plans/completed/phase0-skeleton.md) | 2026-03-26 | 1 session | 75 files, all 3 profiles build, 12 tests pass |
@@ -42,7 +56,11 @@ Issue #81 implementation and validation: [bidirectional ICE](engineering/issue-8
 
 Tracked in [tech-debt-tracker.md](exec-plans/tech-debt-tracker.md).
 
-**Current status: 1 active item** — `TD-026` (Phase 13 FEC residual limits L2 single-video-track / L3 one-pending-FEC; "reduced efficiency, not incorrect"; L1 + NACK-coordination now closed). `TD-023` (non-contiguous NACK-retransmit corruption) **resolved 2026-06-22** via the `nack_retx_buf` scratch ring (revert-verified test). 24 resolved (most recently `TD-025` — audio jitter-pop multi-emit aliasing of `media_buf`, fixed via a poll-time audio producer mirroring the video reorder fix, resolved 2026-06-22; before that `TD-024` — inbound PLI mapped via RTCP sender SSRC instead of media-source SSRC + a stack-buffer lifetime bug in the PLI emit; both found and fixed during Phase 12 PR-1, resolved 2026-06-21; before that `TD-021` — ICE hardening pass: mandatory MI+FP on incoming STUN, random tie-breaker per RFC 8445 §5.2, SDP-vs-STUN priority alignment, Binding Error 0x0111 handler, DISCONNECTED early-return, unarmed-consent fail-loud; resolved 2026-04-17).
+**Current status: 2 active items** — `TD-026` retains bounded FEC coverage
+(shared groups, finite repair slots and one pending receive group); `TD-027` is
+partially addressed by 0.2.0 but complete GCC probing and real-link/controller
+validation remain open. See the tracker for the resolved historical defects
+and current scope.
 
 ## Plan Lifecycle
 

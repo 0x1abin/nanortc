@@ -14,51 +14,66 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
+#include "nano_twcc.h"
 #include "nanortc_config.h"
-
-/* BWE configurable limits */
-
-/** @brief Minimum bitrate (bps). Default 30 kbps. */
-#ifndef NANORTC_BWE_MIN_BITRATE
-#define NANORTC_BWE_MIN_BITRATE 30000
-#endif
-
-/** @brief Maximum bitrate (bps). Default 2 Mbps. */
-#ifndef NANORTC_BWE_MAX_BITRATE
-#define NANORTC_BWE_MAX_BITRATE 2000000
-#endif
-
-/** @brief Initial bitrate (bps). Default 300 kbps. */
-#ifndef NANORTC_BWE_INITIAL_BITRATE
-#define NANORTC_BWE_INITIAL_BITRATE 300000
-#endif
-
-/** @brief EMA smoothing factor numerator (out of 256). Default 204 (~0.8).
- *  new_rate = (alpha * remb + (256 - alpha) * old_rate) / 256 */
-#ifndef NANORTC_BWE_EMA_ALPHA
-#define NANORTC_BWE_EMA_ALPHA 204
-#endif
 
 /* REMB packet identification (draft-alvestrand-rmcat-remb-03 §2) */
 #define BWE_REMB_FMT       15         /* RTCP PSFB FMT=15 for REMB */
 #define BWE_REMB_MIN_SIZE  16         /* Minimum REMB packet size: header(8) + SSRC(4) + REMB(4) */
 #define BWE_REMB_UNIQUE_ID 0x52454D42 /* "REMB" in ASCII */
 
+typedef struct {
+    uint32_t sequence;
+    uint32_t sent_ms;
+    uint16_t bytes;
+    uint8_t flags;
+} nano_bwe_sent_t;
+
 typedef struct nano_bwe {
-    uint32_t estimated_bitrate;  /* bps — current smoothed estimate */
+    uint32_t estimated_bitrate;  /* bps — current bounded target */
     uint32_t prev_event_bitrate; /* bps — bitrate at last event emission */
     uint32_t last_update_ms;     /* monotonic time of last update */
     uint32_t remb_count;         /* number of REMB packets processed */
     uint32_t twcc_count;         /* number of TWCC feedbacks processed */
-    uint16_t smoothed_loss_q8;   /* EMA of the TWCC loss fraction (q8: 256 = 100%) */
+    uint16_t smoothed_loss_q8;   /* Smoothed accepted loss fraction (q8: 256 = 100%). */
 
     /* Runtime-tunable parameters (0 means "use compile-time default").
      * Changed via nanortc_set_bitrate_bounds/_initial_bitrate/
      * _bwe_event_threshold. */
     uint32_t runtime_min_bps;
     uint32_t runtime_max_bps;
+    uint32_t local_target;
+    uint32_t remb_limit;
+    uint32_t latest_sequence;
+    uint32_t history_missed;
+    nano_bwe_sent_t sent[NANORTC_BWE_SEND_HISTORY_SIZE];
+    uint32_t send_bytes[NANORTC_BWE_RATE_BUCKETS];
+    uint32_t bucket_start_ms;
+    uint32_t control_ms;
+    uint32_t stable_since_ms;
+    uint32_t last_probe_ms;
+    uint32_t last_feedback_ms;
+    uint32_t last_bad_send_ms;
+    uint32_t delay_first_send_ms;
+    int64_t delay_first_arrival_us;
+    int64_t delay_last_arrival_us;
+    uint16_t delay_samples;
+    bool bucket_valid;
+    bool control_valid;
+    bool stable_valid;
+    bool bad_send_valid;
+    bool delay_valid;
+    bool delay_growing;
+    bool feedback_valid;
+    bool sequence_valid;
     uint8_t runtime_event_threshold_pct;
 } nano_bwe_t;
+
+void bwe_record_transmit(nano_bwe_t *bwe, uint32_t sequence, uint16_t bytes, uint32_t at_ms,
+                         bool has_twcc, bool retransmit);
+void bwe_record_drop(nano_bwe_t *bwe, uint32_t at_ms);
+int bwe_on_twcc_feedback(nano_bwe_t *bwe, const uint8_t *data, size_t len, uint32_t now_ms);
 
 /**
  * @brief Initialize bandwidth estimator.
@@ -96,8 +111,8 @@ int bwe_set_initial_bitrate(nano_bwe_t *bwe, uint32_t bps);
 /**
  * @brief Process incoming RTCP feedback for bandwidth estimation.
  *
- * Parses REMB (RTCP PSFB FMT=15) packets and updates the estimated
- * bitrate using exponential moving average smoothing.
+ * Parses REMB (RTCP PSFB FMT=15) as an immediate receiver cap.
+ * With no matched TWCC, REMB directly supplies the local target.
  *
  * @param bwe   Bandwidth estimator state.
  * @param data  Raw RTCP packet (after SRTCP unprotect).
@@ -117,10 +132,9 @@ int bwe_on_rtcp_feedback(nano_bwe_t *bwe, const uint8_t *data, size_t len, uint3
 uint32_t bwe_get_bitrate(const nano_bwe_t *bwe);
 
 /**
- * @brief Current smoothed packet-loss fraction (q8: 256 = 100%).
+ * @brief Smoothed accepted packet-loss fraction (q8: 256 = 100%).
  *
- * EMA of the TWCC loss samples fed to bwe_on_twcc_loss(). 0 until the first
- * TWCC feedback. Used by adaptive FEC to scale protection to measured loss.
+ * Zero until the first accepted loss sample. Adaptive FEC uses this value.
  * @param bwe  Bandwidth estimator state.
  * @return loss fraction in 256-ths (0..256), or 0 if @p bwe is NULL.
  */
@@ -152,18 +166,12 @@ int bwe_parse_remb(const uint8_t *data, size_t len, uint32_t *bitrate);
 int bwe_should_emit_event(nano_bwe_t *bwe);
 
 /**
- * @brief Feed a loss-based TWCC signal into the bandwidth estimator.
+ * @brief Feed a summary-only loss signal; it cannot authorize growth.
  *
- * Implements a legacy libwebrtc-style loss-based controller:
- *   - loss_fraction_q8 <  5  (< ~2%): increase estimate by 8 %.
- *   - loss_fraction_q8 in [5, 25] (2 %–10 %): hold estimate.
- *   - loss_fraction_q8 >  25 (> ~10%): decrease estimate by (0.5 * loss).
- *
- * The resulting value is clamped to [NANORTC_BWE_MIN_BITRATE,
- * NANORTC_BWE_MAX_BITRATE] and then combined with the existing estimate
- * via the same EMA used for REMB (alpha = NANORTC_BWE_EMA_ALPHA / 256).
- * This parallels bwe_on_rtcp_feedback() so the two signal paths stay
- * coherent.
+ * At most once per control interval, loss above 10% reduces the local target
+ * by half the loss fraction. Lower loss holds the target; growth additionally
+ * requires matched send history, fresh feedback and measured offered load.
+ * The independent REMB cap also applies below the configured encoder minimum.
  *
  * @param bwe               Bandwidth estimator state.
  * @param loss_fraction_q8  Packet loss as an unsigned 8-bit fraction

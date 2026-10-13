@@ -32,6 +32,113 @@
 
 #include <string.h>
 
+bool nano_rtc_peer_can_send(const nanortc_t *rtc)
+{
+    return !rtc->ice_restarting || (rtc->ice.consent_expiry_ms != 0u &&
+                                    !nano_time_is_due(rtc->now_ms, rtc->ice.consent_expiry_ms));
+}
+
+static bool rtc_is_peer_payload(const uint8_t *data, size_t len)
+{
+    return data && len &&
+           ((data[0] >= 20u && data[0] <= 63u) || (data[0] >= 128u && data[0] <= 191u));
+}
+
+static void rtc_close(nanortc_t *rtc, nanortc_disconnect_reason_t reason)
+{
+    if (rtc->state == NANORTC_STATE_CLOSED)
+        return;
+    rtc->state = NANORTC_STATE_CLOSED;
+    rtc->transmit_pending = false;
+    rtc->out_head = rtc->out_tail;
+    rtc->tx_slots_in_use = 0;
+    rtc->pending_event_count = 0;
+    memset(rtc->host_candidate_pending, 0, sizeof(rtc->host_candidate_pending));
+    rtc->srflx_candidate_pending = false;
+#if NANORTC_FEATURE_TURN
+    rtc->relay_candidate_pending = false;
+#endif
+#if NANORTC_FEATURE_VIDEO
+    rtc->nack_retx_in_use = 0;
+#if NANORTC_FEATURE_VIDEO_PACING
+    rtc->pacer.head = rtc->pacer.tail;
+#endif
+#if NANORTC_FEATURE_VIDEO_FEC
+    rtc->fec_tx_in_use = 0;
+#endif
+#endif
+    nanortc_event_t event;
+    memset(&event, 0, sizeof(event));
+    if (reason == NANORTC_DISCONNECT_ICE_FAILED || reason == NANORTC_DISCONNECT_CONSENT_EXPIRED) {
+        event.type = NANORTC_EV_ICE_STATE_CHANGE;
+        event.ice_state = (uint16_t)rtc->ice.state;
+        (void)nano_rtc_emit_event_full(rtc, &event);
+    }
+    memset(&event, 0, sizeof(event));
+    event.type = NANORTC_EV_DISCONNECTED;
+    event.disconnect_reason = reason;
+    (void)nano_rtc_emit_event_full(rtc, &event);
+}
+
+#if NANORTC_HAVE_MEDIA_TRANSPORT
+/* Only the authenticated-but-unencrypted RTP header is inspected here. */
+static void rtc_transmit_metadata(nanortc_t *rtc, nanortc_output_t *out)
+{
+    const uint8_t *data = out->transmit.data;
+    size_t len = out->transmit.len;
+    if (!data || len < RTP_HEADER_SIZE + NANORTC_SRTP_AUTH_TAG_SIZE || (data[0] >> 6) != 2 ||
+        (data[1] >= 192 && data[1] <= 223))
+        return;
+    uint32_t ssrc = nanortc_read_u32be(data + 8);
+    for (uint8_t i = 0; i < rtc->media_count; i++) {
+        const nanortc_track_t *m = &rtc->media[i];
+        if (!m->active)
+            continue;
+        uint8_t flags = NANO_TX_RTP;
+        if (ssrc != m->rtp.ssrc) {
+#if NANORTC_FEATURE_VIDEO_FEC
+            if (m->kind != NANORTC_TRACK_VIDEO || ssrc != m->rtp.ssrc + 1u ||
+                (data[1] & 0x7fu) != NANORTC_VIDEO_FEC_PT)
+                continue;
+            flags = NANO_TX_FEC;
+#else
+            continue;
+#endif
+        }
+        size_t header = RTP_HEADER_SIZE + (size_t)(data[0] & 15u) * 4u;
+        if (header > len - NANORTC_SRTP_AUTH_TAG_SIZE)
+            return;
+        if ((data[0] & 0x10u) != 0) {
+            if (len - NANORTC_SRTP_AUTH_TAG_SIZE - header < 4u)
+                return;
+            size_t ext = (size_t)nanortc_read_u16be(data + header + 2u) * 4u;
+            if (ext > len - NANORTC_SRTP_AUTH_TAG_SIZE - header - 4u)
+                return;
+#if NANORTC_FEATURE_VIDEO
+            if (ext == 4u && nanortc_read_u16be(data + header) == RTP_EXT_PROFILE_ONE_BYTE &&
+                (data[header + 4u] >> 4) == m->rtp.twcc_ext_id && m->rtp.twcc_ext_id != 0) {
+                uint16_t wire = nanortc_read_u16be(data + header + 5u);
+                out->transmit._internal.transport_seq =
+                    rtc->twcc_sequence - (uint16_t)((uint16_t)rtc->twcc_sequence - wire);
+                flags |= NANO_TX_TWCC;
+            }
+#endif
+            header += 4u + ext;
+        }
+#if NANORTC_FEATURE_VIDEO
+        for (uint8_t n = 0; n < NANORTC_NACK_RETX_RING; n++)
+            if (data == rtc->nack_retx_buf[n])
+                flags |= NANO_TX_RETRANSMIT;
+#endif
+        out->transmit._internal.payload_bytes =
+            (uint16_t)(len - header - NANORTC_SRTP_AUTH_TAG_SIZE);
+        out->transmit._internal.mid = m->mid;
+        out->transmit._internal.flags = flags;
+        return;
+    }
+}
+#endif
+
 /* Enqueue an output. Returns NANORTC_OK or NANORTC_ERR_BUFFER_TOO_SMALL. */
 static inline int rtc_enqueue_output(nanortc_t *rtc, const nanortc_output_t *out)
 {
@@ -181,6 +288,12 @@ static int rtc_enqueue_transmit_ref(nanortc_t *rtc, const uint8_t *data, size_t 
                                     const nanortc_addr_t *peer_dest,
                                     const nanortc_addr_t *local_src, rtc_tx_route_t route)
 {
+    if (rtc->state == NANORTC_STATE_CLOSED)
+        return NANORTC_ERR_STATE;
+    if (len > UINT16_MAX)
+        return NANORTC_ERR_BUFFER_TOO_SMALL;
+    if (!nano_rtc_peer_can_send(rtc) && rtc_is_peer_payload(data, len))
+        return NANORTC_ERR_WOULD_BLOCK;
     /* Lifetime contract (see nanortc.h `nanortc_output_t`): @p data must stay
      * owned until this queue entry is polled. Transient protocol producers use
      * tx_slots; video/FEC/NACK use their dedicated managed rings. */
@@ -190,6 +303,9 @@ static int rtc_enqueue_transmit_ref(nanortc_t *rtc, const uint8_t *data, size_t 
     out.transmit.data = data;
     out.transmit.len = len;
     out.transmit.dest = *peer_dest;
+#if NANORTC_HAVE_MEDIA_TRANSPORT
+    rtc_transmit_metadata(rtc, &out);
+#endif
     if (local_src) {
         out.transmit.src = *local_src;
     } else if (rtc->ice.selected_local_family != 0) {
@@ -327,7 +443,6 @@ static uint16_t rtc_event_key(const nanortc_event_t *event)
     case NANORTC_EV_KEYFRAME_REQUEST:
         return event->keyframe_request.mid;
     case NANORTC_EV_DATACHANNEL_CLOSE:
-    case NANORTC_EV_DATACHANNEL_BUFFERED_LOW:
         return event->datachannel_id.id;
     default:
         return 0;
@@ -430,6 +545,7 @@ int nanortc_init(nanortc_t *rtc, const nanortc_config_t *cfg)
     }
     ice_init(&rtc->ice, cfg->role == NANORTC_ROLE_CONTROLLING);
     rtc->ice.tie_breaker = tie_breaker;
+    rtc->transmit_token = tie_breaker & UINT64_C(0xffffffff00000000);
 
     /* Initialize logging only after fallible init-time RNG has succeeded. */
     NANORTC_LOGI(&rtc->config.log, "RTC", "nanortc_init");
@@ -491,6 +607,9 @@ void nanortc_destroy(nanortc_t *rtc)
     NANORTC_LOGI(&rtc->config.log, "RTC", "nanortc_destroy");
     dtls_destroy(&rtc->dtls);
     rtc->state = NANORTC_STATE_CLOSED;
+    rtc->transmit_pending = false;
+    rtc->out_head = rtc->out_tail;
+    rtc->pending_event_count = 0;
 }
 
 #if NANORTC_FEATURE_DATACHANNEL
@@ -503,6 +622,15 @@ static int rtc_poll_queued_output(nanortc_t *rtc, nanortc_output_t *out)
     while (rtc->out_head != rtc->out_tail) {
         uint16_t slot = rtc->out_head & (NANORTC_OUT_QUEUE_SIZE - 1);
         *out = rtc->out_queue[slot];
+        if (out->type == NANORTC_OUTPUT_TRANSMIT && rtc->transmit_pending)
+            return NANORTC_ERR_WOULD_BLOCK;
+        if (out->type == NANORTC_OUTPUT_TRANSMIT && !nano_rtc_peer_can_send(rtc) &&
+            rtc_is_peer_payload(out->transmit.data, out->transmit.len)) {
+            rtc->stats_packets_dropped++;
+            rtc->out_head++;
+            rtc_release_output_backing(rtc);
+            continue;
+        }
 
 #if NANORTC_FEATURE_TURN
         if (out->type == NANORTC_OUTPUT_TRANSMIT && rtc->out_wrap_meta[slot].via_turn) {
@@ -555,6 +683,19 @@ static int rtc_poll_queued_output(nanortc_t *rtc, nanortc_output_t *out)
         }
 #endif /* NANORTC_FEATURE_TURN */
 
+        if (out->type == NANORTC_OUTPUT_TRANSMIT) {
+            if (rtc->transmit_token == UINT64_MAX)
+                return NANORTC_ERR_STATE;
+            rtc->transmit_pending = true;
+            rtc->transmit_pending_len = (uint16_t)out->transmit.len;
+#if NANORTC_HAVE_MEDIA_TRANSPORT
+            rtc->transmit_pending_seq = out->transmit._internal.transport_seq;
+            rtc->transmit_pending_payload = out->transmit._internal.payload_bytes;
+            rtc->transmit_pending_mid = out->transmit._internal.mid;
+            rtc->transmit_pending_flags = out->transmit._internal.flags;
+#endif
+            out->transmit.token = ++rtc->transmit_token;
+        }
         rtc->out_head++;
         rtc_release_output_backing(rtc);
         return NANORTC_OK;
@@ -574,7 +715,8 @@ int nanortc_poll_output(nanortc_t *rtc, nanortc_output_t *out)
      * rtc->now_ms from the last handle_input) before draining the queue, so
      * metered media interleaves with control output on the universal
      * handle_input → drain-poll_output loop. */
-    nano_rtc_pacer_pump(rtc);
+    if (!rtc->transmit_pending && rtc->state != NANORTC_STATE_CLOSED)
+        nano_rtc_pacer_pump(rtc);
 #endif
 
     int queued = rtc_poll_queued_output(rtc, out);
@@ -590,6 +732,9 @@ int nanortc_poll_output(nanortc_t *rtc, nanortc_output_t *out)
                 rtc->pending_event_count * sizeof(rtc->pending_events[0]));
         return NANORTC_OK;
     }
+
+    if (rtc->state == NANORTC_STATE_CLOSED)
+        return NANORTC_ERR_NO_DATA;
 
     if (nano_rtc_candidate_produce(rtc, out) == NANORTC_OK)
         return NANORTC_OK;
@@ -638,21 +783,128 @@ int nanortc_poll_output(nanortc_t *rtc, nanortc_output_t *out)
  */
 #define NANORTC_TIMEOUT_IDLE_CAP_MS 1000u
 
+int nanortc_report_transmit(nanortc_t *rtc, uint64_t token, nanortc_transmit_result_t result,
+                            uint32_t at_ms)
+{
+    if (!rtc || !rtc->transmit_pending || token != rtc->transmit_token ||
+        (result != NANORTC_TRANSMIT_SENT && result != NANORTC_TRANSMIT_DROPPED))
+        return NANORTC_ERR_INVALID_PARAM;
+    rtc->transmit_pending = false;
+    if (result == NANORTC_TRANSMIT_DROPPED) {
+        rtc->stats_packets_dropped++;
+#if NANORTC_FEATURE_VIDEO
+        bwe_record_drop(&rtc->bwe, at_ms);
+#endif
+        return NANORTC_OK;
+    }
+    rtc->stats_packets_sent++;
+    rtc->stats_bytes_sent += rtc->transmit_pending_len;
+#if NANORTC_HAVE_MEDIA_TRANSPORT
+    uint8_t flags = rtc->transmit_pending_flags;
+    nanortc_track_t *m = track_find_by_mid(rtc->media, rtc->media_count, rtc->transmit_pending_mid);
+    if ((flags & NANO_TX_SR) != 0 && m) {
+        m->rtcp.last_tx_sr_ntp = rtc->transmit_pending_seq;
+        m->rtcp.last_tx_sr_ms = at_ms;
+        m->rtcp.last_tx_sr_valid = true;
+    }
+    if ((flags & NANO_TX_RTP) != 0 && m) {
+        m->rtcp.packets_sent++;
+        m->rtcp.octets_sent += rtc->transmit_pending_payload;
+        rate_window_on_bytes(&m->rate_window, at_ms, rtc->transmit_pending_len);
+    }
+#if NANORTC_FEATURE_VIDEO
+    if ((flags & (NANO_TX_RTP | NANO_TX_FEC)) != 0)
+        bwe_record_transmit(&rtc->bwe, rtc->transmit_pending_seq, rtc->transmit_pending_len, at_ms,
+                            (flags & NANO_TX_TWCC) != 0, (flags & NANO_TX_RETRANSMIT) != 0);
+#endif
+#else
+    (void)at_ms;
+#endif
+    return NANORTC_OK;
+}
+
+void nano_rtc_tag_last_sr(nanortc_t *rtc, uint8_t mid, uint32_t compact_ntp)
+{
+    nanortc_output_t *out = &rtc->out_queue[(rtc->out_tail - 1u) & (NANORTC_OUT_QUEUE_SIZE - 1u)];
+    out->transmit._internal.mid = mid;
+    out->transmit._internal.transport_seq = compact_ntp;
+    out->transmit._internal.flags = NANO_TX_SR;
+}
+
+int nanortc_get_stats(const nanortc_t *rtc, nanortc_stats_t *stats)
+{
+    if (!rtc || !stats)
+        return NANORTC_ERR_INVALID_PARAM;
+    memset(stats, 0, sizeof(*stats));
+    stats->connection_state = rtc->state;
+    stats->ice_state = rtc->ice.state;
+    stats->is_controlling = rtc->ice.is_controlling;
+    stats->remote_candidate_count = rtc->ice.remote_candidate_count;
+    for (uint8_t i = 0; i < rtc->ice.remote_candidate_count; i++)
+        if (rtc->ice.remote_candidates[i].type == NANORTC_ICE_CAND_RELAY)
+            stats->remote_relay_candidate_count++;
+    stats->selected_local_type = rtc->ice.selected_local_type;
+    stats->selected_remote_type = rtc->ice.selected_type;
+    stats->selected_local.family = rtc->ice.selected_local_family;
+    stats->selected_local.port = rtc->ice.selected_local_port;
+    memcpy(stats->selected_local.addr, rtc->ice.selected_local_addr, NANORTC_ADDR_SIZE);
+    stats->selected_remote.family = rtc->ice.selected_family;
+    stats->selected_remote.port = rtc->ice.selected_port;
+    memcpy(stats->selected_remote.addr, rtc->ice.selected_addr, NANORTC_ADDR_SIZE);
+    stats->packets_sent = rtc->stats_packets_sent;
+    stats->bytes_sent = rtc->stats_bytes_sent;
+    stats->packets_dropped = rtc->stats_packets_dropped;
+    stats->tx_queue_full = rtc->stats_tx_queue_full;
+    stats->output_free_slots = nanortc_output_free_slots(rtc);
+    stats->output_queued = (uint16_t)(rtc->out_tail - rtc->out_head);
+    stats->transmit_pending = rtc->transmit_pending;
+#if NANORTC_FEATURE_TURN
+    stats->enqueue_direct = rtc->stats_enqueue_direct;
+    stats->enqueue_via_turn = rtc->stats_enqueue_via_turn;
+    stats->wrap_dropped = rtc->stats_wrap_dropped;
+#endif
+#if NANORTC_FEATURE_VIDEO
+    stats->packet_ring_overrun = rtc->stats_pkt_ring_overrun;
+    stats->feedback_history_missed = rtc->bwe.history_missed;
+    stats->estimated_bitrate_bps = bwe_get_bitrate(&rtc->bwe);
+    stats->remb_cap_bps = rtc->bwe.remb_limit;
+    stats->remb_cap_valid = rtc->bwe.remb_count != 0;
+#if NANORTC_FEATURE_VIDEO_FEC
+    stats->fec_sent = rtc->stats_fec_sent;
+    stats->fec_dropped_resource = rtc->stats_fec_dropped_resource;
+    stats->fec_recovered = rtc->stats_fec_recovered;
+#endif
+#if NANORTC_FEATURE_VIDEO_PACING
+    stats->pacer_queued = (uint16_t)(rtc->pacer.tail - rtc->pacer.head);
+    stats->paced_packets = rtc->stats_paced_packets;
+    stats->pace_catchup = rtc->stats_pace_catchup;
+#endif
+#endif
+    return NANORTC_OK;
+}
+
 int nanortc_next_timeout_ms(const nanortc_t *rtc, uint32_t now_ms, uint32_t *out_ms)
 {
     if (!rtc || !out_ms) {
         return NANORTC_ERR_INVALID_PARAM;
     }
 
-    uint32_t best = (rtc->out_head != rtc->out_tail || rtc->pending_event_count ||
-                     rtc->dtls.out_len || rtc->srflx_candidate_pending)
+    if (rtc->state == NANORTC_STATE_CLOSED) {
+        *out_ms = rtc->out_head != rtc->out_tail || rtc->pending_event_count
+                      ? 0u
+                      : NANORTC_TIMEOUT_IDLE_CAP_MS;
+        return NANORTC_OK;
+    }
+    bool blocked = rtc->transmit_pending;
+    uint32_t best = (!blocked && (rtc->out_head != rtc->out_tail || rtc->pending_event_count ||
+                                  rtc->dtls.out_len || rtc->srflx_candidate_pending))
                         ? 0u
                         : UINT32_MAX;
     for (uint8_t i = 0; i < NANORTC_MAX_LOCAL_CANDIDATES; i++)
-        if (rtc->host_candidate_pending[i])
+        if (!blocked && rtc->host_candidate_pending[i])
             best = 0;
 #if NANORTC_FEATURE_TURN
-    if (rtc->relay_candidate_pending)
+    if (!blocked && rtc->relay_candidate_pending)
         best = 0;
 #endif
 
@@ -664,6 +916,12 @@ int nanortc_next_timeout_ms(const nanortc_t *rtc, uint32_t now_ms, uint32_t *out
                          : rtc_ice_get_check(rtc, now_ms, &check);
         if (d < best) {
             best = d;
+        }
+        if (rtc->ice_restarting && rtc->ice.consent_expiry_ms &&
+            !nano_time_is_due(now_ms, rtc->ice.consent_expiry_ms)) {
+            uint32_t expiry = nano_time_until(now_ms, rtc->ice.consent_expiry_ms);
+            if (expiry < best)
+                best = expiry;
         }
     }
 
@@ -698,9 +956,9 @@ int nanortc_next_timeout_ms(const nanortc_t *rtc, uint32_t now_ms, uint32_t *out
         if (d < best) {
             best = d;
         }
-        if (rtc->dtls.out_len > 0u || nsctp_has_pending_output(&rtc->sctp) ||
-            (rtc->sctp.state == NANORTC_SCTP_STATE_ESTABLISHED &&
-             dc_has_pending_output(&rtc->datachannel))) {
+        if (!blocked && (rtc->dtls.out_len > 0u || nsctp_has_pending_output(&rtc->sctp) ||
+                         (rtc->sctp.state == NANORTC_SCTP_STATE_ESTABLISHED &&
+                          dc_has_pending_output(&rtc->datachannel)))) {
             best = 0u;
         }
     }
@@ -727,7 +985,7 @@ int nanortc_next_timeout_ms(const nanortc_t *rtc, uint32_t now_ms, uint32_t *out
     /* Send pacer: wake when the next paced video fragment is due so the
      * application drains and pumps it on schedule (UINT32_MAX when idle). */
     {
-        uint32_t d = nano_rtc_pacer_next_deadline_ms(rtc, now_ms);
+        uint32_t d = blocked ? UINT32_MAX : nano_rtc_pacer_next_deadline_ms(rtc, now_ms);
         if (d < best) {
             best = d;
         }
@@ -764,6 +1022,8 @@ int nanortc_next_timeout_ms(const nanortc_t *rtc, uint32_t now_ms, uint32_t *out
     if (best == UINT32_MAX) {
         best = NANORTC_TIMEOUT_IDLE_CAP_MS;
     }
+    if ((blocked || !nano_rtc_peer_can_send(rtc)) && best == 0u)
+        best = 1u; /* Socket completion owns the blocked send deadline. */
 
     *out_ms = best;
     return NANORTC_OK;
@@ -794,6 +1054,12 @@ static int rtc_begin_dtls_handshake(nanortc_t *rtc, const nanortc_addr_t *src)
     /* accept_offer() does early init; this guard covers create_offer() path */
     if (!rtc->dtls.crypto_ctx) {
         int rc = dtls_init(&rtc->dtls, rtc->config.crypto, is_server);
+        if (rc != NANORTC_OK)
+            return rc;
+    }
+
+    if (rtc->sdp.has_remote_fingerprint) {
+        int rc = dtls_set_peer_fingerprint(&rtc->dtls, rtc->sdp.remote_fingerprint);
         if (rc != NANORTC_OK)
             return rc;
     }
@@ -868,6 +1134,8 @@ static int rtc_deliver_sctp_to_dc(nanortc_t *rtc, const nano_sctp_message_t *mes
 
 static int rtc_pump_sctp_through_dtls(nanortc_t *rtc, const nanortc_addr_t *dest)
 {
+    if (!nano_rtc_peer_can_send(rtc))
+        return NANORTC_ERR_WOULD_BLOCK;
     int rc = rtc_drain_dtls_output(rtc, dest);
     if (rc != NANORTC_OK && rc != NANORTC_ERR_NO_DATA) {
         return rc;
@@ -1221,22 +1489,17 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
             stun_out_size = NANORTC_TX_SLOT_SIZE;
         }
         size_t resp_len = 0;
+        uint8_t candidates_before = rtc->ice.remote_candidate_count;
         int rc = ice_handle_stun(&rtc->ice, data, len, src, local_idx, via_turn, rtc->config.crypto,
                                  stun_out, stun_out_size, &resp_len);
         if (rc != NANORTC_OK) {
             return rc;
         }
+        for (uint8_t i = candidates_before; i < rtc->ice.remote_candidate_count; i++)
+            memset(&rtc->remote_candidate_related[i], 0, sizeof(rtc->remote_candidate_related[i]));
 
-        /* Refresh consent expiry on any successful STUN from the selected pair.
-         * RFC 7675 §5.1: receiving a valid STUN message on the selected pair
-         * proves the remote endpoint is alive and consents to receive traffic. */
-        if (rtc->ice.state == NANORTC_ICE_STATE_CONNECTED && rtc->ice.consent_expiry_ms > 0 &&
-            src->family == rtc->ice.selected_family && src->port == rtc->ice.selected_port &&
-            memcmp(src->addr, rtc->ice.selected_addr, NANORTC_ADDR_SIZE) == 0) {
-            rtc->ice.consent_expiry_ms =
-                nano_time_deadline(rtc->now_ms, NANORTC_ICE_CONSENT_TIMEOUT_MS);
-        }
-        /* Also clear pending if our consent check got a response */
+        /* RFC 7675 §5.1: only a matching authenticated response renews consent;
+         * an incoming request merely asks for consent in the other direction. */
         if (was_consent_pending && !rtc->ice.consent_pending) {
             rtc->ice.consent_expiry_ms =
                 nano_time_deadline(rtc->now_ms, NANORTC_ICE_CONSENT_TIMEOUT_MS);
@@ -1275,8 +1538,9 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
 
         /* Check for ICE state transition → init DTLS + emit event */
         if (rtc->ice.state == NANORTC_ICE_STATE_CONNECTED &&
-            rtc->state < NANORTC_STATE_ICE_CONNECTED) {
-            rtc->state = NANORTC_STATE_ICE_CONNECTED;
+            (rtc->state < NANORTC_STATE_ICE_CONNECTED || rtc->ice_restarting)) {
+            if (!rtc->ice_restarting)
+                rtc->state = NANORTC_STATE_ICE_CONNECTED;
             /* Arm consent freshness timers (RFC 7675) */
             rtc->ice.consent_next_ms =
                 nano_time_deadline(rtc->now_ms, NANORTC_ICE_CONSENT_INTERVAL_MS);
@@ -1291,6 +1555,28 @@ static int rtc_process_receive(nanortc_t *rtc, const uint8_t *data, size_t len,
                 nano_rtc_emit_event_full(rtc, &ice_evt);
             }
 
+            if (rtc->ice_restarting) {
+                rtc->remote_addr = *src;
+                rtc->ice_restarting = false;
+                for (uint16_t cursor = rtc->out_head; cursor != rtc->out_tail; cursor++) {
+                    uint16_t slot = cursor & (NANORTC_OUT_QUEUE_SIZE - 1u);
+                    nanortc_output_t *pending = &rtc->out_queue[slot];
+                    if (pending->type != NANORTC_OUTPUT_TRANSMIT ||
+                        !rtc_is_peer_payload(pending->transmit.data, pending->transmit.len))
+                        continue;
+                    pending->transmit.dest = *src;
+                    pending->transmit.src.family = rtc->ice.selected_local_family;
+                    pending->transmit.src.port = rtc->ice.selected_local_port;
+                    memcpy(pending->transmit.src.addr, rtc->ice.selected_local_addr,
+                           NANORTC_ADDR_SIZE);
+#if NANORTC_FEATURE_TURN
+                    rtc->out_wrap_meta[slot].via_turn =
+                        rtc->ice.selected_local_type == NANORTC_ICE_CAND_RELAY;
+                    rtc->out_wrap_meta[slot].peer_dest = *src;
+#endif
+                }
+                return NANORTC_OK;
+            }
             int drc = rtc_begin_dtls_handshake(rtc, src);
             if (drc != NANORTC_OK) {
                 return drc;
@@ -1453,14 +1739,8 @@ static int rtc_process_timers(nanortc_t *rtc, uint32_t now_ms)
             fice.type = NANORTC_EV_ICE_STATE_CHANGE;
             fice.ice_state = (uint16_t)NANORTC_ICE_STATE_FAILED;
             nano_rtc_emit_event_full(rtc, &fice);
-            /* TD-018: emit DISCONNECTED symmetric to the consent-expiry path
-             * so applications see a consistent signal across both failure
-             * modes (ICE check exhaustion and consent loss). */
-            nanortc_event_t fdev;
-            memset(&fdev, 0, sizeof(fdev));
-            fdev.type = NANORTC_EV_DISCONNECTED;
-            nano_rtc_emit_event_full(rtc, &fdev);
-            rtc->state = NANORTC_STATE_CLOSED;
+            rtc_close(rtc, NANORTC_DISCONNECT_ICE_FAILED);
+            return NANORTC_OK;
         }
     }
 
@@ -1474,12 +1754,8 @@ static int rtc_process_timers(nanortc_t *rtc, uint32_t now_ms)
             dice.type = NANORTC_EV_ICE_STATE_CHANGE;
             dice.ice_state = (uint16_t)NANORTC_ICE_STATE_DISCONNECTED;
             nano_rtc_emit_event_full(rtc, &dice);
-            /* Emit DISCONNECTED application event */
-            nanortc_event_t dev;
-            memset(&dev, 0, sizeof(dev));
-            dev.type = NANORTC_EV_DISCONNECTED;
-            nano_rtc_emit_event_full(rtc, &dev);
-            rtc->state = NANORTC_STATE_CLOSED;
+            rtc_close(rtc, NANORTC_DISCONNECT_CONSENT_EXPIRED);
+            return NANORTC_OK;
         } else if (rtc->ice.consent_next_ms == 0u ||
                    nano_time_is_due(now_ms, rtc->ice.consent_next_ms)) {
             /* Generate consent check if due */
@@ -1650,7 +1926,7 @@ static int rtc_process_timers(nanortc_t *rtc, uint32_t now_ms)
 
 #if NANORTC_FEATURE_DATACHANNEL
     /* SCTP: retransmission + heartbeat timers */
-    if (rtc->sctp.state == NANORTC_SCTP_STATE_ESTABLISHED) {
+    if (rtc->sctp.state != NANORTC_SCTP_STATE_CLOSED) {
         int src = nsctp_handle_timeout(&rtc->sctp, now_ms);
         if (src != NANORTC_OK && !rtc->sctp.closed_due_to_failure) {
             return src;
@@ -1680,15 +1956,9 @@ static int rtc_process_timers(nanortc_t *rtc, uint32_t now_ms)
      * Clear on read so the event fires exactly once. */
     if (rtc->sctp.closed_due_to_failure) {
         rtc->sctp.closed_due_to_failure = false;
-        if (rtc->state == NANORTC_STATE_CONNECTED) {
-            nanortc_event_t fdev;
-            memset(&fdev, 0, sizeof(fdev));
-            fdev.type = NANORTC_EV_DISCONNECTED;
-            nano_rtc_emit_event_full(rtc, &fdev);
-            rtc->state = NANORTC_STATE_CLOSED;
-            NANORTC_LOGW(&rtc->config.log, "RTC", "SCTP retransmit exhaustion → DISCONNECTED");
-        }
+        rtc_close(rtc, NANORTC_DISCONNECT_SCTP_FAILED);
     }
+
 #endif
 
 #if NANORTC_HAVE_MEDIA_TRANSPORT
@@ -1767,15 +2037,24 @@ int nanortc_handle_input(nanortc_t *rtc, const nanortc_input_t *in)
         return NANORTC_ERR_INVALID_PARAM;
     }
 
+    if (rtc->state == NANORTC_STATE_CLOSED)
+        return NANORTC_ERR_STATE;
     rtc->now_ms = in->now_ms;
+#if NANORTC_FEATURE_DATACHANNEL
+    rtc->sctp.now_ms = in->now_ms;
+#endif
     dtls_set_time(&rtc->dtls, in->now_ms);
 
     /* Always process timers (ICE checks, SCTP retransmits) */
     int trc = rtc_process_timers(rtc, in->now_ms);
     if (trc != NANORTC_OK) {
         NANORTC_LOGW(&rtc->config.log, "RTC", "protocol timer failed");
+        if (rtc->dtls.state == NANORTC_DTLS_STATE_ERROR)
+            rtc_close(rtc, NANORTC_DISCONNECT_AUTH_FAILED);
         return trc;
     }
+    if (rtc->state == NANORTC_STATE_CLOSED)
+        return NANORTC_OK;
 
     /* If packet data provided, process the incoming UDP packet. family==0
      * on src is treated as "no packet" (timer-only tick). family==0 on dst
@@ -1785,8 +2064,13 @@ int nanortc_handle_input(nanortc_t *rtc, const nanortc_input_t *in)
         const nanortc_addr_t *dst_p = (in->dst.family != 0) ? &in->dst : NULL;
         uint8_t local_idx = rtc_resolve_local_idx(rtc, dst_p);
         int rc = rtc_process_receive(rtc, in->data, in->len, &in->src, local_idx, false);
-        if (rc != NANORTC_OK)
+        if (rc != NANORTC_OK) {
             NANORTC_LOGW(&rtc->config.log, "RTC", "input rejected");
+            if (rtc->dtls.state == NANORTC_DTLS_STATE_ERROR)
+                rtc_close(rtc, NANORTC_DISCONNECT_AUTH_FAILED);
+        } else if (rtc->dtls.state == NANORTC_DTLS_STATE_CLOSED) {
+            rtc_close(rtc, NANORTC_DISCONNECT_PEER);
+        }
         return rc;
     }
 
@@ -1822,16 +2106,15 @@ int nanortc_create_datachannel(nanortc_t *rtc, const char *label,
         return NANORTC_ERR_INVALID_PARAM;
     }
 
+    if (rtc->state == NANORTC_STATE_CLOSED)
+        return NANORTC_ERR_STATE;
+
     bool partial = options && (options->partial_reliability || options->max_retransmits != 0);
     if (partial && !NANORTC_FEATURE_DC_RELIABLE)
         return NANORTC_ERR_NOT_IMPLEMENTED;
 
-    /* Ensure DC m-line is registered in SDP */
-    if (!rtc->sdp.has_datachannel) {
-        rtc->sdp.has_datachannel = true;
-        rtc->sdp.dc_mid = rtc->sdp.mid_count;
-        rtc->sdp.mid_count++;
-    }
+    if (!rtc->sdp.has_datachannel && rtc->signaling_state != NANORTC_SIGNALING_READY)
+        return NANORTC_ERR_NOT_IMPLEMENTED;
 
     bool ordered = options ? !options->unordered : true;
     uint16_t max_rexmit = options ? options->max_retransmits : 0;
@@ -1841,6 +2124,11 @@ int nanortc_create_datachannel(nanortc_t *rtc, const char *label,
                              ordered, partial, max_rexmit);
     if (rc != NANORTC_OK) {
         return rc;
+    }
+
+    if (!rtc->sdp.has_datachannel) {
+        rtc->sdp.has_datachannel = true;
+        rtc->sdp.dc_mid = rtc->sdp.mid_count++;
     }
 
     /* If already connected, drain DCEP OPEN through SCTP→DTLS. The helper
@@ -1896,31 +2184,12 @@ int nanortc_datachannel_send_string(nanortc_t *rtc, uint16_t id, const char *str
 
 int nanortc_datachannel_close(nanortc_t *rtc, uint16_t id)
 {
-    if (!rtc) {
+    if (!rtc || !dc_find_channel(&rtc->datachannel, id))
         return NANORTC_ERR_INVALID_PARAM;
-    }
-
-    nano_dc_channel_t *dc = NULL;
-    for (uint8_t i = 0; i < rtc->datachannel.channel_count; i++) {
-        if (rtc->datachannel.channels[i].stream_id == id &&
-            rtc->datachannel.channels[i].state != NANORTC_DC_STATE_CLOSED) {
-            dc = &rtc->datachannel.channels[i];
-            break;
-        }
-    }
-    if (!dc) {
-        return NANORTC_ERR_INVALID_PARAM;
-    }
-
-    dc->state = NANORTC_DC_STATE_CLOSED;
-    nanortc_event_t cevt;
-    memset(&cevt, 0, sizeof(cevt));
-    cevt.type = NANORTC_EV_DATACHANNEL_CLOSE;
-    cevt.datachannel_id.id = id;
-    nano_rtc_emit_event_full(rtc, &cevt);
-
-    NANORTC_LOGI(&rtc->config.log, "RTC", "channel closed");
-    return NANORTC_OK;
+    if (rtc->state == NANORTC_STATE_CLOSED)
+        return NANORTC_ERR_STATE;
+    /* RFC 8831 §6.7: closing requires SCTP stream reset (not implemented). */
+    return NANORTC_ERR_NOT_IMPLEMENTED;
 }
 
 const char *nanortc_datachannel_get_label(nanortc_t *rtc, uint16_t id)
@@ -1968,6 +2237,12 @@ int nanortc_ice_restart(nanortc_t *rtc)
         return NANORTC_ERR_INVALID_PARAM;
     }
 
+    if (rtc->state == NANORTC_STATE_CLOSED)
+        return NANORTC_ERR_STATE;
+    if (rtc->dtls.state == NANORTC_DTLS_STATE_HANDSHAKING)
+        return NANORTC_ERR_STATE;
+    if (rtc->transmit_pending)
+        return NANORTC_ERR_WOULD_BLOCK;
     /* Generate the new credentials before touching live connection state. A
      * fail-on-Nth provider therefore leaves the existing session intact. */
     uint8_t ufrag_bytes[NANORTC_ICE_UFRAG_LEN / 2];
@@ -1992,34 +2267,26 @@ int nanortc_ice_restart(nanortc_t *rtc)
 
     NANORTC_LOGI(&rtc->config.log, "RTC", "ICE restart");
 
-    /* Tear down the DTLS context so the next accept_offer/create_offer
-     * re-initialises it with a fresh cert and BIO. Without this, the
-     * `if (!rtc->dtls.crypto_ctx)` guard in rtc_begin_dtls_handshake
-     * would skip dtls_init and reuse the previous DTLS state across the
-     * ICE restart — possible key-material reuse and orphan handshake
-     * timers. dtls_destroy is a no-op when crypto_ctx is NULL. */
-    dtls_destroy(&rtc->dtls);
-
-    /* Invalidate cached fingerprints tied to the destroyed DTLS identity.
-     * nano_rtc_cache_fingerprint() is a write-once cache that bails when
-     * sdp.local_fingerprint is non-empty; without this clear, the next
-     * create_offer/accept_offer would advertise the *previous* cert's
-     * fingerprint while dtls_init() generates a new one — DTLS verify
-     * would then fail on the peer side. */
-    memset(rtc->sdp.local_fingerprint, 0, sizeof(rtc->sdp.local_fingerprint));
-    memset(rtc->dtls.local_fingerprint, 0, sizeof(rtc->dtls.local_fingerprint));
+    /* RFC 8842 §6: an ICE restart retains the authenticated association. */
+    nanortc_addr_t old_local = {.family = rtc->ice.selected_local_family,
+                                .port = rtc->ice.selected_local_port};
+    memcpy(old_local.addr, rtc->ice.selected_local_addr, NANORTC_ADDR_SIZE);
+    uint32_t old_consent_expiry = rtc->ice.consent_expiry_ms;
+    uint8_t old_local_type = rtc->ice.selected_local_type;
+    uint8_t old_remote_type = rtc->ice.selected_type;
+    uint8_t old_local_idx = rtc->ice.selected_local_idx;
 
     /* Reset ICE state (preserves role + tie_breaker, bumps generation) */
     int rc = ice_restart(&rtc->ice);
     if (rc != NANORTC_OK) {
         return rc;
     }
+    memset(rtc->remote_candidate_related, 0, sizeof(rtc->remote_candidate_related));
 #if NANORTC_FEATURE_TURN
-    /* The allocation is independent of an ICE generation and remains usable
-     * until its Refresh lifetime expires. Permissions and channel bindings are
-     * peer-specific, so discard them and recreate them from the new remote
-     * candidate set after renegotiation. */
-    turn_reset_peer_state(&rtc->turn);
+    /* An established association can use the old relay until consent expires.
+     * Its allocation and existing permissions are independent of ICE generation. */
+    if (rtc->dtls.state != NANORTC_DTLS_STATE_ESTABLISHED)
+        turn_reset_peer_state(&rtc->turn);
 #endif
 
     memcpy(rtc->ice.local_ufrag, new_ufrag, sizeof(new_ufrag));
@@ -2035,8 +2302,24 @@ int nanortc_ice_restart(nanortc_t *rtc)
     rtc->sdp.candidate_count = 0;
     rtc->sdp.end_of_candidates = false;
 
-    /* Reset connection state to allow re-negotiation */
-    rtc->state = NANORTC_STATE_NEW;
+    rtc->signaling_state = NANORTC_SIGNALING_READY;
+    rtc->ice_restarting = rtc->dtls.state == NANORTC_DTLS_STATE_ESTABLISHED;
+    if (rtc->ice_restarting) {
+        /* RFC 8445 §9 / RFC 7675 §5: retain the selected route only while
+         * its existing consent remains valid; new checks use new credentials. */
+        memcpy(rtc->ice.selected_addr, rtc->remote_addr.addr, NANORTC_ADDR_SIZE);
+        rtc->ice.selected_port = rtc->remote_addr.port;
+        rtc->ice.selected_family = rtc->remote_addr.family;
+        rtc->ice.selected_type = old_remote_type;
+        memcpy(rtc->ice.selected_local_addr, old_local.addr, NANORTC_ADDR_SIZE);
+        rtc->ice.selected_local_port = old_local.port;
+        rtc->ice.selected_local_family = old_local.family;
+        rtc->ice.selected_local_type = old_local_type;
+        rtc->ice.selected_local_idx = old_local_idx;
+        rtc->ice.consent_expiry_ms = old_consent_expiry;
+    }
+    if (!rtc->ice_restarting)
+        rtc->state = NANORTC_STATE_NEW;
 
     /* Emit ICE state change */
     nanortc_event_t ice_evt;
@@ -2053,36 +2336,7 @@ void nanortc_disconnect(nanortc_t *rtc)
     if (!rtc) {
         return;
     }
-    if (rtc->state == NANORTC_STATE_CLOSED || rtc->state == NANORTC_STATE_NEW) {
-        return;
-    }
-
-#if NANORTC_FEATURE_DATACHANNEL
-    /* Send SCTP SHUTDOWN if association is established */
-    if (rtc->sctp.state == NANORTC_SCTP_STATE_ESTABLISHED) {
-        uint8_t shutdown_pkt[64];
-        size_t hdr_len = nsctp_encode_header(shutdown_pkt, rtc->sctp.local_port,
-                                             rtc->sctp.remote_port, rtc->sctp.remote_vtag);
-        size_t chunk_len = nsctp_encode_shutdown(shutdown_pkt + hdr_len, rtc->sctp.cumulative_tsn);
-        nsctp_finalize_checksum(shutdown_pkt, hdr_len + chunk_len);
-
-        dtls_encrypt(&rtc->dtls, shutdown_pkt, hdr_len + chunk_len);
-        rtc_drain_dtls_output(rtc, &rtc->remote_addr);
-        rtc->sctp.state = NANORTC_SCTP_STATE_SHUTDOWN_SENT;
-    }
-#endif
-
-    /* Send DTLS close_notify */
-    dtls_close(&rtc->dtls);
-    rtc_drain_dtls_output(rtc, &rtc->remote_addr);
-
-    rtc->state = NANORTC_STATE_CLOSED;
-    nanortc_event_t evt;
-    memset(&evt, 0, sizeof(evt));
-    evt.type = NANORTC_EV_DISCONNECTED;
-    nano_rtc_emit_event_full(rtc, &evt);
-
-    NANORTC_LOGI(&rtc->config.log, "RTC", "disconnected");
+    rtc_close(rtc, NANORTC_DISCONNECT_LOCAL);
 }
 
 const char *nanortc_err_name(int err)

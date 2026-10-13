@@ -1806,7 +1806,187 @@ TEST(test_sctp_gap_sack_abandons_only_missing_zero_retry)
 }
 #endif
 
+/* RFC 9260 §4/§5.1: each of the four handshake packets may be lost. */
+TEST(test_sctp_handshake_recovers_each_lost_packet)
+{
+    const uint8_t lost_types[] = {SCTP_CHUNK_INIT, SCTP_CHUNK_INIT_ACK, SCTP_CHUNK_COOKIE_ECHO,
+                                  SCTP_CHUNK_COOKIE_ACK};
+    const uint32_t starts[] = {0u, UINT32_MAX - NANORTC_SCTP_RTO_INITIAL_MS / 2u};
+    for (size_t clock = 0; clock < sizeof(starts) / sizeof(starts[0]); clock++) {
+        for (size_t loss = 0; loss < sizeof(lost_types); loss++) {
+            nano_sctp_t client, server;
+            ASSERT_OK(nsctp_init(&client));
+            ASSERT_OK(nsctp_init(&server));
+            client.crypto = server.crypto = nano_test_crypto();
+            uint32_t now = starts[clock];
+            ASSERT_OK(nsctp_handle_timeout(&client, now));
+            ASSERT_OK(nsctp_handle_timeout(&server, now));
+            ASSERT_OK(nsctp_start(&client));
+            bool dropped = false;
+            for (unsigned step = 0; step < 12; step++) {
+                for (unsigned side = 0; side < 2; side++) {
+                    nano_sctp_t *src = side ? &server : &client;
+                    nano_sctp_t *dst = side ? &client : &server;
+                    uint8_t packet[NANORTC_SCTP_MTU];
+                    size_t len = 0;
+                    int rc = nsctp_poll_output(src, packet, sizeof(packet), &len);
+                    if (rc == NANORTC_ERR_NO_DATA)
+                        continue;
+                    ASSERT_OK(rc);
+                    if (!dropped && packet[12] == lost_types[loss]) {
+                        dropped = true;
+                        continue;
+                    }
+                    ASSERT_OK(nsctp_handle_data(dst, packet, len));
+                }
+                if (client.state == NANORTC_SCTP_STATE_ESTABLISHED &&
+                    server.state == NANORTC_SCTP_STATE_ESTABLISHED)
+                    break;
+                if (!nsctp_has_pending_output(&client) && !nsctp_has_pending_output(&server)) {
+                    uint32_t delay = nsctp_next_timeout_ms(&client, now);
+                    ASSERT_TRUE(delay != UINT32_MAX);
+                    now += delay;
+                    ASSERT_OK(nsctp_handle_timeout(&client, now));
+                    ASSERT_OK(nsctp_handle_timeout(&server, now));
+                }
+            }
+            ASSERT_TRUE(dropped);
+            ASSERT_EQ(client.state, NANORTC_SCTP_STATE_ESTABLISHED);
+            ASSERT_EQ(server.state, NANORTC_SCTP_STATE_ESTABLISHED);
+        }
+    }
+}
+
+TEST(test_sctp_handshake_failure_is_bounded)
+{
+    for (unsigned cookie_stage = 0; cookie_stage < 2; cookie_stage++) {
+        nano_sctp_t client, server;
+        ASSERT_OK(nsctp_init(&client));
+        ASSERT_OK(nsctp_init(&server));
+        client.crypto = server.crypto = nano_test_crypto();
+        uint32_t now = UINT32_MAX - NANORTC_SCTP_RTO_INITIAL_MS / 2u;
+        ASSERT_OK(nsctp_handle_timeout(&client, now));
+        ASSERT_OK(nsctp_start(&client));
+        if (cookie_stage) {
+            pump(&client, &server, NULL);
+            pump(&server, &client, NULL);
+        }
+        uint8_t first[NANORTC_SCTP_MTU], packet[NANORTC_SCTP_MTU];
+        size_t first_len = 0, len = 0;
+        uint32_t rto = NANORTC_SCTP_RTO_INITIAL_MS;
+        for (unsigned sent = 0; sent <= NANORTC_SCTP_MAX_RETRANSMITS; sent++) {
+            /* A queued packet has no timer until the caller takes ownership. */
+            ASSERT_EQ(nsctp_next_timeout_ms(&client, now), UINT32_MAX);
+            ASSERT_OK(nsctp_poll_output(&client, packet, sizeof(packet), &len));
+            if (!sent) {
+                memcpy(first, packet, len);
+                first_len = len;
+            } else {
+                ASSERT_EQ(len, first_len);
+                ASSERT_MEM_EQ(packet, first, len);
+                rto = rto > NANORTC_SCTP_RTO_MAX_MS / 2u ? NANORTC_SCTP_RTO_MAX_MS : rto * 2u;
+            }
+            ASSERT_EQ(nsctp_next_timeout_ms(&client, now), rto);
+            ASSERT_OK(nsctp_handle_timeout(&client, now + rto - 1u));
+            ASSERT_FALSE(nsctp_has_pending_output(&client));
+            ASSERT_EQ(nsctp_next_timeout_ms(&client, now + rto - 1u), 1u);
+            now += rto;
+            int rc = nsctp_handle_timeout(&client, now);
+            if (sent == NANORTC_SCTP_MAX_RETRANSMITS) {
+                ASSERT_EQ(rc, NANORTC_ERR_PROTOCOL);
+                ASSERT_EQ(client.state, NANORTC_SCTP_STATE_CLOSED);
+                ASSERT_TRUE(client.closed_due_to_failure);
+                ASSERT_FALSE(nsctp_has_pending_output(&client));
+                client.closed_due_to_failure = false;
+                ASSERT_OK(nsctp_handle_timeout(&client, now + rto));
+                ASSERT_FALSE(client.closed_due_to_failure);
+            } else {
+                ASSERT_OK(rc);
+                ASSERT_TRUE(nsctp_has_pending_output(&client));
+                ASSERT_FALSE(client.closed_due_to_failure);
+            }
+        }
+    }
+}
+
+TEST(test_sctp_handshake_backpressure_preserves_retry_budget)
+{
+    nano_sctp_t client;
+    ASSERT_OK(nsctp_init(&client));
+    client.crypto = nano_test_crypto();
+    ASSERT_OK(nsctp_start(&client));
+    uint8_t packet[NANORTC_SCTP_MTU];
+    size_t len = 0;
+    ASSERT_EQ(nsctp_poll_output(&client, packet, 12, &len), NANORTC_ERR_BUFFER_TOO_SMALL);
+    uint32_t now = NANORTC_SCTP_RTO_MAX_MS * 2u;
+    ASSERT_OK(nsctp_handle_timeout(&client, now));
+    ASSERT_EQ(nsctp_next_timeout_ms(&client, now), UINT32_MAX);
+    ASSERT_OK(nsctp_poll_output(&client, packet, sizeof(packet), &len));
+    ASSERT_EQ(nsctp_next_timeout_ms(&client, now), NANORTC_SCTP_RTO_INITIAL_MS);
+
+    uint8_t heartbeat[20] = {0};
+    nsctp_encode_header(heartbeat, 5000, 5000, client.local_vtag);
+    const uint8_t chunk[] = {4, 0, 0, 8, 0, 1, 0, 4};
+    memcpy(heartbeat + 12, chunk, sizeof(chunk));
+    nsctp_finalize_checksum(heartbeat, sizeof(heartbeat));
+    for (unsigned i = 0; i < NANORTC_SCTP_OUT_QUEUE_SIZE; i++)
+        ASSERT_OK(nsctp_handle_data(&client, heartbeat, sizeof(heartbeat)));
+    now += NANORTC_SCTP_RTO_INITIAL_MS;
+    for (unsigned i = 0; i < NANORTC_SCTP_MAX_RETRANSMITS + 2u; i++)
+        ASSERT_OK(nsctp_handle_timeout(&client, now));
+    ASSERT_FALSE(client.closed_due_to_failure);
+    for (unsigned i = 0; i < NANORTC_SCTP_OUT_QUEUE_SIZE; i++) {
+        ASSERT_OK(nsctp_poll_output(&client, packet, sizeof(packet), &len));
+        ASSERT_EQ(packet[12], SCTP_CHUNK_HEARTBEAT_ACK);
+    }
+    uint32_t rto = NANORTC_SCTP_RTO_INITIAL_MS;
+    for (unsigned retry = 0; retry < NANORTC_SCTP_MAX_RETRANSMITS; retry++) {
+        ASSERT_OK(nsctp_handle_timeout(&client, now));
+        ASSERT_EQ(nsctp_poll_output(&client, packet, 12, &len), NANORTC_ERR_BUFFER_TOO_SMALL);
+        ASSERT_OK(nsctp_handle_timeout(&client, now + rto));
+        ASSERT_FALSE(client.closed_due_to_failure);
+        ASSERT_OK(nsctp_poll_output(&client, packet, sizeof(packet), &len));
+        ASSERT_EQ(packet[12], SCTP_CHUNK_INIT);
+        rto = rto > NANORTC_SCTP_RTO_MAX_MS / 2u ? NANORTC_SCTP_RTO_MAX_MS : rto * 2u;
+        now = client.now_ms + rto;
+    }
+    ASSERT_EQ(nsctp_handle_timeout(&client, now), NANORTC_ERR_PROTOCOL);
+    ASSERT_TRUE(client.closed_due_to_failure);
+}
+
+TEST(test_sctp_handshake_ignores_delayed_acknowledgements)
+{
+    nano_sctp_t client, server;
+    ASSERT_OK(nsctp_init(&client));
+    ASSERT_OK(nsctp_init(&server));
+    client.crypto = server.crypto = nano_test_crypto();
+    ASSERT_OK(nsctp_start(&client));
+    pump(&client, &server, NULL);
+    uint8_t init_ack[NANORTC_SCTP_MTU], cookie_ack[NANORTC_SCTP_MTU];
+    size_t init_ack_len = 0, cookie_ack_len = 0;
+    ASSERT_OK(nsctp_poll_output(&server, init_ack, sizeof(init_ack), &init_ack_len));
+    ASSERT_OK(nsctp_handle_timeout(&client, NANORTC_SCTP_RTO_INITIAL_MS));
+    ASSERT_TRUE(nsctp_has_pending_output(&client)); /* INIT retry races with INIT ACK. */
+    ASSERT_OK(nsctp_handle_data(&client, init_ack, init_ack_len));
+    ASSERT_OK(nsctp_handle_data(&client, init_ack, init_ack_len));
+    pump(&client, &server, NULL); /* Retained INIT, then COOKIE ECHO. */
+    pump(&server, &client, NULL); /* Repeated INIT ACK, then COOKIE ACK. */
+    ASSERT_EQ(client.state, NANORTC_SCTP_STATE_ESTABLISHED);
+    ASSERT_EQ(server.state, NANORTC_SCTP_STATE_ESTABLISHED);
+    ASSERT_OK(nsctp_handle_data(&client, init_ack, init_ack_len));
+    const uint8_t ack[] = {11, 0, 0, 4}; /* RFC 9260 §3.3.12 COOKIE ACK. */
+    cookie_ack_len = build_sctp_packet(cookie_ack, 5000, 5000, client.local_vtag, ack, sizeof(ack));
+    ASSERT_OK(nsctp_handle_data(&client, cookie_ack, cookie_ack_len));
+    ASSERT_FALSE(nsctp_has_pending_output(&client));
+    ASSERT_EQ(client.rto_ms, NANORTC_SCTP_RTO_INITIAL_MS);
+    ASSERT_FALSE(client.closed_due_to_failure);
+}
+
 TEST_MAIN_BEGIN("test_sctp")
+RUN(test_sctp_handshake_recovers_each_lost_packet);
+RUN(test_sctp_handshake_failure_is_bounded);
+RUN(test_sctp_handshake_backpressure_preserves_retry_budget);
+RUN(test_sctp_handshake_ignores_delayed_acknowledgements);
 RUN(test_sctp_fragment_identity_and_reserved_flags);
 RUN(test_sctp_oversized_continuation_is_not_backpressure);
 RUN(test_sctp_capacity_and_fragmentation);

@@ -13,6 +13,7 @@
 
 #include "interop_common.h"
 #include "run_loop.h"
+#include "interop_owner.h"
 
 #include <pthread.h>
 #include <stdatomic.h>
@@ -45,6 +46,7 @@ typedef struct {
     /* NanoRTC state */
     nanortc_t rtc;
     nano_run_loop_t loop;
+    interop_owner_t owner; /* Serialize sends and hand off fairly after blocking I/O. */
 
     /* Signaling pipe (our end) */
     int sig_fd;
@@ -57,6 +59,7 @@ typedef struct {
 
     /* Last received DataChannel message */
     pthread_mutex_t msg_mutex;
+    nanortc_stats_t stats_snapshot; /* Published by the RTC owner under msg_mutex. */
     char last_msg[4096];
     size_t last_msg_len;
     int last_msg_is_string;
@@ -88,6 +91,11 @@ int interop_nanortc_start(interop_nanortc_peer_t *peer, int sig_fd, uint16_t por
  * Stop the peer thread and clean up.
  */
 int interop_nanortc_stop(interop_nanortc_peer_t *peer);
+
+/* Thread-safe copy of the most recently published owner-thread snapshot. */
+nanortc_stats_t interop_nanortc_stats(interop_nanortc_peer_t *peer);
+int interop_nanortc_send(interop_nanortc_peer_t *peer, uint16_t id, const void *data, size_t len);
+int interop_nanortc_send_string(interop_nanortc_peer_t *peer, uint16_t id, const char *text);
 
 /*
  * Wait until the given atomic flag becomes nonzero, or timeout.

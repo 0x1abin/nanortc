@@ -2,7 +2,7 @@
  * nanortc — Bandwidth estimation (MEDIA profile only)
  *
  * Implements REMB (Receiver Estimated Maximum Bitrate) parsing and
- * exponential moving average (EMA) smoothing for bitrate adaptation.
+ * bounded loss control and matched transport-feedback probing.
  *
  * REMB format (draft-alvestrand-rmcat-remb-03 §2):
  *
@@ -27,6 +27,7 @@
 
 #include "nano_bwe.h"
 #include "nanortc.h"
+#include "nano_time.h"
 #include <stdbool.h>
 #include <string.h>
 
@@ -40,6 +41,7 @@ int bwe_init(nano_bwe_t *bwe)
         return NANORTC_ERR_INVALID_PARAM;
     }
     memset(bwe, 0, sizeof(*bwe));
+    bwe->local_target = NANORTC_BWE_INITIAL_BITRATE;
     bwe->estimated_bitrate = NANORTC_BWE_INITIAL_BITRATE;
     bwe->prev_event_bitrate = NANORTC_BWE_INITIAL_BITRATE;
     return NANORTC_OK;
@@ -149,7 +151,10 @@ int bwe_set_bounds(nano_bwe_t *bwe, uint32_t min_bps, uint32_t max_bps)
     /* Commit only after validating the fully-expanded envelope. */
     bwe->runtime_min_bps = min_bps;
     bwe->runtime_max_bps = max_bps;
-    bwe->estimated_bitrate = bwe_clamp(bwe, bwe->estimated_bitrate);
+    bwe->local_target = bwe_clamp(bwe, bwe->local_target);
+    bwe->estimated_bitrate = bwe->local_target;
+    if (bwe->remb_count && bwe->estimated_bitrate > bwe->remb_limit)
+        bwe->estimated_bitrate = bwe->remb_limit;
     bwe->prev_event_bitrate = bwe_clamp(bwe, bwe->prev_event_bitrate);
     return NANORTC_OK;
 }
@@ -162,100 +167,262 @@ int bwe_set_initial_bitrate(nano_bwe_t *bwe, uint32_t bps)
 
     if (bwe->remb_count == 0 && bwe->twcc_count == 0) {
         uint32_t initial = bps ? bps : (uint32_t)NANORTC_BWE_INITIAL_BITRATE;
-        bwe->estimated_bitrate = bwe_clamp(bwe, initial);
+        bwe->local_target = bwe_clamp(bwe, initial);
+        bwe->estimated_bitrate = bwe->local_target;
         bwe->prev_event_bitrate = bwe->estimated_bitrate;
     }
     return NANORTC_OK;
 }
 
-static void bwe_apply(nano_bwe_t *bwe, uint32_t candidate_bps, uint32_t now_ms, bool first_sample)
-{
-    candidate_bps = bwe_clamp(bwe, candidate_bps);
+#define BWE_SENT_VALID     1u
+#define BWE_SENT_REPORTED  2u
+#define BWE_SENT_AMBIGUOUS 4u
 
-    if (first_sample) {
-        bwe->estimated_bitrate = candidate_bps;
-    } else {
-        uint32_t alpha = NANORTC_BWE_EMA_ALPHA;
-        uint64_t smoothed =
-            ((uint64_t)alpha * candidate_bps + (uint64_t)(256 - alpha) * bwe->estimated_bitrate) /
-            256;
-        bwe->estimated_bitrate = (uint32_t)smoothed;
-    }
+static void bwe_publish(nano_bwe_t *bwe, uint32_t now_ms)
+{
+    bwe->estimated_bitrate = bwe_clamp(bwe, bwe->local_target);
+    /* A receiver cap overrides encoder preference, including its minimum. */
+    if (bwe->remb_count && bwe->estimated_bitrate > bwe->remb_limit)
+        bwe->estimated_bitrate = bwe->remb_limit;
     bwe->last_update_ms = now_ms;
 }
 
 int bwe_on_rtcp_feedback(nano_bwe_t *bwe, const uint8_t *data, size_t len, uint32_t now_ms)
 {
-    if (!bwe || !data) {
+    if (!bwe || !data)
         return NANORTC_ERR_INVALID_PARAM;
-    }
-
-    uint32_t remb_bitrate = 0;
-    int rc = bwe_parse_remb(data, len, &remb_bitrate);
-    if (rc != NANORTC_OK) {
-        return rc; /* Not a REMB packet or parse error */
-    }
-
+    uint32_t cap = 0;
+    int rc = bwe_parse_remb(data, len, &cap);
+    if (rc != NANORTC_OK)
+        return rc;
+    bwe->remb_limit = cap;
     bwe->remb_count++;
-
-    bwe_apply(bwe, remb_bitrate, now_ms, bwe->remb_count == 1);
-
+    if (bwe->twcc_count == 0)
+        bwe->local_target = bwe_clamp(bwe, cap);
+    else if (bwe->local_target > cap)
+        bwe->local_target = cap;
+    bwe_publish(bwe, now_ms);
     return NANORTC_OK;
 }
 
-/* Loss-based upward probe (+8 % at low loss). NOTE: this shares one EMA estimate
- * with the REMB path (bwe_apply), so when the peer also sends REMB the receiver's
- * measured-throughput estimate re-anchors this probe and stalls upward recovery
- * after congestion — limitation tracked as issue #71. */
+static void bwe_roll_send_window(nano_bwe_t *bwe, uint32_t now_ms)
+{
+    if (!bwe->bucket_valid) {
+        bwe->bucket_start_ms = now_ms;
+        bwe->bucket_valid = true;
+        return;
+    }
+    uint32_t elapsed = nano_time_elapsed(now_ms, bwe->bucket_start_ms);
+    if (elapsed > INT32_MAX)
+        return; /* A delayed completion must not roll the clock backward. */
+    uint32_t steps = elapsed / NANORTC_BWE_CONTROL_INTERVAL_MS;
+    if (steps == 0)
+        return;
+    if (steps >= NANORTC_BWE_RATE_BUCKETS)
+        memset(bwe->send_bytes, 0, sizeof(bwe->send_bytes));
+    else {
+        for (uint32_t i = NANORTC_BWE_RATE_BUCKETS; i-- > steps;)
+            bwe->send_bytes[i] = bwe->send_bytes[i - steps];
+        for (uint32_t i = 0; i < steps; i++)
+            bwe->send_bytes[i] = 0;
+    }
+    bwe->bucket_start_ms += steps * NANORTC_BWE_CONTROL_INTERVAL_MS;
+}
+
+void bwe_record_drop(nano_bwe_t *bwe, uint32_t at_ms)
+{
+    if (!bwe)
+        return;
+    bwe->last_bad_send_ms = at_ms;
+    bwe->bad_send_valid = true;
+    bwe->stable_valid = false;
+}
+
+void bwe_record_transmit(nano_bwe_t *bwe, uint32_t sequence, uint16_t bytes, uint32_t at_ms,
+                         bool has_twcc, bool retransmit)
+{
+    if (!bwe)
+        return;
+    bwe_roll_send_window(bwe, at_ms);
+    bwe->send_bytes[0] += bytes;
+    if (retransmit) {
+        bwe_record_drop(bwe, at_ms);
+        nano_bwe_sent_t *old = &bwe->sent[sequence & (NANORTC_BWE_SEND_HISTORY_SIZE - 1u)];
+        if ((old->flags & BWE_SENT_VALID) != 0 && old->sequence == sequence)
+            old->flags |= BWE_SENT_AMBIGUOUS;
+        return;
+    }
+    if (!has_twcc)
+        return;
+    uint32_t advance = sequence - bwe->latest_sequence;
+    if (!bwe->sequence_valid || (advance != 0u && advance <= INT32_MAX)) {
+        bwe->latest_sequence = sequence;
+        bwe->sequence_valid = true;
+    }
+    nano_bwe_sent_t *record = &bwe->sent[sequence & (NANORTC_BWE_SEND_HISTORY_SIZE - 1u)];
+    record->sequence = sequence;
+    record->sent_ms = at_ms;
+    record->bytes = bytes;
+    record->flags = BWE_SENT_VALID;
+}
+
+static void bwe_control(nano_bwe_t *bwe, uint16_t loss, uint32_t now_ms, bool allow_growth)
+{
+    bwe->smoothed_loss_q8 = bwe->twcc_count == 0
+                                ? loss
+                                : (uint16_t)(((uint32_t)bwe->smoothed_loss_q8 * 3u + loss) / 4u);
+    bwe->twcc_count++;
+    bwe->last_feedback_ms = now_ms;
+    bwe->feedback_valid = true;
+    bool clean =
+        loss < NANORTC_BWE_LOW_LOSS_Q8 && allow_growth && bwe->delay_valid && !bwe->delay_growing;
+    if (bwe->bad_send_valid &&
+        nano_time_elapsed(now_ms, bwe->last_bad_send_ms) < NANORTC_BWE_PROBE_INTERVAL_MS)
+        clean = false;
+    bwe_roll_send_window(bwe, now_ms);
+    uint64_t bytes = 0;
+    for (uint32_t i = 0; i < NANORTC_BWE_RATE_BUCKETS; i++)
+        bytes += bwe->send_bytes[i];
+    uint32_t covered_ms = (NANORTC_BWE_RATE_BUCKETS - 1u) * NANORTC_BWE_CONTROL_INTERVAL_MS +
+                          nano_time_elapsed(now_ms, bwe->bucket_start_ms);
+    uint64_t load_bps = bytes * 8000u / covered_ms;
+    if (load_bps * 100u < (uint64_t)bwe_get_bitrate(bwe) * NANORTC_BWE_MIN_LOAD_PCT)
+        clean = false;
+    if (!clean)
+        bwe->stable_valid = false;
+    else if (!bwe->stable_valid) {
+        bwe->stable_valid = true;
+        bwe->stable_since_ms = now_ms;
+    }
+    if (bwe->control_valid &&
+        nano_time_elapsed(now_ms, bwe->control_ms) < NANORTC_BWE_CONTROL_INTERVAL_MS)
+        return;
+    bwe->control_ms = now_ms;
+    bwe->control_valid = true;
+    if (loss > NANORTC_BWE_HIGH_LOSS_Q8) {
+        uint64_t shrunk = (uint64_t)bwe->local_target * (512u - loss) / 512u;
+        uint32_t min_bps = bwe_effective_min(bwe);
+        bwe->local_target = shrunk < min_bps ? min_bps : (uint32_t)shrunk;
+    } else if (clean && bwe->stable_valid &&
+               nano_time_elapsed(now_ms, bwe->stable_since_ms) >= NANORTC_BWE_STABLE_INTERVAL_MS &&
+               nano_time_elapsed(now_ms, bwe->last_probe_ms) >= NANORTC_BWE_PROBE_INTERVAL_MS) {
+        uint64_t grown =
+            (uint64_t)bwe->local_target * (100u + NANORTC_BWE_PROBE_INCREASE_PCT) / 100u;
+        uint32_t max_bps = bwe_effective_max(bwe);
+        bwe->local_target = grown > max_bps ? max_bps : (uint32_t)grown;
+        bwe->last_probe_ms = now_ms;
+    }
+    bwe_publish(bwe, now_ms);
+}
+
 int bwe_on_twcc_loss(nano_bwe_t *bwe, uint16_t loss_fraction_q8, uint32_t now_ms)
 {
-    if (!bwe) {
+    if (!bwe)
         return NANORTC_ERR_INVALID_PARAM;
+    if (loss_fraction_q8 > 256u)
+        loss_fraction_q8 = 256u;
+    /* Summary-only samples may reduce load, but never prove spare capacity. */
+    bwe_control(bwe, loss_fraction_q8, now_ms, false);
+    return NANORTC_OK;
+}
+
+typedef struct {
+    nano_bwe_t *bwe;
+    uint32_t now_ms;
+    uint32_t matched;
+    uint32_t unknown;
+    uint32_t lost;
+    int64_t arrival_us;
+} bwe_feedback_t;
+
+static void bwe_feedback_packet(uint16_t wire_seq, nano_twcc_status_t status, int32_t delta_us,
+                                void *user)
+{
+    bwe_feedback_t *feedback = (bwe_feedback_t *)user;
+    nano_bwe_t *bwe = feedback->bwe;
+    if (status != NANO_TWCC_STATUS_NOT_RECEIVED)
+        feedback->arrival_us += delta_us;
+    uint32_t seq = bwe->latest_sequence - (uint16_t)((uint16_t)bwe->latest_sequence - wire_seq);
+    nano_bwe_sent_t *record = &bwe->sent[seq & (NANORTC_BWE_SEND_HISTORY_SIZE - 1u)];
+    if ((record->flags & BWE_SENT_VALID) == 0 || record->sequence != seq ||
+        nano_time_elapsed(feedback->now_ms, record->sent_ms) > NANORTC_BWE_HISTORY_MAX_AGE_MS) {
+        feedback->unknown++;
+        return;
     }
-    if (loss_fraction_q8 > 256) {
-        loss_fraction_q8 = 256; /* saturate */
+    if ((record->flags & BWE_SENT_REPORTED) != 0)
+        return;
+    record->flags |= BWE_SENT_REPORTED;
+    feedback->matched++;
+    if (status == NANO_TWCC_STATUS_NOT_RECEIVED) {
+        feedback->lost++;
+        return;
     }
-
-    /* Smooth the loss fraction (EMA, weight 3/4 old + 1/4 new) so adaptive FEC
-     * reacts to sustained loss, not a single noisy feedback. First sample seeds
-     * directly. */
-    if (bwe->twcc_count == 0) {
-        bwe->smoothed_loss_q8 = loss_fraction_q8;
-    } else {
-        bwe->smoothed_loss_q8 =
-            (uint16_t)(((uint32_t)bwe->smoothed_loss_q8 * 3u + loss_fraction_q8) / 4u);
+    if ((record->flags & BWE_SENT_AMBIGUOUS) != 0 || status == NANO_TWCC_STATUS_RESERVED)
+        return;
+    /* Late feedback can acknowledge an older send after a newer one. Such
+     * samples still count for loss, but must not rewind the delay window. */
+    if (bwe->delay_samples != 0 &&
+        nano_time_elapsed(record->sent_ms, bwe->delay_first_send_ms) > INT32_MAX)
+        return;
+    if (bwe->delay_samples == 0) {
+        bwe->delay_first_send_ms = record->sent_ms;
+        bwe->delay_first_arrival_us = feedback->arrival_us;
     }
-
-    uint32_t max_bps = bwe_effective_max(bwe);
-    uint32_t min_bps = bwe_effective_min(bwe);
-
-    /* Loss-based controller, legacy libwebrtc flavour. Thresholds measured
-     * in 256-ths of a packet so we stay in integer math. */
-    uint32_t target = bwe->estimated_bitrate;
-    if (target == 0) {
-        target = NANORTC_BWE_INITIAL_BITRATE;
+    bwe->delay_samples++;
+    bwe->delay_last_arrival_us = feedback->arrival_us;
+    uint32_t span = nano_time_elapsed(record->sent_ms, bwe->delay_first_send_ms);
+    if (span < NANORTC_BWE_DELAY_MIN_SPAN_MS || bwe->delay_samples < NANORTC_BWE_DELAY_MIN_SAMPLES)
+        return;
+    int64_t excess = feedback->arrival_us - bwe->delay_first_arrival_us - (int64_t)span * 1000;
+    bwe->delay_valid = true;
+    bwe->delay_growing = excess > NANORTC_BWE_DELAY_GROWTH_US;
+    if (bwe->delay_growing)
+        bwe->stable_valid = false;
+    if (span >= NANORTC_BWE_CONTROL_INTERVAL_MS) {
+        bwe->delay_samples = 1;
+        bwe->delay_first_send_ms = record->sent_ms;
+        bwe->delay_first_arrival_us = feedback->arrival_us;
     }
+}
 
-    if (loss_fraction_q8 < 5) {
-        /* Low loss: grow aggressively, +8 % per feedback. Cap at max. */
-        uint64_t grown = (uint64_t)target * 108u / 100u;
-        target = (grown > max_bps) ? max_bps : (uint32_t)grown;
-    } else if (loss_fraction_q8 > 25) {
-        /* High loss: new = old * (1 - 0.5 * loss_fraction).
-         * loss_fraction = loss_q8 / 256, so new = old * (512 - loss_q8) / 512. */
-        uint64_t shrunk = (uint64_t)target * (uint64_t)(512 - loss_fraction_q8) / 512u;
-        if (shrunk < min_bps) {
-            shrunk = min_bps;
-        }
-        target = (uint32_t)shrunk;
+int bwe_on_twcc_feedback(nano_bwe_t *bwe, const uint8_t *data, size_t len, uint32_t now_ms)
+{
+    if (!bwe || !data)
+        return NANORTC_ERR_INVALID_PARAM;
+    nano_twcc_summary_t summary;
+    int rc = twcc_parse_feedback(data, len, &summary, NULL, NULL);
+    if (rc != NANORTC_OK)
+        return rc;
+    if (!bwe->feedback_valid ||
+        nano_time_elapsed(now_ms, bwe->last_feedback_ms) > NANORTC_BWE_FEEDBACK_TIMEOUT_MS) {
+        bwe->delay_samples = 0;
+        bwe->delay_valid = false;
+        bwe->stable_valid = false;
     }
-    /* else: hold */
-
-    bwe->twcc_count++;
-    /* First TWCC sample jumps directly to target (like REMB) so the first
-     * feedback is not blended with the compile-time initial estimate. */
-    bwe_apply(bwe, target, now_ms, bwe->twcc_count == 1);
-
+    int64_t arrival = summary.reference_time_us;
+    if (bwe->delay_samples != 0) {
+        const int64_t period = INT64_C(16777216) * 64000;
+        int64_t delta = (arrival - bwe->delay_last_arrival_us) % period;
+        if (delta < -period / 2)
+            delta += period;
+        else if (delta > period / 2)
+            delta -= period;
+        arrival = bwe->delay_last_arrival_us + delta;
+    }
+    bwe_feedback_t feedback = {bwe, now_ms, 0, 0, 0, arrival};
+    rc = twcc_parse_feedback(data, len, &summary, bwe_feedback_packet, &feedback);
+    if (rc != NANORTC_OK)
+        return rc;
+    bwe->history_missed += feedback.unknown;
+    if (feedback.matched == 0) {
+        if (feedback.unknown != 0)
+            bwe->stable_valid = false;
+        return NANORTC_OK;
+    }
+    uint16_t loss = (uint16_t)((feedback.lost * 256u) / feedback.matched);
+    bool enough = feedback.matched * 100u >=
+                  (feedback.matched + feedback.unknown) * NANORTC_BWE_MIN_HISTORY_MATCH_PCT;
+    bwe_control(bwe, loss, now_ms, enough);
     return NANORTC_OK;
 }
 
@@ -285,8 +452,13 @@ uint16_t bwe_get_loss_q8(const nano_bwe_t *bwe)
 
 int bwe_should_emit_event(nano_bwe_t *bwe)
 {
-    if (!bwe || bwe->prev_event_bitrate == 0) {
+    if (!bwe)
         return 0;
+    if (bwe->prev_event_bitrate == 0) {
+        if (bwe->estimated_bitrate == 0)
+            return 0;
+        bwe->prev_event_bitrate = bwe->estimated_bitrate;
+        return 1;
     }
 
     /* Calculate absolute percentage change:

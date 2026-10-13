@@ -49,7 +49,7 @@ TEST(test_poll_empty)
     ASSERT_OK(nanortc_init(&rtc, &cfg));
 
     nanortc_output_t out;
-    ASSERT_EQ(nanortc_poll_output(&rtc, &out), NANORTC_ERR_NO_DATA);
+    ASSERT_EQ(nano_test_poll_output(&rtc, &out), NANORTC_ERR_NO_DATA);
 
     nanortc_destroy(&rtc);
 }

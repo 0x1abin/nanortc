@@ -31,6 +31,7 @@
 
 #include "nanortc.h"
 #include "http_signaling.h"
+#include "udp_send.h"
 
 #include <arpa/inet.h>
 #include <stdint.h>
@@ -81,6 +82,7 @@ typedef struct nano_session {
     int viewer_id; /**< signaling peer id of the browser */
     nanortc_t rtc;
     int udp_fd;
+    nano_udp_sender_t udp;
     int video_mid;                  /**< -1 if no video track negotiated */
     int audio_mid;                  /**< -1 if no audio track negotiated */
     int media_connected;            /**< 1 after NANORTC_EV_CONNECTED */

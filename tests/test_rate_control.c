@@ -217,7 +217,7 @@ static int drain_spec_reco_full(nanortc_t *rtc, nanortc_ev_spec_recommendation_t
 {
     nanortc_output_t out;
     int seen = 0;
-    while (nanortc_poll_output(rtc, &out) == NANORTC_OK) {
+    while (nano_test_poll_output(rtc, &out) == NANORTC_OK) {
         if (out.type == NANORTC_OUTPUT_EVENT && out.event.type == NANORTC_EV_SPEC_RECOMMENDATION) {
             seen = 1;
             if (reco) {
@@ -262,7 +262,7 @@ TEST(test_rate_control_tick_emits_event)
 
     nanortc_output_t out;
     int got = 0;
-    while (nanortc_poll_output(&rtc, &out) == NANORTC_OK) {
+    while (nano_test_poll_output(&rtc, &out) == NANORTC_OK) {
         if (out.type == NANORTC_OUTPUT_EVENT && out.event.type == NANORTC_EV_SPEC_RECOMMENDATION) {
             got = 1;
             ASSERT_EQ(out.event.spec_recommendation.rung, 2);

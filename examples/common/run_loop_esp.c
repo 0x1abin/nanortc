@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <lwip/sockets.h>
 #include <lwip/netdb.h>
 #include <esp_timer.h>
@@ -81,6 +82,11 @@ int nano_run_loop_init(nano_run_loop_t *loop, nanortc_t *rtc, uint16_t port)
     }
 #endif
 
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+        close(fd);
+        return -1;
+    }
     loop->fds[0] = fd;
     loop->fd_count = 1;
 
@@ -102,35 +108,12 @@ void nano_run_loop_set_event_cb(nano_run_loop_t *loop, nano_event_cb cb, void *u
     }
 }
 
-/* Bounded-retry UDP send. lwIP returns ENOMEM when the WiFi TX buffer /
- * pbuf pool is exhausted (EWOULDBLOCK/ENOBUFS with some netif drivers) —
- * exactly what a multi-fragment video burst provokes. Previously the
- * return value was ignored and every such packet silently vanished; a
- * short bounded wait lets the (higher-priority) WiFi/lwIP tasks free
- * buffers, and both outcomes are counted for the bench stats. Worst-case
- * stall is 3 ms per packet. */
-static void send_udp(nano_run_loop_t *loop, const void *data, size_t len,
-                     const struct sockaddr *dest, socklen_t dest_len)
-{
-    for (int attempt = 0;; attempt++) {
-        if (sendto(loop->fds[0], data, len, 0, dest, dest_len) >= 0) {
-            return;
-        }
-        int e = errno;
-        if (attempt >= 3 || (e != ENOMEM && e != ENOBUFS && e != EWOULDBLOCK && e != EAGAIN)) {
-            loop->stats_send_drop++;
-            return;
-        }
-        loop->stats_send_retry++;
-        usleep(1000);
-    }
-}
-
 static void dispatch_outputs(nano_run_loop_t *loop)
 {
+    nano_udp_retry(&loop->udp, loop->rtc, nano_get_millis());
     nanortc_output_t out;
 
-    while (nanortc_poll_output(loop->rtc, &out) == NANORTC_OK) {
+    while (!loop->udp.pending && nanortc_poll_output(loop->rtc, &out) == NANORTC_OK) {
         switch (out.type) {
         case NANORTC_OUTPUT_TRANSMIT: {
             /* Build destination sockaddr from nanortc_addr_t */
@@ -141,8 +124,8 @@ static void dispatch_outputs(nano_run_loop_t *loop)
                 dest6.sin6_family = AF_INET6;
                 memcpy(&dest6.sin6_addr, out.transmit.dest.addr, 16);
                 dest6.sin6_port = htons(out.transmit.dest.port);
-                send_udp(loop, out.transmit.data, out.transmit.len, (struct sockaddr *)&dest6,
-                         sizeof(dest6));
+                nano_udp_send(&loop->udp, loop->rtc, &out, loop->fds[0], (struct sockaddr *)&dest6,
+                              sizeof(dest6), nano_get_millis());
             } else {
                 /* IPv4: wrap in IPv4-mapped IPv6 for dual-stack socket */
                 struct sockaddr_in6 dest6;
@@ -153,8 +136,8 @@ static void dispatch_outputs(nano_run_loop_t *loop)
                 dest6.sin6_addr.s6_addr[11] = 0xff;
                 memcpy(&dest6.sin6_addr.s6_addr[12], out.transmit.dest.addr, 4);
                 dest6.sin6_port = htons(out.transmit.dest.port);
-                send_udp(loop, out.transmit.data, out.transmit.len, (struct sockaddr *)&dest6,
-                         sizeof(dest6));
+                nano_udp_send(&loop->udp, loop->rtc, &out, loop->fds[0], (struct sockaddr *)&dest6,
+                              sizeof(dest6), nano_get_millis());
             }
 #else
             {
@@ -163,8 +146,8 @@ static void dispatch_outputs(nano_run_loop_t *loop)
                 dest.sin_family = AF_INET;
                 memcpy(&dest.sin_addr, out.transmit.dest.addr, 4);
                 dest.sin_port = htons(out.transmit.dest.port);
-                send_udp(loop, out.transmit.data, out.transmit.len, (struct sockaddr *)&dest,
-                         sizeof(dest));
+                nano_udp_send(&loop->udp, loop->rtc, &out, loop->fds[0], (struct sockaddr *)&dest,
+                              sizeof(dest), nano_get_millis());
             }
 #endif
             break;
@@ -196,6 +179,7 @@ int nano_run_loop_step(nano_run_loop_t *loop)
      * which also bounds cooperative-shutdown latency for callers that
      * tear the loop down by flipping `peer->running`). The library's
      * next protocol deadline can only *shorten* this — never extend it. */
+    dispatch_outputs(loop);
     uint32_t timeout_ms = loop->max_poll_ms ? loop->max_poll_ms : 100;
 
     uint32_t deadline_ms = 0;
@@ -204,7 +188,9 @@ int nano_run_loop_step(nano_run_loop_t *loop)
         timeout_ms = deadline_ms;
     }
 
-    dispatch_outputs(loop);
+    uint32_t retry_ms = nano_udp_next_timeout(&loop->udp, nano_get_millis());
+    if (retry_ms < timeout_ms)
+        timeout_ms = retry_ms;
 
     /* Wait for network input or timeout */
     fd_set rset;
@@ -245,7 +231,10 @@ int nano_run_loop_step(nano_run_loop_t *loop)
                 memcpy(in.src.addr, a, 16);
             }
             in.src.port = ntohs(from6.sin6_port);
-            nanortc_handle_input(loop->rtc, &in);
+            if (nanortc_handle_input(loop->rtc, &in) == NANORTC_ERR_WOULD_BLOCK) {
+                dispatch_outputs(loop);
+                (void)nanortc_handle_input(loop->rtc, &in);
+            }
         }
 #else
         struct sockaddr_in from;
@@ -259,13 +248,15 @@ int nano_run_loop_step(nano_run_loop_t *loop)
             in.src.family = 4;
             memcpy(in.src.addr, &from.sin_addr, 4);
             in.src.port = ntohs(from.sin_port);
-            nanortc_handle_input(loop->rtc, &in);
+            if (nanortc_handle_input(loop->rtc, &in) == NANORTC_ERR_WOULD_BLOCK) {
+                dispatch_outputs(loop);
+                (void)nanortc_handle_input(loop->rtc, &in);
+            }
         }
 #endif
-    } else {
-        nanortc_input_t tick = {.now_ms = now};
-        nanortc_handle_input(loop->rtc, &tick);
     }
+    nanortc_input_t tick = {.now_ms = now};
+    nanortc_handle_input(loop->rtc, &tick);
 
     /* Dispatch any new output generated by handle_input */
     dispatch_outputs(loop);
@@ -300,6 +291,8 @@ void nano_run_loop_destroy(nano_run_loop_t *loop)
 {
     if (!loop)
         return;
+    loop->running = 0;
+    nano_udp_cancel(&loop->udp, loop->rtc, nano_get_millis());
     for (uint8_t i = 0; i < loop->fd_count; i++) {
         if (loop->fds[i] >= 0) {
             close(loop->fds[i]);
